@@ -1,0 +1,17 @@
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+dist/
+build/
+*.egg-info/
+
+# local configuration and logs (may name accounts; never committed)
+*.local.*
+*.log
+
+# editors
+.idea/
+.vscode/
+*.swp
