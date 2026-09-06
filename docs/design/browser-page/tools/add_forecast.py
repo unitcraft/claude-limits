@@ -13,8 +13,8 @@ os.chdir(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 FORECAST = {  # key: (label text fragment, reset text fragment) -> (projected %, note, is_warning)
     ("session 5h", "20:50"): (11, "→ 11% at reset", False),
     ("all 7d", "Tue 13:00"): (31, "→ 31% at reset", False),
-    ("Fable 7d", "Tue 13:00"): (103, "2d 17h left · Tue ~12:30", True),
-    ("all 7d", "Thu 09:30"): (156, "2d 19h left · Tue ~15:00", True),
+    ("Fable 7d", "Tue 13:00"): (103, "Tue ~12:30 (2d 17h left)", True),
+    ("all 7d", "Thu 09:30"): (156, "Tue ~15:00 (2d 19h left)", True),
 }
 ROW = re.compile(r'(<div style="display: grid; grid-template-columns: 100px [^"]*">)(.*?)(\n\s*</div>\n\s*</div>)', re.S)
 BAR = re.compile(r'(<div style="position: relative; height: 10px; border-radius: 3px; background: (#[0-9a-f]{6});"><div style="position: absolute; left: 0; top: 0; bottom: 0; width: (\d+)%; background: (#[0-9a-f]{6}); border-radius: 3px;"></div>)(</div>)')
