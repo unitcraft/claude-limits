@@ -1,0 +1,12 @@
+# built artefacts of the spike — rebuild with build_win.ps1 / build_linux.sh
+*.obj
+*.lib
+*.o
+*.a
+*.exe
+*.duckdb*
+duckdb.cpp
+duckdb.h
+duckdb.hpp
+duckdb_extension.h
+libduckdb-src.zip

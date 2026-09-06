@@ -1,0 +1,12 @@
+# duckspike — does a Nova binary link against a statically built DuckDB (C++, /MT) without CRT conflicts?
+[package]
+name = "duckspike"
+version = "0.1.0"
+description = "spike: Nova + static DuckDB link check (plan 01.2 alternative)"
+std = "../../../../nova/std"                  # or NOVA_STD_PATH; the spike ran with absolute paths
+
+[ffi]
+c_shims      = ["native/duck_shim.c"]
+include_dirs = ["native/", "../"]          # ../duckdb.h from the amalgamation
+libs         = ["duckdb_static"]           # ../duckdb_static.lib, built with clang-cl /MT
+lib_dirs     = ["../"]

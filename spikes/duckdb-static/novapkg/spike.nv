@@ -1,0 +1,11 @@
+// spike.nv — Nova binary calling a statically linked DuckDB through a C shim.
+module duckspike
+
+extern "C" fn duck_spike_roundtrip() -> int
+extern "C" fn duck_spike_version_len() -> int
+
+fn main() {
+    ro rows = duck_spike_roundtrip()
+    println("duckdb roundtrip rows = ", rows)
+    println("duckdb version length = ", duck_spike_version_len())
+}
