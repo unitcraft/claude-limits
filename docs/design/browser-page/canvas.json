@@ -65,14 +65,14 @@
       "x": 0,
       "y": 0,
       "w": 1580,
-      "h": 940,
+      "h": 1040,
       "page": "page-2"
     },
     {
       "file": "ApiMap.dc.html",
       "title": "HTTP API map (plan 01.3)",
       "x": 0,
-      "y": 1080,
+      "y": 1180,
       "w": 1580,
       "h": 900,
       "page": "page-2"
