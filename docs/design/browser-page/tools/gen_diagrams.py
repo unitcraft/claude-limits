@@ -72,7 +72,7 @@ TABLES = {
                        [], "версии файла настроек · 20 шт"),
     "notification": ([("id", "UUID v7", ["PK"]), ("created_at", "TIMESTAMPTZ", ["NN"]), ("updated_at", "TIMESTAMPTZ", ["NN"]), ("deleted_at", "TIMESTAMPTZ", []), ("created_by", "UUID", ["NN", "app"]), ("updated_by", "UUID", ["NN", "app"]), ("subject_id", "UUID", ["NN"]), ("account_id", "UUID", ["FK"]), ("window_id", "UUID", ["FK"]),
                       ("kind", "VARCHAR(32)", ["NN", "CHECK notice_kind"]), ("fired_at", "TIMESTAMPTZ", ["NN"]), ("acknowledged_at", "TIMESTAMPTZ", []), ("payload", "JSON", ["только id"])],
-                     ["UNIQUE (kind, subject_id, fired_at)", "Ф.5, до неё пусто"], "зарезервировано под Ф.5"),
+                     ["UNIQUE (kind, subject_id, fired_at)", "черновик · не в 0001_init"], "появится миграцией Ф.5"),
     "schema_meta": ([("key", "VARCHAR", ["PK"]), ("value", "VARCHAR", ["NN"])], ["служебная таблица механизма — без набора §6"], "schema_version, duckdb_version, app_instance_id, rollup_tz, …"),
 }
 POS = {  # x, y of each card; column width 362
@@ -151,7 +151,7 @@ svg.append("</svg>")
 
 legend = (f'<div style="position: absolute; left: 40px; top: 24px; display: flex; align-items: center; gap: 18px;">'
           f'<span style="font-size: 16px; font-weight: 600;">claude-limits.duckdb</span>'
-          f'<span style="color: {MUTED};">DuckDB v1.5.5 + core_functions + icu (статически) · конвенция БД 2.2: файл шифрован (ENCRYPTION_KEY, ключ в хранилище ОС) · id UUID v7 из приложения, служебный набор у каждой таблицы, *_at TIMESTAMPTZ в UTC, *_on DATE, VARCHAR + CHECK · подплан 01.2 §3</span>'
+          f'<span style="color: {MUTED};">DuckDB v1.5.5 + core_functions + icu (статически) · конвенция БД 2.2: файл шифрован (ENCRYPTION_KEY, ключ в каталоге настроек) · id UUID v7 из приложения, служебный набор у каждой таблицы, *_at TIMESTAMPTZ в UTC, *_on DATE, VARCHAR + CHECK · подплан 01.2 §3</span>'
           f'<span style="display: flex; gap: 6px; align-items: center;">{badge("PK", TEAL)}{badge("FK", VIOLET)}{badge("UQ", ORANGE)}{badge("NN", SUBTLE)}{badge("app = идентичность экземпляра приложения", AMBER)}{badge("ПДн = в реестре 01.2 §10", RED)}'
           f'<span class="mono" style="font-size: 10px; color: {SUBTLE};">⌕ индекс</span>'
           f'<svg width="40" height="10" aria-hidden="true"><circle cx="4" cy="5" r="3" fill="{VIOLET}"></circle><line x1="7" y1="5" x2="30" y2="5" stroke="{VIOLET}" stroke-width="1.5"></line><path d="M 30 1 L 38 5 L 30 9 z" fill="{VIOLET}"></path></svg>'
