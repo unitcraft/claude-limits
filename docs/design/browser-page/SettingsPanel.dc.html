@@ -16,7 +16,7 @@
   </style>
 </helmet>
 
-<div style="min-height: 1230px; background: radial-gradient(1100px 520px at 18% -8%, rgba(107, 63, 160, 0.30), transparent 62%), radial-gradient(900px 500px at 92% 110%, rgba(107, 63, 160, 0.16), transparent 60%), #13111d; display: flex; justify-content: center; padding: 28px 24px 36px; box-sizing: border-box;">
+<div style="min-height: 1500px; background: radial-gradient(1100px 520px at 18% -8%, rgba(107, 63, 160, 0.30), transparent 62%), radial-gradient(900px 500px at 92% 110%, rgba(107, 63, 160, 0.16), transparent 60%), #13111d; display: flex; justify-content: center; padding: 28px 24px 36px; box-sizing: border-box;">
 
   <!-- Popover anchored under the gear button -->
   <div style="width: 400px; display: flex; flex-direction: column; background: #1e1a2e; border: 1px solid #3b3458; border-radius: 12px; box-shadow: 0 18px 40px rgba(0, 0, 0, 0.55);">
@@ -125,6 +125,43 @@
             <div style="width: 16px; height: 16px; border-radius: 4px; background: #3aa98c; display: flex; align-items: center; justify-content: center;"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#13111d" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="4 12 10 18 20 6"></polyline></svg></div>
           </div>
         </div>
+      </div>
+
+      <!-- Forecast -->
+      <div style="display: flex; flex-direction: column; gap: 8px;">
+        <div style="font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: #6d6786;">Forecast</div>
+        <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px;">
+          <div>Show forecast at reset <span style="color: #9b95b5;">· hatched part of the bar</span></div>
+          <div style="width: 36px; height: 20px; border-radius: 999px; background: #3aa98c; position: relative;"><div style="position: absolute; top: 2px; left: 18px; width: 16px; height: 16px; border-radius: 50%; background: #13111d;"></div></div>
+        </div>
+        <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px;">
+          <div>Working days</div>
+          <div style="display: flex; gap: 4px;">
+            <span class="mono" style="width: 30px; height: 28px; display: flex; align-items: center; justify-content: center; border-radius: 5px; background: #2a2542; color: #e8e8ee; font-size: 11px;">Mo</span>
+            <span class="mono" style="width: 30px; height: 28px; display: flex; align-items: center; justify-content: center; border-radius: 5px; background: #2a2542; color: #e8e8ee; font-size: 11px;">Tu</span>
+            <span class="mono" style="width: 30px; height: 28px; display: flex; align-items: center; justify-content: center; border-radius: 5px; background: #2a2542; color: #e8e8ee; font-size: 11px;">We</span>
+            <span class="mono" style="width: 30px; height: 28px; display: flex; align-items: center; justify-content: center; border-radius: 5px; background: #2a2542; color: #e8e8ee; font-size: 11px;">Th</span>
+            <span class="mono" style="width: 30px; height: 28px; display: flex; align-items: center; justify-content: center; border-radius: 5px; background: #2a2542; color: #e8e8ee; font-size: 11px;">Fr</span>
+            <span class="mono" style="width: 30px; height: 28px; display: flex; align-items: center; justify-content: center; border-radius: 5px; border: 1px solid #322c4a; color: #6d6786; font-size: 11px; box-sizing: border-box;">Sa</span>
+            <span class="mono" style="width: 30px; height: 28px; display: flex; align-items: center; justify-content: center; border-radius: 5px; border: 1px solid #322c4a; color: #6d6786; font-size: 11px; box-sizing: border-box;">Su</span>
+          </div>
+        </div>
+        <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px;">
+          <div>Working hours</div>
+          <div style="display: flex; align-items: center; gap: 6px;">
+            <div class="mono" style="width: 64px; height: 32px; display: flex; align-items: center; justify-content: center; border: 1px solid #3b3458; border-radius: 6px; background: #13111d; box-sizing: border-box;">09:00</div>
+            <span style="color: #9b95b5;">–</span>
+            <div class="mono" style="width: 64px; height: 32px; display: flex; align-items: center; justify-content: center; border: 1px solid #3b3458; border-radius: 6px; background: #13111d; box-sizing: border-box;">19:00</div>
+          </div>
+        </div>
+        <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px;">
+          <div>Usage outside working hours</div>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <div class="mono" style="width: 64px; height: 32px; display: flex; align-items: center; justify-content: flex-end; padding: 0 10px; border: 1px solid #3b3458; border-radius: 6px; background: #13111d; box-sizing: border-box;">0%</div>
+            <span style="color: #9b95b5; font-size: 12px;">of the working rate</span>
+          </div>
+        </div>
+        <div style="font-size: 12px; color: #6d6786;">Rate = usage over the last working hours from the 5-min history; the 5 h session window uses plain clock time.</div>
       </div>
 
       <!-- Polling -->
