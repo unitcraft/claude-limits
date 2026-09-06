@@ -46,7 +46,7 @@ TABLES = {
                    ("token_state", "VARCHAR(32)", ["NN", "CHECK token_state"]), ("started_at", "TIMESTAMPTZ", ["NN"]), ("ended_at", "TIMESTAMPTZ", ["NULL = сейчас"])],
                   ["one open row per login_dir — kept by store, checked by test", "CHECK (ended_at IS NULL OR ended_at ≥ started_at)"],
                   "кто сидел в каталоге когда · журнал"),
-    "account": ([("id", "UUID v7", ["PK"]), ("created_at", "TIMESTAMPTZ", ["NN"]), ("updated_at", "TIMESTAMPTZ", ["NN"]), ("deleted_at", "TIMESTAMPTZ", []), ("created_by", "UUID", ["NN", "app"]), ("updated_by", "UUID", ["NN", "app"]), ("email", "VARCHAR", ["UQ", "NN", "lower()", "ПДн"]), ("org_name", "VARCHAR", ["ПДн"]), ("org_uuid", "UUID", []),
+    "account": ([("id", "UUID v7", ["PK"]), ("created_at", "TIMESTAMPTZ", ["NN"]), ("updated_at", "TIMESTAMPTZ", ["NN"]), ("deleted_at", "TIMESTAMPTZ", []), ("created_by", "UUID", ["NN", "app"]), ("updated_by", "UUID", ["NN", "app"]), ("email", "VARCHAR", ["UQ", "NN", "lower()", "ПДн"]), ("org_name", "VARCHAR", ["ПДн"]),
                  ("subscription_type", "VARCHAR", []), ("rate_limit_tier", "VARCHAR", []), ("color_slot", "TINYINT", ["NN"]),
                  ("first_seen_at", "TIMESTAMPTZ", ["NN"]), ("last_seen_at", "TIMESTAMPTZ", ["NN"])],
                 ["CHECK (email = lower(email))"], "учётка = почта · токенов нет"),
@@ -63,10 +63,10 @@ TABLES = {
               ("latency_ms", "INTEGER", []), ("error", "VARCHAR", ["≤200, без токенов"])],
              ["UNIQUE (account_id, polled_at) — ключ факта", "zone maps by polled_at"], "каждая попытка опроса · журнал"),
     "lock_period": ([("id", "UUID v7", ["PK"]), ("created_at", "TIMESTAMPTZ", ["NN"]), ("updated_at", "TIMESTAMPTZ", ["NN"]), ("created_by", "UUID", ["NN", "app"]), ("updated_by", "UUID", ["NN", "app"]), ("window_id", "UUID", ["FK", "NN"]), ("cycle_id", "UUID", ["FK", "NN"]), ("started_at", "TIMESTAMPTZ", ["NN"]),
-                     ("ended_at", "TIMESTAMPTZ", ["NULL = идёт"]), ("reason", "VARCHAR", ["…|percent_100"])],
+                     ("ended_at", "TIMESTAMPTZ", ["NULL = идёт"]), ("reason", "VARCHAR(32)", ["NN", "CHECK lock_reason"])],
                     ["one open period per window — kept by store", "CHECK (ended_at IS NULL OR ended_at ≥ started_at)"], "интервалы блокировки"),
     "daily_rollup": ([("id", "UUID v7", ["PK"]), ("created_at", "TIMESTAMPTZ", ["NN"]), ("updated_at", "TIMESTAMPTZ", ["NN"]), ("created_by", "UUID", ["NN", "app"]), ("updated_by", "UUID", ["NN", "app"]), ("window_id", "UUID", ["FK", "NN"]), ("day_on", "DATE", ["NN", "rollup_tz"]), ("samples", "INTEGER", ["NN"]),
-                      ("peak_percent", "TINYINT", ["NN"]), ("avg_percent", "DECIMAL(5,2)", ["NN"]), ("minutes_locked", "INTEGER", ["NN"]), ("resets", "INTEGER", ["NN"])],
+                      ("peak_percent", "TINYINT", ["NN"]), ("avg_percent", "DECIMAL(5,2)", ["NN"]), ("locked_sec", "INTEGER", ["NN"]), ("resets", "INTEGER", ["NN"])],
                      ["UNIQUE (window_id, day_on)"], "дневные свёртки · 400 д"),
     "config_history": ([("id", "UUID v7", ["PK"]), ("created_at", "TIMESTAMPTZ", ["NN"]), ("updated_at", "TIMESTAMPTZ", ["NN"]), ("created_by", "UUID", ["NN", "app"]), ("updated_by", "UUID", ["NN", "app"]), ("source", "VARCHAR(32)", ["NN", "CHECK config_source"]), ("toml", "VARCHAR", ["NN", "token → ***", "ПДн"])],
                        [], "версии файла настроек · 20 шт"),
@@ -151,7 +151,7 @@ svg.append("</svg>")
 
 legend = (f'<div style="position: absolute; left: 40px; top: 24px; display: flex; align-items: center; gap: 18px;">'
           f'<span style="font-size: 16px; font-weight: 600;">claude-limits.duckdb</span>'
-          f'<span style="color: {MUTED};">DuckDB v1.5.5 + core_functions + icu (статически) · конвенция БД 2.2: id UUID v7 из приложения, служебный набор у каждой таблицы, *_at TIMESTAMPTZ в UTC, *_on DATE, VARCHAR + CHECK · подплан 01.2 §3</span>'
+          f'<span style="color: {MUTED};">DuckDB v1.5.5 + core_functions + icu (статически) · конвенция БД 2.2: файл шифрован (ENCRYPTION_KEY, ключ в хранилище ОС) · id UUID v7 из приложения, служебный набор у каждой таблицы, *_at TIMESTAMPTZ в UTC, *_on DATE, VARCHAR + CHECK · подплан 01.2 §3</span>'
           f'<span style="display: flex; gap: 6px; align-items: center;">{badge("PK", TEAL)}{badge("FK", VIOLET)}{badge("UQ", ORANGE)}{badge("NN", SUBTLE)}{badge("app = идентичность экземпляра приложения", AMBER)}{badge("ПДн = в реестре 01.2 §10", RED)}'
           f'<span class="mono" style="font-size: 10px; color: {SUBTLE};">⌕ индекс</span>'
           f'<svg width="40" height="10" aria-hidden="true"><circle cx="4" cy="5" r="3" fill="{VIOLET}"></circle><line x1="7" y1="5" x2="30" y2="5" stroke="{VIOLET}" stroke-width="1.5"></line><path d="M 30 1 L 38 5 L 30 9 z" fill="{VIOLET}"></path></svg>'
