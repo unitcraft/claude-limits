@@ -42,7 +42,7 @@ TABLES = {
     "login_dir": ([("id", "INTEGER", ["PK"]), ("folder_id", "INTEGER", ["FK", "NN", "no cascade"]), ("path", "VARCHAR", ["UQ", "NN"]), ("name", "VARCHAR", ["NN"]),
                    ("layout", "ENUM dir_layout", []), ("first_seen_at", "TIMESTAMPTZ", ["NN"]), ("last_seen_at", "TIMESTAMPTZ", ["NN"]), ("removed_at", "TIMESTAMPTZ", [])],
                   ["CHECK (last_seen_at >= first_seen_at)"], "каталог с .credentials.json"),
-    "occupancy": ([("id", "INTEGER", ["PK"]), ("login_dir_id", "INTEGER", ["FK", "NN", "forget tx"]), ("account_id", "INTEGER", ["FK", "forget → NULL"]),
+    "occupancy": ([("id", "BIGINT", ["PK"]), ("login_dir_id", "INTEGER", ["FK", "NN", "forget tx"]), ("account_id", "INTEGER", ["FK", "forget → NULL"]),
                    ("token_state", "ENUM token_state", ["NN"]), ("started_at", "TIMESTAMPTZ", ["NN"]), ("ended_at", "TIMESTAMPTZ", ["NULL = сейчас"])],
                   ["one open row per login_dir — kept by store, checked by test", "CHECK (ended_at IS NULL OR ended_at >= started_at)"],
                   "кто сидел в каталоге когда"),
@@ -53,16 +53,16 @@ TABLES = {
     "limit_window": ([("id", "INTEGER", ["PK"]), ("account_id", "INTEGER", ["FK", "NN", "forget tx"]), ("kind", "ENUM window_kind", ["NN"]),
                       ("model", "VARCHAR", ["NULL кроме scoped"]), ("first_seen_at", "TIMESTAMPTZ", ["NN"]), ("last_seen_at", "TIMESTAMPTZ", ["NN"])],
                      ["UNIQUE (account_id, kind, model)", "CHECK (kind = 'weekly_scoped') = (model IS NOT NULL)"], "измерение: окно лимита учётки"),
-    "window_cycle": ([("id", "INTEGER", ["PK"]), ("window_id", "INTEGER", ["FK", "NN", "forget tx"]), ("starts_at", "TIMESTAMPTZ", ["NN"]), ("resets_at", "TIMESTAMPTZ", ["NN"])],
+    "window_cycle": ([("id", "BIGINT", ["PK"]), ("window_id", "INTEGER", ["FK", "NN", "forget tx"]), ("starts_at", "TIMESTAMPTZ", ["NN"]), ("resets_at", "TIMESTAMPTZ", ["NN"])],
                      ["UNIQUE (window_id, resets_at)", "CHECK (resets_at > starts_at)"], "проход окна: от сброса до сброса"),
-    "sample": ([("window_id", "INTEGER", ["PK", "FK", "forget tx"]), ("sampled_at", "TIMESTAMPTZ", ["PK", "unix s UTC"]), ("cycle_id", "INTEGER", ["FK", "NN", "forget tx"]), ("percent", "TINYINT", ["0..100"]),
+    "sample": ([("window_id", "INTEGER", ["PK", "FK", "forget tx"]), ("sampled_at", "TIMESTAMPTZ", ["PK"]), ("cycle_id", "BIGINT", ["FK", "NN", "forget tx"]), ("percent", "TINYINT", ["0..100"]),
                 ("locked", "BOOLEAN", ["NN"]), ("locked_reason", "VARCHAR", []), ("server_severity", "VARCHAR", []), ("is_active", "BOOLEAN", [])],
                ["PK (window_id, sampled_at)", "zone maps: range by sampled_at"], "замер раз в опрос · ~138k строк / 30 д"),
-    "poll": ([("id", "INTEGER", ["PK"]), ("account_id", "INTEGER", ["FK", "NN", "forget tx"]), ("sampled_at", "TIMESTAMPTZ", ["NN"]),
+    "poll": ([("id", "BIGINT", ["PK"]), ("account_id", "INTEGER", ["FK", "NN", "forget tx"]), ("polled_at", "TIMESTAMPTZ", ["NN"]),
               ("outcome", "ENUM poll_outcome", ["NN"]), ("http_status", "SMALLINT", []), ("retry_after_sec", "INTEGER", []),
               ("latency_ms", "INTEGER", []), ("error", "VARCHAR", ["≤200, без токенов"])],
              ["no indexes: zone maps by polled_at"], "каждая попытка опроса"),
-    "lock_period": ([("id", "INTEGER", ["PK"]), ("window_id", "INTEGER", ["FK", "NN", "forget tx"]), ("cycle_id", "INTEGER", ["FK", "NN", "forget tx"]), ("started_at", "TIMESTAMPTZ", ["NN"]),
+    "lock_period": ([("id", "BIGINT", ["PK"]), ("window_id", "INTEGER", ["FK", "NN", "forget tx"]), ("cycle_id", "BIGINT", ["FK", "NN", "forget tx"]), ("started_at", "TIMESTAMPTZ", ["NN"]),
                      ("ended_at", "TIMESTAMPTZ", ["NULL = идёт"]), ("reason", "VARCHAR", ["…|percent_100"])],
                     ["one open period per window — kept by store", "CHECK (ended_at IS NULL OR ended_at >= started_at)"], "интервалы блокировки"),
     "daily_rollup": ([("window_id", "INTEGER", ["PK", "FK", "forget tx"]), ("day", "DATE", ["PK", "rollup_tz"]), ("samples", "INTEGER", ["NN"]),
@@ -70,7 +70,7 @@ TABLES = {
                      ["PK (window_id, day)"], "дневные свёртки · 400 д"),
     "config_history": ([("id", "INTEGER", ["PK"]), ("saved_at", "TIMESTAMPTZ", ["NN"]), ("source", "ENUM config_source", ["NN"]), ("toml", "VARCHAR", ["token → ***"])],
                        ["токен → ***"], "версии файла настроек · 20 шт"),
-    "notification": ([("id", "INTEGER", ["PK"]), ("account_id", "INTEGER", ["FK", "forget tx"]), ("window_id", "INTEGER", ["FK", "forget tx"]),
+    "notification": ([("id", "BIGINT", ["PK"]), ("account_id", "INTEGER", ["FK", "forget tx"]), ("window_id", "INTEGER", ["FK", "forget tx"]),
                       ("kind", "ENUM notice_kind", ["NN"]), ("fired_at", "TIMESTAMPTZ", ["NN"]), ("acknowledged_at", "TIMESTAMPTZ", []), ("payload", "JSON", [])],
                      ["Ф.5, до неё пусто"], "зарезервировано под Ф.5"),
     "schema_meta": ([("key", "VARCHAR", ["PK"]), ("value", "VARCHAR", ["NN"])], [], "schema_version, duckdb_version, rollup_tz, …"),
@@ -158,8 +158,8 @@ legend = (f'<div style="position: absolute; left: 40px; top: 24px; display: flex
           f'<span style="font-size: 10px; color: {SUBTLE};">FK → родитель</span></span></div>')
 
 foot = (f'<div style="position: absolute; left: 40px; top: {H - 40}px; color: {SUBTLE}; font-size: 11px;">'
-        f'Одно соединение у файбера <span class="mono">store</span>; запись тика = одна транзакция (poll + sample × окна + lock_period + occupancy). '
-        f'Ретенция: sample и poll 30 д, daily_rollup 400 д, occupancy и lock_period без срока. Каскадов нет — forget одной транзакцией. Настройки — в claude-limits.toml.</div>')
+        f'Одно соединение у файбера <span class="mono">store</span>; запись тика — одна транзакция: poll → Appender в stage_sample → sample, lock_period, occupancy, затем CHECKPOINT. '
+        f'Ретенция: sample и poll 30 д, daily_rollup 400 д, occupancy и lock_period без срока. Каскадов в DuckDB нет — forget одной транзакцией (01.2 §3.15). Настройки — в claude-limits.toml.</div>')
 
 db_html = (HEAD + f'<div style="position: relative; width: {W}px; height: {H}px; background: {BG}; overflow: hidden;">'
            + legend + "".join(table_card(n) for n in TABLES) + "".join(svg) + foot + "</div>\n" + TAIL)
