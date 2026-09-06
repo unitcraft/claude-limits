@@ -212,8 +212,8 @@ reads = [("GET", "/api/health", "ok · LAN без путей · всё на loop
 for i, r in enumerate(reads):
     parts.append(route(col1, 170 + i * 32, 330, *r))
 parts.append(f'<div style="position: absolute; left: {col2}px; top: 152px; font-size: 11px; color: {SUBTLE};">действия</div>')
-acts = [("POST", "/api/snapshot/refresh", "{ account_id } · 202 · 429 + Retry-After", ORANGE), ("PUT", "/api/config", "If-Match → 200 · 422 errors[] · 412 · 428", AMBER),
-        ("POST", "/api/folders/probe", "kind · login_dirs · problem", ORANGE), ("POST", "/api/config/token", "только loopback · 403 из LAN", ORANGE), ("POST", "/api/history/search", "{ account_id[] } · чтение · тот же ответ", ORANGE)]
+acts = [("POST", "/api/snapshot/refresh", "{ account_id } · 202 · 429", ORANGE), ("PUT", "/api/config", "If-Match → 200 · 422 errors[] · 412 · 428", AMBER),
+        ("POST", "/api/folders/probe", "kind · login_dirs · problem", ORANGE), ("POST", "/api/config/token", "только loopback · 403 из LAN", ORANGE), ("POST", "/api/history/search", "{ account_id[] } · чтение", ORANGE)]
 for i, r in enumerate(acts):
     parts.append(route(col2, 170 + i * 32, 330, *r))
 parts.append(f'<div style="position: absolute; left: {col2}px; top: 338px; font-size: 11px; color: {SUBTLE};">поток</div>')
