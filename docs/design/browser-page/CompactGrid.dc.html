@@ -1,0 +1,146 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap">
+  <style>
+    body { margin: 0; background: radial-gradient(1100px 520px at 18% -8%, rgba(107, 63, 160, 0.30), transparent 62%), radial-gradient(900px 500px at 92% 110%, rgba(107, 63, 160, 0.16), transparent 60%), #13111d; color: #e8e8ee; font-family: "Manrope", "Segoe UI", system-ui, sans-serif; font-size: 13px; line-height: 1.35; -webkit-font-smoothing: antialiased; }
+    a { color: #7fc7ad; } a:hover { color: #a3dcc6; }
+    .mono { font-family: "JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace; }
+    @keyframes live-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+    .live-dot { animation: live-pulse 2.4s ease-in-out infinite; }
+    .icon-btn:hover { background: #2a2542; color: #e8e8ee; }
+  </style>
+</helmet>
+
+<div style="min-height: 520px; background: radial-gradient(1100px 520px at 18% -8%, rgba(107, 63, 160, 0.30), transparent 62%), radial-gradient(900px 500px at 92% 110%, rgba(107, 63, 160, 0.16), transparent 60%), #13111d; padding: 28px 32px 36px; box-sizing: border-box; display: flex; flex-direction: column; gap: 14px;">
+
+  <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px;">
+    <div style="display: flex; align-items: center; gap: 10px;">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#e8e8ee" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+        <line x1="4" y1="7" x2="20" y2="7"></line>
+        <line x1="4" y1="12" x2="14" y2="12"></line>
+        <line x1="4" y1="17" x2="17" y2="17"></line>
+      </svg>
+      <div style="font-size: 15px; font-weight: 600;">claude-limits</div>
+      <div class="mono" style="margin-left: 8px; font-size: 12px; color: #f0716b;">worst 100% · work@example.org · session</div>
+    </div>
+    <div style="display: flex; align-items: center; gap: 10px;">
+      <span class="live-dot" title="live" style="display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #3aa98c;"></span>
+      <div class="mono" style="color: #9b95b5; font-size: 12px;">19:47 · 15 s ago</div>
+      <button class="icon-btn" type="button" title="Refresh now" style="width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; border: 1px solid #322c4a; border-radius: 8px; background: #1e1a2e; color: #9b95b5; cursor: pointer;">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M20 12a8 8 0 1 1-2.34-5.66"></path>
+          <polyline points="20 4 20 9 15 9"></polyline>
+        </svg>
+      </button>
+    </div>
+  </div>
+
+  <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px;">
+
+    <!-- ok -->
+    <section style="display: flex; flex-direction: column; gap: 8px; padding: 12px 14px 14px; background: #1e1a2e; border: 1px solid #322c4a; border-radius: 12px;">
+      <div style="display: flex; align-items: baseline; justify-content: space-between; gap: 8px;">
+        <span style="font-weight: 600;">main@example.com</span>
+        <span style="color: #9b95b5; font-size: 12px;">Tech Center · nv-lang</span>
+      </div>
+      <div style="display: grid; grid-template-columns: 84px minmax(0, 1fr) 40px; gap: 10px; align-items: center;">
+        <div style="color: #cbc7da;">session 5h</div>
+        <div style="position: relative; height: 10px; border-radius: 3px; background: #2a2542;"><div style="position: absolute; left: 0; top: 0; bottom: 0; width: 9%; background: #3aa98c; border-radius: 3px;"></div></div>
+        <div class="mono" style="font-size: 12px; font-weight: 600; text-align: right; white-space: nowrap;">9%</div>
+      </div>
+      <div style="display: grid; grid-template-columns: 84px minmax(0, 1fr) 40px; gap: 10px; align-items: center;">
+        <div style="color: #cbc7da;">all 7d</div>
+        <div style="position: relative; height: 10px; border-radius: 3px; background: #2a2542;"><div style="position: absolute; left: 0; top: 0; bottom: 0; width: 22%; background: #3aa98c; border-radius: 3px;"></div></div>
+        <div class="mono" style="font-size: 12px; font-weight: 600; text-align: right; white-space: nowrap;">22%</div>
+      </div>
+      <div style="display: grid; grid-template-columns: 84px minmax(0, 1fr) 40px; gap: 10px; align-items: center;">
+        <div style="color: #cbc7da;">Fable 7d</div>
+        <div style="position: relative; height: 10px; border-radius: 3px; background: #2a2542;"><div style="position: absolute; left: 0; top: 0; bottom: 0; width: 74%; background: #e0b04a; border-radius: 3px;"></div></div>
+        <div class="mono" style="font-size: 12px; font-weight: 600; text-align: right; white-space: nowrap; color: #e0b04a;">74%</div>
+      </div>
+      <div class="mono" style="display: flex; justify-content: space-between; font-size: 11px; color: #9b95b5; padding-top: 2px; white-space: nowrap;">
+        <span>session 20:50 (1h 02m)</span><span>7d Tue 13:00 (2d 17h)</span>
+      </div>
+    </section>
+
+    <!-- locked: red-tinted -->
+    <section style="display: flex; flex-direction: column; gap: 8px; padding: 12px 14px 14px; background: #2f1a2e; border: 1px solid #56304c; border-radius: 12px;">
+      <div style="display: flex; align-items: baseline; justify-content: space-between; gap: 8px;">
+        <span style="font-weight: 600;">work@example.org</span>
+        <div style="display: flex; align-items: center; gap: 5px; color: #f0716b; font-size: 12px; font-weight: 500;">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="4" y="11" width="16" height="10" rx="2"></rect>
+            <path d="M8 11V7a4 4 0 0 1 8 0v4"></path>
+          </svg>
+          <span>locked until 21:10</span>
+        </div>
+      </div>
+      <div style="display: grid; grid-template-columns: 84px minmax(0, 1fr) 40px; gap: 10px; align-items: center;">
+        <div style="color: #d9c9dc;">session 5h</div>
+        <div style="position: relative; height: 10px; border-radius: 3px; background: #3d2438;"><div style="position: absolute; left: 0; top: 0; bottom: 0; width: 100%; background: #e0554f; border-radius: 3px;"></div></div>
+        <div class="mono" style="font-size: 12px; font-weight: 600; text-align: right; white-space: nowrap; color: #f0716b;">100%</div>
+      </div>
+      <div style="display: grid; grid-template-columns: 84px minmax(0, 1fr) 40px; gap: 10px; align-items: center;">
+        <div style="color: #d9c9dc;">all 7d</div>
+        <div style="position: relative; height: 10px; border-radius: 3px; background: #3d2438;"><div style="position: absolute; left: 0; top: 0; bottom: 0; width: 61%; background: #3aa98c; border-radius: 3px;"></div></div>
+        <div class="mono" style="font-size: 12px; font-weight: 600; text-align: right; white-space: nowrap;">61%</div>
+      </div>
+      <div class="mono" style="display: flex; justify-content: space-between; font-size: 11px; color: #ab98b4; padding-top: 2px; white-space: nowrap;">
+        <span>Personal · dev, dev-wsl</span><span>7d Thu 09:30 (4d 13h)</span>
+      </div>
+    </section>
+
+    <!-- expired -->
+    <section style="display: flex; flex-direction: column; justify-content: center; gap: 6px; padding: 12px 14px; background: #181526; border: 1px dashed #3b3458; border-radius: 12px;">
+      <div style="display: flex; align-items: baseline; justify-content: space-between; gap: 8px;">
+        <span style="font-weight: 600; color: #9b95b5;">ops@example.org</span>
+        <span style="color: #6d6786; font-size: 12px;">Example Inc · ops</span>
+      </div>
+      <div style="color: #9b95b5; font-size: 12px;">token expired 5 Sep 18:02 · start Claude Code under this login</div>
+    </section>
+
+    <!-- 429 -->
+    <section style="display: flex; flex-direction: column; gap: 8px; padding: 12px 14px 14px; background: #1e1a2e; border: 1px solid #322c4a; border-radius: 12px;">
+      <div style="display: flex; align-items: baseline; justify-content: space-between; gap: 8px;">
+        <span style="font-weight: 600;">qa@example.org</span>
+        <span class="mono" style="font-size: 11px; color: #e0b04a;">429 · retry 19:49 · data 19:41</span>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 8px; opacity: 0.5;">
+        <div style="display: grid; grid-template-columns: 84px minmax(0, 1fr) 40px; gap: 10px; align-items: center;">
+          <div style="color: #cbc7da;">session 5h</div>
+          <div style="position: relative; height: 10px; border-radius: 3px; background: #2a2542;"><div style="position: absolute; left: 0; top: 0; bottom: 0; width: 41%; background: #3aa98c; border-radius: 3px;"></div></div>
+          <div class="mono" style="font-size: 12px; font-weight: 600; text-align: right; white-space: nowrap;">41%</div>
+        </div>
+        <div style="display: grid; grid-template-columns: 84px minmax(0, 1fr) 40px; gap: 10px; align-items: center;">
+          <div style="color: #cbc7da;">all 7d</div>
+          <div style="position: relative; height: 10px; border-radius: 3px; background: #2a2542;"><div style="position: absolute; left: 0; top: 0; bottom: 0; width: 58%; background: #3aa98c; border-radius: 3px;"></div></div>
+          <div class="mono" style="font-size: 12px; font-weight: 600; text-align: right; white-space: nowrap;">58%</div>
+        </div>
+        <div style="display: grid; grid-template-columns: 84px minmax(0, 1fr) 40px; gap: 10px; align-items: center;">
+          <div style="color: #cbc7da;">Opus 7d</div>
+          <div style="position: relative; height: 10px; border-radius: 3px; background: #2a2542;"><div style="position: absolute; left: 0; top: 0; bottom: 0; width: 12%; background: #3aa98c; border-radius: 3px;"></div></div>
+          <div class="mono" style="font-size: 12px; font-weight: 600; text-align: right; white-space: nowrap;">12%</div>
+        </div>
+      </div>
+      <div class="mono" style="display: flex; justify-content: space-between; font-size: 11px; color: #9b95b5; padding-top: 2px; white-space: nowrap;">
+        <span>Example Inc · qa</span><span>7d Wed 02:00 (3d 06h)</span>
+      </div>
+    </section>
+
+  </div>
+
+  <div class="mono" style="display: flex; justify-content: space-between; gap: 12px; color: #6d6786; font-size: 11px;">
+    <div>127.0.0.1:7391 · 4 logins in 5 directories</div>
+    <div>every 300 s · next 19:52</div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

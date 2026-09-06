@@ -1,0 +1,31 @@
+{
+  "pages": [
+    { "id": "page-1", "name": "List · Cards · Settings" },
+    { "id": "page-2", "name": "Density variants" },
+    { "id": "page-3", "name": "Early sketches" }
+  ],
+  "artboards": [
+    { "file": "Main.dc.html", "title": "List view (default)", "x": 0, "y": 0, "w": 960, "h": 600, "expand": "fill", "page": "page-1" },
+    { "file": "MainBlocks.dc.html", "title": "List view · bar style: blocks", "x": 0, "y": 720, "w": 960, "h": 600, "expand": "fill", "page": "page-1" },
+    { "file": "CardsView.dc.html", "title": "Cards view · dragging a card", "x": 1060, "y": 0, "w": 960, "h": 640, "expand": "fill", "page": "page-1" },
+    { "file": "SettingsPanel.dc.html", "title": "Settings popover · folders, order, polling, server, widget", "x": 2120, "y": 0, "w": 520, "h": 1180, "page": "page-1" },
+    { "file": "StatsView.dc.html", "title": "Stats · by account · three limit windows · 7 d", "x": 0, "y": 1440, "w": 1180, "h": 960, "expand": "fill", "page": "page-1" },
+    { "file": "StatsFolders.dc.html", "title": "Stats · by folder (person) · 30 d · logins switching", "x": 0, "y": 2520, "w": 1180, "h": 900, "expand": "fill", "page": "page-1" },
+    { "file": "CompactRows.dc.html", "title": "B · compact rows", "x": 0, "y": 0, "w": 1120, "h": 720, "expand": "fill", "page": "page-2" },
+    { "file": "CompactList.dc.html", "title": "C · one list (chosen)", "x": 1220, "y": 0, "w": 960, "h": 560, "expand": "fill", "page": "page-2" },
+    { "file": "CompactGrid.dc.html", "title": "D · two columns", "x": 0, "y": 860, "w": 1120, "h": 520, "expand": "fill", "page": "page-2" },
+    { "file": "DenseTable.dc.html", "title": "Sketch · dense table", "x": 0, "y": 0, "w": 960, "h": 620, "page": "page-3" },
+    { "file": "CardsGrid.dc.html", "title": "Sketch · cards grid", "x": 1060, "y": 0, "w": 1120, "h": 620, "page": "page-3" }
+  ],
+  "annotations": [
+    { "id": "brief", "x": 0, "y": -200, "w": 560, "text": "claude-limits · page served by the local backend at 127.0.0.1:7391.\nChosen direction: the compact dark list (variant C). Two views of the same data, switched by the toggle in the header: List (one card, hairline separators) and Cards (one card per account, drag handle at the left, drag to reorder; the order is saved in the config).\nAny account with a window at 100% gets a red-tinted card. Expired token = one grey line, no request made. HTTP 429 = last snapshot dimmed with the retry time.", "page": "page-1" },
+    { "id": "settings-note", "x": 2120, "y": -150, "w": 520, "text": "Settings popover under the gear: layout, countdown, hide expired logins; LOGIN FOLDERS — add a login folder or a parent of several (path or Browse), remove with ×, each row says what was found there; account order (same drag as in Cards), polling interval with the 60 s floor, warning/critical thresholds, server bind with LAN opt-in, desktop widget toggles. Values are samples.", "page": "page-1" },
+    { "id": "stats-note", "x": 1280, "y": 1440, "w": 520, "text": "Stats · by account: three columns = the three limit windows (session 5 h, all models 7 d, per model 7 d). Single hue per chart; the per-model chart has two series (Fable solid teal, Opus orange) with a legend in the filter row. Dashed ticks = window resets, red band = locked, amber band = no data; hover crosshair with time and value. Tiles: time locked, peak session, average session window, weekly pace with the projected day of hitting 100%.", "page": "page-1" },
+    { "id": "folders-note", "x": 1280, "y": 2520, "w": 520, "text": "Stats · by folder = by person (a credential folder is a seat; different accounts log into it over time). 30-day range. The strip above the charts shows WHO was logged in WHEN; the lines take that account's colour and break at a switch, so a jump in the level reads as a different account, not as usage. Same three windows; per model: solid = Fable, dashed = Opus. Palette teal / violet / orange validated for colour-blind separation on the Nova surface.\nHonest limit: the endpoint counts per LOGIN. A folder's history is the concatenation of its logins' curves — usage cannot be split between two folders that share one login at the same time.", "page": "page-1" },
+    { "id": "theme-note", "x": 0, "y": -330, "w": 560, "text": "Theme tinted with the Nova site tokens (www/site/src/styles/global.css, dark scheme): bg #13111d with a soft violet glow (site accent-glow), surface #1e1a2e, alt #181526, border #322c4a, ink #e8e8ee / #9b95b5 / #6d6786, accent colour NOT used on controls, only the surfaces are tinted. Fonts as on the site: Manrope for UI, JetBrains Mono for numbers and paths.", "page": "page-1" },
+    { "id": "blocks-note", "x": 1060, "y": 760, "w": 460, "text": "Bar style is a setting (Settings → Bar style): Rounded (default) or Blocks — 8 px cells with a 2 px gap at a fixed pixel pitch (repeating gradient, so every gap is identical); the gap is a slightly darker shade of the same colour; a cell is either fully filled or fully empty (the fill snaps to whole cells, the bar width snaps to a whole number of cells, the exact percent stays in the number column); only the two outer ends rounded, the exact percent stays in the number column. Same markup in Cards view.", "page": "page-1" },
+    { "id": "variants", "x": 0, "y": -140, "w": 560, "text": "Round two: same content at three densities. C was chosen as the base; B and D kept for reference.", "page": "page-2" },
+    { "id": "sketches", "x": 0, "y": -110, "w": 480, "text": "First-round light sketches, kept for reference only.", "page": "page-3" }
+  ],
+  "launch": { "view": "canvas", "page": "page-1" }
+}

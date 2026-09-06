@@ -1,0 +1,190 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap">
+  <style>
+    body { margin: 0; background: radial-gradient(1100px 520px at 18% -8%, rgba(107, 63, 160, 0.30), transparent 62%), radial-gradient(900px 500px at 92% 110%, rgba(107, 63, 160, 0.16), transparent 60%), #13111d; color: #e8e8ee; font-family: "Manrope", "Segoe UI", system-ui, sans-serif; font-size: 13px; line-height: 1.35; -webkit-font-smoothing: antialiased; }
+    a { color: #7fc7ad; } a:hover { color: #a3dcc6; }
+    .mono { font-family: "JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace; }
+    .icon-btn:hover { background: #2a2542; color: #e8e8ee; }
+  </style>
+</helmet>
+
+<div style="min-height: 1180px; background: radial-gradient(1100px 520px at 18% -8%, rgba(107, 63, 160, 0.30), transparent 62%), radial-gradient(900px 500px at 92% 110%, rgba(107, 63, 160, 0.16), transparent 60%), #13111d; display: flex; justify-content: center; padding: 28px 24px 36px; box-sizing: border-box;">
+
+  <!-- Popover anchored under the gear button -->
+  <div style="width: 400px; display: flex; flex-direction: column; background: #1e1a2e; border: 1px solid #3b3458; border-radius: 12px; box-shadow: 0 18px 40px rgba(0, 0, 0, 0.55);">
+
+    <div style="display: flex; align-items: center; justify-content: space-between; padding: 14px 16px 12px; border-bottom: 1px solid #322c4a;">
+      <div style="font-size: 15px; font-weight: 600;">Settings</div>
+      <button class="icon-btn" type="button" title="Close" style="width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; border: 0; border-radius: 8px; background: transparent; color: #9b95b5; cursor: pointer; margin: -8px -10px -8px 0;">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><line x1="6" y1="6" x2="18" y2="18"></line><line x1="18" y1="6" x2="6" y2="18"></line></svg>
+      </button>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 18px; padding: 16px;">
+
+      <!-- View -->
+      <div style="display: flex; flex-direction: column; gap: 8px;">
+        <div style="font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: #6d6786;">View</div>
+        <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px;">
+          <div>Layout</div>
+          <div role="tablist" style="display: flex; padding: 3px; border: 1px solid #322c4a; border-radius: 8px; background: #181526;">
+            <div role="tab" style="height: 28px; padding: 0 12px; display: flex; align-items: center; border-radius: 5px; background: #2a2542; color: #e8e8ee; font-size: 12px; font-weight: 500;">List</div>
+            <div role="tab" style="height: 28px; padding: 0 12px; display: flex; align-items: center; border-radius: 5px; color: #9b95b5; font-size: 12px;">Cards</div>
+          </div>
+        </div>
+        <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px;">
+          <div>Bar style</div>
+          <div role="tablist" style="display: flex; padding: 3px; border: 1px solid #322c4a; border-radius: 8px; background: #181526;">
+            <div role="tab" style="height: 28px; padding: 0 12px; display: flex; align-items: center; gap: 6px; border-radius: 5px; background: #2a2542; color: #e8e8ee; font-size: 12px; font-weight: 500;"><span style="display: inline-block; width: 22px; height: 6px; border-radius: 3px; background: #3aa98c;"></span>Rounded</div>
+            <div role="tab" style="height: 28px; padding: 0 12px; display: flex; align-items: center; gap: 6px; border-radius: 5px; color: #9b95b5; font-size: 12px;"><span style="display: inline-flex; gap: 2px;"><span style="width: 4px; height: 6px; border-radius: 3px 0 0 3px; background: #3aa98c;"></span><span style="width: 4px; height: 6px; background: #3aa98c;"></span><span style="width: 4px; height: 6px; background: #3aa98c;"></span><span style="width: 4px; height: 6px; background: #3aa98c;"></span><span style="width: 4px; height: 6px; background: #46406a;"></span><span style="width: 4px; height: 6px; border-radius: 0 3px 3px 0; background: #46406a;"></span></span>Blocks</div>
+          </div>
+        </div>
+        <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px;">
+          <div>Reset time <span style="color: #9b95b5;">· show countdown</span></div>
+          <div style="width: 36px; height: 20px; border-radius: 999px; background: #3aa98c; position: relative;"><div style="position: absolute; top: 2px; left: 18px; width: 16px; height: 16px; border-radius: 50%; background: #13111d;"></div></div>
+        </div>
+        <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px;">
+          <div>Hide logins with an expired token</div>
+          <div style="width: 36px; height: 20px; border-radius: 999px; background: #3b3458; position: relative;"><div style="position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #9b95b5;"></div></div>
+        </div>
+      </div>
+
+      <!-- Login folders: where credentials are read from -->
+      <div style="display: flex; flex-direction: column; gap: 8px;">
+        <div style="display: flex; justify-content: space-between; align-items: baseline;">
+          <div style="font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: #6d6786;">Login folders</div>
+          <div style="font-size: 11px; color: #6d6786;">read-only · nothing is written there</div>
+        </div>
+        <div style="display: flex; flex-direction: column; border: 1px solid #322c4a; border-radius: 8px; overflow: hidden;">
+          <div style="display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 6px 6px 6px 10px; border-bottom: 1px solid #322c4a;">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#9b95b5" stroke-width="2" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path></svg>
+            <div style="flex: 1; min-width: 0; line-height: 1.3;"><div class="mono" style="font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">C:/accounts</div><div style="font-size: 11px; color: #9b95b5;">parent folder · 3 logins found: nv-lang, dev, qa</div></div>
+            <button class="icon-btn" type="button" title="Remove folder" style="width: 32px; height: 32px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; border: 0; border-radius: 6px; background: transparent; color: #6d6786; cursor: pointer;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><line x1="6" y1="6" x2="18" y2="18"></line><line x1="18" y1="6" x2="6" y2="18"></line></svg></button>
+          </div>
+          <div style="display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 6px 6px 6px 10px; border-bottom: 1px solid #322c4a;">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#9b95b5" stroke-width="2" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path></svg>
+            <div style="flex: 1; min-width: 0; line-height: 1.3;"><div class="mono" style="font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">~/.claude</div><div style="font-size: 11px; color: #9b95b5;">single login · main@example.com</div></div>
+            <button class="icon-btn" type="button" title="Remove folder" style="width: 32px; height: 32px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; border: 0; border-radius: 6px; background: transparent; color: #6d6786; cursor: pointer;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><line x1="6" y1="6" x2="18" y2="18"></line><line x1="18" y1="6" x2="6" y2="18"></line></svg></button>
+          </div>
+          <div style="display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 6px 6px 6px 10px; border-bottom: 1px solid #322c4a;">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#9b95b5" stroke-width="2" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path></svg>
+            <div style="flex: 1; min-width: 0; line-height: 1.3;"><div class="mono" style="font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">\\wsl.localhost\Ubuntu\home\me\.claude</div><div style="font-size: 11px; color: #9b95b5;">single login · work@example.org (same login as dev)</div></div>
+            <button class="icon-btn" type="button" title="Remove folder" style="width: 32px; height: 32px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; border: 0; border-radius: 6px; background: transparent; color: #6d6786; cursor: pointer;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><line x1="6" y1="6" x2="18" y2="18"></line><line x1="18" y1="6" x2="6" y2="18"></line></svg></button>
+          </div>
+          <div style="display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 6px 6px 6px 10px; border-bottom: 1px solid #322c4a; background: #181526;">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#e0b04a" stroke-width="2" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path></svg>
+            <div style="flex: 1; min-width: 0; line-height: 1.3;"><div class="mono" style="font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #9b95b5;">D:/old/.claude-ops</div><div style="font-size: 11px; color: #e0b04a;">no .credentials.json here</div></div>
+            <button class="icon-btn" type="button" title="Remove folder" style="width: 32px; height: 32px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; border: 0; border-radius: 6px; background: transparent; color: #6d6786; cursor: pointer;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><line x1="6" y1="6" x2="18" y2="18"></line><line x1="18" y1="6" x2="6" y2="18"></line></svg></button>
+          </div>
+          <div style="display: flex; align-items: center; gap: 8px; padding: 8px;">
+            <div class="mono" style="flex: 1; height: 34px; display: flex; align-items: center; padding: 0 10px; border: 1px solid #3b3458; border-radius: 6px; background: #13111d; color: #6d6786; font-size: 12px; box-sizing: border-box;">path to a login folder or a parent of several</div>
+            <button type="button" style="height: 34px; padding: 0 12px; border: 1px solid #3b3458; border-radius: 6px; background: transparent; color: #cbc7da; font: inherit; font-size: 12px; cursor: pointer; white-space: nowrap;">Browse…</button>
+            <button type="button" style="height: 34px; padding: 0 12px; border: 0; border-radius: 6px; background: #2a2542; color: #e8e8ee; font: inherit; font-size: 12px; font-weight: 500; cursor: pointer;">Add</button>
+          </div>
+        </div>
+        <div style="font-size: 12px; color: #6d6786;">A parent folder picks up every child that holds <span class="mono">.credentials.json</span>. Folders sharing one e-mail are shown as one account.</div>
+      </div>
+
+      <!-- Accounts order -->
+      <div style="display: flex; flex-direction: column; gap: 8px;">
+        <div style="display: flex; justify-content: space-between; align-items: baseline;">
+          <div style="font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: #6d6786;">Accounts</div>
+          <div style="font-size: 11px; color: #6d6786;">found in the folders above · drag to reorder</div>
+        </div>
+        <div style="display: flex; flex-direction: column; border: 1px solid #322c4a; border-radius: 8px; overflow: hidden;">
+          <div style="display: flex; align-items: center; gap: 10px; height: 40px; padding: 0 10px 0 8px; border-bottom: 1px solid #322c4a;">
+            <svg width="10" height="16" viewBox="0 0 10 16" fill="#4f4870" aria-hidden="true"><circle cx="2.5" cy="2.5" r="1.5"></circle><circle cx="7.5" cy="2.5" r="1.5"></circle><circle cx="2.5" cy="8" r="1.5"></circle><circle cx="7.5" cy="8" r="1.5"></circle><circle cx="2.5" cy="13.5" r="1.5"></circle><circle cx="7.5" cy="13.5" r="1.5"></circle></svg>
+            <div style="flex: 1;">main@example.com <span style="color: #9b95b5; font-size: 12px;">nv-lang</span></div>
+            <div style="width: 16px; height: 16px; border-radius: 4px; background: #3aa98c; display: flex; align-items: center; justify-content: center;"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#13111d" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="4 12 10 18 20 6"></polyline></svg></div>
+          </div>
+          <div style="display: flex; align-items: center; gap: 10px; height: 40px; padding: 0 10px 0 8px; border-bottom: 1px solid #322c4a;">
+            <svg width="10" height="16" viewBox="0 0 10 16" fill="#4f4870" aria-hidden="true"><circle cx="2.5" cy="2.5" r="1.5"></circle><circle cx="7.5" cy="2.5" r="1.5"></circle><circle cx="2.5" cy="8" r="1.5"></circle><circle cx="7.5" cy="8" r="1.5"></circle><circle cx="2.5" cy="13.5" r="1.5"></circle><circle cx="7.5" cy="13.5" r="1.5"></circle></svg>
+            <div style="flex: 1;">work@example.org <span style="color: #9b95b5; font-size: 12px;">dev, dev-wsl</span></div>
+            <div style="width: 16px; height: 16px; border-radius: 4px; background: #3aa98c; display: flex; align-items: center; justify-content: center;"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#13111d" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="4 12 10 18 20 6"></polyline></svg></div>
+          </div>
+          <div style="display: flex; align-items: center; gap: 10px; height: 40px; padding: 0 10px 0 8px; border-bottom: 1px solid #322c4a;">
+            <svg width="10" height="16" viewBox="0 0 10 16" fill="#4f4870" aria-hidden="true"><circle cx="2.5" cy="2.5" r="1.5"></circle><circle cx="7.5" cy="2.5" r="1.5"></circle><circle cx="2.5" cy="8" r="1.5"></circle><circle cx="7.5" cy="8" r="1.5"></circle><circle cx="2.5" cy="13.5" r="1.5"></circle><circle cx="7.5" cy="13.5" r="1.5"></circle></svg>
+            <div style="flex: 1; color: #9b95b5;">ops@example.org <span style="color: #6d6786; font-size: 12px;">ops · hidden</span></div>
+            <div style="width: 16px; height: 16px; border-radius: 4px; border: 1px solid #4f4870; box-sizing: border-box;"></div>
+          </div>
+          <div style="display: flex; align-items: center; gap: 10px; height: 40px; padding: 0 10px 0 8px;">
+            <svg width="10" height="16" viewBox="0 0 10 16" fill="#4f4870" aria-hidden="true"><circle cx="2.5" cy="2.5" r="1.5"></circle><circle cx="7.5" cy="2.5" r="1.5"></circle><circle cx="2.5" cy="8" r="1.5"></circle><circle cx="7.5" cy="8" r="1.5"></circle><circle cx="2.5" cy="13.5" r="1.5"></circle><circle cx="7.5" cy="13.5" r="1.5"></circle></svg>
+            <div style="flex: 1;">qa@example.org <span style="color: #9b95b5; font-size: 12px;">qa</span></div>
+            <div style="width: 16px; height: 16px; border-radius: 4px; background: #3aa98c; display: flex; align-items: center; justify-content: center;"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#13111d" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="4 12 10 18 20 6"></polyline></svg></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Polling -->
+      <div style="display: flex; flex-direction: column; gap: 8px;">
+        <div style="font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: #6d6786;">Polling</div>
+        <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px;">
+          <div>Interval</div>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <div class="mono" style="width: 72px; height: 32px; display: flex; align-items: center; justify-content: flex-end; padding: 0 10px; border: 1px solid #3b3458; border-radius: 6px; background: #13111d; box-sizing: border-box;">300</div>
+            <span style="color: #9b95b5;">s</span>
+          </div>
+        </div>
+        <div style="font-size: 12px; color: #6d6786;">Minimum 60 s. The server answers 429 to eager polling from one machine.</div>
+      </div>
+
+      <!-- Thresholds -->
+      <div style="display: flex; flex-direction: column; gap: 8px;">
+        <div style="font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: #6d6786;">Thresholds</div>
+        <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px;">
+          <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px;">
+            <div style="display: flex; align-items: center; gap: 7px;"><span style="width: 10px; height: 10px; border-radius: 3px; background: #e0b04a;"></span>Warning</div>
+            <div class="mono" style="width: 64px; height: 32px; display: flex; align-items: center; justify-content: flex-end; padding: 0 10px; border: 1px solid #3b3458; border-radius: 6px; background: #13111d; box-sizing: border-box;">70%</div>
+          </div>
+          <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px;">
+            <div style="display: flex; align-items: center; gap: 7px;"><span style="width: 10px; height: 10px; border-radius: 3px; background: #e0554f;"></span>Critical</div>
+            <div class="mono" style="width: 64px; height: 32px; display: flex; align-items: center; justify-content: flex-end; padding: 0 10px; border: 1px solid #3b3458; border-radius: 6px; background: #13111d; box-sizing: border-box;">90%</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Server -->
+      <div style="display: flex; flex-direction: column; gap: 8px;">
+        <div style="font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: #6d6786;">Server</div>
+        <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px;">
+          <div>Listening on</div>
+          <div class="mono" style="color: #9b95b5;">127.0.0.1:7391</div>
+        </div>
+        <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px;">
+          <div>Allow access from the local network <span style="color: #9b95b5;">· needs a token</span></div>
+          <div style="width: 36px; height: 20px; border-radius: 999px; background: #3b3458; position: relative; flex-shrink: 0;"><div style="position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #9b95b5;"></div></div>
+        </div>
+      </div>
+
+      <!-- Widget -->
+      <div style="display: flex; flex-direction: column; gap: 8px;">
+        <div style="font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: #6d6786;">Desktop widget</div>
+        <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px;">
+          <div>Show the widget</div>
+          <div style="width: 36px; height: 20px; border-radius: 999px; background: #3aa98c; position: relative;"><div style="position: absolute; top: 2px; left: 18px; width: 16px; height: 16px; border-radius: 50%; background: #13111d;"></div></div>
+        </div>
+        <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px;">
+          <div>Always on top</div>
+          <div style="width: 36px; height: 20px; border-radius: 999px; background: #3aa98c; position: relative;"><div style="position: absolute; top: 2px; left: 18px; width: 16px; height: 16px; border-radius: 50%; background: #13111d;"></div></div>
+        </div>
+      </div>
+
+    </div>
+
+    <div style="display: flex; justify-content: flex-end; gap: 8px; padding: 12px 16px 14px; border-top: 1px solid #322c4a;">
+      <button type="button" style="height: 36px; padding: 0 14px; border: 1px solid #3b3458; border-radius: 8px; background: transparent; color: #cbc7da; font: inherit; cursor: pointer;">Cancel</button>
+      <button type="button" style="height: 36px; padding: 0 16px; border: 0; border-radius: 8px; background: #3aa98c; color: #13111d; font: inherit; font-weight: 600; cursor: pointer;">Save</button>
+    </div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

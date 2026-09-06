@@ -1,0 +1,75 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Patrick+Hand&display=swap">
+  <style>
+    body { margin: 0; background: #f4f2ec; color: #2b2b2b; font-family: "Patrick Hand", "Segoe Print", "Comic Sans MS", cursive; font-size: 17px; line-height: 1.35; }
+    a { color: #2b2b2b; } a:hover { color: #000; }
+  </style>
+</helmet>
+
+<div style="min-height: 620px; background: #f4f2ec; padding: 28px 32px; box-sizing: border-box; display: flex; flex-direction: column; gap: 18px;">
+  <div style="display: flex; justify-content: space-between; align-items: baseline; border-bottom: 2px solid #2b2b2b; padding-bottom: 8px;">
+    <div style="font-size: 26px;">Direction B · dense table</div>
+    <div style="color: #6f6f6f;">one row per account × window · scales to 10+ logins</div>
+  </div>
+
+  <div style="display: flex; justify-content: space-between; color: #6f6f6f;">
+    <div>claude-limits &nbsp;&nbsp; live · updated 19:47</div>
+    <div>[ refresh ]</div>
+  </div>
+
+  <div style="display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px 14px; align-items: center; border: 2px solid #2b2b2b; border-radius: 4px; padding: 12px 14px;">
+    <div style="color: #6f6f6f; border-bottom: 1px dashed #9a9a9a;">account</div>
+    <div style="color: #6f6f6f; border-bottom: 1px dashed #9a9a9a;">window</div>
+    <div style="color: #6f6f6f; border-bottom: 1px dashed #9a9a9a; grid-column: span 2;">usage</div>
+    <div style="color: #6f6f6f; border-bottom: 1px dashed #9a9a9a;">reset</div>
+
+    <div style="grid-row: span 3;">main@example.com<br><span style="color: #6f6f6f;">Tech Center · nv-lang</span></div>
+    <div>session 5h</div>
+    <div style="grid-column: span 2; height: 14px; border: 2px solid #2b2b2b; border-radius: 3px; position: relative;"><div style="position: absolute; left: 0; top: 0; bottom: 0; width: 9%; background: #2b2b2b;"></div></div>
+    <div>9% · 20:50</div>
+    <div>all 7d</div>
+    <div style="grid-column: span 2; height: 14px; border: 2px solid #2b2b2b; border-radius: 3px; position: relative;"><div style="position: absolute; left: 0; top: 0; bottom: 0; width: 22%; background: #2b2b2b;"></div></div>
+    <div>22% · Tue 13:00</div>
+    <div>Fable 7d</div>
+    <div style="grid-column: span 2; height: 14px; border: 2px solid #2b2b2b; border-radius: 3px; position: relative;"><div style="position: absolute; left: 0; top: 0; bottom: 0; width: 74%; background: #e0a83a;"></div></div>
+    <div>74% · Tue 13:00</div>
+
+    <div style="grid-column: span 5; border-top: 1px dashed #9a9a9a;"></div>
+
+    <div style="grid-row: span 2;">work@example.org<br><span style="color: #6f6f6f;">Personal · dev, dev-wsl</span></div>
+    <div>session 5h (locked)</div>
+    <div style="grid-column: span 2; height: 14px; border: 2px solid #2b2b2b; border-radius: 3px; position: relative;"><div style="position: absolute; left: 0; top: 0; bottom: 0; width: 100%; background: #d9534f;"></div></div>
+    <div>100% · unlocks 21:10</div>
+    <div>all 7d</div>
+    <div style="grid-column: span 2; height: 14px; border: 2px solid #2b2b2b; border-radius: 3px; position: relative;"><div style="position: absolute; left: 0; top: 0; bottom: 0; width: 61%; background: #2b2b2b;"></div></div>
+    <div>61% · Thu 09:30</div>
+
+    <div style="grid-column: span 5; border-top: 1px dashed #9a9a9a;"></div>
+
+    <div style="color: #6f6f6f;">ops@example.org<br>Example Inc · ops</div>
+    <div style="grid-column: span 4; color: #6f6f6f;">token expired 5 Sep 18:02 — start Claude Code under this login</div>
+
+    <div style="grid-column: span 5; border-top: 1px dashed #9a9a9a;"></div>
+
+    <div style="grid-row: span 2;">qa@example.org<br><span style="color: #6f6f6f;">Example Inc · qa · 429, retry 19:49</span></div>
+    <div style="color: #9a9a9a;">session 5h</div>
+    <div style="grid-column: span 2; height: 14px; border: 2px dashed #9a9a9a; border-radius: 3px; position: relative;"><div style="position: absolute; left: 0; top: 0; bottom: 0; width: 41%; background: #9a9a9a;"></div></div>
+    <div style="color: #9a9a9a;">41% · 22:15</div>
+    <div style="color: #9a9a9a;">all 7d</div>
+    <div style="grid-column: span 2; height: 14px; border: 2px dashed #9a9a9a; border-radius: 3px; position: relative;"><div style="position: absolute; left: 0; top: 0; bottom: 0; width: 58%; background: #9a9a9a;"></div></div>
+    <div style="color: #9a9a9a;">58% · Wed 02:00</div>
+  </div>
+
+  <div style="color: #6f6f6f;">+ compact, sortable by worst · − less glanceable than big bars, cramped on a phone</div>
+</div>
+</x-dc>
+</body>
+</html>

@@ -1,0 +1,88 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Patrick+Hand&display=swap">
+  <style>
+    body { margin: 0; background: #f4f2ec; color: #2b2b2b; font-family: "Patrick Hand", "Segoe Print", "Comic Sans MS", cursive; font-size: 17px; line-height: 1.35; }
+    a { color: #2b2b2b; } a:hover { color: #000; }
+  </style>
+</helmet>
+
+<div style="min-height: 620px; background: #f4f2ec; padding: 28px 32px; box-sizing: border-box; display: flex; flex-direction: column; gap: 18px;">
+  <div style="display: flex; justify-content: space-between; align-items: baseline; border-bottom: 2px solid #2b2b2b; padding-bottom: 8px;">
+    <div style="font-size: 26px;">Direction C · cards side by side</div>
+    <div style="color: #6f6f6f;">one card per account · wide screens, wall monitor</div>
+  </div>
+
+  <div style="display: flex; justify-content: space-between; color: #6f6f6f;">
+    <div>claude-limits &nbsp;&nbsp; live · updated 19:47</div>
+    <div>worst: 100% session (work@) &nbsp; [ refresh ]</div>
+  </div>
+
+  <div style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px;">
+
+    <div style="border: 2px solid #2b2b2b; border-radius: 6px; padding: 14px; display: flex; flex-direction: column; gap: 12px;">
+      <div>main@example.com<br><span style="color: #6f6f6f;">Tech Center · nv-lang</span></div>
+      <div style="display: flex; flex-direction: column; gap: 4px;">
+        <div style="display: flex; justify-content: space-between;"><span>session</span><span>9%</span></div>
+        <div style="height: 12px; border: 2px solid #2b2b2b; border-radius: 3px; position: relative;"><div style="position: absolute; left: 0; top: 0; bottom: 0; width: 9%; background: #2b2b2b;"></div></div>
+        <div style="color: #6f6f6f; font-size: 15px;">20:50 (1h 02min)</div>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 4px;">
+        <div style="display: flex; justify-content: space-between;"><span>all 7d</span><span>22%</span></div>
+        <div style="height: 12px; border: 2px solid #2b2b2b; border-radius: 3px; position: relative;"><div style="position: absolute; left: 0; top: 0; bottom: 0; width: 22%; background: #2b2b2b;"></div></div>
+        <div style="color: #6f6f6f; font-size: 15px;">Tue 13:00 (2d 17h)</div>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 4px;">
+        <div style="display: flex; justify-content: space-between;"><span>Fable 7d</span><span>74%</span></div>
+        <div style="height: 12px; border: 2px solid #2b2b2b; border-radius: 3px; position: relative;"><div style="position: absolute; left: 0; top: 0; bottom: 0; width: 74%; background: #e0a83a;"></div></div>
+        <div style="color: #6f6f6f; font-size: 15px;">Tue 13:00 (2d 17h)</div>
+      </div>
+    </div>
+
+    <div style="border: 2px solid #2b2b2b; border-radius: 6px; padding: 14px; display: flex; flex-direction: column; gap: 12px;">
+      <div>work@example.org<br><span style="color: #6f6f6f;">Personal · dev, dev-wsl</span></div>
+      <div style="display: flex; flex-direction: column; gap: 4px;">
+        <div style="display: flex; justify-content: space-between;"><span>session (locked)</span><span>100%</span></div>
+        <div style="height: 12px; border: 2px solid #2b2b2b; border-radius: 3px; position: relative;"><div style="position: absolute; left: 0; top: 0; bottom: 0; width: 100%; background: #d9534f;"></div></div>
+        <div style="color: #6f6f6f; font-size: 15px;">unlocks 21:10 (1h 22min)</div>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 4px;">
+        <div style="display: flex; justify-content: space-between;"><span>all 7d</span><span>61%</span></div>
+        <div style="height: 12px; border: 2px solid #2b2b2b; border-radius: 3px; position: relative;"><div style="position: absolute; left: 0; top: 0; bottom: 0; width: 61%; background: #2b2b2b;"></div></div>
+        <div style="color: #6f6f6f; font-size: 15px;">Thu 09:30 (4d 13h)</div>
+      </div>
+    </div>
+
+    <div style="border: 2px dashed #9a9a9a; border-radius: 6px; padding: 14px; display: flex; flex-direction: column; gap: 12px; color: #6f6f6f;">
+      <div>ops@example.org<br>Example Inc · ops</div>
+      <div>token expired 5 Sep 18:02</div>
+      <div style="font-size: 15px;">start Claude Code under this login to refresh it</div>
+    </div>
+
+    <div style="border: 2px solid #2b2b2b; border-radius: 6px; padding: 14px; display: flex; flex-direction: column; gap: 12px;">
+      <div>qa@example.org<br><span style="color: #6f6f6f;">Example Inc · qa</span></div>
+      <div style="color: #6f6f6f;">429 · retry 19:49 · data from 19:41</div>
+      <div style="display: flex; flex-direction: column; gap: 4px; color: #9a9a9a;">
+        <div style="display: flex; justify-content: space-between;"><span>session</span><span>41%</span></div>
+        <div style="height: 12px; border: 2px dashed #9a9a9a; border-radius: 3px; position: relative;"><div style="position: absolute; left: 0; top: 0; bottom: 0; width: 41%; background: #9a9a9a;"></div></div>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 4px; color: #9a9a9a;">
+        <div style="display: flex; justify-content: space-between;"><span>all 7d</span><span>58%</span></div>
+        <div style="height: 12px; border: 2px dashed #9a9a9a; border-radius: 3px; position: relative;"><div style="position: absolute; left: 0; top: 0; bottom: 0; width: 58%; background: #9a9a9a;"></div></div>
+      </div>
+    </div>
+
+  </div>
+
+  <div style="color: #6f6f6f;">+ all accounts in one glance, worst-first sort is natural · − cards get short and uneven when models differ; weak on a phone</div>
+</div>
+</x-dc>
+</body>
+</html>
