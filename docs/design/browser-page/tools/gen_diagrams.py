@@ -206,8 +206,8 @@ for i, m in enumerate(mw):
 
 col1, col2 = 396, 750
 parts.append(f'<div style="position: absolute; left: {col1}px; top: 152px; font-size: 11px; color: {SUBTLE};">чтение · Cache-Control: no-store</div>')
-reads = [("GET", "/api/health", "3 уровня: ok · LAN без путей · loopback всё", TEAL), ("GET", "/api/snapshot", "все учётки · forecast · elapsed_share", TEAL),
-         ("GET", "/api/history", "range · by · account_id · login_dir_id · step", TEAL), ("GET", "/api/config", "ETag / 304 · access_token_set", TEAL),
+reads = [("GET", "/api/health", "ok · LAN без путей · всё на loopback", TEAL), ("GET", "/api/snapshot", "все учётки · forecast · elapsed_share", TEAL),
+         ("GET", "/api/history", "range · by · account_id · step", TEAL), ("GET", "/api/config", "ETag / 304 · access_token_set", TEAL),
          ("GET", "/api/export", "CSV/JSON, поток", TEAL), ("GET", "/api/openapi.json", "из типизированных маршрутов", TEAL), ("GET", "/  /assets/*", "index.html · woff2 · ETag", BORDER2)]
 for i, r in enumerate(reads):
     parts.append(route(col1, 170 + i * 32, 330, *r))
@@ -217,16 +217,16 @@ acts = [("POST", "/api/refresh", "{ account_id } · 202 · 429 + Retry-After", O
 for i, r in enumerate(acts):
     parts.append(route(col2, 170 + i * 32, 330, *r))
 parts.append(f'<div style="position: absolute; left: {col2}px; top: 306px; font-size: 11px; color: {SUBTLE};">поток</div>')
-parts.append(route(col2, 324, 330, "SSE", "/api/events", "id: · Last-Event-ID → досылка ≤100 · 32 подписки", VIOLET))
+parts.append(route(col2, 324, 330, "SSE", "/api/events", "id: · Last-Event-ID · ≤100 · 32 подписок", VIOLET))
 ev = [("snapshot", "после каждого опроса и refresh"), ("config", "после PUT и подхвата файла"), ("folders", "нашли/потеряли каталог"), ("notice", "ошибка конфига, база, listener"), ("ping", "раз в 30 с"), ("bye", "остановка")]
 for i, (e, d) in enumerate(ev):
     parts.append(f'<div style="position: absolute; left: {col2 + 14}px; top: {358 + i * 20}px; display: flex; gap: 8px; align-items: baseline;">'
-                 f'<span class="mono" style="font-size: 10.5px; color: {VIOLET}; width: 64px;">event: {e}</span><span style="font-size: 10.5px; color: {SUBTLE};">{d}</span></div>')
+                 f'<span class="mono" style="font-size: 10.5px; color: {VIOLET}; width: 112px; white-space: nowrap;">event: {e}</span><span style="font-size: 10.5px; color: {SUBTLE};">{d}</span></div>')
 
 # errors strip inside server box
 errs = ["400 invalid_parameter", "401 unauthenticated", "403 loopback_only · origin_required", "404 not_found", "405 + Allow", "409 account_stale", "412 precondition_failed", "415", "422 invalid_config · extra_forbidden", "428 precondition_required", "429 + Retry-After", "503 + Retry-After", "500 internal + request_id"]
 parts.append(f'<div style="position: absolute; left: {col1}px; top: 404px; font-size: 11px; color: {SUBTLE};">сессия браузера · только LAN · cookie cl_session</div>')
-sess = [("POST", "/api/session", "{ access_token } → 204 + Set-Cookie", ORANGE), ("POST", "/api/session/token", "cookie → сессионный bearer 12 ч", ORANGE), ("DELETE", "/api/session", "Origin обязателен → 204", RED)]
+sess = [("POST", "/api/session", "{ access_token } → 204 + Set-Cookie", ORANGE), ("POST", "/api/session/token", "cookie → bearer на 12 ч", ORANGE), ("DELETE", "/api/session", "Origin обязателен → 204", RED)]
 for i, r in enumerate(sess):
     parts.append(route(col1, 422 + i * 32, 330, *r))
 parts.append(f'<div style="position: absolute; left: {col1}px; top: 530px; font-size: 11px; color: {SUBTLE};">коды ошибок · RFC 9457</div>')
