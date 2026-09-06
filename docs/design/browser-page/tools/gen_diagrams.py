@@ -188,7 +188,7 @@ def route(x, y, w, method, path, note, color):
 
 parts = []
 parts.append(f'<div style="position: absolute; left: 40px; top: 24px; display: flex; align-items: baseline; gap: 18px;"><span style="font-size: 16px; font-weight: 600;">HTTP API · 127.0.0.1:7391</span>'
-             f'<span style="color: {MUTED};">подплан 01.3 · конвенция API 1.0 · JSON snake_case · время UTC с Z · ошибки RFC 9457 problem+json {{ type, code, request_id, errors[] }} · в URL только UUID v7, ни почт, ни путей, ни токенов · X-Request-Id на каждом ответе</span></div>')
+             f'<span style="color: {MUTED};">подплан 01.3 · конвенция API 1.0 · JSON snake_case · время UTC с Z · ошибки RFC 9457 problem+json {{ type, code, request_id, errors[] }} · в URL только id каталогов, ни почт, ни путей, ни токенов, ни account_id · X-Request-Id на каждом ответе</span></div>')
 
 # clients
 parts.append(box(40, 80, 260, 96, "Страница в браузере", ["<span class='mono'>GET /</span> + статика из embed_dir", "снимок → SSE → PUT config", "личное — localStorage"]))
@@ -206,21 +206,21 @@ for i, m in enumerate(mw):
 
 col1, col2 = 396, 750
 parts.append(f'<div style="position: absolute; left: {col1}px; top: 152px; font-size: 11px; color: {SUBTLE};">чтение · Cache-Control: no-store</div>')
-reads = [("GET", "/api/health", "ok · LAN без путей · всё на loopback", TEAL), ("GET", "/api/snapshot", "все учётки · forecast · elapsed_share", TEAL),
-         ("GET", "/api/history", "range · by · account_id · step", TEAL), ("GET", "/api/config", "ETag / 304 · access_token_set", TEAL),
+reads = [("GET", "/api/health", "ok · LAN без путей · всё на loopback", TEAL), ("GET", "/api/snapshot", "accounts[] + limits[] · ETag / 304", TEAL),
+         ("GET", "/api/history", "range · by · login_dir_id · step", TEAL), ("GET", "/api/config", "ETag / 304 · access_token_set", TEAL),
          ("GET", "/api/export", "CSV/JSON, поток", TEAL), ("GET", "/api/openapi.json", "из типизированных маршрутов", TEAL), ("GET", "/  /assets/*", "index.html · woff2 · ETag", BORDER2)]
 for i, r in enumerate(reads):
     parts.append(route(col1, 170 + i * 32, 330, *r))
 parts.append(f'<div style="position: absolute; left: {col2}px; top: 152px; font-size: 11px; color: {SUBTLE};">действия</div>')
-acts = [("POST", "/api/refresh", "{ account_id } · 202 · 429 + Retry-After", ORANGE), ("PUT", "/api/config", "If-Match → 200 · 422 errors[] · 412 · 428", AMBER),
-        ("POST", "/api/folders/probe", "kind · login_dirs · problem", ORANGE), ("POST", "/api/config/token", "только loopback · 403 из LAN", ORANGE)]
+acts = [("POST", "/api/snapshot/refresh", "{ account_id } · 202 · 429 + Retry-After", ORANGE), ("PUT", "/api/config", "If-Match → 200 · 422 errors[] · 412 · 428", AMBER),
+        ("POST", "/api/folders/probe", "kind · login_dirs · problem", ORANGE), ("POST", "/api/config/token", "только loopback · 403 из LAN", ORANGE), ("POST", "/api/history/search", "{ account_id[] } · чтение · тот же ответ", ORANGE)]
 for i, r in enumerate(acts):
     parts.append(route(col2, 170 + i * 32, 330, *r))
-parts.append(f'<div style="position: absolute; left: {col2}px; top: 306px; font-size: 11px; color: {SUBTLE};">поток</div>')
-parts.append(route(col2, 324, 330, "SSE", "/api/events", "id: · Last-Event-ID · ≤100 · 32 подписок", VIOLET))
+parts.append(f'<div style="position: absolute; left: {col2}px; top: 338px; font-size: 11px; color: {SUBTLE};">поток</div>')
+parts.append(route(col2, 356, 330, "SSE", "/api/events", "id: · Last-Event-ID · ≤100 · 32 подписок", VIOLET))
 ev = [("snapshot", "после каждого опроса и refresh"), ("config", "после PUT и подхвата файла"), ("folders", "нашли/потеряли каталог"), ("notice", "ошибка конфига, база, listener"), ("ping", "раз в 30 с"), ("bye", "остановка")]
 for i, (e, d) in enumerate(ev):
-    parts.append(f'<div style="position: absolute; left: {col2 + 14}px; top: {358 + i * 20}px; display: flex; gap: 8px; align-items: baseline;">'
+    parts.append(f'<div style="position: absolute; left: {col2 + 14}px; top: {390 + i * 20}px; display: flex; gap: 8px; align-items: baseline;">'
                  f'<span class="mono" style="font-size: 10.5px; color: {VIOLET}; width: 112px; white-space: nowrap;">event: {e}</span><span style="font-size: 10.5px; color: {SUBTLE};">{d}</span></div>')
 
 # errors strip inside server box

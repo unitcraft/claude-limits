@@ -45,7 +45,7 @@
 | `GET /` | `index.html` |
 | `GET /api/snapshot` | снимок: `fetched_at`, `accounts[] { email, org, dirs[], state: ok/stale/unknown/error, message, next_poll_at, limits[] { kind, model, percent, severity, resets_at, reset_label } }`, `worst { percent, severity }` |
 | `GET /api/events` | SSE: событие `snapshot` с тем же телом после каждого опроса; `ping` раз в 30 с |
-| `POST /api/refresh` | опросить сейчас; ответ — 202 |
+| `POST /api/snapshot/refresh` | опросить сейчас; ответ — 202 |
 | `GET /api/history?range=24h\|7d\|30d&by=account\|folder` | замеры раз в 5 мин за период: по учётке — `points[] { at, kind, model, percent, locked }`; по папке — то же плюс `occupancy[] { from, to, email }` (дизайн, §3.3) |
 | `PUT /api/config` | настройки из интерфейса: папки, порядок учёток, вид, стиль бара, интервал, пороги, `[server]`; валидация как при старте, ошибка — 400 с текстом |
 | `GET /api/health` | `ok`, версия, аптайм |
@@ -235,7 +235,7 @@ claude-limits/
 │   └── maintenance.nv        дневные свёртки, ретенция, incremental_vacuum
 ├── migrations/0001_init.sql  схема из подплана 01.2 §3
 ├── server/
-│   ├── routes.nv             Router: /, /api/snapshot, /api/events, /api/refresh, /api/health
+│   ├── routes.nv             Router: /, /api/snapshot, /api/events, /api/snapshot/refresh, /api/health
 │   ├── auth.nv               Bearer / cookie по access_token; отказ старта при bind≠loopback без токена
 │   └── json.nv               Snapshot -> JSON (без токенов — тест §7)
 ├── web/
@@ -267,7 +267,7 @@ claude-limits/
   `border-radius`, процент по центру, подпись под баром. Цвета severity — CSS-переменные;
   тёмная тема по умолчанию, светлая — по `prefers-color-scheme`.
 - JS: `new EventSource('/api/events')`, на `snapshot` — перерисовать; таймер 90 с без
-  событий — `fetch('/api/snapshot')`; кнопка «обновить» — `POST /api/refresh`.
+  событий — `fetch('/api/snapshot')`; кнопка «обновить» — `POST /api/snapshot/refresh`.
   Форматирование «reset … (2d 17h)» приходит готовым из `format.nv`, чтобы страница и
   виджет показывали одну и ту же строку и разница ловилась дифференциалом.
 - Ни фреймворков, ни сборки, ни внешних ресурсов: страница работает с `file://`-строгой
@@ -425,7 +425,7 @@ libdbus (грузится динамически самим SDL; без него
 
 ### Ф.2 — бэкенд и страница
 
-`model/store.nv`, `server/`, `web/index.html`, поллеры с интервалом, `POST /api/refresh`,
+`model/store.nv`, `server/`, `web/index.html`, поллеры с интервалом, `POST /api/snapshot/refresh`,
 `[server]` конфига: `bind` не на loopback требует токен и TLS, иначе слушатель остаётся на loopback
 с понятной строкой в логе и в шапке. TLS-слушатель Polaris поверх `nova-tls` — отдельная задача
 этой фазы (спайк, затем реализация); до неё LAN-режим в сборке недоступен.
@@ -433,7 +433,7 @@ libdbus (грузится динамически самим SDL; без него
 Приёмка:
 - `scripts/diff-with-probe.sh --api`: `curl /api/snapshot`, приведённый к таблице,
   побайтно совпадает с `claude_limits.py`;
-- `scripts/smoke-server.sh`: health, snapshot, три события SSE после `POST /api/refresh`,
+- `scripts/smoke-server.sh`: health, snapshot, три события SSE после `POST /api/snapshot/refresh`,
   корректное завершение по сигналу;
 - страница в браузере: группы по учёткам, обновление без перезагрузки — скриншот и
   строка в отчёте; отключить сеть — группы серые с причиной, не пусто;
@@ -527,7 +527,7 @@ JSON, сборка SDL по скрипту с кэшем. Тег `nova-sdl` v0.1
 | `embed_dir` не поднимает `web/index.html` из пакета с `[[bin]]` | Ф.0 п.1; образец `examples/06-static-site` |
 | `nova-tls` без корневых сертификатов ОС на одной из платформ | Ф.0 п.2; при отсутствии — вход в реестр nova |
 | Эндпоинт не документирован и может измениться | разбор терпим к лишним полям; при пустом `limits` — фолбэк; в UI — «формат ответа изменился» |
-| Сервер отвечает 429 на частый опрос с одной машины (факт эталона) | пол 60 с, `Retry-After`, один запрос на почту, ни одного запроса с протухшим токеном; `POST /api/refresh` тоже подчиняется полу — ответ 429 клиенту с `next_poll_at` |
+| Сервер отвечает 429 на частый опрос с одной машины (факт эталона) | пол 60 с, `Retry-After`, один запрос на почту, ни одного запроса с протухшим токеном; `POST /api/snapshot/refresh` тоже подчиняется полу — ответ 429 клиенту с `next_poll_at` |
 | Токен протух и нет сессии Claude Code | серое состояние «запустите Claude Code под этой учёткой»; refresh не делаем (решение 6) |
 | Топмост не держится под Wayland | обход через X11-драйвер; иначе строка в шапке; браузер есть всегда |
 | Клик по иконке трея не приходит из SDL3 | пункт меню (§0) |
