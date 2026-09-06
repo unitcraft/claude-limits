@@ -30,7 +30,7 @@ TAIL = "</x-dc>\n</body>\n</html>\n"
 
 
 def badge(text, color):
-    return f'<span class="mono" style="font-size: 9px; padding: 0 4px; border-radius: 3px; border: 1px solid {color}; color: {color}; line-height: 13px;">{text}</span>'
+    return f'<span class="mono" style="font-size: 9px; padding: 0 4px; border-radius: 3px; border: 1px solid {color}; color: {color}; line-height: 13px; white-space: nowrap; flex: none;">{text}</span>'
 
 
 # ───────────────────────── DB schema ─────────────────────────
@@ -75,7 +75,7 @@ TABLES = {
                      ["Ф.5, до неё пусто"], "зарезервировано под Ф.5"),
     "schema_meta": ([("key", "VARCHAR", ["PK"]), ("value", "VARCHAR", ["NN"])], ["служебная таблица механизма — без набора §6"], "schema_version, duckdb_version, app_instance_id, rollup_tz, …"),
 }
-POS = {  # x, y of each card; column width 330
+POS = {  # x, y of each card; column width 362
     "folder": (40, 90), "login_dir": (40, 440), "occupancy": (40, 790),
     "account": (430, 90), "limit_window": (430, 460), "window_cycle": (430, 760), "sample": (430, 1000),
     "poll": (820, 90), "lock_period": (820, 460), "daily_rollup": (820, 770),
@@ -88,7 +88,7 @@ FKS = [  # (child, field, parent)
     ("window_cycle", "window_id", "limit_window"), ("sample", "cycle_id", "window_cycle"), ("lock_period", "cycle_id", "window_cycle"),
     ("notification", "account_id", "account"), ("notification", "window_id", "limit_window"),
 ]
-CW, ROW, HEADH, PAD = 330, 17, 30, 8
+CW, ROW, HEADH, PAD = 362, 17, 30, 8
 
 
 def card_height(name):
@@ -111,7 +111,7 @@ def table_card(name):
         rows += (f'<div style="display: flex; align-items: center; gap: 6px; height: {ROW}px; padding: 0 10px;">'
                  f'<span class="mono" style="font-size: 11px; color: {FG}; min-width: 118px;">{f}</span>'
                  f'<span class="mono" style="font-size: 10px; color: {MUTED}; min-width: 56px;">{t}</span>'
-                 f'<span style="display: flex; gap: 4px; flex-wrap: nowrap; overflow: hidden;">{bs}</span></div>')
+                 f'<span style="display: flex; gap: 4px; flex-wrap: nowrap; overflow: hidden; white-space: nowrap;">{bs}</span></div>')
     idxs = "".join(f'<div class="mono" style="font-size: 9.5px; color: {SUBTLE}; padding: 0 10px; height: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">⌕ {i}</div>' for i in idx)
     return (f'<div style="position: absolute; left: {x}px; top: {y}px; width: {CW}px; background: {SURF}; border: 1px solid {BORDER}; border-radius: 10px; overflow: hidden;">'
             f'<div style="display: flex; align-items: center; justify-content: space-between; height: {HEADH}px; padding: 0 10px; background: {TRACK}; border-bottom: 1px solid {BORDER};">'
