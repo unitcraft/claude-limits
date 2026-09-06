@@ -1,0 +1,263 @@
+"""DbSchema.dc.html (ER diagram of plan 01.2 §3) and ApiMap.dc.html (route map of plan 01.3) in the Nova dark theme.
+Boxes are absolutely positioned HTML, connectors are one SVG overlay with coordinates computed here."""
+import os
+os.chdir(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+
+BG = "radial-gradient(1100px 520px at 18% -8%, rgba(107, 63, 160, 0.30), transparent 62%), radial-gradient(900px 500px at 92% 110%, rgba(107, 63, 160, 0.16), transparent 60%), #13111d"
+SURF, ALT, BORDER, BORDER2, TRACK = "#1e1a2e", "#181526", "#322c4a", "#3b3458", "#2a2542"
+FG, SOFT, MUTED, SUBTLE = "#e8e8ee", "#cbc7da", "#9b95b5", "#6d6786"
+TEAL, VIOLET, ORANGE, AMBER, RED = "#3aa98c", "#a27bd0", "#cf6f4a", "#e0b04a", "#e0554f"
+MONO = '"JetBrains Mono", ui-monospace, Consolas, monospace'
+
+HEAD = f"""<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap">
+  <style>
+    body {{ margin: 0; background: {BG}; color: {FG}; font-family: "Manrope", "Segoe UI", system-ui, sans-serif; font-size: 12px; line-height: 1.35; -webkit-font-smoothing: antialiased; }}
+    a {{ color: #7fc7ad; }} a:hover {{ color: #a3dcc6; }}
+    .mono {{ font-family: {MONO}; }}
+  </style>
+</helmet>
+"""
+TAIL = "</x-dc>\n</body>\n</html>\n"
+
+
+def badge(text, color):
+    return f'<span class="mono" style="font-size: 9px; padding: 0 4px; border-radius: 3px; border: 1px solid {color}; color: {color}; line-height: 13px;">{text}</span>'
+
+
+# ───────────────────────── DB schema ─────────────────────────
+# (name, [(field, type, badges)], [indexes], note)
+TABLES = {
+    "folder": ([("id", "INTEGER", ["PK"]), ("path", "TEXT", ["UQ", "NN"]), ("kind", "TEXT", ["single|parent|empty|missing"]), ("source", "TEXT", ["config|default|env"]),
+                ("first_seen_at", "INTEGER", ["NN"]), ("last_seen_at", "INTEGER", ["NN"]), ("removed_at", "INTEGER", [])],
+               ["folder_active_idx (removed_at) WHERE removed_at IS NULL"], "папки из [[folders]] конфига"),
+    "login_dir": ([("id", "INTEGER", ["PK"]), ("folder_id", "INTEGER", ["FK", "NN"]), ("path", "TEXT", ["UQ", "NN"]), ("name", "TEXT", ["NN"]),
+                   ("layout", "TEXT", ["default|config_dir"]), ("first_seen_at", "INTEGER", ["NN"]), ("last_seen_at", "INTEGER", ["NN"]), ("removed_at", "INTEGER", [])],
+                  ["login_dir_folder_idx (folder_id, removed_at)"], "каталог с .credentials.json"),
+    "occupancy": ([("id", "INTEGER", ["PK"]), ("login_dir_id", "INTEGER", ["FK", "NN"]), ("account_id", "INTEGER", ["FK", "NULL = нет логина"]),
+                   ("token_state", "TEXT", ["ok|expired|rejected|none"]), ("started_at", "INTEGER", ["NN"]), ("ended_at", "INTEGER", ["NULL = сейчас"])],
+                  ["occupancy_dir_time_idx (login_dir_id, started_at)", "occupancy_account_time_idx (account_id, started_at)", "occupancy_open_uidx UNIQUE (login_dir_id) WHERE ended_at IS NULL"],
+                  "кто сидел в каталоге когда"),
+    "account": ([("id", "INTEGER", ["PK"]), ("email", "TEXT", ["UQ", "NN", "NOCASE"]), ("org_name", "TEXT", []), ("org_uuid", "TEXT", []),
+                 ("subscription_type", "TEXT", []), ("rate_limit_tier", "TEXT", []), ("color_slot", "INTEGER", ["NN"]),
+                 ("first_seen_at", "INTEGER", ["NN"]), ("last_seen_at", "INTEGER", ["NN"])],
+                [], "учётка = почта · токенов нет"),
+    "limit_window": ([("id", "INTEGER", ["PK"]), ("account_id", "INTEGER", ["FK", "NN"]), ("kind", "TEXT", ["session|weekly_all|weekly_scoped"]),
+                      ("model", "TEXT", ["NULL кроме scoped"]), ("first_seen_at", "INTEGER", ["NN"]), ("last_seen_at", "INTEGER", ["NN"])],
+                     ["UNIQUE (account_id, kind, model)"], "измерение: окно лимита учётки"),
+    "sample": ([("window_id", "INTEGER", ["PK", "FK"]), ("at", "INTEGER", ["PK"]), ("percent", "INTEGER", ["0..100"]), ("resets_at", "INTEGER", ["NN"]),
+                ("locked", "INTEGER", ["0|1"]), ("locked_reason", "TEXT", []), ("server_severity", "TEXT", []), ("is_active", "INTEGER", ["0|1"])],
+               ["PK (window_id, at) WITHOUT ROWID", "sample_at_idx (at)"], "замер раз в опрос · ~138k строк / 30 д"),
+    "poll": ([("id", "INTEGER", ["PK"]), ("account_id", "INTEGER", ["FK", "NN"]), ("at", "INTEGER", ["NN"]),
+              ("outcome", "TEXT", ["ok|http_401|http_429|http_5xx|…"]), ("http_status", "INTEGER", []), ("retry_after_sec", "INTEGER", []),
+              ("latency_ms", "INTEGER", []), ("error", "TEXT", ["≤200, без токенов"])],
+             ["poll_account_at_idx (account_id, at)", "poll_at_idx (at)"], "каждая попытка опроса"),
+    "lock_period": ([("id", "INTEGER", ["PK"]), ("window_id", "INTEGER", ["FK", "NN"]), ("started_at", "INTEGER", ["NN"]),
+                     ("ended_at", "INTEGER", ["NULL = идёт"]), ("reason", "TEXT", ["…|percent_100"])],
+                    ["lock_period_window_idx (window_id, started_at)", "lock_period_open_uidx UNIQUE (window_id) WHERE ended_at IS NULL"], "интервалы блокировки"),
+    "daily_rollup": ([("window_id", "INTEGER", ["PK", "FK"]), ("day", "TEXT", ["PK", "YYYY-MM-DD local"]), ("samples", "INTEGER", ["NN"]),
+                      ("peak_percent", "INTEGER", ["NN"]), ("avg_percent", "REAL", ["NN"]), ("minutes_locked", "INTEGER", ["NN"]), ("resets", "INTEGER", ["NN"])],
+                     ["PK (window_id, day) WITHOUT ROWID", "daily_rollup_day_idx (day)"], "дневные свёртки · 400 д"),
+    "config_history": ([("id", "INTEGER", ["PK"]), ("saved_at", "INTEGER", ["NN"]), ("source", "TEXT", ["ui|widget|file|migration"]), ("toml", "TEXT", ["token → ***"])],
+                       ["config_history_saved_idx (saved_at)"], "версии файла настроек · 20 шт"),
+    "notification": ([("id", "INTEGER", ["PK"]), ("account_id", "INTEGER", ["FK"]), ("window_id", "INTEGER", ["FK"]),
+                      ("kind", "TEXT", ["threshold_…|locked|forecast_runs_out|…"]), ("fired_at", "INTEGER", ["NN"]), ("acknowledged_at", "INTEGER", []), ("payload", "TEXT", ["JSON"])],
+                     ["notification_fired_idx (fired_at)", "notification_open_idx (acknowledged_at) WHERE NULL"], "зарезервировано под Ф.5"),
+    "schema_meta": ([("key", "TEXT", ["PK"]), ("value", "TEXT", ["NN"])], ["WITHOUT ROWID"], "schema_version, last_rollup_day, …"),
+}
+POS = {  # x, y of each card; column width 330
+    "folder": (40, 90), "login_dir": (40, 330), "occupancy": (40, 590),
+    "account": (430, 90), "limit_window": (430, 400), "sample": (430, 620),
+    "poll": (820, 90), "lock_period": (820, 380), "daily_rollup": (820, 600),
+    "config_history": (1210, 90), "notification": (1210, 290), "schema_meta": (1210, 560),
+}
+FKS = [  # (child, field, parent)
+    ("login_dir", "folder_id", "folder"), ("occupancy", "login_dir_id", "login_dir"), ("occupancy", "account_id", "account"),
+    ("poll", "account_id", "account"), ("limit_window", "account_id", "account"), ("sample", "window_id", "limit_window"),
+    ("lock_period", "window_id", "limit_window"), ("daily_rollup", "window_id", "limit_window"),
+    ("notification", "account_id", "account"), ("notification", "window_id", "limit_window"),
+]
+CW, ROW, HEADH, PAD = 330, 17, 30, 8
+
+
+def card_height(name):
+    fields, idx, note = TABLES[name]
+    return HEADH + len(fields) * ROW + PAD + (len(idx) * 14 + 6 if idx else 0) + 18
+
+
+def field_y(name, field):
+    fields = TABLES[name][0]
+    i = [f[0] for f in fields].index(field)
+    return POS[name][1] + HEADH + i * ROW + ROW / 2 + 2
+
+
+def table_card(name):
+    fields, idx, note = TABLES[name]
+    x, y = POS[name]
+    rows = ""
+    for f, t, b in fields:
+        bs = " ".join(badge(v, TEAL if v in ("PK",) else VIOLET if v == "FK" else ORANGE if v in ("UQ", "NOCASE") else SUBTLE) for v in b)
+        rows += (f'<div style="display: flex; align-items: center; gap: 6px; height: {ROW}px; padding: 0 10px;">'
+                 f'<span class="mono" style="font-size: 11px; color: {FG}; min-width: 118px;">{f}</span>'
+                 f'<span class="mono" style="font-size: 10px; color: {MUTED}; min-width: 56px;">{t}</span>'
+                 f'<span style="display: flex; gap: 4px; flex-wrap: nowrap; overflow: hidden;">{bs}</span></div>')
+    idxs = "".join(f'<div class="mono" style="font-size: 9.5px; color: {SUBTLE}; padding: 0 10px; height: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">⌕ {i}</div>' for i in idx)
+    return (f'<div style="position: absolute; left: {x}px; top: {y}px; width: {CW}px; background: {SURF}; border: 1px solid {BORDER}; border-radius: 10px; overflow: hidden;">'
+            f'<div style="display: flex; align-items: center; justify-content: space-between; height: {HEADH}px; padding: 0 10px; background: {TRACK}; border-bottom: 1px solid {BORDER};">'
+            f'<span class="mono" style="font-size: 12px; font-weight: 600;">{name}</span><span style="font-size: 10px; color: {MUTED};">{note}</span></div>'
+            f'<div style="padding: 4px 0;">{rows}</div>'
+            + (f'<div style="border-top: 1px dashed {BORDER}; padding: 3px 0;">{idxs}</div>' if idx else "")
+            + '</div>')
+
+
+def fk_path(child, field, parent):
+    cx, cy = POS[child]
+    px, py = POS[parent]
+    y1 = field_y(child, field)
+    ph = card_height(parent)
+    if abs(cx - px) < 10:                       # same column: child below parent → up to parent's bottom
+        x = cx + CW / 2 + (20 if field.endswith("account_id") else 0)
+        return f"M {x},{cy} C {x},{cy - 40} {x},{py + ph + 40} {x},{py + ph}", (x, py + ph), (x, cy)
+    if px > cx:                                  # parent to the right: leave child's right edge, enter parent's left edge
+        x1, x2 = cx + CW, px
+        y2 = py + HEADH / 2 + (8 if field.endswith("window_id") else 0)
+        mid = (x1 + x2) / 2
+        return f"M {x1},{y1} C {mid},{y1} {mid},{y2} {x2},{y2}", (x2, y2), (x1, y1)
+    x1, x2 = cx, px + CW                         # parent to the left
+    y2 = py + HEADH / 2 + (8 if field == "window_id" else 0)
+    mid = (x1 + x2) / 2
+    return f"M {x1},{y1} C {mid},{y1} {mid},{y2} {x2},{y2}", (x2, y2), (x1, y1)
+
+
+W, H = 1580, 940
+svg = [f'<svg width="{W}" height="{H}" viewBox="0 0 {W} {H}" style="position: absolute; left: 0; top: 0; pointer-events: none;" aria-hidden="true">'
+       f'<defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="{VIOLET}"></path></marker></defs>']
+for child, field, parent in FKS:
+    d, head, tail = fk_path(child, field, parent)
+    svg.append(f'<path d="{d}" fill="none" stroke="{VIOLET}" stroke-width="1.5" stroke-opacity="0.85" marker-end="url(#arr)"></path>'
+               f'<circle cx="{tail[0]:.1f}" cy="{tail[1]:.1f}" r="3" fill="{VIOLET}"></circle>')
+svg.append("</svg>")
+
+legend = (f'<div style="position: absolute; left: 40px; top: 24px; display: flex; align-items: center; gap: 18px;">'
+          f'<span style="font-size: 16px; font-weight: 600;">claude-limits.db</span>'
+          f'<span style="color: {MUTED};">SQLite · WAL · STRICT · время в секундах Unix UTC · подплан 01.2 §3</span>'
+          f'<span style="display: flex; gap: 6px; align-items: center;">{badge("PK", TEAL)}{badge("FK", VIOLET)}{badge("UQ", ORANGE)}{badge("NN", SUBTLE)}'
+          f'<span class="mono" style="font-size: 10px; color: {SUBTLE};">⌕ индекс</span>'
+          f'<svg width="40" height="10" aria-hidden="true"><circle cx="4" cy="5" r="3" fill="{VIOLET}"></circle><line x1="7" y1="5" x2="30" y2="5" stroke="{VIOLET}" stroke-width="1.5"></line><path d="M 30 1 L 38 5 L 30 9 z" fill="{VIOLET}"></path></svg>'
+          f'<span style="font-size: 10px; color: {SUBTLE};">FK → родитель</span></span></div>')
+
+foot = (f'<div style="position: absolute; left: 40px; top: {H - 40}px; color: {SUBTLE}; font-size: 11px;">'
+        f'Одно соединение у файбера <span class="mono">store</span>; запись тика = одна транзакция (poll + sample × окна + lock_period + occupancy). '
+        f'Ретенция: sample и poll 30 д, daily_rollup 400 д, occupancy и lock_period без срока. Настройки — не здесь, а в claude-limits.toml.</div>')
+
+db_html = (HEAD + f'<div style="position: relative; width: {W}px; height: {H}px; background: {BG}; overflow: hidden;">'
+           + legend + "".join(table_card(n) for n in TABLES) + "".join(svg) + foot + "</div>\n" + TAIL)
+open("DbSchema.dc.html", "w", encoding="utf-8").write(db_html)
+print("DbSchema written", W, H)
+
+# ───────────────────────── API map ─────────────────────────
+AW, AH = 1580, 900
+
+
+def box(x, y, w, h, title, lines, color=BORDER, title_color=FG, bg=SURF):
+    body = "".join(f'<div style="font-size: 11px; color: {MUTED}; line-height: 1.45;">{l}</div>' for l in lines)
+    return (f'<div style="position: absolute; left: {x}px; top: {y}px; width: {w}px; min-height: {h}px; box-sizing: border-box; padding: 10px 12px; '
+            f'background: {bg}; border: 1px solid {color}; border-radius: 10px;">'
+            f'<div style="font-weight: 600; font-size: 13px; color: {title_color}; margin-bottom: 4px;">{title}</div>{body}</div>')
+
+
+def route(x, y, w, method, path, note, color):
+    mc = {"GET": TEAL, "POST": ORANGE, "PUT": AMBER, "SSE": VIOLET}[method]
+    return (f'<div style="position: absolute; left: {x}px; top: {y}px; width: {w}px; box-sizing: border-box; display: flex; align-items: center; gap: 8px; height: 26px; padding: 0 10px; '
+            f'background: {ALT}; border: 1px solid {color}; border-radius: 7px;">'
+            f'<span class="mono" style="font-size: 10px; font-weight: 600; color: {mc}; width: 32px;">{method}</span>'
+            f'<span class="mono" style="font-size: 11px; color: {FG}; white-space: nowrap;">{path}</span>'
+            f'<span style="font-size: 10px; color: {SUBTLE}; margin-left: auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{note}</span></div>')
+
+
+parts = []
+parts.append(f'<div style="position: absolute; left: 40px; top: 24px; display: flex; align-items: baseline; gap: 18px;"><span style="font-size: 16px; font-weight: 600;">HTTP API · 127.0.0.1:7391</span>'
+             f'<span style="color: {MUTED};">подплан 01.3 · JSON snake_case · время ISO-8601 со смещением · ошибки одним конвертом {{ error: {{ code, message, field, retry_after }} }}</span></div>')
+
+# clients
+parts.append(box(40, 80, 260, 96, "Страница в браузере", ["<span class='mono'>GET /</span> + статика из embed_dir", "снимок → SSE → PUT config", "личное — localStorage"]))
+parts.append(box(40, 196, 260, 78, "Виджет SDL3 (тот же процесс)", ["читает Snapshot из памяти store", "те же dto, без HTTP"], color=BORDER2))
+parts.append(box(40, 294, 260, 96, "Скрипты · curl · дифференциал", ["<span class='mono'>/api/snapshot → таблица</span> ≡ claude_limits.py", "<span class='mono'>/api/export?format=csv</span>", "<span class='mono'>/api/openapi.json</span>"]))
+parts.append(box(40, 410, 260, 110, "Телефон в LAN", ["только при <span class='mono'>allow_lan = true</span>", "<span class='mono'>Authorization: Bearer</span> или cookie", "<span class='mono'>GET /?token=…</span> один раз → 303 + Set-Cookie", "10 ошибок/мин → 429 на 60 с"], color=AMBER))
+
+# server column
+parts.append(f'<div style="position: absolute; left: 380px; top: 80px; width: 720px; height: 620px; border: 1px dashed {BORDER2}; border-radius: 14px;"></div>')
+parts.append(f'<div style="position: absolute; left: 396px; top: 88px; font-size: 13px; font-weight: 600;">Polaris · <span class="mono" style="font-weight: 500; color: {MUTED};">serve_router</span> в spawn · до 64 соединений · тело ≤ 256 КБ</div>')
+mw = ["security headers", "access log (без query)", "auth (только при allow_lan)", "routes"]
+for i, m in enumerate(mw):
+    parts.append(f'<div style="position: absolute; left: {396 + i * 172}px; top: 114px; width: 160px; height: 24px; box-sizing: border-box; display: flex; align-items: center; justify-content: center; '
+                 f'background: {TRACK}; border: 1px solid {BORDER}; border-radius: 6px; font-size: 10.5px; color: {SOFT};">{m}{"" if i == 3 else " →"}</div>')
+
+col1, col2 = 396, 750
+parts.append(f'<div style="position: absolute; left: {col1}px; top: 152px; font-size: 11px; color: {SUBTLE};">чтение · Cache-Control: no-store</div>')
+reads = [("GET", "/api/health", "живость, api_version, пути, размер БД", TEAL), ("GET", "/api/snapshot", "все учётки · forecast · elapsed_share", TEAL),
+         ("GET", "/api/history", "range · by=account|folder · step", TEAL), ("GET", "/api/config", "ETag · access_token_set", TEAL),
+         ("GET", "/api/export", "CSV/JSON, поток", TEAL), ("GET", "/api/openapi.json", "из типизированных маршрутов", TEAL), ("GET", "/  /assets/*", "index.html · woff2 · ETag", BORDER2)]
+for i, r in enumerate(reads):
+    parts.append(route(col1, 170 + i * 32, 330, *r))
+parts.append(f'<div style="position: absolute; left: {col2}px; top: 152px; font-size: 11px; color: {SUBTLE};">действия</div>')
+acts = [("POST", "/api/refresh", "202 · 429 too_soon + Retry-After", ORANGE), ("PUT", "/api/config", "If-Match → 200 · 400 field · 409 · 428", AMBER),
+        ("POST", "/api/folders/probe", "kind · login_dirs · problem", ORANGE), ("POST", "/api/config/token", "только loopback · 403 из LAN", ORANGE)]
+for i, r in enumerate(acts):
+    parts.append(route(col2, 170 + i * 32, 330, *r))
+parts.append(f'<div style="position: absolute; left: {col2}px; top: 306px; font-size: 11px; color: {SUBTLE};">поток</div>')
+parts.append(route(col2, 324, 330, "SSE", "/api/events", "id: · Last-Event-ID → досылка ≤100 · 32 подписки", VIOLET))
+ev = [("snapshot", "после каждого опроса и refresh"), ("config", "после PUT и подхвата файла"), ("folders", "нашли/потеряли каталог"), ("notice", "ошибка конфига, база, listener"), ("ping", "раз в 30 с"), ("bye", "остановка")]
+for i, (e, d) in enumerate(ev):
+    parts.append(f'<div style="position: absolute; left: {col2 + 14}px; top: {358 + i * 20}px; display: flex; gap: 8px; align-items: baseline;">'
+                 f'<span class="mono" style="font-size: 10.5px; color: {VIOLET}; width: 64px;">event: {e}</span><span style="font-size: 10.5px; color: {SUBTLE};">{d}</span></div>')
+
+# errors strip inside server box
+errs = ["400 invalid_*", "401 unauthorized", "403 loopback_only", "404 not_found", "405 + Allow", "409 config_changed", "413 range_too_large", "423 config_readonly", "428 precondition_required", "429 too_soon", "503 store_busy", "500 internal + request_id"]
+parts.append(f'<div style="position: absolute; left: {col1}px; top: 500px; font-size: 11px; color: {SUBTLE};">коды ошибок</div>')
+parts.append(f'<div style="position: absolute; left: {col1}px; top: 518px; width: 688px; display: flex; flex-wrap: wrap; gap: 6px;">'
+             + "".join(f'<span class="mono" style="font-size: 10px; color: {SOFT}; padding: 2px 7px; border: 1px solid {BORDER}; border-radius: 5px; background: {ALT};">{e}</span>' for e in errs) + "</div>")
+parts.append(f'<div style="position: absolute; left: {col1}px; top: 592px; width: 688px; font-size: 11px; color: {MUTED}; line-height: 1.45;">'
+             f'Хендлеры не трогают БД и файлы: запрос/ответ по <span class="mono">Chan</span> к файберу store, таймаут 5 с → 503 store_busy. '
+             f'Токены учёток не появляются ни в одном ответе (тест ищет подстроки из фикстур). Заголовки: nosniff · no-referrer · DENY · CSP без внешних источников. CORS выключен.</div>')
+
+# right column: store, storage, pollers, endpoint
+parts.append(box(1180, 80, 360, 118, "store · файбер-владелец состояния", ["Snapshot в памяти · подписки SSE", "одно соединение SQLite (#thread_affine)", "запись тика — одна транзакция", "восстановление снимка из БД при старте"], color=TEAL))
+parts.append(box(1180, 220, 360, 92, "claude-limits.db · SQLite WAL", ["sample · poll · occupancy · lock_period · daily_rollup", "account · limit_window · folder · login_dir", "config_history · notification · schema_meta"], color=BORDER2))
+parts.append(box(1180, 334, 360, 92, "claude-limits.toml", ["источник истины настроек · write_atomic", "mtime → перечитать → event: config", "If-Match = хэш файла"], color=BORDER2))
+parts.append(box(1180, 448, 360, 96, "поллеры · spawn на учётку", ["HttpClient → api.anthropic.com/api/oauth/usage", "Bearer из .credentials.json (только чтение)", "interval_sec ≥ 60 · 429 → Retry-After · expired → без запроса"], color=ORANGE))
+parts.append(box(1180, 566, 360, 74, "обнаружение · раз в тик и по PUT", ["[[folders]] → login_dir → account", "смена почты/токена → occupancy"], color=BORDER2))
+
+# connectors
+def line(x1, y1, x2, y2, color=MUTED, dash=""):
+    mid = (x1 + x2) / 2
+    return f'<path d="M {x1},{y1} C {mid},{y1} {mid},{y2} {x2},{y2}" fill="none" stroke="{color}" stroke-width="1.5" stroke-opacity="0.8" {dash} marker-end="url(#arr2)"></path>'
+
+
+asvg = [f'<svg width="{AW}" height="{AH}" viewBox="0 0 {AW} {AH}" style="position: absolute; left: 0; top: 0; pointer-events: none;" aria-hidden="true">'
+        f'<defs><marker id="arr2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="{MUTED}"></path></marker></defs>']
+for y in (128, 342, 465):                       # clients → server
+    asvg.append(line(300, y, 380, y))
+asvg.append(line(300, 235, 1180, 139, TEAL, 'stroke-dasharray="4 4"'))   # widget → store directly
+asvg.append(line(1100, 200, 1180, 139))                                  # routes → store
+asvg.append(line(1100, 340, 1180, 150, VIOLET))                          # SSE ← store
+asvg.append(line(1360, 198, 1360, 220, TEAL))                            # store → db
+asvg.append(line(1300, 198, 1300, 334, TEAL))                            # store → toml (config write)
+asvg.append(line(1440, 448, 1440, 198, ORANGE))                          # pollers → store
+asvg.append(line(1240, 566, 1240, 198, MUTED))                           # discovery → store
+asvg.append("</svg>")
+
+api_html = (HEAD + f'<div style="position: relative; width: {AW}px; height: {AH}px; background: {BG}; overflow: hidden;">'
+            + "".join(parts) + "".join(asvg)
+            + f'<div style="position: absolute; left: 40px; top: {AH - 40}px; color: {SUBTLE}; font-size: 11px;">Стрелки: клиенты → маршруты → store; пунктир — виджет читает состояние напрямую, без HTTP. Дифференциал с эталоном сравнивает только email / kind / percent / severity / resets_at.</div>'
+            + "</div>\n" + TAIL)
+open("ApiMap.dc.html", "w", encoding="utf-8").write(api_html)
+print("ApiMap written", AW, AH)

@@ -18,6 +18,8 @@ https://claude.ai/code/artifact/620932c4-2769-411e-9752-cb27c42d43cf
 | `StatsView.dc.html` | **статистика по учёткам** — три графика по трём окнам лимитов, 7 дней | утверждён |
 | `StatsFolders.dc.html` | **статистика по папкам** (по людям) — 30 дней, смена учёток в папке | утверждён |
 | `SettingsPanel.dc.html` | панель настроек под шестерёнкой | утверждён |
+| `DbSchema.dc.html` | **схема БД** — все таблицы, поля, ключи, индексы подплана 01.2, стрелки FK (страница «Architecture») | генерируется |
+| `ApiMap.dc.html` | **карта API** — клиенты, middleware, маршруты, события SSE, коды ошибок, store и хранилища подплана 01.3 (страница «Architecture») | генерируется |
 | `archive/CompactRows`, `archive/CompactList`, `archive/CompactGrid` | второй раунд: варианты плотности; выбран `CompactList`, он и стал `Main` | архив, на холсте нет |
 | `archive/DenseTable`, `archive/CardsGrid` | первый раунд: светлые эскизы | архив, на холсте нет |
 
@@ -92,6 +94,7 @@ python tools/gen_stats.py     # StatsView.dc.html и StatsFolders.dc.html в т�
 python tools/retheme.py       # перевод всех тёмных артбордов в токены Nova (идемпотентно)
 python tools/add_timebars.py  # полосы времени под барами в Main и CardsView + пересборка MainBlocks (идемпотентно)
 python tools/add_forecast.py  # штрихованный прогноз в барах, секция Forecast в настройках, пересборка MainBlocks (идемпотентно)
+python tools/gen_diagrams.py  # DbSchema.dc.html и ApiMap.dc.html из таблиц в скрипте (править там, не в HTML)
 ```
 
 Порядок обязателен: генератор пишет старые токены, `retheme.py` переводит их. Остальные
