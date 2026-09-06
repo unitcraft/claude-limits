@@ -17,8 +17,8 @@ https://claude.ai/code/artifact/620932c4-2769-411e-9752-cb27c42d43cf
 | `StatsView.dc.html` | **статистика по учёткам** — три графика по трём окнам лимитов, 7 дней | утверждён |
 | `StatsFolders.dc.html` | **статистика по папкам** (по людям) — 30 дней, смена учёток в папке | утверждён |
 | `SettingsPanel.dc.html` | панель настроек под шестерёнкой | утверждён |
-| `CompactRows.dc.html`, `CompactList.dc.html`, `CompactGrid.dc.html` | второй раунд: варианты плотности; выбран `CompactList`, он и стал `Main` | справочно |
-| `DenseTable.dc.html`, `CardsGrid.dc.html` | первый раунд: светлые эскизы | справочно |
+| `archive/CompactRows`, `archive/CompactList`, `archive/CompactGrid` | второй раунд: варианты плотности; выбран `CompactList`, он и стал `Main` | архив, на холсте нет |
+| `archive/DenseTable`, `archive/CardsGrid` | первый раунд: светлые эскизы | архив, на холсте нет |
 
 ## Решения, влияющие на реализацию
 
