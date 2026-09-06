@@ -36,50 +36,50 @@ def badge(text, color):
 # ───────────────────────── DB schema ─────────────────────────
 # (name, [(field, type, badges)], [indexes], note)
 TABLES = {
-    "folder": ([("id", "INTEGER", ["PK"]), ("path", "VARCHAR", ["UQ", "NN"]), ("kind", "VARCHAR(32)", ["CHECK folder_kind"]), ("source", "VARCHAR(32)", ["CHECK folder_source"]),
-                ("first_seen_at", "TIMESTAMPTZ", ["NN"]), ("last_seen_at", "TIMESTAMPTZ", ["NN"]), ("removed_at", "TIMESTAMPTZ", [])],
-               ["CHECK (last_seen_at >= first_seen_at)"], "папки из [[folders]] конфига"),
-    "login_dir": ([("id", "INTEGER", ["PK"]), ("folder_id", "INTEGER", ["FK", "NN", "no cascade"]), ("path", "VARCHAR", ["UQ", "NN"]), ("name", "VARCHAR", ["NN"]),
-                   ("layout", "VARCHAR(32)", ["CHECK dir_layout"]), ("first_seen_at", "TIMESTAMPTZ", ["NN"]), ("last_seen_at", "TIMESTAMPTZ", ["NN"]), ("removed_at", "TIMESTAMPTZ", [])],
-                  ["CHECK (last_seen_at >= first_seen_at)"], "каталог с .credentials.json"),
-    "occupancy": ([("id", "BIGINT", ["PK"]), ("login_dir_id", "INTEGER", ["FK", "NN", "forget tx"]), ("account_id", "INTEGER", ["FK", "forget → NULL"]),
+    "folder": ([("id", "UUID v7", ["PK"]), ("created_at", "TIMESTAMPTZ", ["NN"]), ("updated_at", "TIMESTAMPTZ", ["NN"]), ("deleted_at", "TIMESTAMPTZ", []), ("deleted_reason", "VARCHAR(32)", ["CHECK"]), ("created_by", "UUID", ["NN", "app"]), ("updated_by", "UUID", ["NN", "app"]), ("path", "VARCHAR", ["UQ", "NN"]), ("kind", "VARCHAR(32)", ["NN", "CHECK folder_kind"]), ("source", "VARCHAR(32)", ["NN", "CHECK folder_source"]),
+                ("first_seen_at", "TIMESTAMPTZ", ["NN"]), ("last_seen_at", "TIMESTAMPTZ", ["NN"])],
+               ["CHECK (last_seen_at ≥ first_seen_at)", "CHECK (deleted_at IS NULL) = (deleted_reason IS NULL)"], "папки из [[folders]] конфига"),
+    "login_dir": ([("id", "UUID v7", ["PK"]), ("created_at", "TIMESTAMPTZ", ["NN"]), ("updated_at", "TIMESTAMPTZ", ["NN"]), ("deleted_at", "TIMESTAMPTZ", []), ("deleted_reason", "VARCHAR(32)", ["CHECK"]), ("created_by", "UUID", ["NN", "app"]), ("updated_by", "UUID", ["NN", "app"]), ("folder_id", "UUID", ["FK", "NN"]), ("path", "VARCHAR", ["UQ", "NN", "ПДн"]), ("name", "VARCHAR", ["NN"]),
+                   ("layout", "VARCHAR(32)", ["NN", "CHECK dir_layout"]), ("first_seen_at", "TIMESTAMPTZ", ["NN"]), ("last_seen_at", "TIMESTAMPTZ", ["NN"])],
+                  ["CHECK (last_seen_at ≥ first_seen_at)"], "каталог с .credentials.json"),
+    "occupancy": ([("id", "UUID v7", ["PK"]), ("created_at", "TIMESTAMPTZ", ["NN"]), ("updated_at", "TIMESTAMPTZ", ["NN"]), ("created_by", "UUID", ["NN", "app"]), ("updated_by", "UUID", ["NN", "app"]), ("login_dir_id", "UUID", ["FK", "NN"]), ("account_id", "UUID", ["FK", "forget → NULL"]),
                    ("token_state", "VARCHAR(32)", ["NN", "CHECK token_state"]), ("started_at", "TIMESTAMPTZ", ["NN"]), ("ended_at", "TIMESTAMPTZ", ["NULL = сейчас"])],
-                  ["one open row per login_dir — kept by store, checked by test", "CHECK (ended_at IS NULL OR ended_at >= started_at)"],
-                  "кто сидел в каталоге когда"),
-    "account": ([("id", "INTEGER", ["PK"]), ("email", "VARCHAR", ["UQ", "NN", "lower()"]), ("org_name", "VARCHAR", []), ("org_uuid", "UUID", []),
+                  ["one open row per login_dir — kept by store, checked by test", "CHECK (ended_at IS NULL OR ended_at ≥ started_at)"],
+                  "кто сидел в каталоге когда · журнал"),
+    "account": ([("id", "UUID v7", ["PK"]), ("created_at", "TIMESTAMPTZ", ["NN"]), ("updated_at", "TIMESTAMPTZ", ["NN"]), ("deleted_at", "TIMESTAMPTZ", []), ("created_by", "UUID", ["NN", "app"]), ("updated_by", "UUID", ["NN", "app"]), ("email", "VARCHAR", ["UQ", "NN", "lower()", "ПДн"]), ("org_name", "VARCHAR", ["ПДн"]), ("org_uuid", "UUID", []),
                  ("subscription_type", "VARCHAR", []), ("rate_limit_tier", "VARCHAR", []), ("color_slot", "TINYINT", ["NN"]),
                  ("first_seen_at", "TIMESTAMPTZ", ["NN"]), ("last_seen_at", "TIMESTAMPTZ", ["NN"])],
-                [], "учётка = почта · токенов нет"),
-    "limit_window": ([("id", "INTEGER", ["PK"]), ("account_id", "INTEGER", ["FK", "NN", "forget tx"]), ("kind", "VARCHAR(32)", ["NN", "CHECK window_kind"]),
+                ["CHECK (email = lower(email))"], "учётка = почта · токенов нет"),
+    "limit_window": ([("id", "UUID v7", ["PK"]), ("created_at", "TIMESTAMPTZ", ["NN"]), ("updated_at", "TIMESTAMPTZ", ["NN"]), ("deleted_at", "TIMESTAMPTZ", []), ("created_by", "UUID", ["NN", "app"]), ("updated_by", "UUID", ["NN", "app"]), ("account_id", "UUID", ["FK", "NN"]), ("kind", "VARCHAR(32)", ["NN", "CHECK window_kind"]),
                       ("model", "VARCHAR", ["NULL кроме scoped"]), ("first_seen_at", "TIMESTAMPTZ", ["NN"]), ("last_seen_at", "TIMESTAMPTZ", ["NN"])],
                      ["UNIQUE (account_id, kind, model)", "CHECK (kind = 'weekly_scoped') = (model IS NOT NULL)"], "измерение: окно лимита учётки"),
-    "window_cycle": ([("id", "BIGINT", ["PK"]), ("window_id", "INTEGER", ["FK", "NN", "forget tx"]), ("starts_at", "TIMESTAMPTZ", ["NN"]), ("resets_at", "TIMESTAMPTZ", ["NN"])],
+    "window_cycle": ([("id", "UUID v7", ["PK"]), ("created_at", "TIMESTAMPTZ", ["NN"]), ("updated_at", "TIMESTAMPTZ", ["NN"]), ("created_by", "UUID", ["NN", "app"]), ("updated_by", "UUID", ["NN", "app"]), ("window_id", "UUID", ["FK", "NN"]), ("starts_at", "TIMESTAMPTZ", ["NN"]), ("resets_at", "TIMESTAMPTZ", ["NN"])],
                      ["UNIQUE (window_id, resets_at)", "CHECK (resets_at > starts_at)"], "проход окна: от сброса до сброса"),
-    "sample": ([("window_id", "INTEGER", ["PK", "FK", "forget tx"]), ("sampled_at", "TIMESTAMPTZ", ["PK"]), ("cycle_id", "BIGINT", ["FK", "NN", "forget tx"]), ("percent", "TINYINT", ["0..100"]),
+    "sample": ([("id", "UUID v7", ["PK"]), ("created_at", "TIMESTAMPTZ", ["NN"]), ("updated_at", "TIMESTAMPTZ", ["NN"]), ("created_by", "UUID", ["NN", "app"]), ("updated_by", "UUID", ["NN", "app"]), ("window_id", "UUID", ["FK", "NN"]), ("sampled_at", "TIMESTAMPTZ", ["NN"]), ("cycle_id", "UUID", ["FK", "NN"]), ("percent", "TINYINT", ["0..100"]),
                 ("locked", "BOOLEAN", ["NN"]), ("locked_reason", "VARCHAR", []), ("server_severity", "VARCHAR", []), ("is_active", "BOOLEAN", [])],
-               ["PK (window_id, sampled_at)", "zone maps: range by sampled_at"], "замер раз в опрос · ~138k строк / 30 д"),
-    "poll": ([("id", "BIGINT", ["PK"]), ("account_id", "INTEGER", ["FK", "NN", "forget tx"]), ("polled_at", "TIMESTAMPTZ", ["NN"]),
+               ["UNIQUE (window_id, sampled_at) — естественный ключ факта", "zone maps: range by sampled_at"], "замер раз в опрос · ~138k строк / 30 д"),
+    "poll": ([("id", "UUID v7", ["PK"]), ("created_at", "TIMESTAMPTZ", ["NN"]), ("updated_at", "TIMESTAMPTZ", ["NN"]), ("created_by", "UUID", ["NN", "app"]), ("updated_by", "UUID", ["NN", "app"]), ("account_id", "UUID", ["FK", "NN"]), ("polled_at", "TIMESTAMPTZ", ["NN"]),
               ("outcome", "VARCHAR(32)", ["NN", "CHECK poll_outcome"]), ("http_status", "SMALLINT", []), ("retry_after_sec", "INTEGER", []),
               ("latency_ms", "INTEGER", []), ("error", "VARCHAR", ["≤200, без токенов"])],
-             ["no indexes: zone maps by polled_at"], "каждая попытка опроса"),
-    "lock_period": ([("id", "BIGINT", ["PK"]), ("window_id", "INTEGER", ["FK", "NN", "forget tx"]), ("cycle_id", "BIGINT", ["FK", "NN", "forget tx"]), ("started_at", "TIMESTAMPTZ", ["NN"]),
+             ["no indexes: zone maps by polled_at"], "каждая попытка опроса · журнал"),
+    "lock_period": ([("id", "UUID v7", ["PK"]), ("created_at", "TIMESTAMPTZ", ["NN"]), ("updated_at", "TIMESTAMPTZ", ["NN"]), ("created_by", "UUID", ["NN", "app"]), ("updated_by", "UUID", ["NN", "app"]), ("window_id", "UUID", ["FK", "NN"]), ("cycle_id", "UUID", ["FK", "NN"]), ("started_at", "TIMESTAMPTZ", ["NN"]),
                      ("ended_at", "TIMESTAMPTZ", ["NULL = идёт"]), ("reason", "VARCHAR", ["…|percent_100"])],
-                    ["one open period per window — kept by store", "CHECK (ended_at IS NULL OR ended_at >= started_at)"], "интервалы блокировки"),
-    "daily_rollup": ([("window_id", "INTEGER", ["PK", "FK", "forget tx"]), ("day_on", "DATE", ["PK", "rollup_tz"]), ("samples", "INTEGER", ["NN"]),
+                    ["one open period per window — kept by store", "CHECK (ended_at IS NULL OR ended_at ≥ started_at)"], "интервалы блокировки"),
+    "daily_rollup": ([("id", "UUID v7", ["PK"]), ("created_at", "TIMESTAMPTZ", ["NN"]), ("updated_at", "TIMESTAMPTZ", ["NN"]), ("created_by", "UUID", ["NN", "app"]), ("updated_by", "UUID", ["NN", "app"]), ("window_id", "UUID", ["FK", "NN"]), ("day_on", "DATE", ["NN", "rollup_tz"]), ("samples", "INTEGER", ["NN"]),
                       ("peak_percent", "TINYINT", ["NN"]), ("avg_percent", "DECIMAL(5,2)", ["NN"]), ("minutes_locked", "INTEGER", ["NN"]), ("resets", "INTEGER", ["NN"])],
-                     ["PK (window_id, day_on)"], "дневные свёртки · 400 д"),
-    "config_history": ([("id", "INTEGER", ["PK"]), ("saved_at", "TIMESTAMPTZ", ["NN"]), ("source", "VARCHAR(32)", ["NN", "CHECK config_source"]), ("toml", "VARCHAR", ["token → ***"])],
-                       ["токен → ***"], "версии файла настроек · 20 шт"),
-    "notification": ([("id", "BIGINT", ["PK"]), ("account_id", "INTEGER", ["FK", "forget tx"]), ("window_id", "INTEGER", ["FK", "forget tx"]),
-                      ("kind", "VARCHAR(32)", ["NN", "CHECK notice_kind"]), ("fired_at", "TIMESTAMPTZ", ["NN"]), ("acknowledged_at", "TIMESTAMPTZ", []), ("payload", "JSON", [])],
+                     ["UNIQUE (window_id, day_on)"], "дневные свёртки · 400 д"),
+    "config_history": ([("id", "UUID v7", ["PK"]), ("created_at", "TIMESTAMPTZ", ["NN"]), ("updated_at", "TIMESTAMPTZ", ["NN"]), ("created_by", "UUID", ["NN", "app"]), ("updated_by", "UUID", ["NN", "app"]), ("source", "VARCHAR(32)", ["NN", "CHECK config_source"]), ("toml", "VARCHAR", ["NN", "token → ***", "ПДн"])],
+                       [], "версии файла настроек · 20 шт"),
+    "notification": ([("id", "UUID v7", ["PK"]), ("created_at", "TIMESTAMPTZ", ["NN"]), ("updated_at", "TIMESTAMPTZ", ["NN"]), ("deleted_at", "TIMESTAMPTZ", []), ("created_by", "UUID", ["NN", "app"]), ("updated_by", "UUID", ["NN", "app"]), ("account_id", "UUID", ["FK"]), ("window_id", "UUID", ["FK"]),
+                      ("kind", "VARCHAR(32)", ["NN", "CHECK notice_kind"]), ("fired_at", "TIMESTAMPTZ", ["NN"]), ("acknowledged_at", "TIMESTAMPTZ", []), ("payload", "JSON", ["только id"])],
                      ["Ф.5, до неё пусто"], "зарезервировано под Ф.5"),
-    "schema_meta": ([("key", "VARCHAR", ["PK"]), ("value", "VARCHAR", ["NN"])], [], "schema_version, duckdb_version, rollup_tz, …"),
+    "schema_meta": ([("key", "VARCHAR", ["PK"]), ("value", "VARCHAR", ["NN"])], ["служебная таблица механизма — без набора §6"], "schema_version, duckdb_version, app_instance_id, rollup_tz, …"),
 }
 POS = {  # x, y of each card; column width 330
-    "folder": (40, 90), "login_dir": (40, 330), "occupancy": (40, 590),
-    "account": (430, 90), "limit_window": (430, 380), "window_cycle": (430, 560), "sample": (430, 710),
-    "poll": (820, 90), "lock_period": (820, 380), "daily_rollup": (820, 640),
-    "config_history": (1210, 90), "notification": (1210, 290), "schema_meta": (1210, 560),
+    "folder": (40, 90), "login_dir": (40, 440), "occupancy": (40, 790),
+    "account": (430, 90), "limit_window": (430, 460), "window_cycle": (430, 760), "sample": (430, 1000),
+    "poll": (820, 90), "lock_period": (820, 460), "daily_rollup": (820, 770),
+    "config_history": (1210, 90), "notification": (1210, 330), "schema_meta": (1210, 680),
 }
 FKS = [  # (child, field, parent)
     ("login_dir", "folder_id", "folder"), ("occupancy", "login_dir_id", "login_dir"), ("occupancy", "account_id", "account"),
@@ -107,7 +107,7 @@ def table_card(name):
     x, y = POS[name]
     rows = ""
     for f, t, b in fields:
-        bs = " ".join(badge(v, TEAL if v in ("PK",) else VIOLET if v == "FK" else ORANGE if v in ("UQ", "lower()") else AMBER if v in ("forget tx", "forget → NULL", "no cascade") else SUBTLE) for v in b)
+        bs = " ".join(badge(v, TEAL if v in ("PK",) else VIOLET if v == "FK" else ORANGE if v in ("UQ", "lower()") else RED if v == "ПДн" else AMBER if v in ("forget → NULL", "app") else SUBTLE) for v in b)
         rows += (f'<div style="display: flex; align-items: center; gap: 6px; height: {ROW}px; padding: 0 10px;">'
                  f'<span class="mono" style="font-size: 11px; color: {FG}; min-width: 118px;">{f}</span>'
                  f'<span class="mono" style="font-size: 10px; color: {MUTED}; min-width: 56px;">{t}</span>'
@@ -140,7 +140,7 @@ def fk_path(child, field, parent):
     return f"M {x1},{y1} C {mid},{y1} {mid},{y2} {x2},{y2}", (x2, y2), (x1, y1)
 
 
-W, H = 1580, 1040
+W, H = 1580, 1400
 svg = [f'<svg width="{W}" height="{H}" viewBox="0 0 {W} {H}" style="position: absolute; left: 0; top: 0; pointer-events: none;" aria-hidden="true">'
        f'<defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="{VIOLET}"></path></marker></defs>']
 for child, field, parent in FKS:
@@ -151,8 +151,8 @@ svg.append("</svg>")
 
 legend = (f'<div style="position: absolute; left: 40px; top: 24px; display: flex; align-items: center; gap: 18px;">'
           f'<span style="font-size: 16px; font-weight: 600;">claude-limits.duckdb</span>'
-          f'<span style="color: {MUTED};">DuckDB v1.5.5 + core_functions + icu (статически) · все *_at — TIMESTAMPTZ, сессия в UTC · перечисления VARCHAR + CHECK · подплан 01.2 §3</span>'
-          f'<span style="display: flex; gap: 6px; align-items: center;">{badge("PK", TEAL)}{badge("FK", VIOLET)}{badge("UQ", ORANGE)}{badge("NN", SUBTLE)}{badge("forget tx = removed by the forget transaction (DuckDB has no ON DELETE)", AMBER)}'
+          f'<span style="color: {MUTED};">DuckDB v1.5.5 + core_functions + icu (статически) · конвенция БД 2.1: id UUID v7 из приложения, служебный набор у каждой таблицы, *_at TIMESTAMPTZ в UTC, *_on DATE, VARCHAR + CHECK · подплан 01.2 §3</span>'
+          f'<span style="display: flex; gap: 6px; align-items: center;">{badge("PK", TEAL)}{badge("FK", VIOLET)}{badge("UQ", ORANGE)}{badge("NN", SUBTLE)}{badge("app = идентичность экземпляра приложения", AMBER)}{badge("ПДн = в реестре 01.2 §10", RED)}'
           f'<span class="mono" style="font-size: 10px; color: {SUBTLE};">⌕ индекс</span>'
           f'<svg width="40" height="10" aria-hidden="true"><circle cx="4" cy="5" r="3" fill="{VIOLET}"></circle><line x1="7" y1="5" x2="30" y2="5" stroke="{VIOLET}" stroke-width="1.5"></line><path d="M 30 1 L 38 5 L 30 9 z" fill="{VIOLET}"></path></svg>'
           f'<span style="font-size: 10px; color: {SUBTLE};">FK → родитель</span></span></div>')

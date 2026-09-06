@@ -61,18 +61,18 @@
     },
     {
       "file": "DbSchema.dc.html",
-      "title": "DB schema · claude-limits.duckdb (plan 01.2, DuckDB)",
+      "title": "DB schema · claude-limits.duckdb (plan 01.2, convention 2.1)",
       "x": 0,
       "y": 0,
       "w": 1580,
-      "h": 1040,
+      "h": 1400,
       "page": "page-2"
     },
     {
       "file": "ApiMap.dc.html",
       "title": "HTTP API map (plan 01.3)",
       "x": 0,
-      "y": 1180,
+      "y": 1540,
       "w": 1580,
       "h": 900,
       "page": "page-2"
@@ -132,7 +132,7 @@
       "x": 0,
       "y": -150,
       "w": 620,
-      "text": "Architecture page: the DuckDB schema (every table, field, key and constraint from plan 01.2 §3 — TIMESTAMPTZ, ENUM, BOOLEAN, DECIMAL; FK arrows child → parent, no ON DELETE: the forget transaction deletes explicitly) and the HTTP API map (clients, middleware, routes grouped read / action / stream with SSE event types, error codes, and the store fiber that owns the DB, the TOML settings, the pollers and discovery — plan 01.3).",
+      "text": "Architecture page: the DuckDB schema per DB convention 2.1 (plan 01.2 §3): UUID v7 ids created by the app, the common column set on every domain table (created/updated/deleted_at, created/updated_by = app instance), VARCHAR + CHECK enums, TIMESTAMPTZ/DATE, red PII badges tied to the PII registry; FK arrows child → parent, no ON DELETE: the forget transaction deletes explicitly and the HTTP API map (clients, middleware, routes grouped read / action / stream with SSE event types, error codes, and the store fiber that owns the DB, the TOML settings, the pollers and discovery — plan 01.3).",
       "page": "page-2"
     }
   ],
