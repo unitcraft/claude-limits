@@ -36,44 +36,44 @@ def badge(text, color):
 # ───────────────────────── DB schema ─────────────────────────
 # (name, [(field, type, badges)], [indexes], note)
 TABLES = {
-    "folder": ([("id", "INTEGER", ["PK"]), ("path", "TEXT", ["UQ", "NN"]), ("kind", "TEXT", ["single|parent|empty|missing"]), ("source", "TEXT", ["config|default|env"]),
-                ("first_seen_at", "INTEGER", ["NN"]), ("last_seen_at", "INTEGER", ["NN"]), ("removed_at", "INTEGER", [])],
-               ["folder_active_idx (removed_at) WHERE removed_at IS NULL"], "папки из [[folders]] конфига"),
-    "login_dir": ([("id", "INTEGER", ["PK"]), ("folder_id", "INTEGER", ["FK", "NN", "RESTRICT"]), ("path", "TEXT", ["UQ", "NN"]), ("name", "TEXT", ["NN"]),
-                   ("layout", "TEXT", ["default|config_dir"]), ("first_seen_at", "INTEGER", ["NN"]), ("last_seen_at", "INTEGER", ["NN"]), ("removed_at", "INTEGER", [])],
-                  ["login_dir_folder_idx (folder_id, removed_at)"], "каталог с .credentials.json"),
-    "occupancy": ([("id", "INTEGER", ["PK"]), ("login_dir_id", "INTEGER", ["FK", "NN", "CASCADE"]), ("account_id", "INTEGER", ["FK", "SET NULL"]),
-                   ("token_state", "TEXT", ["ok|expired|rejected|none"]), ("started_at", "INTEGER", ["NN"]), ("ended_at", "INTEGER", ["NULL = сейчас"])],
-                  ["occupancy_dir_time_idx (login_dir_id, started_at)", "occupancy_account_time_idx (account_id, started_at)", "occupancy_open_uidx UNIQUE (login_dir_id) WHERE ended_at IS NULL", "CHECK (ended_at IS NULL OR ended_at >= started_at)"],
+    "folder": ([("id", "INTEGER", ["PK"]), ("path", "VARCHAR", ["UQ", "NN"]), ("kind", "ENUM folder_kind", []), ("source", "ENUM folder_source", []),
+                ("first_seen_at", "TIMESTAMPTZ", ["NN"]), ("last_seen_at", "TIMESTAMPTZ", ["NN"]), ("removed_at", "TIMESTAMPTZ", [])],
+               ["CHECK (last_seen_at >= first_seen_at)"], "папки из [[folders]] конфига"),
+    "login_dir": ([("id", "INTEGER", ["PK"]), ("folder_id", "INTEGER", ["FK", "NN", "no cascade"]), ("path", "VARCHAR", ["UQ", "NN"]), ("name", "VARCHAR", ["NN"]),
+                   ("layout", "ENUM dir_layout", []), ("first_seen_at", "TIMESTAMPTZ", ["NN"]), ("last_seen_at", "TIMESTAMPTZ", ["NN"]), ("removed_at", "TIMESTAMPTZ", [])],
+                  ["CHECK (last_seen_at >= first_seen_at)"], "каталог с .credentials.json"),
+    "occupancy": ([("id", "INTEGER", ["PK"]), ("login_dir_id", "INTEGER", ["FK", "NN", "forget tx"]), ("account_id", "INTEGER", ["FK", "forget → NULL"]),
+                   ("token_state", "ENUM token_state", ["NN"]), ("started_at", "TIMESTAMPTZ", ["NN"]), ("ended_at", "TIMESTAMPTZ", ["NULL = сейчас"])],
+                  ["one open row per login_dir — kept by store, checked by test", "CHECK (ended_at IS NULL OR ended_at >= started_at)"],
                   "кто сидел в каталоге когда"),
-    "account": ([("id", "INTEGER", ["PK"]), ("email", "TEXT", ["UQ", "NN", "lower()"]), ("org_name", "TEXT", []), ("org_uuid", "TEXT", []),
-                 ("subscription_type", "TEXT", []), ("rate_limit_tier", "TEXT", []), ("color_slot", "INTEGER", ["NN"]),
-                 ("first_seen_at", "INTEGER", ["NN"]), ("last_seen_at", "INTEGER", ["NN"])],
+    "account": ([("id", "INTEGER", ["PK"]), ("email", "VARCHAR", ["UQ", "NN", "lower()"]), ("org_name", "VARCHAR", []), ("org_uuid", "UUID", []),
+                 ("subscription_type", "VARCHAR", []), ("rate_limit_tier", "VARCHAR", []), ("color_slot", "TINYINT", ["NN"]),
+                 ("first_seen_at", "TIMESTAMPTZ", ["NN"]), ("last_seen_at", "TIMESTAMPTZ", ["NN"])],
                 [], "учётка = почта · токенов нет"),
-    "limit_window": ([("id", "INTEGER", ["PK"]), ("account_id", "INTEGER", ["FK", "NN", "CASCADE"]), ("kind", "TEXT", ["session|weekly_all|weekly_scoped"]),
-                      ("model", "TEXT", ["NULL кроме scoped"]), ("first_seen_at", "INTEGER", ["NN"]), ("last_seen_at", "INTEGER", ["NN"])],
+    "limit_window": ([("id", "INTEGER", ["PK"]), ("account_id", "INTEGER", ["FK", "NN", "forget tx"]), ("kind", "ENUM window_kind", ["NN"]),
+                      ("model", "VARCHAR", ["NULL кроме scoped"]), ("first_seen_at", "TIMESTAMPTZ", ["NN"]), ("last_seen_at", "TIMESTAMPTZ", ["NN"])],
                      ["UNIQUE (account_id, kind, model)", "CHECK (kind = 'weekly_scoped') = (model IS NOT NULL)"], "измерение: окно лимита учётки"),
-    "window_cycle": ([("id", "INTEGER", ["PK"]), ("window_id", "INTEGER", ["FK", "NN", "CASCADE"]), ("starts_at", "INTEGER", ["NN"]), ("resets_at", "INTEGER", ["NN"])],
-                     ["UNIQUE (window_id, resets_at)", "window_cycle_window_idx (window_id, starts_at)", "CHECK (resets_at > starts_at)"], "проход окна: от сброса до сброса"),
-    "sample": ([("window_id", "INTEGER", ["PK", "FK", "CASCADE"]), ("at", "INTEGER", ["PK", "unix s UTC"]), ("cycle_id", "INTEGER", ["FK", "NN", "CASCADE"]), ("percent", "INTEGER", ["0..100"]),
-                ("locked", "INTEGER", ["0|1"]), ("locked_reason", "TEXT", []), ("server_severity", "TEXT", []), ("is_active", "INTEGER", ["0|1"])],
-               ["PK (window_id, at) WITHOUT ROWID", "sample_at_idx (at)", "sample_cycle_idx (cycle_id, at)"], "замер раз в опрос · ~138k строк / 30 д"),
-    "poll": ([("id", "INTEGER", ["PK"]), ("account_id", "INTEGER", ["FK", "NN", "CASCADE"]), ("at", "INTEGER", ["NN"]),
-              ("outcome", "TEXT", ["ok|http_401|http_429|http_5xx|…"]), ("http_status", "INTEGER", []), ("retry_after_sec", "INTEGER", []),
-              ("latency_ms", "INTEGER", []), ("error", "TEXT", ["≤200, без токенов"])],
-             ["poll_account_at_idx (account_id, at)", "poll_at_idx (at)"], "каждая попытка опроса"),
-    "lock_period": ([("id", "INTEGER", ["PK"]), ("window_id", "INTEGER", ["FK", "NN", "CASCADE"]), ("cycle_id", "INTEGER", ["FK", "NN", "CASCADE"]), ("started_at", "INTEGER", ["NN"]),
-                     ("ended_at", "INTEGER", ["NULL = идёт"]), ("reason", "TEXT", ["…|percent_100"])],
-                    ["lock_period_window_idx (window_id, started_at)", "lock_period_open_uidx UNIQUE (window_id) WHERE ended_at IS NULL", "CHECK (ended_at IS NULL OR ended_at >= started_at)"], "интервалы блокировки"),
-    "daily_rollup": ([("window_id", "INTEGER", ["PK", "FK", "CASCADE"]), ("day", "TEXT", ["PK", "YYYY-MM-DD · rollup_tz"]), ("samples", "INTEGER", ["NN"]),
-                      ("peak_percent", "INTEGER", ["NN"]), ("avg_percent", "REAL", ["NN"]), ("minutes_locked", "INTEGER", ["NN"]), ("resets", "INTEGER", ["NN"])],
-                     ["PK (window_id, day) WITHOUT ROWID", "daily_rollup_day_idx (day)"], "дневные свёртки · 400 д"),
-    "config_history": ([("id", "INTEGER", ["PK"]), ("saved_at", "INTEGER", ["NN"]), ("source", "TEXT", ["ui|widget|file|migration"]), ("toml", "TEXT", ["token → ***"])],
-                       ["config_history_saved_idx (saved_at)"], "версии файла настроек · 20 шт"),
-    "notification": ([("id", "INTEGER", ["PK"]), ("account_id", "INTEGER", ["FK", "CASCADE"]), ("window_id", "INTEGER", ["FK", "CASCADE"]),
-                      ("kind", "TEXT", ["threshold_…|locked|forecast_runs_out|…"]), ("fired_at", "INTEGER", ["NN"]), ("acknowledged_at", "INTEGER", []), ("payload", "TEXT", ["JSON"])],
-                     ["notification_fired_idx (fired_at)", "notification_open_idx (acknowledged_at) WHERE NULL"], "зарезервировано под Ф.5"),
-    "schema_meta": ([("key", "TEXT", ["PK"]), ("value", "TEXT", ["NN"])], ["WITHOUT ROWID"], "schema_version, rollup_tz, last_rollup_day, …"),
+    "window_cycle": ([("id", "INTEGER", ["PK"]), ("window_id", "INTEGER", ["FK", "NN", "forget tx"]), ("starts_at", "TIMESTAMPTZ", ["NN"]), ("resets_at", "TIMESTAMPTZ", ["NN"])],
+                     ["UNIQUE (window_id, resets_at)", "CHECK (resets_at > starts_at)"], "проход окна: от сброса до сброса"),
+    "sample": ([("window_id", "INTEGER", ["PK", "FK", "forget tx"]), ("sampled_at", "TIMESTAMPTZ", ["PK", "unix s UTC"]), ("cycle_id", "INTEGER", ["FK", "NN", "forget tx"]), ("percent", "TINYINT", ["0..100"]),
+                ("locked", "BOOLEAN", ["NN"]), ("locked_reason", "VARCHAR", []), ("server_severity", "VARCHAR", []), ("is_active", "BOOLEAN", [])],
+               ["PK (window_id, sampled_at)", "zone maps: range by sampled_at"], "замер раз в опрос · ~138k строк / 30 д"),
+    "poll": ([("id", "INTEGER", ["PK"]), ("account_id", "INTEGER", ["FK", "NN", "forget tx"]), ("sampled_at", "TIMESTAMPTZ", ["NN"]),
+              ("outcome", "ENUM poll_outcome", ["NN"]), ("http_status", "SMALLINT", []), ("retry_after_sec", "INTEGER", []),
+              ("latency_ms", "INTEGER", []), ("error", "VARCHAR", ["≤200, без токенов"])],
+             ["no indexes: zone maps by polled_at"], "каждая попытка опроса"),
+    "lock_period": ([("id", "INTEGER", ["PK"]), ("window_id", "INTEGER", ["FK", "NN", "forget tx"]), ("cycle_id", "INTEGER", ["FK", "NN", "forget tx"]), ("started_at", "TIMESTAMPTZ", ["NN"]),
+                     ("ended_at", "TIMESTAMPTZ", ["NULL = идёт"]), ("reason", "VARCHAR", ["…|percent_100"])],
+                    ["one open period per window — kept by store", "CHECK (ended_at IS NULL OR ended_at >= started_at)"], "интервалы блокировки"),
+    "daily_rollup": ([("window_id", "INTEGER", ["PK", "FK", "forget tx"]), ("day", "DATE", ["PK", "rollup_tz"]), ("samples", "INTEGER", ["NN"]),
+                      ("peak_percent", "TINYINT", ["NN"]), ("avg_percent", "DECIMAL(5,2)", ["NN"]), ("minutes_locked", "INTEGER", ["NN"]), ("resets", "INTEGER", ["NN"])],
+                     ["PK (window_id, day)"], "дневные свёртки · 400 д"),
+    "config_history": ([("id", "INTEGER", ["PK"]), ("saved_at", "TIMESTAMPTZ", ["NN"]), ("source", "ENUM config_source", ["NN"]), ("toml", "VARCHAR", ["token → ***"])],
+                       ["токен → ***"], "версии файла настроек · 20 шт"),
+    "notification": ([("id", "INTEGER", ["PK"]), ("account_id", "INTEGER", ["FK", "forget tx"]), ("window_id", "INTEGER", ["FK", "forget tx"]),
+                      ("kind", "ENUM notice_kind", ["NN"]), ("fired_at", "TIMESTAMPTZ", ["NN"]), ("acknowledged_at", "TIMESTAMPTZ", []), ("payload", "JSON", [])],
+                     ["Ф.5, до неё пусто"], "зарезервировано под Ф.5"),
+    "schema_meta": ([("key", "VARCHAR", ["PK"]), ("value", "VARCHAR", ["NN"])], [], "schema_version, duckdb_version, rollup_tz, …"),
 }
 POS = {  # x, y of each card; column width 330
     "folder": (40, 90), "login_dir": (40, 330), "occupancy": (40, 590),
@@ -107,7 +107,7 @@ def table_card(name):
     x, y = POS[name]
     rows = ""
     for f, t, b in fields:
-        bs = " ".join(badge(v, TEAL if v in ("PK",) else VIOLET if v == "FK" else ORANGE if v in ("UQ", "lower()") else AMBER if v in ("CASCADE", "SET NULL", "RESTRICT") else SUBTLE) for v in b)
+        bs = " ".join(badge(v, TEAL if v in ("PK",) else VIOLET if v == "FK" else ORANGE if v in ("UQ", "lower()") else AMBER if v in ("forget tx", "forget → NULL", "no cascade") else SUBTLE) for v in b)
         rows += (f'<div style="display: flex; align-items: center; gap: 6px; height: {ROW}px; padding: 0 10px;">'
                  f'<span class="mono" style="font-size: 11px; color: {FG}; min-width: 118px;">{f}</span>'
                  f'<span class="mono" style="font-size: 10px; color: {MUTED}; min-width: 56px;">{t}</span>'
@@ -150,16 +150,16 @@ for child, field, parent in FKS:
 svg.append("</svg>")
 
 legend = (f'<div style="position: absolute; left: 40px; top: 24px; display: flex; align-items: center; gap: 18px;">'
-          f'<span style="font-size: 16px; font-weight: 600;">claude-limits.db</span>'
-          f'<span style="color: {MUTED};">SQLite · WAL · STRICT (типы проверяются) · все *_at — INTEGER, секунды Unix UTC · подплан 01.2 §3</span>'
-          f'<span style="display: flex; gap: 6px; align-items: center;">{badge("PK", TEAL)}{badge("FK", VIOLET)}{badge("UQ", ORANGE)}{badge("NN", SUBTLE)}{badge("CASCADE / SET NULL / RESTRICT = ON DELETE", AMBER)}'
+          f'<span style="font-size: 16px; font-weight: 600;">claude-limits.duckdb</span>'
+          f'<span style="color: {MUTED};">DuckDB v1.5.5 + core_functions + icu (статически) · все *_at — TIMESTAMPTZ, сессия в UTC · ENUM для закрытых списков · подплан 01.2 §3</span>'
+          f'<span style="display: flex; gap: 6px; align-items: center;">{badge("PK", TEAL)}{badge("FK", VIOLET)}{badge("UQ", ORANGE)}{badge("NN", SUBTLE)}{badge("forget tx = removed by the forget transaction (DuckDB has no ON DELETE)", AMBER)}'
           f'<span class="mono" style="font-size: 10px; color: {SUBTLE};">⌕ индекс</span>'
           f'<svg width="40" height="10" aria-hidden="true"><circle cx="4" cy="5" r="3" fill="{VIOLET}"></circle><line x1="7" y1="5" x2="30" y2="5" stroke="{VIOLET}" stroke-width="1.5"></line><path d="M 30 1 L 38 5 L 30 9 z" fill="{VIOLET}"></path></svg>'
           f'<span style="font-size: 10px; color: {SUBTLE};">FK → родитель</span></span></div>')
 
 foot = (f'<div style="position: absolute; left: 40px; top: {H - 40}px; color: {SUBTLE}; font-size: 11px;">'
         f'Одно соединение у файбера <span class="mono">store</span>; запись тика = одна транзакция (poll + sample × окна + lock_period + occupancy). '
-        f'Ретенция: sample и poll 30 д, daily_rollup 400 д, occupancy и lock_period без срока. Настройки — не здесь, а в claude-limits.toml.</div>')
+        f'Ретенция: sample и poll 30 д, daily_rollup 400 д, occupancy и lock_period без срока. Каскадов нет — forget одной транзакцией. Настройки — в claude-limits.toml.</div>')
 
 db_html = (HEAD + f'<div style="position: relative; width: {W}px; height: {H}px; background: {BG}; overflow: hidden;">'
            + legend + "".join(table_card(n) for n in TABLES) + "".join(svg) + foot + "</div>\n" + TAIL)
@@ -233,8 +233,8 @@ parts.append(f'<div style="position: absolute; left: {col1}px; top: 592px; width
              f'Токены учёток не появляются ни в одном ответе (тест ищет подстроки из фикстур). Заголовки: nosniff · no-referrer · DENY · CSP без внешних источников. CORS выключен.</div>')
 
 # right column: store, storage, pollers, endpoint
-parts.append(box(1180, 80, 360, 118, "store · файбер-владелец состояния", ["Snapshot в памяти · подписки SSE", "одно соединение SQLite (#thread_affine)", "запись тика — одна транзакция", "восстановление снимка из БД при старте"], color=TEAL))
-parts.append(box(1180, 220, 360, 92, "claude-limits.db · SQLite WAL", ["sample · poll · occupancy · lock_period · daily_rollup", "account · limit_window · folder · login_dir", "config_history · notification · schema_meta"], color=BORDER2))
+parts.append(box(1180, 80, 360, 118, "store · файбер-владелец состояния", ["Snapshot в памяти · подписки SSE", "одно соединение DuckDB (#thread_affine)", "запись тика — одна транзакция", "восстановление снимка из БД при старте"], color=TEAL))
+parts.append(box(1180, 220, 360, 92, "claude-limits.duckdb · DuckDB", ["sample · poll · occupancy · lock_period · daily_rollup", "account · limit_window · folder · login_dir", "config_history · notification · schema_meta"], color=BORDER2))
 parts.append(box(1180, 334, 360, 92, "claude-limits.toml", ["источник истины настроек · write_atomic", "mtime → перечитать → event: config", "If-Match = хэш файла"], color=BORDER2))
 parts.append(box(1180, 448, 360, 96, "поллеры · spawn на учётку", ["HttpClient → api.anthropic.com/api/oauth/usage", "Bearer из .credentials.json (только чтение)", "interval_sec ≥ 60 · 429 → Retry-After · expired → без запроса"], color=ORANGE))
 parts.append(box(1180, 566, 360, 74, "обнаружение · раз в тик и по PUT", ["[[folders]] → login_dir → account", "смена почты/токена → occupancy"], color=BORDER2))
