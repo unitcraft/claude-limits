@@ -178,7 +178,7 @@ def box(x, y, w, h, title, lines, color=BORDER, title_color=FG, bg=SURF):
 
 
 def route(x, y, w, method, path, note, color):
-    mc = {"GET": TEAL, "POST": ORANGE, "PUT": AMBER, "SSE": VIOLET}[method]
+    mc = {"GET": TEAL, "POST": ORANGE, "PUT": AMBER, "DELETE": RED, "SSE": VIOLET}[method]
     return (f'<div style="position: absolute; left: {x}px; top: {y}px; width: {w}px; box-sizing: border-box; display: flex; align-items: center; gap: 8px; height: 26px; padding: 0 10px; '
             f'background: {ALT}; border: 1px solid {color}; border-radius: 7px;">'
             f'<span class="mono" style="font-size: 10px; font-weight: 600; color: {mc}; width: 32px;">{method}</span>'
@@ -188,31 +188,31 @@ def route(x, y, w, method, path, note, color):
 
 parts = []
 parts.append(f'<div style="position: absolute; left: 40px; top: 24px; display: flex; align-items: baseline; gap: 18px;"><span style="font-size: 16px; font-weight: 600;">HTTP API · 127.0.0.1:7391</span>'
-             f'<span style="color: {MUTED};">подплан 01.3 · JSON snake_case · время ISO-8601 со смещением · ошибки одним конвертом {{ error: {{ code, message, field, retry_after }} }}</span></div>')
+             f'<span style="color: {MUTED};">подплан 01.3 · конвенция API 1.0 · JSON snake_case · время UTC с Z · ошибки RFC 9457 problem+json {{ type, code, request_id, errors[] }} · в URL только UUID v7, ни почт, ни путей, ни токенов · X-Request-Id на каждом ответе</span></div>')
 
 # clients
 parts.append(box(40, 80, 260, 96, "Страница в браузере", ["<span class='mono'>GET /</span> + статика из embed_dir", "снимок → SSE → PUT config", "личное — localStorage"]))
 parts.append(box(40, 196, 260, 78, "Виджет SDL3 (тот же процесс)", ["читает Snapshot из памяти store", "те же dto, без HTTP"], color=BORDER2))
 parts.append(box(40, 294, 260, 96, "Скрипты · curl · дифференциал", ["<span class='mono'>/api/snapshot → таблица</span> ≡ claude_limits.py", "<span class='mono'>/api/export?format=csv</span>", "<span class='mono'>/api/openapi.json</span>"]))
-parts.append(box(40, 410, 260, 110, "Телефон в LAN", ["только при <span class='mono'>allow_lan = true</span>", "<span class='mono'>Authorization: Bearer</span> или cookie", "<span class='mono'>GET /?token=…</span> один раз → 303 + Set-Cookie", "10 ошибок/мин → 429 на 60 с"], color=AMBER))
+parts.append(box(40, 410, 260, 110, "Телефон в LAN", ["только при <span class='mono'>allow_lan = true</span> и только TLS", "скрипты: <span class='mono'>Authorization: Bearer</span>", "браузер: <span class='mono'>/login</span> → POST /api/session → cookie", "10 ошибок/мин → 429 + Retry-After"], color=AMBER))
 
 # server column
-parts.append(f'<div style="position: absolute; left: 380px; top: 80px; width: 720px; height: 620px; border: 1px dashed {BORDER2}; border-radius: 14px;"></div>')
+parts.append(f'<div style="position: absolute; left: 380px; top: 80px; width: 720px; height: 660px; border: 1px dashed {BORDER2}; border-radius: 14px;"></div>')
 parts.append(f'<div style="position: absolute; left: 396px; top: 88px; font-size: 13px; font-weight: 600;">Polaris · <span class="mono" style="font-weight: 500; color: {MUTED};">serve_router</span> в spawn · до 64 соединений · тело ≤ 256 КБ</div>')
-mw = ["security headers", "access log (без query)", "auth (только при allow_lan)", "routes"]
+mw = ["request_id · limits", "security headers · log", "auth: bearer | cookie", "routes"]
 for i, m in enumerate(mw):
     parts.append(f'<div style="position: absolute; left: {396 + i * 172}px; top: 114px; width: 160px; height: 24px; box-sizing: border-box; display: flex; align-items: center; justify-content: center; '
                  f'background: {TRACK}; border: 1px solid {BORDER}; border-radius: 6px; font-size: 10.5px; color: {SOFT};">{m}{"" if i == 3 else " →"}</div>')
 
 col1, col2 = 396, 750
 parts.append(f'<div style="position: absolute; left: {col1}px; top: 152px; font-size: 11px; color: {SUBTLE};">чтение · Cache-Control: no-store</div>')
-reads = [("GET", "/api/health", "живость, api_version, пути, размер БД", TEAL), ("GET", "/api/snapshot", "все учётки · forecast · elapsed_share", TEAL),
-         ("GET", "/api/history", "range · by=account|folder · step", TEAL), ("GET", "/api/config", "ETag · access_token_set", TEAL),
+reads = [("GET", "/api/health", "3 уровня: ok · LAN без путей · loopback всё", TEAL), ("GET", "/api/snapshot", "все учётки · forecast · elapsed_share", TEAL),
+         ("GET", "/api/history", "range · by · account_id · login_dir_id · step", TEAL), ("GET", "/api/config", "ETag / 304 · access_token_set", TEAL),
          ("GET", "/api/export", "CSV/JSON, поток", TEAL), ("GET", "/api/openapi.json", "из типизированных маршрутов", TEAL), ("GET", "/  /assets/*", "index.html · woff2 · ETag", BORDER2)]
 for i, r in enumerate(reads):
     parts.append(route(col1, 170 + i * 32, 330, *r))
 parts.append(f'<div style="position: absolute; left: {col2}px; top: 152px; font-size: 11px; color: {SUBTLE};">действия</div>')
-acts = [("POST", "/api/refresh", "202 · 429 too_soon + Retry-After", ORANGE), ("PUT", "/api/config", "If-Match → 200 · 400 field · 409 · 428", AMBER),
+acts = [("POST", "/api/refresh", "{ account_id } · 202 · 429 + Retry-After", ORANGE), ("PUT", "/api/config", "If-Match → 200 · 422 errors[] · 412 · 428", AMBER),
         ("POST", "/api/folders/probe", "kind · login_dirs · problem", ORANGE), ("POST", "/api/config/token", "только loopback · 403 из LAN", ORANGE)]
 for i, r in enumerate(acts):
     parts.append(route(col2, 170 + i * 32, 330, *r))
@@ -224,13 +224,17 @@ for i, (e, d) in enumerate(ev):
                  f'<span class="mono" style="font-size: 10.5px; color: {VIOLET}; width: 64px;">event: {e}</span><span style="font-size: 10.5px; color: {SUBTLE};">{d}</span></div>')
 
 # errors strip inside server box
-errs = ["400 invalid_*", "401 unauthorized", "403 loopback_only", "404 not_found", "405 + Allow", "409 config_changed", "413 range_too_large", "423 config_readonly", "428 precondition_required", "429 too_soon", "503 store_busy", "500 internal + request_id"]
-parts.append(f'<div style="position: absolute; left: {col1}px; top: 500px; font-size: 11px; color: {SUBTLE};">коды ошибок</div>')
-parts.append(f'<div style="position: absolute; left: {col1}px; top: 518px; width: 688px; display: flex; flex-wrap: wrap; gap: 6px;">'
+errs = ["400 invalid_parameter", "401 unauthenticated", "403 loopback_only · origin_required", "404 not_found", "405 + Allow", "409 account_stale", "412 precondition_failed", "415", "422 invalid_config · extra_forbidden", "428 precondition_required", "429 + Retry-After", "503 + Retry-After", "500 internal + request_id"]
+parts.append(f'<div style="position: absolute; left: {col1}px; top: 404px; font-size: 11px; color: {SUBTLE};">сессия браузера · только LAN · cookie cl_session</div>')
+sess = [("POST", "/api/session", "{ access_token } → 204 + Set-Cookie", ORANGE), ("POST", "/api/session/token", "cookie → сессионный bearer 12 ч", ORANGE), ("DELETE", "/api/session", "Origin обязателен → 204", RED)]
+for i, r in enumerate(sess):
+    parts.append(route(col1, 422 + i * 32, 330, *r))
+parts.append(f'<div style="position: absolute; left: {col1}px; top: 530px; font-size: 11px; color: {SUBTLE};">коды ошибок · RFC 9457</div>')
+parts.append(f'<div style="position: absolute; left: {col1}px; top: 548px; width: 688px; display: flex; flex-wrap: wrap; gap: 6px;">'
              + "".join(f'<span class="mono" style="font-size: 10px; color: {SOFT}; padding: 2px 7px; border: 1px solid {BORDER}; border-radius: 5px; background: {ALT};">{e}</span>' for e in errs) + "</div>")
-parts.append(f'<div style="position: absolute; left: {col1}px; top: 592px; width: 688px; font-size: 11px; color: {MUTED}; line-height: 1.45;">'
+parts.append(f'<div style="position: absolute; left: {col1}px; top: 644px; width: 688px; font-size: 11px; color: {MUTED}; line-height: 1.45;">'
              f'Хендлеры не трогают БД и файлы: запрос/ответ по <span class="mono">Chan</span> к файберу store, таймаут 5 с → 503 store_busy. '
-             f'Токены учёток не появляются ни в одном ответе (тест ищет подстроки из фикстур). Заголовки: nosniff · no-referrer · DENY · CSP без внешних источников. CORS выключен.</div>')
+             f'Токены учёток не появляются ни в одном ответе (тест ищет подстроки из фикстур). Заголовки: X-Request-Id · Cache-Control · nosniff · no-referrer · DENY · CSP без внешних источников · HSTS в LAN. CORS выключен. Отклонения от конвенции — 01.3 §9.</div>')
 
 # right column: store, storage, pollers, endpoint
 parts.append(box(1180, 80, 360, 118, "store · файбер-владелец состояния", ["Snapshot в памяти · подписки SSE", "одно соединение DuckDB (#thread_affine)", "запись тика — одна транзакция", "восстановление снимка из БД при старте"], color=TEAL))
