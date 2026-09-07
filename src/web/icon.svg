@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <!-- The favicon, and the same mark the header draws inline: three bars of falling
+       length. It is the page in one glyph - limits, read at a glance - and it needs
+       no text, which matters at 16 px where any letter turns to mud.
+
+       Colours are literal, not var(): a favicon is fetched as its own document and
+       inherits nothing from app.css. The three bars carry the severity palette of
+       01.1 section 8 in order, so the icon says the same thing the page does. -->
+  <rect width="32" height="32" rx="7" fill="#1e1a2e"/>
+  <rect x="6" y="8"  width="20" height="4" rx="2" fill="#3aa98c"/>
+  <rect x="6" y="14" width="14" height="4" rx="2" fill="#e0b04a"/>
+  <rect x="6" y="20" width="8"  height="4" rx="2" fill="#e0554f"/>
+</svg>

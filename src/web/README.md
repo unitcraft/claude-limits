@@ -11,6 +11,15 @@ that inline blocks are forbidden as an inline block. It now strips comments firs
 check that cannot tell code from prose about code cries wolf, and a guard that cries
 wolf gets switched off.
 
+## The guard checks both halves of "asks for something it cannot get"
+
+It counted external references and stopped there — so `index.html` linked `icon.svg`
+for a day while no such file existed, and the guard printed `external references: 0`
+and called that clean. A missing favicon is a quiet 404; a typo in the `app.js` path
+is a blank page, and the same blind spot covered both. Local `href`/`src` targets are
+now resolved against this directory, and the reverse probe is one line: rename the
+file, watch the guard redden.
+
 ## Fonts are an open item, and the page does not wait for them
 
 The design artboard loads Manrope and JetBrains Mono from `fonts.googleapis.com`.

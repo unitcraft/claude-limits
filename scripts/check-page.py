@@ -38,6 +38,22 @@ if re.search(r"<style[\s>]", markup):
 if re.search(r"<script(?![^>]*\bsrc=)[^>]*>", markup):
     bad.append("index.html: inline <script> — the CSP refuses it")
 
+# 2b. every LOCAL reference must resolve to a file that exists.
+#
+#     The external check above and this one are two halves of one class: "the page
+#     asks for something it cannot get". Only the first half was written, and the
+#     miss was immediate -- index.html linked icon.svg for a day while no such file
+#     existed, and the guard said "external references: 0" and called that clean.
+#     A 404 for a favicon is quiet; a 404 for app.js is a blank page, and the same
+#     blind spot covers both.
+for m in re.finditer(r'(?:href|src)\s*=\s*["\']([^"\'#?]+)', markup):
+    ref = m.group(1)
+    if ref.startswith(("http:", "https:", "//", "data:", "mailto:")):
+        continue                                  # the external check owns those
+    if not (web / ref).exists():
+        line = markup[:m.start()].count("\n") + 1
+        bad.append(f"index.html:{line}: references {ref}, which does not exist")
+
 # 3. every var(--x) used must be defined in :root -- OR set from the scripts, which
 #    is a different animal and must not be forced into :root.
 #
