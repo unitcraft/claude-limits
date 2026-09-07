@@ -1,7 +1,11 @@
-# 00 — Вводная для исполнителя задач claude-limits
+# Вводная для исполнителя задач claude-limits
+
+> **Переехал 2026-09-07** из `docs/plans/00-agent-brief.md`: это не план, а вводная, и в
+> каталоге планов он лежал с планоподобным номером и без строки `**Статус:**`, из которой
+> берётся сводка планов. Номер `00` из имени и заголовка снят.
 
 **Редакция 1.0, 2026-09-07.** Этот файл читает первым каждый, кто берёт задачу из
-[01.5-work-breakdown.md](01.5-work-breakdown.md): человек или агент на любой модели. Здесь то, чего в
+[01.5-work-breakdown.md](plans/01.5-work-breakdown.md): человек или агент на любой модели. Здесь то, чего в
 планах нет и что иначе исполнитель додумывает сам: как собрать, как проверить, где фикстуры, куда
 писать отчёт, когда остановиться. Правил проекта здесь нет, они в планах и конвенциях; здесь только
 ссылки на них и механика.
@@ -19,21 +23,21 @@
 
 `claude-limits` — один бинарь на Nova: бэкенд опрашивает эндпоинт использования Claude, хранит
 историю в DuckDB, отдаёт страницу и JSON на `127.0.0.1:7391`; опционально виджет поверх окон на SDL3.
-Публичное описание — [README.md](../../README.md) (по-английски). Все проектные документы — по-русски.
+Публичное описание — [README.md](../README.md) (по-английски). Все проектные документы — по-русски.
 
 | что | где |
 |---|---|
-| главный план: решения, архитектура, фазы, приёмка фаз | [01-widget-on-nova.md](01-widget-on-nova.md) |
-| страница: каждый элемент и его поведение, формулы, тексты ошибок | [01.1-browser-page-spec.md](01.1-browser-page-spec.md) |
-| настройки (TOML) и база (DDL, ретенция, `forget`, реестр ПДн, отклонения) | [01.2-storage.md](01.2-storage.md) |
-| HTTP API: маршруты, тела, коды, заголовки, доступ, отклонения | [01.3-api.md](01.3-api.md) |
-| пакет привязки DuckDB (сиблинг-репо `nova-duckdb`) | [01.4-nova-duckdb.md](01.4-nova-duckdb.md) |
-| задачи с входами, выходами и критерием готовности | [01.5-work-breakdown.md](01.5-work-breakdown.md) |
-| конвенция по БД и её чек-лист (§17) | [../conventions/database.md](../conventions/database.md) |
-| конвенция по API и её чек-лист (§20) | [../conventions/api.md](../conventions/api.md) |
-| эталон разметки страницы: артборды `*.dc.html`, генератор диаграмм, токены цвета | [../design/browser-page/](../design/browser-page/README.md) |
-| эталон данных и правил опроса: `scripts/claude_limits.py` (Python 3.11+, только stdlib) | [../../scripts/](../../scripts/) |
-| вердикт спайка DuckDB | [../../spikes/duckdb-static/VERDICT.md](../../spikes/duckdb-static/VERDICT.md) |
+| главный план: решения, архитектура, фазы, приёмка фаз | [01-widget-on-nova.md](plans/01-widget-on-nova.md) |
+| страница: каждый элемент и его поведение, формулы, тексты ошибок | [01.1-browser-page-spec.md](plans/01.1-browser-page-spec.md) |
+| настройки (TOML) и база (DDL, ретенция, `forget`, реестр ПДн, отклонения) | [01.2-storage.md](plans/01.2-storage.md) |
+| HTTP API: маршруты, тела, коды, заголовки, доступ, отклонения | [01.3-api.md](plans/01.3-api.md) |
+| пакет привязки DuckDB (сиблинг-репо `nova-duckdb`) | [01.4-nova-duckdb.md](plans/01.4-nova-duckdb.md) |
+| задачи с входами, выходами и критерием готовности | [01.5-work-breakdown.md](plans/01.5-work-breakdown.md) |
+| конвенция по БД и её чек-лист (§17) | [conventions/database.md](conventions/database.md) |
+| конвенция по API и её чек-лист (§20) | [conventions/api.md](conventions/api.md) |
+| эталон разметки страницы: артборды `*.dc.html`, генератор диаграмм, токены цвета | [design/browser-page/](design/browser-page/README.md) |
+| эталон данных и правил опроса: `scripts/claude_limits.py` (Python 3.11+, только stdlib) | [scripts/](../scripts/) |
+| вердикт спайка DuckDB | [spikes/duckdb-static/VERDICT.md](../spikes/duckdb-static/VERDICT.md) |
 
 Соседние репозитории лежат рядом, в `<repos>/` (на другой машине — в одном каталоге с
 `claude-limits`): `nova` (язык, std, компилятор, документы разработчика), `nova-polaris` (веб-сервер),
@@ -77,16 +81,16 @@ export NOVA_GC_INCLUDE_DIR="$M/compiler-codegen/vcpkg_installed/x64-windows-stat
 
 ### 2.2. Раскладка пакета
 
-По канону Nova ([authoring-a-module](../../../nova/docs/guide/authoring-a-module.md)): корень пакета =
+По канону Nova ([authoring-a-module](../../nova/docs/guide/authoring-a-module.md)): корень пакета =
 корень исходников, `module a.b` = путь `a/b.nv`, тесты рядом с модулем в `*_test.nv`. Дерево
 модулей — план 01 §3.2. Манифест `nova.toml` с `[[bin]]` и `[dependencies]` по git-тегам:
 `http` (nova-http), `polaris` (nova-polaris), `tls` (nova-tls), `duckdb` (nova-duckdb), `sdl`
 (nova-sdl). Версии тегов на момент написания — план 01 решение 5; актуальные — `git tag` в
 соседнем репозитории.
 
-Стиль `.nv` — [nv-coding-style](../../../nova/docs/dev/nv-coding-style.md); устройство модулей с
-эффектами и моками — [module-conventions](../../../nova/docs/dev/module-conventions.md); FFI (только
-для `nova-duckdb` и `nova-sdl`) — [ffi-cookbook](../../../nova/docs/guide/ffi-cookbook.md).
+Стиль `.nv` — [nv-coding-style](../../nova/docs/dev/nv-coding-style.md); устройство модулей с
+эффектами и моками — [module-conventions](../../nova/docs/dev/module-conventions.md); FFI (только
+для `nova-duckdb` и `nova-sdl`) — [ffi-cookbook](../../nova/docs/guide/ffi-cookbook.md).
 Комментарии в коде и тексты диагностик — по-английски; строки интерфейса — по-английски (подплан
 01.1 §0); документы проекта — по-русски.
 
