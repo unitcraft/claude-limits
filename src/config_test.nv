@@ -1,0 +1,212 @@
+// Tests for config.nv — task T1.2, every case its acceptance names.
+//
+//   ./nova.sh test . --filter config
+//
+// The fixtures under fixtures/config/ are the inputs; each one carries a PINS comment
+// saying what it exists to hold. These tests are the other half of that: the fixture
+// states the rule in prose, the test states it as a number.
+
+module claude_limits.config_test
+
+import claude_limits.config.{Config, ConfigError, parse, validate, repair_for_start}
+// The fixtures come in through `embed_str`, a COMPILE-TIME intrinsic, so the tests
+// touch no filesystem and carry no `Fs` effect. Two reasons, and the second is the
+// one that decided it:
+//
+//   a test that reads a file depends on the working directory the runner happens to
+//   choose, and
+//
+//   `fs.read_text` inside a test emits C that references an `fs` handler which does
+//   not exist there (`use of undeclared identifier 'fs'`) -- an effect with no
+//   handler in scope. Embedding sidesteps the question entirely: the fixture is
+//   still the input, and it is baked in at build time.
+const FULL_VALID = embed_str("../fixtures/config/full-valid.toml")
+const INTERVAL_LOW = embed_str("../fixtures/config/interval-too-low.toml")
+const LAN_EARLY = embed_str("../fixtures/config/lan-before-phase6.toml")
+const UNKNOWN_KEY = embed_str("../fixtures/config/unknown-key.toml")
+const TWO_ERRORS = embed_str("../fixtures/config/two-errors.toml")
+
+fn field_of(errs []ConfigError, field str) -> bool {
+    for e in errs {
+        if e.field == field { return true }
+    }
+    false
+}
+
+fn message_of(errs []ConfigError, field str) -> str {
+    for e in errs {
+        if e.field == field { return e.message }
+    }
+    ""
+}
+
+test "defaults are the table of 01.2 section 2.1" {
+    ro c = Config.defaults()
+    assert(c.schema == 1)
+    assert(c.poll.interval_sec == 300)
+    assert(c.poll.min_interval_sec == 60)
+    assert(c.thresholds.warning == 70)
+    assert(c.thresholds.critical == 90)
+    assert(c.forecast.work_days.len() == 5)
+    assert(c.server.port == 7391)
+    assert(c.server.bind == "127.0.0.1")
+    assert(!c.server.allow_lan)
+    assert(c.ui.time_bar)
+    assert(c.history.keep_days == 30)
+    assert(c.storage.memory_limit == "512MB")
+    assert(validate(c).len() == 0)
+}
+
+test "a full valid file reads, and absent keys keep their defaults" {
+    ro text = FULL_VALID
+    assert(text != "")
+    match parse(text) {
+        Err(why) => assert(false)
+        Ok((cfg, errs)) => {
+            assert(errs.len() == 0)
+            assert(validate(cfg).len() == 0)
+            assert(cfg.schema == 1)
+            // Not written in the fixture, so it must still be the default.
+            assert(cfg.poll.request_timeout_sec == 30)
+        }
+    }
+}
+
+test "interval below the floor: an error AND a repaired start" {
+    ro text = INTERVAL_LOW
+    match parse(text) {
+        Err(_) => assert(false)
+        Ok((cfg, errs)) => {
+            assert(errs.len() == 0)
+            ro bad = validate(cfg)
+            assert(field_of(bad, "poll.interval_sec"))
+            // The text is the CONTRACT with the page (01.3 section 3.8 shows it verbatim).
+            ro said = message_of(bad, "poll.interval_sec")
+            assert(said == "minimum is 60 s (the server rate-limits eager polling)")
+
+            // ... and the app still starts, at the floor, saying so once.
+            mut fixed = cfg
+            ro warnings = repair_for_start(fixed)
+            assert(fixed.poll.interval_sec == 60)
+            assert(warnings.len() == 1)
+            assert(validate(fixed).len() == 0)
+        }
+    }
+}
+
+test "repair touches nothing when the file is already fine" {
+    mut c = Config.defaults()
+    ro warnings = repair_for_start(c)
+    assert(warnings.len() == 0)
+    assert(c.poll.interval_sec == 300)
+}
+
+test "allow_lan is refused until phase 6, with the panel's own sentence" {
+    ro text = LAN_EARLY
+    match parse(text) {
+        Err(_) => assert(false)
+        Ok((cfg, _)) => {
+            ro bad = validate(cfg)
+            assert(field_of(bad, "server.allow_lan"))
+            assert(message_of(bad, "server.allow_lan") == "LAN access arrives in a later version")
+        }
+    }
+}
+
+test "an unknown key is refused BY NAME, with its exact dotted path" {
+    ro text = UNKNOWN_KEY
+    match parse(text) {
+        Err(_) => assert(false)
+        Ok((cfg, errs)) => {
+            assert(errs.len() == 1)
+            assert(errs[0].field == "poll.intervl_sec")
+            assert(errs[0].code == "extra_forbidden")
+            // And the misspelling did NOT quietly become the real setting.
+            assert(cfg.poll.interval_sec == 300)
+        }
+    }
+}
+
+test "two faults arrive in ONE list, not one at a time" {
+    ro text = TWO_ERRORS
+    match parse(text) {
+        Err(_) => assert(false)
+        Ok((cfg, _)) => {
+            ro bad = validate(cfg)
+            assert(bad.len() >= 2)
+            assert(field_of(bad, "server.port"))
+            assert(field_of(bad, "history.keep_days"))
+        }
+    }
+}
+
+test "thresholds must be ordered, and both fields are named" {
+    mut c = Config.defaults()
+    c.thresholds.warning = 90
+    c.thresholds.critical = 50
+    ro bad = validate(c)
+    assert(field_of(bad, "thresholds.warning"))
+    assert(field_of(bad, "thresholds.critical"))
+    assert(message_of(bad, "thresholds.warning") == "0 < warning < critical <= 100")
+}
+
+test "an empty set of working days is refused" {
+    mut c = Config.defaults()
+    c.forecast.work_days = []
+    ro bad = validate(c)
+    assert(field_of(bad, "forecast.work_days"))
+    assert(message_of(bad, "forecast.work_days") == "pick at least one working day")
+}
+
+test "off_hours_rate outside 0..100 is refused, and inside it is not" {
+    mut c = Config.defaults()
+    c.forecast.off_hours_rate = 150
+    assert(field_of(validate(c), "forecast.off_hours_rate"))
+    c.forecast.off_hours_rate = 100
+    assert(!field_of(validate(c), "forecast.off_hours_rate"))
+    c.forecast.off_hours_rate = 0
+    assert(!field_of(validate(c), "forecast.off_hours_rate"))
+}
+
+test "a folder path is read, and only the path" {
+    // From unknown-key.toml, which carries a real `path`. The full-valid fixture
+    // leaves it COMMENTED OUT on purpose -- the inventory has no default for it --
+    // so an empty [[folders]] block is legal and yields no folder. That was the
+    // first version of this test and it was wrong about the fixture, not about
+    // the reader.
+    match parse(UNKNOWN_KEY) {
+        Err(_) => assert(false)
+        Ok((cfg, _)) => {
+            assert(cfg.folders.len() == 1)
+            assert(cfg.folders[0] == "~/.claude")
+        }
+    }
+}
+
+test "an empty [[folders]] block is legal and adds nothing" {
+    match parse(FULL_VALID) {
+        Err(_) => assert(false)
+        Ok((cfg, _)) => assert(cfg.folders.len() == 0)
+    }
+}
+
+test "a line that is neither a section nor a pair fails, naming the line" {
+    // `this is not = = toml` does NOT belong here: it splits into a key and a value
+    // and is therefore an unknown SETTING, not a broken file. The difference matters
+    // -- one is a typo the person can see beside the field, the other means the file
+    // cannot be read at all.
+    match parse("schema = 1\nthis line has no equals sign\n") {
+        Ok(_) => assert(false)
+        Err(why) => assert(why.starts_with("line 2:"))
+    }
+}
+
+test "a stray key at the root is an unknown setting, not a broken file" {
+    match parse("this is not = 1\n") {
+        Err(_) => assert(false)
+        Ok((_, errs)) => {
+            assert(errs.len() == 1)
+            assert(errs[0].code == "extra_forbidden")
+        }
+    }
+}

@@ -1,0 +1,11 @@
+[lib]
+src = "src"
+
+[package]
+name = "probe_toml_sections"
+version = "0.0.0"
+description = "Probe: what std TOML does with [section] and [[array of tables]]"
+
+[[bin]]
+name = "probe-toml-sections"
+path = "src/main.nv"

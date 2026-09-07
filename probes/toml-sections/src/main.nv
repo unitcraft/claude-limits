@@ -1,0 +1,36 @@
+// What does std's TOML parser actually return for sections?
+//
+// Asked because config.nv read `[poll] interval_sec = 10` and did not find it, and
+// because std/src/encoding/toml.nv:466 carries `TODO: nested path resolution` in
+// `insert_at_current_path`. The comment is not proof of behaviour; this is.
+
+module probe_toml_sections.main
+
+import std.encoding.toml.{TomlValue}
+
+const SAMPLE = "schema = 1\n[[folders]]\npath = \"~/.claude\"\n[poll]\ninterval_sec = 10\n"
+
+fn kind_of(v TomlValue) -> str =>
+    match v {
+        TomlStr(_) => "str"
+        TomlInt(_) => "int"
+        TomlFloat(_) => "float"
+        TomlBool(_) => "bool"
+        TomlArray(_) => "array"
+        TomlTable(_) => "table"
+    }
+
+fn main() Io -> () {
+    match SAMPLE.to_toml() {
+        Err(_) => println("PARSE FAILED")
+        Ok(root) => match root {
+            TomlTable(t) => {
+                println("root keys:")
+                for (k, v) in t {
+                    println("  ${k} = <${kind_of(v)}>")
+                }
+            }
+            _ => println("root is not a table")
+        }
+    }
+}

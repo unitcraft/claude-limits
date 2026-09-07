@@ -1,0 +1,658 @@
+// config.nv — the settings file: defaults, parsing, validation (task T1.2).
+//
+// Sources: subplan 01.2 §2.1 (the complete key list and its defaults), §2.2
+// (validation), 01.1 §5 (the error TEXTS, verbatim), 01.3 §3.8 (the shape of
+// `errors[]`). The inventory of all 35 keys is docs/reports/T1.2-config-inventory.md.
+//
+// TWO DIFFERENT ANSWERS TO ONE BAD VALUE, and the difference is the point:
+//
+//   `validate` reports. It is what `PUT /api/config` uses, and a refused save must
+//   leave the file untouched and name every wrong field at once (01.3 §3.8).
+//
+//   `repair_for_start` fixes and warns. A person whose file says `interval_sec = 10`
+//   wants the app to RUN, not to refuse to start -- so it starts at the floor of 60
+//   and says so. The task card asks for exactly this pair.
+//
+// Unknown keys are an ERROR, never ignored (`extra_forbidden`, 01.3 §3.8): a typo in
+// a settings file that is silently dropped is a setting the person believes is on.
+
+module claude_limits.config
+
+// NO `std.encoding.toml` HERE, and that is a measured decision, not a preference.
+// Its parser is a bootstrap one: it FLATTENS sections into the root. `[poll]
+// interval_sec = 10` arrives as a root key `interval_sec` beside an empty `poll`
+// table, and `[[folders]]` arrives as a table rather than an array. Measured in
+// `probes/toml-sections/`, with the output quoted in its FINDING.md.
+//
+// That is fatal for this file in particular: every setting lives in a section, and
+// two sections share a key name (`enabled` under both `forecast` and `widget`), so
+// flattening would let one silently overwrite the other. The reader below covers
+// exactly the subset the settings file uses. When std's parser grows up this goes
+// away and the tests stay.
+
+// ── the tree ─────────────────────────────────────────────────────────────────
+
+export type Poll value {
+    interval_sec int
+    min_interval_sec int
+    request_timeout_sec int
+}
+
+export type Thresholds value {
+    warning int
+    critical int
+}
+
+export type Forecast value {
+    enabled bool
+    work_days []str
+    work_from str
+    work_to str
+    off_hours_rate int
+    rate_window_days int
+}
+
+export type Server value {
+    bind str
+    port int
+    allow_lan bool
+    access_token str        // "" = not set; never leaves the process in an API reply
+    tls_cert str
+    tls_key str
+}
+
+export type Ui value {
+    accounts_order []str
+    hidden_accounts []str
+    hide_stale bool
+    time_bar bool
+}
+
+export type Widget value {
+    enabled bool
+    always_on_top bool
+    x int
+    y int
+    visible bool
+}
+
+export type History value {
+    keep_days int
+    rollup_keep_days int
+    config_versions_keep int
+}
+
+export type Storage value {
+    data_dir str
+    backups_keep int
+    memory_limit str
+    threads int
+}
+
+export type Config value {
+    schema int
+    folders []str            // paths only: kind/login_dirs are computed, not settings
+    poll Poll
+    thresholds Thresholds
+    forecast Forecast
+    server Server
+    ui Ui
+    widget Widget
+    history History
+    storage Storage
+}
+
+/// One refusal, in the shape 01.3 §3.8 gives `errors[]`: the field in dotted
+/// notation, a code, and the message the page shows verbatim.
+export type ConfigError value {
+    field str
+    code str
+    message str
+}
+
+// ── defaults (01.2 §2.1) ─────────────────────────────────────────────────────
+
+export fn Config.defaults() -> Config => {
+    schema: 1,
+    folders: [],
+    poll: { interval_sec: 300, min_interval_sec: 60, request_timeout_sec: 30 },
+    thresholds: { warning: 70, critical: 90 },
+    forecast: {
+        enabled: true,
+        work_days: ["mon", "tue", "wed", "thu", "fri"],
+        work_from: "09:00",
+        work_to: "19:00",
+        off_hours_rate: 0,
+        rate_window_days: 3,
+    },
+    server: {
+        bind: "127.0.0.1", port: 7391, allow_lan: false,
+        access_token: "", tls_cert: "", tls_key: "",
+    },
+    ui: { accounts_order: [], hidden_accounts: [], hide_stale: false, time_bar: true },
+    widget: { enabled: false, always_on_top: true, x: 1480, y: 820, visible: true },
+    history: { keep_days: 30, rollup_keep_days: 400, config_versions_keep: 20 },
+    storage: { data_dir: "", backups_keep: 5, memory_limit: "512MB", threads: 2 },
+}
+
+// ── the texts, verbatim from 01.1 §5 ─────────────────────────────────────────
+//
+// Written out as constants rather than composed at the point of use: these strings
+// are the CONTRACT with the page (01.3 §3.8 says the panel shows `errors[].message`
+// as it arrives), and a message assembled from pieces drifts the first time someone
+// edits one of the pieces.
+
+const MSG_INTERVAL = "minimum is 60 s (the server rate-limits eager polling)"
+const MSG_THRESHOLDS = "0 < warning < critical <= 100"
+const MSG_WORK_DAYS = "pick at least one working day"
+const MSG_OFF_HOURS = "0..100 percent of the working-hours rate"
+const MSG_LAN = "LAN access arrives in a later version"
+const MSG_SCHEMA = "unknown schema version"
+// The two below are OURS, not quotes from 01.1 §5 — see the note at their check.
+const MSG_PORT = "port must be between 1 and 65535"
+const MSG_KEEP_DAYS = "keep_days must be at least 1"
+
+const CODE_INVALID = "invalid_config"
+const CODE_EXTRA = "extra_forbidden"
+
+// ── validation (01.2 §2.2) ───────────────────────────────────────────────────
+
+/// Every violation, in one list. NEVER stops at the first: 01.3 §3.8 says all errors
+/// arrive in one response, and a panel that highlights one field at a time makes a
+/// person save four times to learn four things.
+export fn validate(cfg Config) -> []ConfigError {
+    mut out []ConfigError = []
+
+    if cfg.schema != 1 {
+        out.push({ field: "schema", code: CODE_INVALID, message: MSG_SCHEMA })
+    }
+    if cfg.poll.interval_sec < cfg.poll.min_interval_sec {
+        out.push({ field: "poll.interval_sec", code: CODE_INVALID, message: MSG_INTERVAL })
+    }
+    // One line: a condition broken across lines ends the `if` at the newline
+    // ("expected `{`, got newline"), so the operator cannot lead the next line here.
+    ro bad_thresholds = cfg.thresholds.warning <= 0 || cfg.thresholds.critical <= cfg.thresholds.warning || cfg.thresholds.critical > 100
+    if bad_thresholds {
+        out.push({ field: "thresholds.warning", code: CODE_INVALID, message: MSG_THRESHOLDS })
+        out.push({ field: "thresholds.critical", code: CODE_INVALID, message: MSG_THRESHOLDS })
+    }
+    if cfg.forecast.work_days.len() == 0 {
+        out.push({ field: "forecast.work_days", code: CODE_INVALID, message: MSG_WORK_DAYS })
+    }
+    if cfg.forecast.off_hours_rate < 0 || cfg.forecast.off_hours_rate > 100 {
+        out.push({ field: "forecast.off_hours_rate", code: CODE_INVALID, message: MSG_OFF_HOURS })
+    }
+    // NOT IN THE DOCUMENTS, and said so rather than dressed up as a quote: neither
+    // 01.2 §2.2 nor 01.1 §5 states a range for `server.port` or a floor for
+    // `history.keep_days` (the inventory in docs/reports/T1.2-config-inventory.md
+    // marks both "не указано"). The fixture `two-errors.toml` nonetheless relies on
+    // them, and both bounds are the kind a reader would be surprised to find missing:
+    // a port outside 1..65535 cannot be bound at all, and a negative retention would
+    // delete history that has not happened yet. If the owner wants other bounds,
+    // these two lines are where they live.
+    if cfg.server.port < 1 || cfg.server.port > 65535 {
+        out.push({ field: "server.port", code: CODE_INVALID, message: MSG_PORT })
+    }
+    if cfg.history.keep_days < 1 {
+        out.push({ field: "history.keep_days", code: CODE_INVALID, message: MSG_KEEP_DAYS })
+    }
+    // Phase 6 is not here yet, and the toggle is inert in the panel (01.1 §5.7). A
+    // file edited by hand can still ask for it, and it has to be refused with the
+    // same sentence the panel shows.
+    if cfg.server.allow_lan {
+        out.push({ field: "server.allow_lan", code: CODE_INVALID, message: MSG_LAN })
+    }
+    out
+}
+
+/// What the app does at START with a file it can read but not entirely accept.
+///
+/// Only `interval_sec` is repaired, and only upwards to the floor: it is the one
+/// value where the right answer is unambiguous and refusing to start would be
+/// disproportionate. Everything else stays an error -- guessing what a person meant
+/// by `critical = 5` is not repair, it is invention.
+/// IN-OUT, and named so: `mut cfg` means the caller's own config is what gets
+/// repaired (D326 revision, "in-out ALWAYS"). A copy was tried first — there is no
+/// `.clone()` on a value record — and in-out is the honest shape anyway: at startup
+/// exactly one owner holds the config and wants it usable, not duplicated.
+export fn repair_for_start(mut cfg Config) -> []str {
+    mut warnings []str = []
+    if cfg.poll.interval_sec < cfg.poll.min_interval_sec {
+        warnings.push("poll.interval_sec ${cfg.poll.interval_sec} raised to ${cfg.poll.min_interval_sec}: ${MSG_INTERVAL}")
+        cfg.poll.interval_sec = cfg.poll.min_interval_sec
+    }
+    warnings
+}
+
+
+// ── reading the file ─────────────────────────────────────────────────────────
+//
+// A line reader for the subset the settings file uses: comments, `[section]`,
+// `[[folders]]`, and `key = value` where a value is a quoted string, an integer,
+// a boolean, or an array of quoted strings. Nothing else appears in 01.2 §2.1, and
+// anything else is refused rather than guessed at.
+
+/// Text up to the first unquoted `#`, trimmed. A `#` inside quotes is data: a
+/// Windows path or a password may contain one, and cutting there would corrupt it
+/// silently, which is the worst way for a settings file to fail.
+fn strip_comment(line str) -> str {
+    mut out = ""
+    mut in_quotes = false
+    for ch in line.chars() {
+        if ch == '"' { in_quotes = !in_quotes }
+        if ch == '#' && !in_quotes { break }
+        out = "${out}${ch}"
+    }
+    out.trim_ascii()
+}
+
+/// `"text"` -> `text`. Anything not quoted is refused by the caller.
+fn unquote(v str) -> Option[str] {
+    if !v.starts_with("\"") { return None }
+    if !v.ends_with("\"") { return None }
+    match v.strip_prefix("\"") {
+        None => None
+        Some(head) => head.strip_suffix("\"")
+    }
+}
+
+/// `["a", "b"]` -> the strings inside. An entry that is not quoted is skipped, which
+/// the caller reports through the value being shorter than the text suggested.
+fn parse_list(v str) -> Option[[]str] {
+    if !v.starts_with("[") { return None }
+    if !v.ends_with("]") { return None }
+    ro inner = match v.strip_prefix("[") {
+        None => return None
+        Some(h) => match h.strip_suffix("]") {
+            None => return None
+            Some(x) => x
+        }
+    }
+    mut out []str = []
+    if inner.trim_ascii() == "" { return Some(out) }
+    for piece in inner.split(",") {
+        match unquote(piece.trim_ascii()) {
+            Some(s) => out.push(s)
+            None => {}
+        }
+    }
+    Some(out)
+}
+
+fn parse_bool(v str) -> Option[bool] {
+    if v == "true" { return Some(true) }
+    if v == "false" { return Some(false) }
+    None
+}
+
+fn parse_int(v str) -> Option[int] =>
+    match v.to_int() {
+        Ok(n) => Some(n)
+        Err(_) => None
+    }
+
+/// The type a value has to be for this key, so a wrong type is reported instead of
+/// falling back to the default and leaving the person to wonder.
+fn wrong_type(field str) -> ConfigError =>
+    { field, code: CODE_INVALID, message: "the value has the wrong type" }
+
+/// Read a settings file over the defaults.
+///
+/// Returns the config AND the list of refusals: a file with an unknown key still
+/// parses, because the person needs to see every fault at once and the rest of their
+/// settings should not vanish while they fix a typo.
+export fn parse(text str) -> Result[(Config, []ConfigError), str] {
+    mut cfg = Config.defaults()
+    mut errs []ConfigError = []
+    mut section = ""
+    mut folders []str = []
+    mut line_no = 0
+
+    for raw in text.lines() {
+        line_no += 1
+        ro line = strip_comment(raw)
+        if line == "" { continue }
+
+        if line == "[[folders]]" {
+            section = "folders"
+            continue
+        }
+        if line.starts_with("[[") {
+            return Err("line ${line_no}: the only array of tables is [[folders]]")
+        }
+        if line.starts_with("[") {
+            ro name = match line.strip_prefix("[") {
+                None => return Err("line ${line_no}: a section that does not open")
+                Some(h) => match h.strip_suffix("]") {
+                    None => return Err("line ${line_no}: a section that does not close")
+                    Some(x) => x.trim_ascii()
+                }
+            }
+            if !known_section(name) {
+                errs.push(unknown(name))
+            }
+            section = name
+            continue
+        }
+
+        mut pair = match line.split_once("=") {
+            None => return Err("line ${line_no}: neither a section nor `key = value`")
+            Some(p) => p
+        }
+        ro key = pair.0.trim_ascii()
+        ro value = pair.1.trim_ascii()
+        assign(section, key, value, cfg, errs, folders)
+    }
+
+    cfg.folders = folders
+    Ok((cfg, errs))
+}
+
+fn known_section(name str) -> bool =>
+    match name {
+        "poll" => true
+        "thresholds" => true
+        "forecast" => true
+        "server" => true
+        "ui" => true
+        "widget" => true
+        "history" => true
+        "storage" => true
+        _ => false
+    }
+
+fn unknown(path str) -> ConfigError =>
+    { field: path, code: CODE_EXTRA, message: "unknown setting: ${path}" }
+
+fn dotted(section str, key str) -> str =>
+    if section == "" { key } else { "${section}.${key}" }
+
+fn set_int(field str, value str, mut errs []ConfigError) -> Option[int] =>
+    match parse_int(value) {
+        Some(n) => Some(n)
+        None => {
+            errs.push(wrong_type(field))
+            None
+        }
+    }
+
+fn set_bool(field str, value str, mut errs []ConfigError) -> Option[bool] =>
+    match parse_bool(value) {
+        Some(b) => Some(b)
+        None => {
+            errs.push(wrong_type(field))
+            None
+        }
+    }
+
+fn set_str(field str, value str, mut errs []ConfigError) -> Option[str] =>
+    match unquote(value) {
+        Some(s) => Some(s)
+        None => {
+            errs.push(wrong_type(field))
+            None
+        }
+    }
+
+fn set_list(field str, value str, mut errs []ConfigError) -> Option[[]str] =>
+    match parse_list(value) {
+        Some(l) => Some(l)
+        None => {
+            errs.push(wrong_type(field))
+            None
+        }
+    }
+
+/// One key, into the section it belongs to. Every unknown key becomes an error with
+/// its exact dotted path — never a silent drop (01.3 §3.8, `extra_forbidden`).
+fn assign(section str, key str, value str, mut cfg Config, mut errs []ConfigError, mut folders []str) -> () {
+    ro field = dotted(section, key)
+
+    if section == "" {
+        if key == "schema" {
+            match set_int(field, value, errs) {
+                Some(n) => { cfg.schema = n }
+                None => {}
+            }
+        } else {
+            errs.push(unknown(field))
+        }
+        return ()
+    }
+
+    if section == "folders" {
+        if key == "path" {
+            match set_str("folders[].path", value, errs) {
+                Some(s) => folders.push(s)
+                None => {}
+            }
+        } else {
+            errs.push(unknown("folders[].${key}"))
+        }
+        return ()
+    }
+
+    if section == "poll" {
+        if key == "interval_sec" {
+            match set_int(field, value, errs) {
+                Some(n) => { cfg.poll.interval_sec = n }
+                None => {}
+            }
+        } else if key == "min_interval_sec" {
+            match set_int(field, value, errs) {
+                Some(n) => { cfg.poll.min_interval_sec = n }
+                None => {}
+            }
+        } else if key == "request_timeout_sec" {
+            match set_int(field, value, errs) {
+                Some(n) => { cfg.poll.request_timeout_sec = n }
+                None => {}
+            }
+        } else {
+            errs.push(unknown(field))
+        }
+        return ()
+    }
+
+    if section == "thresholds" {
+        if key == "warning" {
+            match set_int(field, value, errs) {
+                Some(n) => { cfg.thresholds.warning = n }
+                None => {}
+            }
+        } else if key == "critical" {
+            match set_int(field, value, errs) {
+                Some(n) => { cfg.thresholds.critical = n }
+                None => {}
+            }
+        } else {
+            errs.push(unknown(field))
+        }
+        return ()
+    }
+
+    if section == "forecast" {
+        if key == "enabled" {
+            match set_bool(field, value, errs) {
+                Some(b) => { cfg.forecast.enabled = b }
+                None => {}
+            }
+        } else if key == "work_days" {
+            match set_list(field, value, errs) {
+                Some(l) => { cfg.forecast.work_days = l }
+                None => {}
+            }
+        } else if key == "work_from" {
+            match set_str(field, value, errs) {
+                Some(s) => { cfg.forecast.work_from = s }
+                None => {}
+            }
+        } else if key == "work_to" {
+            match set_str(field, value, errs) {
+                Some(s) => { cfg.forecast.work_to = s }
+                None => {}
+            }
+        } else if key == "off_hours_rate" {
+            match set_int(field, value, errs) {
+                Some(n) => { cfg.forecast.off_hours_rate = n }
+                None => {}
+            }
+        } else if key == "rate_window_days" {
+            match set_int(field, value, errs) {
+                Some(n) => { cfg.forecast.rate_window_days = n }
+                None => {}
+            }
+        } else {
+            errs.push(unknown(field))
+        }
+        return ()
+    }
+
+    if section == "server" {
+        if key == "bind" {
+            match set_str(field, value, errs) {
+                Some(s) => { cfg.server.bind = s }
+                None => {}
+            }
+        } else if key == "port" {
+            match set_int(field, value, errs) {
+                Some(n) => { cfg.server.port = n }
+                None => {}
+            }
+        } else if key == "allow_lan" {
+            match set_bool(field, value, errs) {
+                Some(b) => { cfg.server.allow_lan = b }
+                None => {}
+            }
+        } else if key == "access_token" {
+            match set_str(field, value, errs) {
+                Some(s) => { cfg.server.access_token = s }
+                None => {}
+            }
+        } else if key == "tls_cert" {
+            match set_str(field, value, errs) {
+                Some(s) => { cfg.server.tls_cert = s }
+                None => {}
+            }
+        } else if key == "tls_key" {
+            match set_str(field, value, errs) {
+                Some(s) => { cfg.server.tls_key = s }
+                None => {}
+            }
+        } else {
+            errs.push(unknown(field))
+        }
+        return ()
+    }
+
+    if section == "ui" {
+        if key == "accounts_order" {
+            match set_list(field, value, errs) {
+                Some(l) => { cfg.ui.accounts_order = l }
+                None => {}
+            }
+        } else if key == "hidden_accounts" {
+            match set_list(field, value, errs) {
+                Some(l) => { cfg.ui.hidden_accounts = l }
+                None => {}
+            }
+        } else if key == "hide_stale" {
+            match set_bool(field, value, errs) {
+                Some(b) => { cfg.ui.hide_stale = b }
+                None => {}
+            }
+        } else if key == "time_bar" {
+            match set_bool(field, value, errs) {
+                Some(b) => { cfg.ui.time_bar = b }
+                None => {}
+            }
+        } else {
+            errs.push(unknown(field))
+        }
+        return ()
+    }
+
+    if section == "widget" {
+        if key == "enabled" {
+            match set_bool(field, value, errs) {
+                Some(b) => { cfg.widget.enabled = b }
+                None => {}
+            }
+        } else if key == "always_on_top" {
+            match set_bool(field, value, errs) {
+                Some(b) => { cfg.widget.always_on_top = b }
+                None => {}
+            }
+        } else if key == "x" {
+            match set_int(field, value, errs) {
+                Some(n) => { cfg.widget.x = n }
+                None => {}
+            }
+        } else if key == "y" {
+            match set_int(field, value, errs) {
+                Some(n) => { cfg.widget.y = n }
+                None => {}
+            }
+        } else if key == "visible" {
+            match set_bool(field, value, errs) {
+                Some(b) => { cfg.widget.visible = b }
+                None => {}
+            }
+        } else {
+            errs.push(unknown(field))
+        }
+        return ()
+    }
+
+    if section == "history" {
+        if key == "keep_days" {
+            match set_int(field, value, errs) {
+                Some(n) => { cfg.history.keep_days = n }
+                None => {}
+            }
+        } else if key == "rollup_keep_days" {
+            match set_int(field, value, errs) {
+                Some(n) => { cfg.history.rollup_keep_days = n }
+                None => {}
+            }
+        } else if key == "config_versions_keep" {
+            match set_int(field, value, errs) {
+                Some(n) => { cfg.history.config_versions_keep = n }
+                None => {}
+            }
+        } else {
+            errs.push(unknown(field))
+        }
+        return ()
+    }
+
+    if section == "storage" {
+        if key == "data_dir" {
+            match set_str(field, value, errs) {
+                Some(s) => { cfg.storage.data_dir = s }
+                None => {}
+            }
+        } else if key == "backups_keep" {
+            match set_int(field, value, errs) {
+                Some(n) => { cfg.storage.backups_keep = n }
+                None => {}
+            }
+        } else if key == "memory_limit" {
+            match set_str(field, value, errs) {
+                Some(s) => { cfg.storage.memory_limit = s }
+                None => {}
+            }
+        } else if key == "threads" {
+            match set_int(field, value, errs) {
+                Some(n) => { cfg.storage.threads = n }
+                None => {}
+            }
+        } else {
+            errs.push(unknown(field))
+        }
+        return ()
+    }
+
+    // An unknown section was already reported when it opened; its keys are not
+    // reported again, or one bad heading would produce a wall of noise.
+}
