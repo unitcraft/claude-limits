@@ -1,0 +1,23 @@
+// version_test.nv — the stub test T0.0 requires, beside the module it covers
+// (canon: authoring-a-module §5, tests are peer files).
+//
+// It imports `version_line` only. The module also exports `print_version`, which
+// calls `println`: if this file compiles, then `println` inside an IMPORTED module
+// is fine, and the CODEGEN-FAIL seen on T0.0 came from importing the entry point
+// (which drags `fn main` in), not from `println` crossing a module boundary. That
+// is the probe, and it is the reason the two functions live together here.
+
+module claude_limits.version_test
+
+import claude_limits.version.{version_line}
+
+test "version line is exactly what T0.0 acceptance expects" {
+    assert(version_line() == "claude-limits 0.0.0")
+}
+
+test "version line names the product and carries a version, not a placeholder" {
+    ro line = version_line()
+    assert(line.starts_with("claude-limits "))
+    assert(!line.contains("TODO"))
+    assert(!line.contains("0.0.0-dev"))
+}

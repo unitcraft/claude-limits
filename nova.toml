@@ -1,0 +1,31 @@
+# nova.toml — claude-limits: usage limits of several Claude accounts.
+#
+# Layout: package root IS the source root (D78 — no separate `src/`), so a module
+# path mirrors the file path: `bin/claude_limits.nv` is `claude_limits.bin.claude_limits`.
+# The module tree this package grows into is plan 01 §3.2.
+#
+# Dependencies are pulled by SEMVER RANGE, not by a pinned tag: the resolver takes
+# the newest matching tag, which is how every sibling package is consumed
+# (AGENTS.md, "Satellite package repositories"). Newest tags observed 2026-09-07:
+# nova-http v0.1.3, nova-polaris v0.1.7, nova-tls v0.1.8 — recorded for provenance
+# only; `nova.lock.toml` is what actually fixes the build.
+#
+# `duckdb` (plan 01.4) and `sdl` (plan 01 Ф.3) are NOT here yet: those packages do
+# not exist, and a manifest naming a missing dependency breaks every build. They
+# arrive with the tasks that create them.
+
+[package]
+name = "claude_limits"
+version = "0.0.0"
+description = "Usage limits of several Claude accounts: local backend with a browser page, optional always-on-top widget"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/unitcraft/claude-limits"
+
+[[bin]]
+name = "claude-limits"
+path = "bin/claude_limits.nv"
+
+[dependencies]
+http = { git = "https://github.com/nv-lang/nova-http", version = "0.1" }
+polaris = { git = "https://github.com/nv-lang/nova-polaris", version = "0.1" }
+tls = { git = "https://github.com/nv-lang/nova-tls", version = "0.1" }

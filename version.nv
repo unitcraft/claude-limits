@@ -1,0 +1,21 @@
+// version.nv — the product's own name and version.
+//
+// This module is PURE on purpose: it returns the string and prints nothing.
+// `println` cannot be called from here at all. Measured on T0.0 with a probe:
+// `nova check version.nv` accepts `println` in this module (PASS), but codegen
+// refuses it — `undefined identifier println` — in every compilation unit that
+// imports the module. Printing therefore lives in the entry module only, and
+// everything a test needs from here is pure anyway. Full repro and both verdict
+// lines: docs/reports/T0.0.md.
+//
+// Declaration form differs by depth, and the compiler is the authority here:
+// a file DIRECTLY in the source root carries the package name
+// (`claude_limits.version`), while a file in a subdirectory does not
+// (`bin/claude_limits.nv` is `bin.claude_limits`). Both were learned from
+// E_D78_MODULE_PATH_MISMATCH on T0.0, not from memory.
+
+module claude_limits.version
+
+/// Version line printed by the bare binary. Exported so the peer test asserts the
+/// exact string T0.0's acceptance greps for, instead of re-typing it.
+export fn version_line() -> str => "claude-limits 0.0.0"

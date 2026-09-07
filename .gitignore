@@ -1,3 +1,7 @@
+# nova build output (T0.0). nova.lock.toml is NOT ignored: it pins the
+# dependency versions and belongs in the repository.
+target/
+
 # python
 __pycache__/
 *.pyc
