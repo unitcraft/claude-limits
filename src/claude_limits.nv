@@ -23,7 +23,7 @@
 // E_D78_MODULE_PATH_MISMATCH on T0.0; sibling packages look different only
 // because they set `[lib] src = "src"`.
 
-module bin.claude_limits
+module claude_limits.claude_limits
 
 import claude_limits.version.{version_line}
 
