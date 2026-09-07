@@ -15,11 +15,11 @@
 // while the machine was held by the integrator's gate, so every line is copied
 // from a working example rather than invented, and the build is the next step.
 
-module main
+module spike_polaris_sse.main
 
 import polaris.{Router, ServerRequest, ServerResponse, StreamBody, stream_body, sse_event}
 import polaris.{StatusCode}
-import polaris.static.{Static, serve_path, static_handler}
+import polaris.static.{Static, serve_path}
 import polaris.net.{ServerPolicy}
 import polaris.serve.{serve_router}
 import std.net.{TcpListener}
@@ -39,20 +39,48 @@ fn static_config() -> Static {
 /// parks the streaming fiber until the producer sends, and a closed channel ends
 /// the stream. This is the shape the real `/api/events` needs, where the producer
 /// is the `store` fiber announcing a new snapshot.
-fn channel_events(rx ChanRx[str]) -> StreamBody =>
+/// FOUND BY THE FIRST RUN (2026-09-07): the closing frame needs a state flag, or
+/// the stream never ends. The first version answered a closed channel with
+/// `Some(done)` every time, so `curl -N` received `done` forever and the request
+/// hung until timeout. `stream_body` ends ONLY on `None`, and a closed channel
+/// keeps returning `None` from `recv()` — so "channel closed" must be emitted
+/// once and followed by `None`.
+fn channel_events(rx ChanRx[str]) -> StreamBody {
+    mut closed = false
+    // FOUND BY THE THIRD BUILD: an early `return None` in this closure produced
+    // INVALID C — `returning 'NovaOpt_nova_int' from a function with incompatible
+    // result type 'NovaOpt_Nova_Vec____nova_byte_p'`, i.e. the bare `None` was
+    // typed as `Option[int]` instead of `Option[[]u8]`. The checker accepted it;
+    // only the C compiler objected. Same class as registry №1017: green `check`,
+    // broken codegen. Written as a tail if/else instead, where the type comes from
+    // the other branch.
+    ro nothing Option[[]u8] = None      // explicit type: a bare None types as Option[int] here
     stream_body(fn() -> Option[[]u8] {
-        match rx.recv() {
-            Some(msg) => Some(sse_event("tick", msg))
-            None => Some(sse_event("done", "channel closed"))
+        if closed {
+            nothing
+        } else {
+            match rx.recv() {
+                Some(msg) => Some(sse_event("tick", msg))
+                None => {
+                    closed = true
+                    Some(sse_event("done", "channel closed"))
+                }
+            }
         }
     })
+}
 
 fn build_router(rx ChanRx[str]) -> Router =>
     Router.new()
         .get("/", fn(req ServerRequest) -> ServerResponse =>
             serve_path(site(), static_config(), "index.html", req))!!
+        // FOUND BY THE FIRST RUN: `json()` SERIALISES what it is given, so a
+        // pre-built JSON string came back double-encoded as
+        // `"{\"spike\":\"t0.1\",\"accounts\":[]}"` — a JSON string, not an object.
+        // The real handlers must hand `json()` a value, or use `text()` with the
+        // content type set when the body is already serialised.
         .get("/api/snapshot", fn(req ServerRequest) -> ServerResponse =>
-            ServerResponse.json(StatusCode.OK, "{\"spike\":\"t0.1\",\"accounts\":[]}"))!!
+            ServerResponse.text(StatusCode.OK, "{\"spike\":\"t0.1\",\"accounts\":[]}"))!!
         .get("/api/events", fn(req ServerRequest) -> ServerResponse =>
             ServerResponse.sse(channel_events(rx)))!!
         .get("/api/health", fn(req ServerRequest) -> ServerResponse =>
@@ -60,6 +88,17 @@ fn build_router(rx ChanRx[str]) -> Router =>
 
 fn main() Net Time Detach -> () {
     ro pair = Chan[str].new(8)
+
+    // FOUND BY THE SECOND BUILD (2026-09-07), and this one belongs in the plan:
+    // the router must be built BEFORE `spawn`, not inside it. Once the SSE body
+    // carried a `mut` flag, `build_router` counted as mutating reachable state and
+    // the compiler refused the call inside a fiber —
+    // `E_FIBER_UNSAFE_CALL` (D446), chain `build_router` → `serve_path` →
+    // `ServerRequest.header` → … The diagnostic names the fix itself: do the call
+    // before `spawn` and capture the result `ro` into the fiber. So the real app's
+    // `spawn serve_router` (plan 01 §3.1) is legal only with the router prepared
+    // outside; that is a constraint on the shape, not a detail of this spike.
+    ro app = build_router(pair.rx)
     println("spike listening on http://127.0.0.1:7391 (page, /api/snapshot, /api/events)")
 
     supervised {
@@ -76,7 +115,7 @@ fn main() Net Time Detach -> () {
         // Server: the accept loop in a spawned fiber, which is the point of the spike.
         spawn {
             consume listener = TcpListener.bind("127.0.0.1:7391")!!
-            serve_router(listener, build_router(pair.rx), ServerPolicy.new())
+            serve_router(listener, app, ServerPolicy.new())
         }
     }
 }

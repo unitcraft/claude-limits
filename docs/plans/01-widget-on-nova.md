@@ -186,7 +186,14 @@ main
   и ломает привязку к потоку;
 - `serve_router(listener, app, policy)` требует `Net Time Detach` и сам владеет
   accept-loop'ом (`nova-polaris/docs/serving.md` §Running the accept loop) — поэтому
-  он в `spawn`, а не в `main`;
+  он в `spawn`, а не в `main`. **ЗАМЕРЕНО спайком T0.1 (2026-09-07): форма рабочая, но
+  роутер обязан строиться ДО `spawn`.** Как только тело SSE получило `mut`-состояние,
+  `build_router` стал мутирующим, и вызов внутри файбера компилятор отверг —
+  `E_FIBER_UNSAFE_CALL` (D446), цепочка `build_router` → `serve_path` →
+  `ServerRequest.header` → …; диагностика сама назвала лечение: сделать вызов до `spawn`
+  и захватить результат `ro`. Это ограничение на форму, а не деталь спайка: в Ф.2
+  `ro app = build_router(...)` стоит перед `supervised`, а в файбер уходит готовый роутер.
+  Вердикт — [spikes/polaris-sse/VERDICT.md](../../spikes/polaris-sse/VERDICT.md);
 - **общее состояние.** **Поправка 2026-09-07 (перепроверка плана): первая редакция
   утверждала «в std нет `Mutex`/`RwLock`» — это неверно.** Правило счёта было ошибочным:
   смотрели только в `std/src/concurrency/` (там действительно лишь `nvchan`, `supervisor`,
