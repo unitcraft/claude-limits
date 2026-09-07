@@ -1,0 +1,21 @@
+# Spike T0.3 — parsing `resets_at` and rendering the reset caption.
+#
+# Question (plan 01 Ф.0 п.3, §3.4; subplan 01.1 §2.4): how does std parse an ISO
+# stamp WITH an offset, does `Duration @to_human` give the caption the page needs,
+# and where does the machine's timezone come from on Windows?
+#
+# No dependencies at all. That is the point: this is std only, so a failure here
+# cannot be blamed on a package -- and, today, it means the spike builds while the
+# HTTP-client link blocker (probes/http-client-link, registry №1033) is open.
+
+[lib]
+src = "src"
+
+[package]
+name = "spike_time_format"
+version = "0.0.0"
+description = "T0.3 spike: resets_at parsing, the reset caption, and the machine's UTC offset"
+
+[[bin]]
+name = "spike-time-format"
+path = "src/main.nv"

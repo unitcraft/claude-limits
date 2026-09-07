@@ -1,0 +1,122 @@
+// Spike T0.3 — the reset caption, end to end.
+//
+// Question (plan 01 Ф.0 п.3, §3.4): how is `resets_at` with an offset parsed, does
+// `Duration @to_human()` give what subplan 01.1 §2.4 asks for, and where does the
+// machine's timezone come from on Windows?
+//
+// The acceptance is exact strings, so the "now" is a FIXED stamp rather than the
+// clock: a spike whose output depends on the minute it is run cannot be checked
+// twice. The one place the real clock is touched is the offset probe at the end,
+// which is a question about the machine and nothing else.
+//
+// Format under test (01.1 §2.4):
+//   same day        -> `20:50 (1h 02m)`
+//   within a week   -> `Tue 13:00 (2d 17h)`
+//   further out     -> `14 Sep 09:30 (8d 13h)`
+// Duration: the two LARGEST units, and minutes zero-padded only after hours -- a
+// bare `05m` reads as a clock.
+
+module spike_time_format.main
+
+import std.time.civil.{Offset, TimeZone}
+import std.time.duration.{Duration, Timestamp}
+
+// The moment the artboards are drawn at: Saturday 2026-09-05 19:47 UTC.
+const NOW_ISO = "2026-09-05T19:47:00Z"
+
+// The three moments the card asks for (plan 01 Ф.0 п.3).
+const R1 = "2026-09-05T20:50:00Z"        // later today
+const R2 = "2026-09-08T13:00:00Z"        // Tuesday, inside the week
+const R3 = "2026-09-14T09:30:00+02:00"   // beyond six days, AND with an offset
+
+fn parse(iso str) -> Result[Timestamp, str] {
+    match iso.to_timestamp() {
+        Ok(t) => Ok(t)
+        Err(e) => Err("${e}")
+    }
+}
+
+/// Two largest units (01.1 §0). Written here rather than taken from
+/// `Duration @to_human()` -- see the verdict: that one gives four components.
+fn two_units(d Duration) -> str {
+    ro total = d.seconds()
+    ro secs = if total < 0 { 0 } else { total }
+    ro days = secs / 86400
+    ro hours = (secs % 86400) / 3600
+    ro mins = (secs % 3600) / 60
+    if days > 0 { return "${days}d ${hours}h" }
+    if hours > 0 {
+        ro mm = if mins < 10 { "0${mins}" } else { "${mins}" }
+        return "${hours}h ${mm}m"
+    }
+    "${mins}m"
+}
+
+/// The moment as the row shows it (01.1 §2.4).
+fn moment(at Timestamp, now Timestamp, tz TimeZone) -> str {
+    // No `Timestamp.to_datetime()` exists: civil time is only reachable THROUGH a
+    // zone, `Timestamp @to_zoned(tz)`. That is a design statement, not an omission --
+    // "what o'clock is this instant" has no answer without saying where. Recorded in
+    // the verdict, because the app has to choose that zone deliberately.
+    ro dt = at.to_zoned(tz).datetime()
+    ro t = dt.time()
+    ro hh = if t.hour() < 10 { "0${t.hour()}" } else { "${t.hour()}" }
+    ro mm = if t.minute() < 10 { "0${t.minute()}" } else { "${t.minute()}" }
+    ro hhmm = "${hh}:${mm}"
+
+    ro now_dt = now.to_zoned(tz).datetime()
+    if dt.date().to_iso() == now_dt.date().to_iso() { return hhmm }
+
+    ro ahead = at.minus(now)
+    if ahead.seconds() > 6 * 86400 {
+        ro d = dt.date()
+        return "${d.day()} ${d.month().to_str()} ${hhmm}"
+    }
+    "${dt.weekday().to_str()} ${hhmm}"
+}
+
+// A hand-rolled month table stood here and was deleted: `Month @to_str()` already
+// returns exactly the three-letter names 01.1 sec.2.4 asks for, and so does
+// `Weekday @to_str()`. Worth recording in the verdict -- the page's own formatter
+// reimplemented both in JavaScript, which is fine there and would be waste here.
+
+fn caption(iso str, now Timestamp, local TimeZone) Io -> () {
+    match parse(iso) {
+        Err(why) => println("  ${iso} -> PARSE FAILED: ${why}")
+        Ok(at) => {
+            ro left = at.minus(now)
+            ro dur = two_units(left)
+            // BOTH zones on purpose. Plan 01 sec.3.4 says the app shows the machine's
+            // time, and the difference is invisible until a stamp carries an offset:
+            // the third moment is +02:00 on a machine at +03:00, so the two lines
+            // disagree by five hours and only one of them is what a person expects.
+            println("  ${iso}")
+            println("      utc:     ${moment(at, now, TimeZone.Utc)} (${dur})")
+            println("      machine: ${moment(at, now, local)} (${dur})")
+            // Side by side with what std offers, the second half of the question.
+            println("      to_human(): ${left.to_human()}")
+        }
+    }
+}
+
+fn main() Time Io -> () {
+    ro now = match parse(NOW_ISO) {
+        Ok(t) => t
+        Err(why) => {
+            println("FAIL: the fixed now does not parse: ${why}")
+            return
+        }
+    }
+    // Where does the machine's zone come from? `Offset.local()` is what std offers:
+    // an OFFSET through the Time effect, not a named zone. So the app's "local zone"
+    // is `TimeZone.Fixed(offset)` -- correct for today, and WITHOUT DST rules, which
+    // matters for a weekly window that straddles a transition.
+    ro off = Offset.local()
+    ro local = TimeZone.Fixed(off)
+    println("machine offset: ${off.seconds() / 60} minutes from UTC (zone: ${local.to_str()})")
+    println("now = ${NOW_ISO}")
+    println("captions (01.1 sec.2.4):")
+    caption(R1, now, local)
+    caption(R2, now, local)
+    caption(R3, now, local)
+}
