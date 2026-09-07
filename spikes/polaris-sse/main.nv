@@ -1,0 +1,82 @@
+// Spike T0.1 — Polaris from a clean package.
+//
+// Question (plan 01 Ф.0 п.1): can a package whose only dependency is `polaris`
+// serve an embedded page, a JSON endpoint, and Server-Sent Events whose frames
+// come from a CHANNEL written by another fiber, with `serve_router` living in a
+// `spawn` under `supervised` rather than owning `main`?
+//
+// The last part is the whole point. Both Polaris examples put the accept loop in
+// `main` directly ("main IS the accept loop"), which the real app cannot do: with
+// `--widget`, `main` has to run the SDL event loop, so the server must sit in a
+// spawned fiber (plan 01 §3.1). This spike is the first place that shape is tried.
+//
+// Modelled on `nova-polaris/examples/07-sse-stream` (StreamBody + sse_event) and
+// `examples/06-static-site` (embed_dir + static_handler). NOT YET BUILT: written
+// while the machine was held by the integrator's gate, so every line is copied
+// from a working example rather than invented, and the build is the next step.
+
+module main
+
+import polaris.{Router, ServerRequest, ServerResponse, StreamBody, stream_body, sse_event}
+import polaris.{StatusCode}
+import polaris.static.{Static, serve_path, static_handler}
+import polaris.net.{ServerPolicy}
+import polaris.serve.{serve_router}
+import std.net.{TcpListener}
+import std.concurrency.nvchan.{Chan, ChanRx}
+import std.time.duration
+
+/// The page lives in the binary, not on disk.
+fn site() -> EmbeddedDir => embed_dir("web")
+
+fn static_config() -> Static {
+    mut cfg = Static.new()
+    cfg.cache_control("no-store")
+    cfg
+}
+
+/// SSE body that pulls from the channel instead of from a timer: each `recv()`
+/// parks the streaming fiber until the producer sends, and a closed channel ends
+/// the stream. This is the shape the real `/api/events` needs, where the producer
+/// is the `store` fiber announcing a new snapshot.
+fn channel_events(rx ChanRx[str]) -> StreamBody =>
+    stream_body(fn() -> Option[[]u8] {
+        match rx.recv() {
+            Some(msg) => Some(sse_event("tick", msg))
+            None => Some(sse_event("done", "channel closed"))
+        }
+    })
+
+fn build_router(rx ChanRx[str]) -> Router =>
+    Router.new()
+        .get("/", fn(req ServerRequest) -> ServerResponse =>
+            serve_path(site(), static_config(), "index.html", req))!!
+        .get("/api/snapshot", fn(req ServerRequest) -> ServerResponse =>
+            ServerResponse.json(StatusCode.OK, "{\"spike\":\"t0.1\",\"accounts\":[]}"))!!
+        .get("/api/events", fn(req ServerRequest) -> ServerResponse =>
+            ServerResponse.sse(channel_events(rx)))!!
+        .get("/api/health", fn(req ServerRequest) -> ServerResponse =>
+            ServerResponse.text(StatusCode.OK, "ok"))!!
+
+fn main() Net Time Detach -> () {
+    ro pair = Chan[str].new(8)
+    println("spike listening on http://127.0.0.1:7391 (page, /api/snapshot, /api/events)")
+
+    supervised {
+        // Producer: a fiber that is NOT the server, sending three frames.
+        spawn {
+            mut i = 1
+            while i <= 3 {
+                pair.tx.send("frame ${i} from the producer fiber")
+                300.to_millis().sleep()
+                i += 1
+            }
+            pair.tx.close()
+        }
+        // Server: the accept loop in a spawned fiber, which is the point of the spike.
+        spawn {
+            consume listener = TcpListener.bind("127.0.0.1:7391")!!
+            serve_router(listener, build_router(pair.rx), ServerPolicy.new())
+        }
+    }
+}

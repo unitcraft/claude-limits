@@ -1,0 +1,14 @@
+# Spike T0.1 — Polaris from a clean package: embedded static page, JSON, and SSE
+# fed from a Chan by ANOTHER fiber, with serve_router in a spawn under supervised.
+#
+# Its own package so the spike answers the question the real app asks: can a
+# package that only declares `polaris` as a git dependency do all of this. The
+# app's own manifest is the repository root; this one is deliberately separate.
+
+[package]
+name = "spike_polaris_sse"
+version = "0.0.0"
+description = "T0.1 spike: static page + JSON + SSE from a channel, server in a spawned fiber"
+
+[dependencies]
+polaris = { git = "https://github.com/nv-lang/nova-polaris", version = "0.1" }
