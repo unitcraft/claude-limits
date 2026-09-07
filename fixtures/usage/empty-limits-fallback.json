@@ -1,0 +1,35 @@
+{
+  "_comment": "limits[] EMPTY on purpose: the reader must fall back to five_hour/seven_day. The reference tool does exactly that (scripts/claude_limits.py, rows_of). Not synthetic guesswork: an account that has spent nothing in a window gets resets_at null, which this fixture also carries.",
+  "five_hour": {
+    "utilization": 4.0,
+    "resets_at": "2026-09-07T22:29:00.000000+00:00",
+    "limit_dollars": null,
+    "used_dollars": null,
+    "remaining_dollars": null,
+    "locked_reason": null
+  },
+  "seven_day": {
+    "utilization": 2.0,
+    "resets_at": "2026-09-12T23:00:00.000000+00:00",
+    "limit_dollars": null,
+    "used_dollars": null,
+    "remaining_dollars": null,
+    "locked_reason": null
+  },
+  "limits": [],
+  "extra_usage": {
+    "is_enabled": false,
+    "monthly_limit": null,
+    "used_credits": null,
+    "utilization": null,
+    "currency": null,
+    "decimal_places": null,
+    "disabled_reason": null,
+    "user_disabled": false,
+    "spend_limit_reached": false,
+    "credits_ever_enabled": false,
+    "daily": null,
+    "weekly": null
+  },
+  "member_dashboard_available": false
+}

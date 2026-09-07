@@ -1,0 +1,52 @@
+{
+  "_comment": "TWO weekly_scoped rows. The plan's page and widget must draw one bar per scoped model, not a fixed three: the count comes from limits[], never from a constant. A reader hardcoding three bars passes on `normal.json` and breaks here -- that is why this fixture exists.",
+  "five_hour": {
+    "utilization": 33.0,
+    "resets_at": "2026-09-07T20:00:00.000000+00:00",
+    "locked_reason": null
+  },
+  "seven_day": {
+    "utilization": 47.0,
+    "resets_at": "2026-09-13T07:00:00.000000+00:00",
+    "locked_reason": null
+  },
+  "limits": [
+    {
+      "kind": "session",
+      "group": "session",
+      "percent": 33,
+      "severity": "normal",
+      "resets_at": "2026-09-07T20:00:00.000000+00:00",
+      "scope": null,
+      "is_active": true
+    },
+    {
+      "kind": "weekly_all",
+      "group": "weekly",
+      "percent": 47,
+      "severity": "normal",
+      "resets_at": "2026-09-13T07:00:00.000000+00:00",
+      "scope": null,
+      "is_active": false
+    },
+    {
+      "kind": "weekly_scoped",
+      "group": "weekly",
+      "percent": 72,
+      "severity": "warning",
+      "resets_at": "2026-09-13T07:00:00.000000+00:00",
+      "scope": { "model": { "id": null, "display_name": "Fable" }, "surface": null },
+      "is_active": false
+    },
+    {
+      "kind": "weekly_scoped",
+      "group": "weekly",
+      "percent": 8,
+      "severity": "normal",
+      "resets_at": null,
+      "scope": { "model": { "id": null, "display_name": "Opus" }, "surface": null },
+      "is_active": false
+    }
+  ],
+  "member_dashboard_available": false
+}
