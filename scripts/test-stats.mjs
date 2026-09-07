@@ -1,0 +1,185 @@
+// Structure test for the statistics view (task T2.23), under node.
+//
+//   node scripts/test-stats.mjs
+//
+// The acceptance in 01.5 is "the fixture history renders like the artboard", judged
+// by eye. What an eye cannot judge on a 280x84 chart: whether the line broke at the
+// right gap, whether the lock band covers the hours it claims, whether a card with no
+// per-model limit says so or just shows an empty box. Those are asserted here against
+// fixtures/api/history-7d.json, which the generator derives from a stated shape.
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { Node, installDocument } from './dom-stub.mjs';
+
+const view = new Node('section');
+installDocument({ 'view-stats': view });
+const { renderStats, renderTiles, summaryLine, modelColors } = await import('../src/web/stats.js');
+
+let passed = 0;
+const test = (name, fn) => {
+  try { fn(); passed++; console.log(`  ok   ${name}`); }
+  catch (e) { console.log(`  FAIL ${name}\n       ${e.message}`); process.exitCode = 1; }
+};
+
+const hist = JSON.parse(readFileSync(new URL('../fixtures/api/history-7d.json', import.meta.url)));
+const draw = (kind = '7d') => { renderStats(hist, kind); return view; };
+const first = (n, cls) => n.find((x) => x.className === cls);
+const all = (n, cls) => n.all((x) => x.className === cls);
+
+console.log('the frame');
+
+test('filters, tiles and one card per account', () => {
+  const v = draw();
+  assert.ok(first(v, 'stats-filters'), 'the period row');
+  assert.equal(all(v, 'tile').length, 4);
+  assert.equal(all(v, 'stat-card').length, 3);
+});
+
+test('the selected period is the one marked selected', () => {
+  const v = draw('24h');
+  const chips = all(v, 'chip').filter((c) => c.dataset.range);
+  assert.deepEqual(chips.map((c) => c.attrs['aria-selected']), ['true', 'false', 'false']);
+});
+
+test('the folders control exists but says it does nothing yet', () => {
+  const folder = all(draw(), 'chip').find((c) => c.dataset.group === 'folder');
+  assert.equal(folder.disabled, true);
+  assert.match(folder.title, /not built yet/);
+});
+
+test('an empty history says so instead of drawing an empty frame', () => {
+  renderStats({ accounts: [], series: [], range: null });
+  assert.equal(view.children.length, 1);
+  assert.match(view.children[0].textContent, /no history yet/);
+});
+
+console.log('\ntiles (§6.2)');
+
+test('a locked week is red and names who and when', () => {
+  const t = renderTiles(hist.tiles);
+  const tile = t.children[0];
+  assert.equal(first(tile, 'tile-value').dataset.tone, 'critical');
+  assert.equal(first(tile, 'tile-value').textContent, '2h 40m');
+  assert.match(first(tile, 'tile-note').textContent, /work@example\.org/);
+});
+
+test('a peak of 100 is red, and the count of times is shown', () => {
+  const tile = renderTiles(hist.tiles).children[1];
+  assert.equal(first(tile, 'tile-value').textContent, '100%');
+  assert.equal(first(tile, 'tile-value').dataset.tone, 'critical');
+  assert.match(first(tile, 'tile-note').textContent, /2 times/);
+});
+
+test('no history at all is an em dash, NOT a zero', () => {
+  const t = renderTiles({});
+  const values = all(t, 'tile-value').map((v) => v.textContent);
+  assert.deepEqual(values, ['—', '—', '—', '—'],
+    'zero locked hours and no data are different facts');
+  assert.deepEqual(all(t, 'tile-value').map((v) => v.dataset.tone), [undefined, undefined, undefined, undefined]);
+});
+
+test('a week with zero locked seconds says zero, not no data', () => {
+  const t = renderTiles({ locked: { seconds: 0, when: [] } });
+  assert.equal(first(t.children[0], 'tile-value').textContent, '0m');
+  assert.match(first(t.children[0], 'tile-note').textContent, /nobody was locked/);
+});
+
+console.log('\ncards (§6.3)');
+
+test('three columns per card, always, in fixed order', () => {
+  const v = draw();
+  for (const card of all(v, 'stat-card')) {
+    assert.deepEqual(all(card, 'stat-col').map((c) => c.dataset.column),
+      ['session', 'weekly_all', 'per_model']);
+  }
+});
+
+test('an account with no per-model limit SAYS so rather than showing a blank', () => {
+  const qa = all(draw(), 'stat-card').find((c) => c.dataset.email === 'qa@example.org');
+  const col = all(qa, 'stat-col').find((c) => c.dataset.column === 'per_model');
+  assert.equal(first(col, 'col-now').textContent, 'no per-model limit on this plan');
+  assert.ok(col.find((n) => n.className === 'flat'), 'and draws the dotted baseline');
+});
+
+test('the caption of a column is the LAST sample, per model where there are several', () => {
+  const main = all(draw(), 'stat-card').find((c) => c.dataset.email === 'main@example.com');
+  const caps = all(main, 'col-now').map((n) => n.textContent);
+  assert.match(caps[0], /^now \d+%$/);
+  assert.equal(caps[2], 'Fable 74%');
+});
+
+test('the summary line ranks a lock above a peak', () => {
+  const work = hist.accounts.find((a) => a.email === 'work@example.org');
+  const series = hist.series.filter((s) => s.account_id === work.id);
+  const line = summaryLine(work, series, hist.range);
+  assert.equal(line.tone, 'critical');
+  assert.match(line.text, /^locked 2h 40m this week$/);
+});
+
+test('a gap is reported with its cause, above the peak', () => {
+  const qa = hist.accounts.find((a) => a.email === 'qa@example.org');
+  const series = hist.series.filter((s) => s.account_id === qa.id);
+  const line = summaryLine(qa, series, hist.range);
+  assert.equal(line.tone, 'warning');
+  assert.match(line.text, /gap .* HTTP 429/);
+});
+
+test('a quiet account says peak and never locked', () => {
+  const main = hist.accounts.find((a) => a.email === 'main@example.com');
+  const series = hist.series.filter((s) => s.account_id === main.id);
+  assert.deepEqual(summaryLine(main, series, hist.range),
+    { text: `peak ${main.summary.peak_session}% · never locked`, tone: null });
+});
+
+console.log('\ncharts (§6.4)');
+
+test('a lock is drawn as a band, an open one reaching the right edge', () => {
+  const work = all(draw(), 'stat-card').find((c) => c.dataset.email === 'work@example.org');
+  const bands = all(work, 'band-lock');
+  assert.equal(bands.length, 2);
+  const open = bands[1];
+  assert.equal(Number(open.attrs.x) + Number(open.attrs.width), 280,
+    'the lock that has not ended must reach the edge, not vanish for lacking a `to`');
+});
+
+test('a gap is an amber band that says why', () => {
+  const qa = all(draw(), 'stat-card').find((c) => c.dataset.email === 'qa@example.org');
+  const band = all(qa, 'band-gap')[0];
+  assert.ok(band, 'the 429 must be visible as a band');
+  assert.match(band.textContent, /HTTP 429/);
+});
+
+test('the line BREAKS at the gap instead of crossing it', () => {
+  const qa = all(draw(), 'stat-card').find((c) => c.dataset.email === 'qa@example.org');
+  const line = all(qa, 'line')[0];
+  assert.equal((line.attrs.d.match(/M/g) || []).length, 2,
+    'two runs: a straight segment across a 429 is a measurement nobody took');
+});
+
+test('the session chart of a quiet account has no bands at all', () => {
+  const main = all(draw(), 'stat-card').find((c) => c.dataset.email === 'main@example.com');
+  assert.equal(all(main, 'band-lock').length, 0);
+  assert.equal(all(main, 'band-gap').length, 0);
+});
+
+test('every chart is labelled for a screen reader', () => {
+  for (const chart of all(draw(), 'chart')) {
+    assert.match(chart.attrs['aria-label'], /@/, 'the label must name the account');
+    assert.equal(chart.attrs.role, 'img');
+  }
+});
+
+test('resets are drawn, and the session window has many of them in a week', () => {
+  const main = all(draw(), 'stat-card').find((c) => c.dataset.email === 'main@example.com');
+  const col = all(main, 'stat-col')[0];
+  assert.ok(all(col, 'reset').length > 20, 'a five-hour window resets about 33 times a week');
+});
+
+test('model colours are fixed by name, not by position', () => {
+  const a = modelColors(hist.series);
+  const reversed = modelColors([...hist.series].reverse());
+  assert.deepEqual([...a.entries()], [...reversed.entries()],
+    'a model must not change colour because the backend reordered its series');
+});
+
+console.log(`\n${passed} passed${process.exitCode ? ', SOME FAILED' : ''}`);

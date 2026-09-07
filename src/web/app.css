@@ -345,6 +345,73 @@ main:has(.view-wide:not([hidden])) { max-width: var(--page-width-wide); }
   box-shadow: 0 8px 24px rgba(0, 0, 0, .45);
 }
 
+/* -------------------------------------------------- statistics view (§6) -- */
+
+.stats-filters { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.range-tabs, .group-tabs { display: flex; gap: 4px; padding: 3px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-alt); }
+
+.chip {
+  min-height: 28px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-muted);
+  font: 500 12px/1 var(--font-ui);
+  cursor: pointer;
+}
+.chip:hover { background: var(--surface-hover); color: var(--fg); }
+.chip:focus-visible { outline: 2px solid var(--fg-soft); outline-offset: 2px; }
+.chip[aria-selected="true"] { background: var(--surface-active); color: var(--fg); }
+.chip[disabled] { opacity: .45; cursor: default; }
+
+.legend { display: flex; gap: 10px; margin-left: auto; font-size: 11px; color: var(--fg-muted); }
+.legend-item { display: inline-flex; align-items: center; gap: 5px; }
+.legend-item::before { content: ""; width: 9px; height: 9px; border-radius: 2px; background: var(--swatch, var(--series-1)); }
+
+.tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+.tile { padding: 10px 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; }
+.tile-label { font-size: 11px; color: var(--fg-muted); }
+.tile-value { margin: 3px 0 2px; font: 600 20px/1.1 var(--font-mono); }
+.tile-value[data-tone="critical"] { color: var(--critical-text); }
+.tile-value[data-tone="warning"] { color: var(--warning); }
+.tile-note { font-size: 11px; color: var(--fg-subtle); }
+
+.stat-cards { display: flex; flex-direction: column; gap: 12px; }
+.stat-card { padding: 12px 14px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; }
+.stat-card[data-state="locked"] { background: var(--surface-critical); border-color: var(--border-critical); }
+.stat-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+.stat-summary { font-size: 11px; color: var(--fg-muted); font-family: var(--font-mono); }
+.stat-summary[data-tone="critical"] { color: var(--critical-text); }
+.stat-summary[data-tone="warning"] { color: var(--warning); }
+
+.stat-cols { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.col-title { font-size: 11px; color: var(--fg-soft); margin-bottom: 2px; }
+.col-now { font: 500 11px/1.3 var(--font-mono); color: var(--fg-muted); text-align: right; }
+.hover-readout { min-height: 14px; margin-top: 4px; font: 10.5px/1.3 var(--font-mono); color: var(--fg-muted); text-align: right; }
+
+/* The chart keeps its 280x84 viewBox and stretches; `preserveAspectRatio: none` is
+   deliberate — the shape of the curve carries no meaning that a squeeze would break,
+   and the alternative is empty space beside every chart on a wide screen. */
+.chart { width: 100%; height: 84px; display: block; overflow: visible; }
+.chart .grid { stroke: var(--border); stroke-width: 1; }
+.chart .area { fill: var(--line, var(--normal)); opacity: .12; stroke: none; }
+.chart .line { fill: none; stroke: var(--line, var(--normal)); stroke-width: 2; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+.chart .flat { stroke: var(--fg-subtle); stroke-width: 1.5; stroke-dasharray: 3 4; }
+.chart .reset { stroke: var(--fg-subtle); stroke-width: 1; stroke-dasharray: 2 3; vector-effect: non-scaling-stroke; }
+.chart .band-lock { fill: var(--critical); opacity: .18; }
+.chart .band-gap { fill: var(--warning); opacity: .15; }
+.chart .tick { fill: var(--fg-subtle); font: 10px var(--font-mono); }
+.chart .cursor { stroke: var(--fg-muted); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.chart .cursor-dot { fill: var(--fg); stroke: var(--surface); stroke-width: 1.5; }
+
+/* Below 900 px the three columns stack: three 280-wide charts side by side on a
+   phone are three unreadable charts. */
+@media (max-width: 900px) {
+  .tiles { grid-template-columns: repeat(2, 1fr); }
+  .stat-cols { grid-template-columns: 1fr; }
+}
+
 /* A restarted backend may speak a newer api_version than this script reads, so the
    page asks to be reloaded instead of rendering a shape it was not written for
    (01.3 §5). Amber, not red: nothing is broken yet. */

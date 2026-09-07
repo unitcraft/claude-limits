@@ -10,6 +10,7 @@
 import { isRetryable, retryDelay, MAX_RETRIES } from './format.js';
 import { el, renderList, renderCards, layoutCells } from './render.js';
 import { createReorder } from './reorder.js';
+import { renderStats, RANGES } from './stats.js';
 
 const VIEWS = ['list', 'cards', 'stats'];
 const POLL_WHEN_DEGRADED_MS = 10_000;   // no SSE: ask for a snapshot this often
@@ -27,6 +28,9 @@ const state = {
   apiVersion: null,
   order: null,          // optimistic account order, live only until the server agrees
   reorder: null,
+  history: null,        // last /api/history reply
+  statsRange: '7d',
+  statsLoading: false,
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -41,6 +45,52 @@ function showView(name) {
     b.setAttribute('aria-selected', String(b.dataset.view === name));
   });
   try { localStorage.setItem('view', name); } catch { /* private mode: not fatal */ }
+  // Opened for the first time: the history has not been asked for yet. Fetching it
+  // at load instead would spend a large query on a view most sessions never open.
+  if (name === 'stats' && !state.history) loadHistory(state.statsRange);
+}
+
+/**
+ * History is fetched when the statistics view is first opened and on every period
+ * change — NOT on every snapshot. A week of samples is two orders of magnitude more
+ * data than a snapshot, and it does not change meaningfully between two polls five
+ * minutes apart (01.1 §6.1: the period drives the request).
+ */
+async function loadHistory(rangeKind) {
+  if (state.statsLoading) return;
+  state.statsLoading = true;
+  try {
+    const res = await apiGet(`/api/history?range=${encodeURIComponent(rangeKind)}&by=account`);
+    state.history = await res.json();
+    renderStats(state.history, rangeKind);
+  } catch (e) {
+    const view = document.getElementById('view-stats');
+    // Only when there is nothing to keep: an old chart with a failed refresh behind
+    // it is more use than an error where the chart was.
+    if (view && !state.history) {
+      view.replaceChildren(el('p', 'placeholder', `cannot load history (${e.message})`));
+    }
+  } finally {
+    state.statsLoading = false;
+  }
+}
+
+function setStatsRange(rangeKind) {
+  if (!RANGES.includes(rangeKind) || rangeKind === state.statsRange) return;
+  state.statsRange = rangeKind;
+  try { localStorage.setItem('stats_range', rangeKind); } catch { /* private mode */ }
+  loadHistory(rangeKind);
+}
+
+function initStats() {
+  try { state.statsRange = localStorage.getItem('stats_range') || '7d'; } catch { /* ignore */ }
+  if (!RANGES.includes(state.statsRange)) state.statsRange = '7d';
+  // Delegated: the chips are rebuilt with the view on every render, so a listener
+  // bound to them would be lost the first time the period changed.
+  document.getElementById('view-stats').addEventListener('click', (e) => {
+    const chip = e.target.closest && e.target.closest('.chip[data-range]');
+    if (chip) setStatsRange(chip.dataset.range);
+  });
 }
 
 function initViews() {
@@ -329,6 +379,7 @@ function initVisibility() {
 }
 
 function main() {
+  initStats();          // before initViews: opening on `stats` must find the period
   initViews();
   initVisibility();
   state.reorder = createReorder({

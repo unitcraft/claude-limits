@@ -17,7 +17,14 @@ export class Node {
     this._text = '';
     this.children = [];
     this.dataset = {};
-    this.style = {};
+    // Enough of CSSStyleDeclaration for the page: named properties assigned
+    // directly, plus setProperty for the custom ones (`--swatch`, `--line`), which
+    // cannot be assigned as fields at all in a real DOM.
+    this.style = {
+      _custom: {},
+      setProperty(k, v) { this._custom[k] = String(v); },
+      getPropertyValue(k) { return this._custom[k] ?? ''; },
+    };
     this.attrs = {};
     this.title = '';
     this.parent = null;
@@ -72,7 +79,14 @@ export class Node {
     this.append(...kids);
   }
 
-  setAttribute(k, v) { this.attrs[k] = String(v); }
+  // `class` is mirrored into className because that is what selector matching reads
+  // here, and SVG elements are built with setAttribute('class', ...) — in a real DOM
+  // an SVG element's className is not a string, and querySelector('.chart') still
+  // works off the attribute. Without the mirror every SVG lookup would find nothing.
+  setAttribute(k, v) {
+    this.attrs[k] = String(v);
+    if (k === 'class') this.className = String(v);
+  }
   getAttribute(k) { return this.attrs[k] ?? null; }
   addEventListener(type, fn) { (this.listeners[type] ||= []).push(fn); }
   focus() { this.focused = true; }
@@ -129,6 +143,7 @@ export function installDocument(views = {}) {
   for (const v of Object.values(views)) body.append(v);
   globalThis.document = {
     createElement: (t) => new Node(t),
+    createElementNS: (ns, t) => { const n = new Node(t); n.ns = ns; return n; },
     getElementById: (id) => views[id] || null,
     querySelectorAll: (sel) => body.all((n) => matches(n, sel)),
     body,

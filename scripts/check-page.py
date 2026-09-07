@@ -38,12 +38,32 @@ if re.search(r"<style[\s>]", markup):
 if re.search(r"<script(?![^>]*\bsrc=)[^>]*>", markup):
     bad.append("index.html: inline <script> — the CSP refuses it")
 
-# 3. every var(--x) used must be defined in :root
+# 3. every var(--x) used must be defined in :root -- OR set from the scripts, which
+#    is a different animal and must not be forced into :root.
+#
+#    A design TOKEN lives in :root: one value for the whole page, and a typo in its
+#    name is exactly what this check catches. A LOCAL custom property (`--line` on one
+#    chart, `--swatch` on one legend square) is per-element by nature: it carries a
+#    different value on every node, and a root definition for it would be a value
+#    nobody ever reads. Requiring one would teach the next writer to declare a fake
+#    default just to quiet the guard -- and a guard that trains people to lie to it is
+#    worse than no guard.
+#
+#    So: a var() is accepted when the name is a root token, or when some script
+#    actually sets it (`setProperty('--x'` / `--x: ` inside a style string). A name
+#    that is neither is still the typo this check exists for.
 used = set(re.findall(r"var\((--[a-z0-9-]+)", css))
 root = css.split(":root")[1].split("}")[0] if ":root" in css else ""
 defined = set(re.findall(r"(--[a-z0-9-]+)\s*:", root))
-for miss in sorted(used - defined):
-    bad.append(f"app.css: var({miss}) used but never defined in :root")
+
+set_by_script = set()
+for js in sorted(web.glob("*.js")):
+    text = js.read_text(encoding="utf-8")
+    set_by_script |= set(re.findall(r"setProperty\(\s*['\"](--[a-z0-9-]+)", text))
+    set_by_script |= set(re.findall(r"`?\s*(--[a-z0-9-]+)\s*:", text))
+
+for miss in sorted(used - defined - set_by_script):
+    bad.append(f"app.css: var({miss}) used, not a :root token and set by no script")
 
 print(f"tokens defined: {len(defined)}, tokens used: {len(used)}")
 print(f"external references: {sum(1 for b in bad if 'external' in b)}")
