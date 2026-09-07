@@ -1,0 +1,132 @@
+// format.js — the pure arithmetic and wording of a limit row (task T2.20).
+//
+// Separated from app.js for one reason: these are the parts that can be WRONG in a
+// way nobody sees. A misplaced rounding in the cell geometry or an off-by-one in the
+// elapsed share looks plausible on screen and is only caught by a test — so they
+// live here, take no DOM, and are exercised by scripts/test-format.mjs under node.
+//
+// Everything here follows subplan 01.1 §2. Where the spec gives a formula it is
+// transcribed, not reinvented.
+
+/** Window length in ms: five hours for the session, seven days for the weekly ones. */
+export function windowMs(kind) {
+  return kind === 'session' ? 5 * 3600_000 : 7 * 86400_000;
+}
+
+/**
+ * Share of the window already elapsed, 0..1 (01.1 §2.6). The page computes this
+ * itself from resets_at; the backend sends nothing for it.
+ */
+export function elapsedShare(kind, resetsAtIso, now = Date.now()) {
+  if (!resetsAtIso) return 0;
+  const end = Date.parse(resetsAtIso);
+  if (Number.isNaN(end)) return 0;
+  const w = windowMs(kind);
+  return clamp((now - (end - w)) / w, 0, 1);
+}
+
+export function clamp(x, lo, hi) {
+  return x < lo ? lo : x > hi ? hi : x;
+}
+
+/**
+ * Cell geometry for the "cells" bar style (01.1 §2.2): a cell is either whole or
+ * absent, never clipped. Step 10 px = 8 px cell + 2 px gap; the trailing gap is not
+ * drawn, hence the -2.
+ */
+export function cellGeometry(widthPx, percent, forecastPercent = null) {
+  const n = Math.max(0, Math.floor((widthPx + 2) / 10));
+  if (n === 0) return { cells: 0, barWidth: 0, fillWidth: 0, filledCells: 0, ghostFrom: 0, ghostWidth: 0 };
+  const filled = Math.round(clamp(percent, 0, 100) / 100 * n);
+  const geo = {
+    cells: n,
+    barWidth: n * 10 - 2,
+    filledCells: filled,
+    fillWidth: filled === 0 ? 0 : filled * 10 - 2,
+    ghostFrom: 0,
+    ghostWidth: 0,
+  };
+  // The forecast ghost runs from the filled edge to the predicted cell, and only
+  // when the prediction is ahead of the present (01.1 §2.2).
+  if (forecastPercent != null && forecastPercent > percent) {
+    const to = Math.round(clamp(forecastPercent, 0, 100) / 100 * n);
+    if (to > filled) {
+      geo.ghostFrom = filled * 10;
+      geo.ghostWidth = (to - filled) * 10 - 2;
+    }
+  }
+  return geo;
+}
+
+/**
+ * Two largest units (01.1 §0): `2d 17h`, `1h 02m`, `45m`. Minutes are zero-padded
+ * only when they follow hours — a bare `05m` would read as a clock.
+ */
+export function formatDuration(ms) {
+  const total = Math.max(0, Math.round(ms / 1000));
+  const d = Math.floor(total / 86400);
+  const h = Math.floor((total % 86400) / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  if (d > 0) return `${d}d ${h}h`;
+  if (h > 0) return `${h}h ${String(m).padStart(2, '0')}m`;
+  return `${m}m`;
+}
+
+/**
+ * The reset moment as the row shows it (01.1 §2.4): bare time today, weekday and
+ * time within the week, day and month beyond six days.
+ */
+export function formatResetMoment(resetsAtIso, now = Date.now()) {
+  if (!resetsAtIso) return '';
+  const at = new Date(resetsAtIso);
+  if (Number.isNaN(at.getTime())) return '';
+  const hhmm = at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+  const sameDay = new Date(now).toDateString() === at.toDateString();
+  if (sameDay) return hhmm;
+  if (at.getTime() - now > 6 * 86400_000) {
+    const day = at.getDate();
+    const mon = at.toLocaleDateString('en', { month: 'short' });
+    return `${day} ${mon} ${hhmm}`;
+  }
+  return `${at.toLocaleDateString('en', { weekday: 'short' })} ${hhmm}`;
+}
+
+/** `Tue 13:00 (2d 17h)` — the whole caption of the reset column. */
+export function formatReset(resetsAtIso, now = Date.now()) {
+  if (!resetsAtIso) return '—';
+  const at = Date.parse(resetsAtIso);
+  if (Number.isNaN(at)) return '—';
+  return `${formatResetMoment(resetsAtIso, now)} (${formatDuration(at - now)})`;
+}
+
+/**
+ * The row label (01.1 §2.1). `weekly_scoped` carries the model name; a scoped row
+ * without one would be indistinguishable from another, so it falls back visibly.
+ */
+export function rowLabel(limit) {
+  if (limit.kind === 'session') return 'session 5h';
+  if (limit.kind === 'weekly_all') return 'all 7d';
+  const model = limit.model || (limit.scope && limit.scope.model && limit.scope.model.display_name);
+  return `${model || 'scoped'} 7d`;
+}
+
+/**
+ * Fixed row order (01.1 §2.1): session, all models, then models alphabetically.
+ * A stable order matters more than it looks — rows that reshuffle between polls
+ * make a page impossible to read at a glance.
+ */
+export function sortLimits(limits) {
+  const rank = (l) => (l.kind === 'session' ? 0 : l.kind === 'weekly_all' ? 1 : 2);
+  return [...limits].sort((a, b) =>
+    rank(a) - rank(b) || rowLabel(a).localeCompare(rowLabel(b)));
+}
+
+/**
+ * Severity for colouring. The BACKEND decides it from the user's thresholds, and
+ * the endpoint's own `server_severity` is kept for debugging only (01.1 §2.2).
+ * `locked` is red at any percent — a locked account at 40 % is still locked.
+ */
+export function severityOf(limit) {
+  if (limit.locked_reason) return 'critical';
+  return limit.severity || 'normal';
+}

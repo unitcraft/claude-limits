@@ -7,7 +7,9 @@
 // account rendering arrive with T2.20; the containers stay empty here.
 //
 // Separate file rather than an inline <script>: the CSP refuses inline (01.1 §0).
-'use strict';
+import {
+  elapsedShare, cellGeometry, formatReset, rowLabel, sortLimits, severityOf,
+} from './format.js';
 
 const VIEWS = ['list', 'cards', 'stats'];
 const POLL_WHEN_DEGRADED_MS = 10_000;   // no SSE: ask for a snapshot this often
@@ -129,10 +131,107 @@ function applySnapshot(snap) {
   }
   $('[data-field="placeholder"]').textContent = accounts.length ? '' : 'no logins found';
 
+  renderList(accounts);
   tick();
-  // Rendering of rows and account blocks lands in T2.20; the frame stops here.
   document.dispatchEvent(new CustomEvent('snapshot', { detail: snap }));
 }
+
+// ------------------------------------------------------------- rendering ----
+
+const el = (tag, cls, text) => {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text != null) n.textContent = text;
+  return n;
+};
+
+/** One limit window: name, bar, percent, reset caption (01.1 §2). */
+function renderRow(limit) {
+  const sev = severityOf(limit);
+  const row = el('div', 'row');
+  row.dataset.severity = sev;
+
+  row.append(el('span', 'row-name', rowLabel(limit)));
+
+  const bars = el('div', 'row-bars');
+  const bar = el('div', 'bar');
+  const fill = el('div', 'bar-fill');
+  fill.style.width = `${Math.max(0, Math.min(100, limit.percent ?? 0))}%`;
+  bar.append(fill);
+  if (limit.forecast_percent_at_reset != null && limit.forecast_percent_at_reset > limit.percent) {
+    const ghost = el('div', 'bar-ghost');
+    ghost.style.left = `${limit.percent}%`;
+    ghost.style.width = `${Math.min(100, limit.forecast_percent_at_reset) - limit.percent}%`;
+    bar.append(ghost);
+  }
+  bars.append(bar);
+
+  // The time strip is computed here, not sent: only resets_at and kind are needed
+  // (01.1 §2.6). Reading: fill left of the strip's end means a pace below the window.
+  if (limit.resets_at) {
+    const strip = el('div', 'timebar');
+    const share = elapsedShare(limit.kind, limit.resets_at);
+    const done = el('div', 'timebar-fill');
+    done.style.width = `${(share * 100).toFixed(1)}%`;
+    strip.append(done);
+    strip.title = `time elapsed ${Math.round(share * 100)}%`;
+    bars.append(strip);
+  }
+  row.append(bars);
+
+  const pct = el('span', 'row-pct', limit.percent == null ? '—' : `${Math.round(limit.percent)}%`);
+  row.append(pct);
+
+  const reset = el('div', 'row-reset');
+  reset.append(el('span', 'reset-when', formatReset(limit.resets_at)));
+  if (limit.forecast_label) reset.append(el('span', 'reset-forecast', limit.forecast_label));
+  row.append(reset);
+  return row;
+}
+
+/** One account: header with its state, then its windows in the fixed order. */
+function renderAccount(acc) {
+  const block = el('section', 'account');
+  block.dataset.state = acc.state || 'ok';
+
+  const head = el('header', 'account-head');
+  head.append(el('span', 'account-email', acc.email || 'unknown account'));
+  if (acc.org) head.append(el('span', 'account-org', acc.org));
+  if (acc.dirs && acc.dirs.length) head.append(el('span', 'account-dirs', acc.dirs.join(', ')));
+  block.append(head);
+
+  // A state other than ok replaces the rows with its reason. Never an empty block:
+  // an account with nothing under it is indistinguishable from a broken renderer.
+  if (acc.state && acc.state !== 'ok') {
+    block.append(el('p', 'account-note', acc.message || acc.state));
+    return block;
+  }
+  for (const limit of sortLimits(acc.limits || [])) block.append(renderRow(limit));
+  return block;
+}
+
+function renderList(accounts) {
+  const view = document.getElementById('view-list');
+  view.replaceChildren(...accounts.map(renderAccount));
+  layoutCells();
+}
+
+/**
+ * The "cells" bar style needs pixel widths, so it is applied after layout and again
+ * on resize (01.1 §2.2). Whole cells only — the geometry is in format.js and tested.
+ */
+function layoutCells() {
+  if (document.body.dataset.barStyle !== 'cells') return;
+  for (const bar of $$('.bar')) {
+    const fill = bar.querySelector('.bar-fill');
+    const pct = parseFloat(fill.style.width) || 0;
+    const g = cellGeometry(bar.parentElement.clientWidth, pct);
+    bar.style.width = `${g.barWidth}px`;
+    fill.style.width = `${g.fillWidth}px`;
+    bar.title = `${Math.round(pct)}% · ${g.filledCells} of ${g.cells} cells`;
+  }
+}
+window.addEventListener('resize', layoutCells);
 
 function connect() {
   try {

@@ -189,3 +189,72 @@ main:has(.view-wide:not([hidden])) { max-width: var(--page-width-wide); }
   .topbar { flex-wrap: wrap; }
   .fetched { order: 3; width: 100%; }
 }
+
+
+/* ---------------------------------------------------- account and its rows -- */
+/* Grid from 01.1 §2: 100px name, flexible bar, 44px percent, 170px reset. */
+
+.account {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 14px;
+}
+.account[data-state="stale"], .account[data-state="unknown"], .account[data-state="error"] {
+  background: var(--surface-alt);
+}
+.account[data-state="locked"] {
+  background: var(--surface-critical);
+  border-color: var(--border-critical);
+}
+
+.account-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+.account-email { font-weight: 600; }
+.account-org, .account-dirs { font-size: 11px; color: var(--fg-muted); }
+.account-note { margin: 4px 0 0; font-size: 12px; color: var(--fg-muted); }
+
+.row {
+  display: grid;
+  grid-template-columns: 100px 1fr 44px 170px;
+  gap: 12px;
+  align-items: center;
+  padding: 4px 6px;
+  margin: 0 -6px;
+  border-radius: 6px;
+}
+.row:hover { background: var(--surface-hover); }
+
+.row-name { font-size: 13px; color: var(--fg-soft); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row-bars { display: flex; flex-direction: column; gap: 3px; }
+
+.bar { position: relative; height: 10px; border-radius: 3px; background: var(--track); overflow: hidden; }
+.bar-fill { height: 100%; border-radius: 3px; background: var(--normal); }
+.row[data-severity="warning"] .bar-fill { background: var(--warning); }
+.row[data-severity="critical"] .bar-fill { background: var(--critical); }
+
+/* The forecast ghost: same colour, hatched, so it never reads as already spent. */
+.bar-ghost {
+  position: absolute; top: 0; height: 100%; opacity: .75;
+  background: repeating-linear-gradient(45deg, currentColor 0 2px, transparent 2px 5px);
+  color: var(--normal);
+}
+.row[data-severity="warning"] .bar-ghost { color: var(--warning); }
+.row[data-severity="critical"] .bar-ghost { color: var(--critical); }
+
+.timebar { height: 3px; border-radius: 2px; background: var(--track); }
+.timebar-fill { height: 100%; border-radius: 2px; background: var(--time-fill); }
+
+.row-pct { font: 600 13px/1 var(--font-mono); text-align: right; white-space: nowrap; }
+.row[data-severity="warning"] .row-pct { color: var(--warning); }
+.row[data-severity="critical"] .row-pct { color: var(--critical-text); }
+
+.row-reset { display: flex; flex-direction: column; align-items: flex-end; font-family: var(--font-mono); white-space: nowrap; }
+.reset-when { font-size: 11px; color: var(--fg-muted); }
+.reset-forecast { font-size: 10px; color: var(--fg-subtle); }
+
+/* Below 560 px the reset column drops under the bar (01.1 §1.3) — the one
+   adaptation the spec allows, and no other reflow. */
+@media (max-width: 560px) {
+  .row { grid-template-columns: 100px 1fr 44px; }
+  .row-reset { grid-column: 2 / 4; align-items: flex-start; }
+}
