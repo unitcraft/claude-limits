@@ -93,7 +93,10 @@ export function renderTiles(tiles) {
  * cannot cut through it.
  */
 export function renderChart(seriesList, range, opts = {}) {
-  const colors = opts.colors || new Map();
+  // A FUNCTION, not a map keyed by model: the folders view colours the same chart by
+  // account instead (01.1 §7.3), and a second nearly-identical renderer for that is
+  // how two charts start disagreeing about where a line goes.
+  const colorOf = opts.colorOf || (() => null);
   const node = svg('svg', {
     viewBox: `0 0 ${BOX.w} ${BOX.h}`,
     class: 'chart',
@@ -105,6 +108,16 @@ export function renderChart(seriesList, range, opts = {}) {
   for (const pct of [0, 50, 100]) {
     node.append(svg('line', {
       class: 'grid', x1: 0, x2: BOX.w, y1: yOf(pct), y2: yOf(pct),
+    }));
+  }
+
+  // The occupancy strip of a folder, painted UNDER everything: it is background, and
+  // a band over the line would hide the very thing it explains (01.1 sec.7.3).
+  for (const band of opts.backdrop || []) {
+    node.append(svg('rect', {
+      class: band.email ? 'backdrop' : 'backdrop-empty',
+      x: band.x, width: band.width, y: BOX.top, height: BOX.bottom - BOX.top,
+      style: band.color ? `--line: ${band.color}` : null,
     }));
   }
 
@@ -130,7 +143,7 @@ export function renderChart(seriesList, range, opts = {}) {
 
   // A single series is filled; several are lines only, or the fills would hide each
   // other and the reader could not tell which model is which (§6.4).
-  const single = seriesList.length === 1;
+  const single = seriesList.length === 1 && !opts.noFill;
   for (const s of seriesList) {
     const gaps = s.gaps || [];
     if (single) {
@@ -139,9 +152,12 @@ export function renderChart(seriesList, range, opts = {}) {
     }
     const d = linePath(s.points, range, gaps);
     if (d) {
-      node.append(svg('path', {
-        class: 'line', d, style: colors.get(s.model) ? `--line: ${colors.get(s.model)}` : null,
-      }));
+      const color = colorOf(s);
+      const line = svg('path', { class: 'line', d, style: color ? `--line: ${color}` : null });
+      // The second model of an account is dashed, so the two are told apart without
+      // relying on colour alone (01.1 sec.7.3, and sec.10: colour is never the only carrier).
+      if (s.dashed) line.setAttribute('stroke-dasharray', '4 3');
+      node.append(line);
     }
     // The backend's resets, plus the ones only the samples know about: a window
     // observed across a restart has no `resets_at` anyone recorded (§6.4).
@@ -239,7 +255,7 @@ export function renderStatCard(account, seriesOfAccount, range, rangeKind) {
     c.dataset.column = column.key;
     c.append(el('div', 'col-title', column.title));
     const chart = renderChart(column.series, range, {
-      colors,
+      colorOf: (s) => colors.get(s.model),
       rangeKind: column.key === 'session' ? '24h' : rangeKind,
       label: `${column.title}, ${account.email}`,
     });

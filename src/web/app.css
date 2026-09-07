@@ -405,6 +405,41 @@ main:has(.view-wide:not([hidden])) { max-width: var(--page-width-wide); }
 .chart .cursor { stroke: var(--fg-muted); stroke-width: 1; vector-effect: non-scaling-stroke; }
 .chart .cursor-dot { fill: var(--fg); stroke: var(--surface); stroke-width: 1.5; }
 
+/* ------------------------------------------- statistics by folder (§7) -- */
+
+.view-note {
+  margin: -2px 0 0;
+  font-size: 11px;
+  color: var(--fg-subtle);
+}
+
+.folder-card { padding: 12px 14px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; }
+.folder-name { font-weight: 600; }
+.folder-path { font: 11px var(--font-mono); color: var(--fg-subtle); }
+
+/* The occupancy strip: who held the folder, when. Blocks are positioned in percent
+   so the strip stretches with the columns under it. */
+.occupancy { position: relative; height: 22px; margin: 6px 0 10px; border-radius: 4px; background: var(--track); overflow: hidden; }
+.occ-block {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  padding: 0 6px;
+  background: color-mix(in srgb, var(--occ, var(--series-1)) 35%, transparent);
+  color: var(--fg-soft);
+  font: 500 10.5px/1 var(--font-mono);
+  white-space: nowrap;
+  overflow: hidden;
+}
+/* A stretch with nobody logged in: grey and quieter, but PRESENT. An absent block
+   would look exactly like a folder that was in use the whole time (§7.3). */
+.occ-block[data-empty] { background: color-mix(in srgb, var(--fg-subtle) 25%, transparent); }
+
+.chart .backdrop { fill: var(--line, var(--series-1)); opacity: .10; }
+.chart .backdrop-empty { fill: var(--fg-subtle); opacity: .18; }
+
 /* Below 900 px the three columns stack: three 280-wide charts side by side on a
    phone are three unreadable charts. */
 @media (max-width: 900px) {

@@ -11,6 +11,7 @@ import { isRetryable, retryDelay, MAX_RETRIES } from './format.js';
 import { el, renderList, renderCards, layoutCells } from './render.js';
 import { createReorder } from './reorder.js';
 import { renderStats, RANGES } from './stats.js';
+import { renderFolders } from './folders.js';
 
 const VIEWS = ['list', 'cards', 'stats'];
 const POLL_WHEN_DEGRADED_MS = 10_000;   // no SSE: ask for a snapshot this often
@@ -30,6 +31,7 @@ const state = {
   reorder: null,
   history: null,        // last /api/history reply
   statsRange: '7d',
+  statsGroup: 'account',
   statsLoading: false,
 };
 
@@ -56,13 +58,15 @@ function showView(name) {
  * data than a snapshot, and it does not change meaningfully between two polls five
  * minutes apart (01.1 §6.1: the period drives the request).
  */
-async function loadHistory(rangeKind) {
+async function loadHistory(rangeKind, group = state.statsGroup) {
   if (state.statsLoading) return;
   state.statsLoading = true;
   try {
-    const res = await apiGet(`/api/history?range=${encodeURIComponent(rangeKind)}&by=account`);
+    const res = await apiGet(
+      `/api/history?range=${encodeURIComponent(rangeKind)}&by=${encodeURIComponent(group)}`);
     state.history = await res.json();
-    renderStats(state.history, rangeKind);
+    if (group === 'folder') renderFolders(state.history, rangeKind);
+    else renderStats(state.history, rangeKind);
   } catch (e) {
     const view = document.getElementById('view-stats');
     // Only when there is nothing to keep: an old chart with a failed refresh behind
@@ -82,14 +86,32 @@ function setStatsRange(rangeKind) {
   loadHistory(rangeKind);
 }
 
+/**
+ * Accounts or folders (01.1 sec.6.1). The two are different QUERIES, not two ways of
+ * drawing one reply -- `by=folder` returns an occupancy journal and series split into
+ * per-account segments, which `by=account` has no equivalent of -- so switching
+ * re-fetches rather than re-rendering what is held.
+ */
+function setStatsGroup(group) {
+  if ((group !== 'account' && group !== 'folder') || group === state.statsGroup) return;
+  state.statsGroup = group;
+  state.history = null;
+  try { localStorage.setItem('stats_group', group); } catch { /* private mode */ }
+  loadHistory(state.statsRange, group);
+}
+
 function initStats() {
   try { state.statsRange = localStorage.getItem('stats_range') || '7d'; } catch { /* ignore */ }
   if (!RANGES.includes(state.statsRange)) state.statsRange = '7d';
+  try { state.statsGroup = localStorage.getItem('stats_group') || 'account'; } catch { /* ignore */ }
+  if (state.statsGroup !== 'folder') state.statsGroup = 'account';
   // Delegated: the chips are rebuilt with the view on every render, so a listener
   // bound to them would be lost the first time the period changed.
   document.getElementById('view-stats').addEventListener('click', (e) => {
-    const chip = e.target.closest && e.target.closest('.chip[data-range]');
-    if (chip) setStatsRange(chip.dataset.range);
+    const chip = e.target.closest && e.target.closest('.chip');
+    if (!chip) return;
+    if (chip.dataset.range) setStatsRange(chip.dataset.range);
+    else if (chip.dataset.group) setStatsGroup(chip.dataset.group);
   });
 }
 

@@ -192,6 +192,77 @@ export function seriesByAccount(series) {
 }
 
 /**
+ * The occupancy strip of a folder (§7.3): who was logged in, when, across the whole
+ * range — with the UNCOVERED stretches filled in as `no login` rather than left out.
+ *
+ * The holes are the point. A folder whose login expired two weeks ago has nothing in
+ * its journal for those weeks, and a strip that simply ends there looks identical to
+ * a strip that runs to the edge under a working login. So the gaps are materialised,
+ * with `email: null`, and the renderer paints them grey.
+ *
+ * `records` are the entries of `occupancy[]` for ONE folder; `to: null` means still
+ * current and is clipped to the end of the range.
+ */
+export function occupancySegments(records, range, box = BOX) {
+  const a = Date.parse(range.from);
+  const b = Date.parse(range.to);
+  if (!(b > a)) return [];
+
+  const spans = (records || [])
+    .map((r) => ({
+      email: r.email || null,
+      token_state: r.token_state || null,
+      account_id: r.account_id || null,
+      from: Math.max(a, Date.parse(r.from)),
+      to: Math.min(b, r.to ? Date.parse(r.to) : b),
+    }))
+    .filter((s) => Number.isFinite(s.from) && Number.isFinite(s.to) && s.to > s.from)
+    .sort((x, y) => x.from - y.from);
+
+  const out = [];
+  let cursor = a;
+  const push = (from, to, span) => {
+    if (to <= from) return;
+    const x = round(xOf(from, a, b, box));
+    out.push({
+      x,
+      width: Math.max(0.5, round(xOf(to, a, b, box) - x)),
+      from: new Date(from).toISOString(),
+      to: new Date(to).toISOString(),
+      email: span ? span.email : null,
+      token_state: span ? span.token_state : null,
+      account_id: span ? span.account_id : null,
+    });
+  };
+
+  for (const span of spans) {
+    push(cursor, Math.min(span.from, b), null);       // the hole before this login
+    push(Math.max(cursor, span.from), span.to, span);
+    cursor = Math.max(cursor, span.to);
+  }
+  push(cursor, b, null);                              // and the hole at the end
+  return out;
+}
+
+/**
+ * Colours for accounts, fixed by e-mail at first appearance (§7.1, palette §8) and
+ * unchanged by any filter. A colour that moves between accounts when the data is
+ * re-fetched makes a month of history unreadable at a glance, which is the only way
+ * anyone reads it.
+ */
+export function accountColors(records) {
+  const out = new Map();
+  let i = 0;
+  for (const r of records || []) {
+    const email = r.email;
+    if (!email || out.has(email)) continue;
+    out.set(email, `var(--series-${(i % 3) + 1})`);
+    i += 1;
+  }
+  return out;
+}
+
+/**
  * The three columns of a card (§6.3), in fixed order: the session window, all models,
  * then one line per model. A card always has three columns even when a series is
  * missing — a plan without a per-model limit still gets its column, with the dotted
