@@ -1,8 +1,22 @@
 # nova.toml — claude-limits: usage limits of several Claude accounts.
 #
-# Layout: package root IS the source root (D78 — no separate `src/`), so a module
-# path mirrors the file path: `bin/claude_limits.nv` is `claude_limits.bin.claude_limits`.
-# The module tree this package grows into is plan 01 §3.2.
+# Layout: FLAT FOR NOW, MOVING TO `src/` — decision recorded in plan 01 §3.2.
+#
+# The line that stood here repeated the cancelled rule verbatim ("package root IS
+# the source root, no separate `src/`"). Found 2026-09-07 by the technique window
+# 283 used on the same class: grep for the DATE of the cancelled decision
+# (2026-05-22) instead of guessing directories — a text that outlived a decision
+# carries that date, while its directory has to be guessed. The rule was cancelled
+# by the Plan 195 amendment, spec/decisions/07-modules.md:1112-1122, which makes
+# `[lib] src = "src"` the standard layout for new packages and leaves the flat one
+# legal but not recommended (registry №1026 covers the stale texts in nova).
+#
+# Why the move has not happened yet, and why the manifest still points at the flat
+# path: it changes module declarations, and only the compiler confirms their form —
+# it corrected my guess twice on T0.0 via E_D78_MODULE_PATH_MISMATCH. Plan 01 §3.2
+# says the move travels WITH a build in one slot, not "move now, verify later", so
+# the path below names the file that actually exists today. The machine is under
+# the integrator's gate; the move and its build go in the next slot together.
 #
 # Dependencies are pulled by SEMVER RANGE, not by a pinned tag: the resolver takes
 # the newest matching tag, which is how every sibling package is consumed
@@ -39,7 +53,7 @@ repository = "https://github.com/unitcraft/claude-limits"
 # запись о точке входа и как готовность к тому дню, когда её начнут читать.
 [[bin]]
 name = "claude-limits"
-path = "src/main.nv"
+path = "bin/claude_limits.nv"   # becomes src/main.nv with the move (plan 01 §3.2)
 
 [dependencies]
 http = { git = "https://github.com/nv-lang/nova-http", version = "0.1" }
