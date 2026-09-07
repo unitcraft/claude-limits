@@ -285,7 +285,7 @@ claude-limits/
 │                             path="src/bin/claude_limits.nv"
 │                             + [dependencies] http, tls, polaris, duckdb, sdl (git, по тегам)
 ├── src/                      ВЕСЬ .nv ниже лежит здесь (см. абзац про раскладку выше)
-├── bin/claude_limits.nv      main: аргументы → конфиг → supervised { store; поллеры; сервер; [виджет] }
+│   ├── bin/claude_limits.nv  main: аргументы → конфиг → supervised { store; поллеры; сервер; [виджет] }
 │                             ЕДИНСТВЕННОЕ место печати: `print`/`println` вне entry-модуля
 │                             CU проходят чекер и падают в кодогене (реестр №1017, К1,
 │                             блокер тега). Остальная прелюдия работает: `panic`, `assert`,
