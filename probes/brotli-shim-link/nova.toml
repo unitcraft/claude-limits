@@ -1,0 +1,29 @@
+# Probe: does a package depending on `compress` link when it actually CALLS the
+# brotli decoder?
+#
+# Found while building spike T0.2 (plan 01 Ф.0 п.2): an HTTPS GET through
+# `nova-http` compiles to C and then fails at LINK with four undefined symbols,
+# all of them from compress's own C shim:
+#
+#   lld-link: error: undefined symbol: compress_brotli_dec_new
+#   lld-link: error: undefined symbol: compress_brotli_dec_pull
+#   lld-link: error: undefined symbol: compress_brotli_dec_done
+#   lld-link: error: undefined symbol: compress_brotli_dec_needs_input
+#
+# This package removes http and tls from the picture so the finding cannot be
+# blamed on the depth of the graph.
+
+[lib]
+src = "src"
+
+[package]
+name = "probe_brotli_shim_link"
+version = "0.0.0"
+description = "Probe: compress's C shim is not linked when brotli_decode is reached"
+
+[[bin]]
+name = "probe-brotli-shim-link"
+path = "src/main.nv"
+
+[dependencies]
+compress = { git = "https://github.com/nv-lang/nova-compress", version = "0.1" }

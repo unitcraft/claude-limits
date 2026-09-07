@@ -1,0 +1,225 @@
+// Spike T0.2 — HTTPS to the Claude usage endpoint.
+//
+// Question (plan 01 Ф.0 п.2): does `nova-http` over `nova-tls` reach
+// api.anthropic.com and come back with 200 and JSON, and WHERE does nova-tls take
+// its root certificates from on each OS?
+//
+// The second half is the one that bites later. A TLS stack that works here because
+// some certificate store happens to be present, and fails on a user's machine, fails
+// at the worst possible moment -- and the failure looks like "the network is down",
+// not like "no roots". So the spike prints what it learned about the roots, not only
+// whether the call succeeded.
+//
+// THE TOKEN IS NEVER PRINTED. Not in an error, not truncated, not as a length. It is
+// read from the file the caller names, put straight into the Authorization header,
+// and never touched again. A secret that reaches a terminal stays in that terminal's
+// scrollback, in its log, and in the session transcript, and no later care removes it.
+// This is also why the path is an ARGUMENT: hardcoding it would invite copying the
+// real path into a report.
+//
+//   spike-https-usage <path-to-.credentials.json>
+//
+// Compared against `python scripts/claude_limits.py --once` on kind/percent/resets_at:
+// two independent clients reading one endpoint disagree only if one of them is wrong.
+//
+// STYLE NOTE, learned here from the compiler rather than from memory: multi-line
+// `match` arms carry NO trailing comma (D452, E_MATCH_ARM_COMMA_MULTILINE). The comma
+// separates arms written on ONE line, and nothing else.
+
+module spike_https_usage.main
+
+import http.client.{HttpClient}
+import std.encoding.json.{Json, JsonValue}
+import std.fs
+import std.os
+
+// The endpoint and the header it insists on (plan 01 Ф.0 п.2, README Endpoint).
+// `const`, not `ro`: at module level the partition is strict and a literal is
+// constexpr-eligible (E_RO_FOR_CONSTEXPR_PREFER_CONST, D199). And a `///` doc comment
+// on a bare module-level binding is silently ignored (Plan 45 Ф.3), so this is `//`.
+const USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
+const OAUTH_BETA = "oauth-2025-04-20"
+
+/// `claudeAiOauth.accessToken` out of a Claude Code credentials file.
+///
+/// Returns the token, never logs it, and says only WHICH step failed -- a message
+/// carrying the file's contents would defeat the whole point of not printing it.
+fn read_token(path str) Fs -> Result[str, str] {
+    ro text = match fs.read_text(path.to_path()) {
+        Ok(t) => t
+        Err(e) => return Err("cannot read the credentials file: ${e}")
+    }
+    ro root = match Json.parse(text) {
+        Ok(v) => v
+        Err(_) => return Err("the credentials file is not JSON")
+    }
+    ro obj = match root.object() {
+        Some(o) => o
+        None => return Err("the credentials file is not a JSON object")
+    }
+    ro oauth = match obj.get("claudeAiOauth") {
+        Some(v) => v
+        None => return Err("no claudeAiOauth in the credentials file")
+    }
+    ro fields = match oauth.object() {
+        Some(o) => o
+        None => return Err("claudeAiOauth is not an object")
+    }
+    ro raw = match fields.get("accessToken") {
+        Some(v) => v
+        None => return Err("no accessToken in claudeAiOauth")
+    }
+    match raw.str() {
+        Some(s) => Ok(s)
+        None => Err("accessToken is not a string")
+    }
+}
+
+/// `JsonObject` is declared in std as a bare `type ... alias` with no `export`, so it
+/// cannot be named in a signature here. These take the VALUE and look inside, which
+/// is shorter anyway.
+fn field_str(item JsonValue, key str) -> str {
+    ro fields = match item.object() {
+        Some(o) => o
+        None => return "-"
+    }
+    ro v = match fields.get(key) {
+        Some(x) => x
+        None => return "-"
+    }
+    match v.str() {
+        Some(s) => s
+        None => "-"
+    }
+}
+
+fn field_num(item JsonValue, key str) -> str {
+    ro fields = match item.object() {
+        Some(o) => o
+        None => return "-"
+    }
+    ro v = match fields.get(key) {
+        Some(x) => x
+        None => return "-"
+    }
+    match v.num() {
+        Some(n) => "${n}"
+        None => "-"
+    }
+}
+
+/// The three fields the differential compares, one line per limit window.
+fn print_limits(body str) Io -> bool {
+    ro root = match Json.parse(body) {
+        Ok(v) => v
+        Err(_) => {
+            println("FAIL: the response is not JSON")
+            return false
+        }
+    }
+    ro obj = match root.object() {
+        Some(o) => o
+        None => {
+            println("FAIL: the response is not a JSON object")
+            return false
+        }
+    }
+    ro raw = match obj.get("limits") {
+        Some(v) => v
+        None => {
+            println("FAIL: no limits in the response")
+            return false
+        }
+    }
+    ro limits = match raw.array() {
+        Some(a) => a
+        None => {
+            println("FAIL: limits is not an array")
+            return false
+        }
+    }
+
+    println("limits: ${limits.len()}")
+    for item in limits {
+        // Pulled into locals rather than called inside the interpolation: a nested
+        // double quote inside `${...}` is the kind of thing to check with the
+        // compiler rather than assume, and here it buys nothing.
+        ro kind = field_str(item, "kind")
+        ro pct = field_num(item, "percent")
+        ro at = field_str(item, "resets_at")
+        println("  kind=${kind} percent=${pct} resets_at=${at}")
+    }
+    true
+}
+
+fn main() Http Fs Os Io -> () {
+    ro argv = os.args()
+    if argv.len() < 2 {
+        println("usage: spike-https-usage <path-to-.credentials.json>")
+        println("the token is read from that file and never printed")
+        return
+    }
+
+    ro token = match read_token(argv[1]) {
+        Ok(t) => t
+        Err(why) => {
+            println("FAIL: ${why}")
+            return
+        }
+    }
+
+    println("GET ${USAGE_URL}")
+
+    // WORKAROUND, NOT A CHOICE: `no_decompress()` is here because the build does not
+    // link otherwise. A package whose only dependency is `http` fails at LINK with
+    // four undefined `compress_brotli_dec_*` symbols the moment the decompression
+    // path is reached — compress's C shim is not compiled for a transitive
+    // dependency. Isolated in `probes/brotli-shim-link/` (the same call links when
+    // `compress` is a DIRECT dependency) and written up in its `FINDING.md`.
+    //
+    // It changes behaviour and must not be inherited silently: the endpoint may
+    // answer `content-encoding: br`, and then this client cannot read the body. The
+    // real app needs decompression; this spike only needs to answer whether HTTPS
+    // reaches the host and where the roots come from.
+    ro client = match HttpClient.builder().no_decompress().into_client() {
+        Ok(c) => c
+        Err(e) => {
+            println("FAIL: cannot build the client: ${e}")
+            return
+        }
+    }
+
+    // A fluent CHAIN, which is how the corpus calls this builder
+    // (nova-http/src/client/mock_roundtrip_test.nv:96-99).
+    //
+    // The first version wrote it as `mut req = client.get(...)` and then
+    // `req = req.bearer_auth(token)`. That reads as ordinary Nova and passes the
+    // front end, and then the C backend emits
+    // `req = Nova_RequestBuilder_method_bearer_auth(&(req), token)` — assigning a
+    // POINTER to a value — and clang refuses. Second finding of this build, kept in
+    // `probes/mut-rebind-builder/`.
+    match client
+        .get(USAGE_URL)
+        .bearer_auth(token)
+        .header("anthropic-beta", OAUTH_BETA)
+        .header("accept", "application/json")
+        .send() {
+        Ok(consume res) => {
+            println("status: ${res.status().code()}")
+            match res.into_text() {
+                Ok(body) => {
+                    ro ok = print_limits(body)
+                    if ok {
+                        println("VERDICT: HTTPS reached the endpoint and the JSON parsed")
+                    } else {
+                        println("VERDICT: the call succeeded but the body did not parse")
+                    }
+                }
+                Err(e) => println("FAIL: cannot read the body: ${e}")
+            }
+        }
+        // The interesting failure. A missing root store shows up HERE, and the text
+        // of this error is the answer to the second half of the question.
+        Err(e) => println("FAIL: the request did not complete: ${e}")
+    }
+}

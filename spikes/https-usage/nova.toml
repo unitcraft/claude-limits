@@ -1,0 +1,29 @@
+# Spike T0.2 — HTTPS to the Claude usage endpoint from a clean package.
+#
+# Question (plan 01 Ф.0 п.2): does `nova-http` over `nova-tls` reach
+# api.anthropic.com, and WHERE does nova-tls take the root certificates from on
+# each OS? A TLS stack that works on the developer's machine because a certificate
+# store happens to be there, and fails on a user's, fails at the worst moment.
+#
+# Its own package, like every spike: it answers the question the real app asks --
+# can a package whose only dependency is `http` do this -- and the app's own
+# manifest must not grow a spike's shape.
+#
+# Layout: `.nv` under `src/`, per the owner's rule of 2026-09-07 extended to new
+# packages. The older spike `polaris-sse` predates that rule and keeps its flat
+# layout; nothing is gained by churning a spike that has already answered.
+
+[lib]
+src = "src"
+
+[package]
+name = "spike_https_usage"
+version = "0.0.0"
+description = "T0.2 spike: HTTPS GET of the OAuth usage endpoint, and where the roots come from"
+
+[[bin]]
+name = "spike-https-usage"
+path = "src/main.nv"
+
+[dependencies]
+http = { git = "https://github.com/nv-lang/nova-http", version = "0.1" }

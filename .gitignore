@@ -2,6 +2,11 @@
 # dependency versions and belongs in the repository.
 target/
 
+# Built binaries. `nova build <file>` drops <name>.exe BESIDE the source, while the
+# package rule says built artefacts live in target/ -- so the stray one is ignored
+# rather than moved: moving it would mean wrapping every build command.
+*.exe
+
 # Codegen leaves a <name>.c beside every <name>.nv it compiles. Hand-written
 # shims live under native/ and stay tracked.
 *.c

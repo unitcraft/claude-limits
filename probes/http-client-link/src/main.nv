@@ -1,0 +1,16 @@
+// The plainest possible use of the HTTP client: one GET, built and sent, nothing
+// else. Never executed against a real host -- the question is LINKING.
+//
+// Deliberately no auth, no headers, no JSON, no filesystem: if this fails to link,
+// nothing in the failure can be blamed on the spike's own imports.
+
+module probe_http_client_link.main
+
+import http.client.{HttpClient}
+
+fn main() Http Io -> () {
+    match HttpClient.new().get("http://127.0.0.1:9/never").send() {
+        Ok(consume res) => println("status: ${res.status().code()}")
+        Err(_) => println("the request failed, which is expected -- it LINKED")
+    }
+}

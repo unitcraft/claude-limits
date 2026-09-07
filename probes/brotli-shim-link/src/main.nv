@@ -1,0 +1,38 @@
+// Probe: reaching `brotli_decode` from a package that depends on `compress`.
+//
+// TWO HALVES ON PURPOSE, and the second is the control.
+//
+//   `inflate` is pure Nova -- no FFI, no shim.
+//   `brotli_decode` goes through `native/compress_shim.c`.
+//
+// If the build fails with `compress_brotli_dec_*` undefined while the inflate half
+// is present and fine, the defect is the SHIM of a dependency not being compiled,
+// not "the C pipeline is broken" and not "my graph is too deep". Comment out the
+// brotli call and the same file links: that is the reverse probe, and it is one
+// line rather than a second package.
+//
+// Input is deliberate nonsense. The probe is about LINKING, not decoding: a
+// decoder that returns an error has still proved its symbol resolved.
+
+module probe_brotli_shim_link.main
+
+import compress.{brotli_decode, inflate}
+
+fn main() Io -> () {
+    // `"...".bytes()` is how the corpus makes a byte slice
+    // (nova-compress/src/brotli_test.nv:18); a `[0x1bu8, …]` literal is not a form
+    // the parser takes, and the compiler said so rather than my memory.
+    ro junk = "not really compressed".bytes()
+
+    // Control half: pure Nova, no shim. Must always link.
+    match inflate(junk, 1024) {
+        Ok(out) => println("inflate: ${out.len()} bytes")
+        Err(_) => println("inflate: refused the input, which is fine -- it LINKED")
+    }
+
+    // The half under test.
+    match brotli_decode(junk, 1024) {
+        Ok(out) => println("brotli: ${out.len()} bytes")
+        Err(_) => println("brotli: refused the input, which is fine -- it LINKED")
+    }
+}

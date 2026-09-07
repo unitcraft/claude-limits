@@ -1,0 +1,24 @@
+# Probe: can ANY package whose only dependency is `http` link a client call?
+#
+# Sharpens probes/brotli-shim-link: that one showed a DIRECT dependency on
+# `compress` links. This one asks whether the plainest possible use of the HTTP
+# client -- one GET, no auth, no headers, never actually run -- links at all.
+#
+# If it does not, plan 01's backend is blocked outright, because the app IS an
+# HTTP client. That is a much bigger claim than "brotli is awkward", so it gets
+# its own package rather than a footnote.
+
+[lib]
+src = "src"
+
+[package]
+name = "probe_http_client_link"
+version = "0.0.0"
+description = "Probe: the plainest http client call, does it link"
+
+[[bin]]
+name = "probe-http-client-link"
+path = "src/main.nv"
+
+[dependencies]
+http = { git = "https://github.com/nv-lang/nova-http", version = "0.1" }
