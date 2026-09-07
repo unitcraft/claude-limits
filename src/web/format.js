@@ -130,3 +130,33 @@ export function severityOf(limit) {
   if (limit.locked_reason) return 'critical';
   return limit.severity || 'normal';
 }
+
+/**
+ * May this failure be retried automatically? (01.3 §5, convention §17.)
+ *
+ * Only reads. A 4xx other than 429 means the request itself is wrong, and repeating
+ * it just spends the endpoint's patience — which on this project is not an
+ * abstraction: the machine has already been rate-limited for exactly that.
+ */
+export function isRetryable(method, status) {
+  const safe = method === 'GET' || method === 'HEAD';
+  if (!safe) return false;
+  if (status === 429) return true;
+  if (status >= 400 && status < 500) return false;
+  return status >= 500 || status === 0;     // 0 = network failure, no response
+}
+
+/**
+ * Delay before attempt N (1-based), in ms. `Retry-After` WINS over any computed
+ * value — the server knows when it will be ready and we do not. Otherwise
+ * exponential with jitter, so several tabs do not return in lockstep.
+ *
+ * `rand` is injectable purely so the jitter can be tested.
+ */
+export function retryDelay(attempt, retryAfterSeconds = null, rand = Math.random) {
+  if (retryAfterSeconds != null && retryAfterSeconds >= 0) return retryAfterSeconds * 1000;
+  const base = Math.min(1000 * 2 ** (attempt - 1), 8000);
+  return Math.round(base * (0.75 + rand() * 0.5));      // ±25 %
+}
+
+export const MAX_RETRIES = 3;

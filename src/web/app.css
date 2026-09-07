@@ -258,3 +258,16 @@ main:has(.view-wide:not([hidden])) { max-width: var(--page-width-wide); }
   .row { grid-template-columns: 100px 1fr 44px; }
   .row-reset { grid-column: 2 / 4; align-items: flex-start; }
 }
+
+/* A restarted backend may speak a newer api_version than this script reads, so the
+   page asks to be reloaded instead of rendering a shape it was not written for
+   (01.3 §5). Amber, not red: nothing is broken yet. */
+.reload-note {
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--warning);
+  border-radius: 8px;
+  background: var(--surface-alt);
+  color: var(--warning);
+  font-size: 12px;
+}

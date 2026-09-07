@@ -9,6 +9,7 @@ import assert from 'node:assert/strict';
 import {
   windowMs, elapsedShare, cellGeometry, formatDuration,
   formatResetMoment, formatReset, rowLabel, sortLimits, severityOf,
+  isRetryable, retryDelay, MAX_RETRIES,
 } from '../src/web/format.js';
 
 let passed = 0;
@@ -155,6 +156,45 @@ test('locked is red at any percent', () => {
   assert.equal(severityOf({ percent: 40, severity: 'normal', locked_reason: 'usage_limit_reached' }), 'critical');
   assert.equal(severityOf({ percent: 95, severity: 'warning' }), 'warning');
   assert.equal(severityOf({ percent: 5 }), 'normal');
+});
+
+// -- retry policy (01.3 §5) ---------------------------------------------------
+
+test('only reads retry, and a 4xx other than 429 never does', () => {
+  assert.equal(isRetryable('GET', 500), true);
+  assert.equal(isRetryable('GET', 503), true);
+  assert.equal(isRetryable('GET', 429), true);
+  assert.equal(isRetryable('GET', 0), true, 'a network failure must be retryable');
+  assert.equal(isRetryable('GET', 404), false);
+  assert.equal(isRetryable('GET', 422), false);
+  assert.equal(isRetryable('GET', 412), false);
+});
+
+test('writes are never retried automatically, not even on 429 or 500', () => {
+  for (const s of [429, 500, 503, 0]) {
+    assert.equal(isRetryable('POST', s), false, `POST must not auto-retry on ${s}`);
+    assert.equal(isRetryable('PUT', s), false, `PUT must not auto-retry on ${s}`);
+  }
+});
+
+test('Retry-After wins over the computed backoff', () => {
+  assert.equal(retryDelay(1, 120), 120_000);
+  assert.equal(retryDelay(3, 5), 5_000, 'the header must beat the exponential too');
+  assert.equal(retryDelay(1, 0), 0, 'Retry-After: 0 means now, not "ignore me"');
+});
+
+test('backoff grows, is capped, and carries jitter of ±25%', () => {
+  const mid = () => 0.5;                       // no jitter
+  assert.equal(retryDelay(1, null, mid), 1000);
+  assert.equal(retryDelay(2, null, mid), 2000);
+  assert.equal(retryDelay(3, null, mid), 4000);
+  assert.equal(retryDelay(9, null, mid), 8000, 'must cap, not grow forever');
+  assert.equal(retryDelay(1, null, () => 0), 750);
+  assert.equal(retryDelay(1, null, () => 0.999), 1250);
+});
+
+test('three attempts is the limit', () => {
+  assert.equal(MAX_RETRIES, 3);
 });
 
 console.log(`\n${passed} passed${process.exitCode ? ', SOME FAILED' : ''}`);

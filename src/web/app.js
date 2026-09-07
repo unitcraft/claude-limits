@@ -1,14 +1,15 @@
-// app.js — the page frame's behaviour (task T2.19): view switching, the live
-// indicator, the freshness clock, and the refresh button.
+// app.js — the page's behaviour: view switching and the frame (T2.19), the list
+// rendering (T2.20), live updates and the retry policy (T2.21).
 //
-// What this file does NOT do, on purpose: it never derives a number. Severity, the
-// share of the window elapsed, the forecast and the reset captions all arrive ready
-// from the backend, so that the SDL widget shows the same figures (01.1 §0). Row and
-// account rendering arrive with T2.20; the containers stay empty here.
+// What this file does NOT do, on purpose: it derives no figure except the elapsed
+// share, which 01.1 §2.6 explicitly assigns to the page. Severity, the forecast and
+// the reset captions arrive ready from the backend, so the SDL widget shows the same
+// numbers. The arithmetic it does own lives in format.js and is tested under node.
 //
 // Separate file rather than an inline <script>: the CSP refuses inline (01.1 §0).
 import {
   elapsedShare, cellGeometry, formatReset, rowLabel, sortLimits, severityOf,
+  isRetryable, retryDelay, MAX_RETRIES,
 } from './format.js';
 
 const VIEWS = ['list', 'cards', 'stats'];
@@ -23,6 +24,8 @@ const state = {
   lastEvent: 0,
   es: null,
   pollTimer: null,
+  tickTimer: null,
+  apiVersion: null,
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -100,17 +103,63 @@ function tick() {
 
 // -------------------------------------------------------------- transport ---
 
+/**
+ * A GET with the retry policy of 01.3 §5: up to three attempts, jitter, and
+ * `Retry-After` ahead of any computed wait. Reads only — writes are retried by a
+ * person pressing the button again, never by us, because a retried write can mean
+ * a second action rather than a second look.
+ */
+async function apiGet(path) {
+  let lastErr = null;
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    let status = 0, res = null;
+    try {
+      res = await fetch(path, { headers: { accept: 'application/json' } });
+      status = res.status;
+      if (res.ok) return res;
+      lastErr = new Error(`HTTP ${status}`);
+    } catch (e) {
+      lastErr = e;                       // network failure: status stays 0
+    }
+    if (attempt === MAX_RETRIES || !isRetryable('GET', status)) break;
+    const after = res && res.headers.get('Retry-After');
+    await sleep(retryDelay(attempt, after ? Number(after) : null));
+  }
+  throw lastErr || new Error('request failed');
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
 async function fetchSnapshot() {
   try {
-    const r = await fetch('/api/snapshot', { headers: { accept: 'application/json' } });
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    applySnapshot(await r.json());
+    applySnapshot(await (await apiGet('/api/snapshot')).json());
   } catch (e) {
     // Keep the last good reading and say it is aging: a page that blanks on one
     // failed poll is less useful than one showing a number with its age.
     $('[data-field="placeholder"]').textContent =
       state.snapshot ? '' : `cannot reach the backend (${e.message})`;
   }
+}
+
+/**
+ * The binary serves both the API and this page, so a restarted backend can be a
+ * NEWER one whose responses this script does not understand. `api_version` is read
+ * once at load and compared on every `notice`; a change asks for a reload instead of
+ * rendering a shape it was not written for (01.3 §5).
+ */
+async function checkApiVersion() {
+  try {
+    const health = await (await apiGet('/api/health')).json();
+    if (state.apiVersion == null) { state.apiVersion = health.api_version; return; }
+    if (health.api_version !== state.apiVersion) askReload();
+  } catch { /* health is not worth a visible error: the snapshot path already reports */ }
+}
+
+function askReload() {
+  if ($('.reload-note')) return;
+  const note = el('p', 'reload-note', 'the backend was updated — reload the page');
+  note.setAttribute('role', 'status');
+  $('main').prepend(note);
 }
 
 function applySnapshot(snap) {
@@ -210,9 +259,29 @@ function renderAccount(acc) {
   return block;
 }
 
+/**
+ * Point updates, not a redraw (01.1 §9). The account block is keyed by e-mail: an
+ * existing one is replaced in place, a new one is inserted at its position, a
+ * vanished one is removed. Redrawing the list wholesale would drop the hover, the
+ * focus and any open tooltip on every poll — five times a minute in the degraded
+ * mode, which is exactly when the user is watching closely.
+ */
 function renderList(accounts) {
   const view = document.getElementById('view-list');
-  view.replaceChildren(...accounts.map(renderAccount));
+  const have = new Map(Array.from(view.children).map((n) => [n.dataset.email, n]));
+  const seen = new Set();
+
+  accounts.forEach((acc, i) => {
+    const key = (acc.email || `?${i}`).toLowerCase();
+    seen.add(key);
+    const fresh = renderAccount(acc);
+    fresh.dataset.email = key;
+    const old = have.get(key);
+    if (old) old.replaceWith(fresh);
+    else view.insertBefore(fresh, view.children[i] || null);
+  });
+
+  for (const [key, node] of have) if (!seen.has(key)) node.remove();
   layoutCells();
 }
 
@@ -250,6 +319,20 @@ function connect() {
     try { applySnapshot(JSON.parse(e.data)); } catch { /* malformed frame: keep the old one */ }
   });
   state.es.addEventListener('ping', () => { state.lastEvent = Date.now(); });
+  // A restarted backend announces itself; the version check decides whether this
+  // script can still read what the new one sends (01.3 §5).
+  state.es.addEventListener('notice', (e) => {
+    state.lastEvent = Date.now();
+    try {
+      if (JSON.parse(e.data).level === 'reload') { askReload(); return; }
+    } catch { /* an unreadable notice is still a sign of life, nothing more */ }
+    checkApiVersion();
+  });
+  // Settings changed in another tab: the config is the backend's, not this tab's.
+  state.es.addEventListener('config', () => {
+    state.lastEvent = Date.now();
+    fetchSnapshot();
+  });
   state.es.addEventListener('error', () => {
     setLive('polling');
     if (!state.pollTimer) state.pollTimer = setInterval(fetchSnapshot, POLL_WHEN_DEGRADED_MS);
@@ -282,14 +365,34 @@ async function refresh(btn) {
 
 // ------------------------------------------------------------------- start --
 
+/**
+ * A hidden tab stops its timers and catches up on return (01.1 §9). Without this a
+ * page left open in a background tab keeps a per-second timer running all day for
+ * nobody, and on a laptop that is measurable.
+ */
+function initVisibility() {
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      clearInterval(state.tickTimer);
+      state.tickTimer = null;
+    } else if (!state.tickTimer) {
+      state.tickTimer = setInterval(tick, 1000);
+      tick();                    // catch up at once rather than a second later
+      if (Date.now() - state.lastEvent > SILENCE_LIMIT_MS) fetchSnapshot();
+    }
+  });
+}
+
 function main() {
   initViews();
+  initVisibility();
   setLive('connecting');
   $('[data-action="refresh"]').addEventListener('click', (e) =>
     refresh(e.currentTarget));
+  checkApiVersion();
   fetchSnapshot();
   connect();
-  setInterval(tick, 1000);
+  state.tickTimer = setInterval(tick, 1000);
 }
 
 document.addEventListener('DOMContentLoaded', main);
