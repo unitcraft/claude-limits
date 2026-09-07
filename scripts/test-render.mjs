@@ -108,6 +108,39 @@ test('an account with no limits at all still renders its header', () => {
   assert.equal(list.children[0].all((n) => n.className === 'row').length, 0);
 });
 
+console.log('\naccessibility of a row (§10, acceptance §11 item 11)');
+
+test('every bar is a meter and carries its value', () => {
+  for (const bar of draw().all((n) => n.className === 'bar')) {
+    assert.equal(bar.attrs.role, 'meter');
+    assert.equal(bar.attrs['aria-valuemin'], '0');
+    assert.equal(bar.attrs['aria-valuemax'], '100');
+    assert.match(bar.attrs['aria-valuenow'], /^\d+$/);
+  }
+});
+
+test('the strip and the ghost are hidden, so they are not read as bars of their own', () => {
+  const v = draw();
+  for (const n of [...v.all((x) => x.className === 'timebar'), ...v.all((x) => x.className === 'bar-ghost')]) {
+    assert.equal(n.attrs['aria-hidden'], 'true');
+  }
+});
+
+test('aria-valuetext carries what the hidden parts would have said', () => {
+  const bar = draw().children[0].all((n) => n.className === 'bar')[0];
+  const said = bar.attrs['aria-valuetext'];
+  assert.match(said, /^9%; session 5h;/, 'percent and window first');
+  assert.match(said, /resets /);
+  assert.match(said, /% of the window elapsed/, 'the strip is aria-hidden: this is its only voice');
+  assert.match(said, /forecast \d+% at reset/, 'and the ghost has no other voice either');
+});
+
+test('a locked window says it is locked, not only in red', () => {
+  const bar = draw().children[1].all((n) => n.className === 'bar')[0];
+  assert.match(bar.attrs['aria-valuetext'], /locked: /,
+    'colour is never the only carrier of meaning (§10)');
+});
+
 console.log('\ncards renderer (T2.22)');
 
 test('one card per account, each with a real button as its handle', () => {

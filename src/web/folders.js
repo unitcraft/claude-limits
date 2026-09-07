@@ -8,7 +8,7 @@
 // path — the only differences are that lines are coloured by account instead of by
 // model, and that an occupancy strip is painted under them. Both arrive as options.
 import { BOX, occupancySegments, accountColors } from './chart.js';
-import { renderChart } from './stats.js';
+import { renderChart, attachValuesTable } from './stats.js';
 import { formatDuration } from './format.js';
 import { el } from './render.js';
 
@@ -198,6 +198,10 @@ export function renderFolderCard(folder, history, colors, rangeKind) {
     cols.append(c);
   }
   card.append(cols);
+  // Labelled by ACCOUNT here: in a folder the same window belongs to whoever held it,
+  // and a column headed `session 5h` three times would say nothing.
+  attachValuesTable(card, series,
+    (x) => `${x.email || '?'} ${x.model || x.kind}`);
   return card;
 }
 

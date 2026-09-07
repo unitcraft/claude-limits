@@ -19,6 +19,30 @@ export const el = (tag, cls, text) => {
 };
 
 /**
+ * Everything the bar means, in one sentence (01.1 §10, the example given there:
+ * `74%, Fable, 7 days, resets Tue 13:00` plus `61% of the window elapsed; forecast
+ * 103% at reset`).
+ *
+ * It is ASSEMBLED rather than taken from a field because the three things it must
+ * carry live in three places — the percent on the bar, the elapsed share in a strip
+ * marked `aria-hidden`, the forecast in a ghost marked the same. Both of those are
+ * hidden precisely so they are not read as separate meaningless bars, which leaves
+ * this string as the only place their meaning survives.
+ */
+export function valueText(limit, elapsedPercent = null) {
+  const parts = [`${Math.round(limit.percent ?? 0)}%`, limit.label || rowLabel(limit)];
+  if (limit.locked_reason) parts.push(`locked: ${limit.locked_reason}`);
+  if (limit.resets_at) parts.push(`resets ${formatReset(limit.resets_at)}`);
+  else if (limit.reset_label) parts.push(`resets ${limit.reset_label}`);
+  if (elapsedPercent != null) parts.push(`${elapsedPercent}% of the window elapsed`);
+  const fc = limit.forecast;
+  if (fc && fc.percent_at_reset != null) {
+    parts.push(`forecast ${Math.round(fc.percent_at_reset)}% at reset`);
+  }
+  return parts.join('; ');
+}
+
+/**
  * One limit window: name, bar, percent, reset caption (01.1 §2).
  *
  * WHY SOME VALUES ARE RECOMPUTED THOUGH THE BACKEND SENDS THEM. The response carries
@@ -41,6 +65,14 @@ export function renderRow(limit) {
 
   const bars = el('div', 'row-bars');
   const bar = el('div', 'bar');
+  // A bar is a meter, and it has to SAY so (01.1 §10). Without this a screen reader
+  // reads an empty div: the percent sits in a sibling and the strip and the ghost
+  // carry no text at all, so their meaning has to be folded into `aria-valuetext` —
+  // which is why that string is assembled rather than taken from one field.
+  bar.setAttribute('role', 'meter');
+  bar.setAttribute('aria-valuemin', '0');
+  bar.setAttribute('aria-valuemax', '100');
+  bar.setAttribute('aria-valuenow', String(Math.round(limit.percent ?? 0)));
   const fill = el('div', 'bar-fill');
   fill.style.width = `${Math.max(0, Math.min(100, limit.percent ?? 0))}%`;
   bar.append(fill);
@@ -49,21 +81,26 @@ export function renderRow(limit) {
     const ghost = el('div', 'bar-ghost');
     ghost.style.left = `${limit.percent}%`;
     ghost.style.width = `${Math.min(100, fc.percent_at_reset) - limit.percent}%`;
+    ghost.setAttribute('aria-hidden', 'true');
     bar.append(ghost);
   }
   bars.append(bar);
 
   // The time strip is computed here, not sent: only resets_at and kind are needed
   // (01.1 §2.6). Reading: fill left of the strip's end means a pace below the window.
+  let elapsed = null;
   if (limit.resets_at) {
     const strip = el('div', 'timebar');
     const share = elapsedShare(limit.kind, limit.resets_at);
+    elapsed = Math.round(share * 100);
     const done = el('div', 'timebar-fill');
     done.style.width = `${(share * 100).toFixed(1)}%`;
     strip.append(done);
-    strip.title = `time elapsed ${Math.round(share * 100)}%`;
+    strip.title = `time elapsed ${elapsed}%`;
+    strip.setAttribute('aria-hidden', 'true');   // its meaning goes into valuetext
     bars.append(strip);
   }
+  bar.setAttribute('aria-valuetext', valueText(limit, elapsed));
   row.append(bars);
 
   const pct = el('span', 'row-pct', limit.percent == null ? '—' : `${Math.round(limit.percent)}%`);

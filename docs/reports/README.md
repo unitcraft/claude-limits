@@ -7,3 +7,11 @@ instead of quoting it is not a report.
 
 The report ships in the same commit as the work, so it does not carry that
 commit's own hash; `git log -- docs/reports/<id>.md` gives it.
+
+One file here is deliberately NOT a task report and is named accordingly:
+[F2-acceptance-audit.md](F2-acceptance-audit.md) sorts the eleven acceptance
+lines of subplan 01.1 §11 into "already answerable by machine" and "needs the
+backend", so that T2.26 is a run rather than a hunt for the criteria. It quotes
+its own run verbatim like any report, but it does not close a task, and the
+acceptance itself will arrive as `F2-acceptance.md`. Naming it `T2.26.md` would
+have claimed a task that is not done.

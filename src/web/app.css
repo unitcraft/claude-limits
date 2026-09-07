@@ -440,6 +440,26 @@ main:has(.view-wide:not([hidden])) { max-width: var(--page-width-wide); }
 .chart .backdrop { fill: var(--line, var(--series-1)); opacity: .10; }
 .chart .backdrop-empty { fill: var(--fg-subtle); opacity: .18; }
 
+/* The numbers behind the charts (§10). Small and quiet: it is a way out of the SVG
+   for a screen reader and for copying, not a second presentation of the data. */
+.table-btn {
+  margin-top: 6px;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-subtle);
+  font: 10.5px var(--font-mono);
+  cursor: pointer;
+}
+.table-btn:hover { color: var(--fg-muted); background: var(--surface-hover); }
+.table-btn:focus-visible { outline: 2px solid var(--fg-soft); outline-offset: 2px; }
+.values-slot { max-height: 240px; overflow: auto; margin-top: 6px; }
+.values { width: 100%; border-collapse: collapse; font: 10.5px var(--font-mono); }
+.values th, .values td { padding: 2px 6px; text-align: right; border-bottom: 1px solid var(--border); color: var(--fg-muted); }
+.values th:first-child, .values td:first-child { text-align: left; }
+.values th { position: sticky; top: 0; background: var(--surface); color: var(--fg-soft); }
+
 /* Below 900 px the three columns stack: three 280-wide charts side by side on a
    phone are three unreadable charts. */
 @media (max-width: 900px) {

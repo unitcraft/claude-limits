@@ -185,6 +185,60 @@ export function renderChart(seriesList, range, opts = {}) {
   return node;
 }
 
+/**
+ * The values behind the charts, as a real table (01.1 §10: "a hidden table of values
+ * behind a `table` button in the corner of the card, for screen reading and copying").
+ *
+ * A chart is `role="img"` with a one-line label: that tells a screen reader WHAT it is
+ * and nothing about what it shows. This is the only path to the numbers themselves —
+ * and the only way to get them out of the page at all, since an SVG cannot be
+ * selected and copied.
+ *
+ * Built on demand, not with the card: a week at one sample an hour is 168 rows per
+ * series, and building them for every card of every render would cost far more than
+ * the button that reveals them.
+ */
+export function valuesTable(seriesList, labelOf) {
+  const table = el('table', 'values');
+  const head = el('tr', 'values-head');
+  head.append(el('th', null, 'time'));
+  for (const s of seriesList) head.append(el('th', null, labelOf(s)));
+  table.append(head);
+
+  const times = [...new Set(seriesList.flatMap((s) => (s.points || []).map((p) => p.at)))].sort();
+  const byTime = seriesList.map((s) => new Map((s.points || []).map((p) => [p.at, p.percent])));
+  for (const at of times) {
+    const tr = el('tr');
+    tr.append(el('td', null, new Date(at).toLocaleString()));
+    for (const map of byTime) {
+      const v = map.get(at);
+      // An empty cell, not a zero: a series with no sample at this moment did not
+      // measure zero, and the difference is the whole subject of the gap bands.
+      tr.append(el('td', null, v == null ? '' : `${v}%`));
+    }
+    table.append(tr);
+  }
+  return table;
+}
+
+/** The `table` button and the table it reveals, built the first time it is asked for. */
+export function attachValuesTable(card, seriesList, labelOf) {
+  const btn = el('button', 'table-btn', 'table');
+  btn.setAttribute('type', 'button');
+  btn.setAttribute('aria-expanded', 'false');
+  btn.title = 'the numbers behind these charts';
+  const slot = el('div', 'values-slot');
+  slot.hidden = true;
+
+  btn.addEventListener('click', () => {
+    if (!slot.children.length) slot.append(valuesTable(seriesList, labelOf));
+    slot.hidden = !slot.hidden;
+    btn.setAttribute('aria-expanded', String(!slot.hidden));
+  });
+  card.append(btn, slot);
+  return { btn, slot };
+}
+
 /** The right-hand caption of a column: `now 9%`, or the reason there is no line. */
 function columnCaption(column) {
   if (!column.series.length) {
@@ -267,6 +321,8 @@ export function renderStatCard(account, seriesOfAccount, range, rangeKind) {
     cols.append(c);
   }
   card.append(cols);
+  attachValuesTable(card, seriesOfAccount || [],
+    (x) => (x.kind === 'weekly_scoped' ? `${x.model} 7d` : x.kind === 'session' ? 'session 5h' : 'all 7d'));
   card.append(el('div', 'hover-readout'));
   attachHover(card, range);
   return card;

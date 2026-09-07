@@ -13,7 +13,8 @@ import { Node, installDocument } from './dom-stub.mjs';
 
 const view = new Node('section');
 installDocument({ 'view-stats': view });
-const { renderStats, renderTiles, summaryLine, modelColors } = await import('../src/web/stats.js');
+const { renderStats, renderTiles, summaryLine, modelColors, valuesTable } =
+  await import('../src/web/stats.js');
 
 let passed = 0;
 const test = (name, fn) => {
@@ -173,6 +174,55 @@ test('resets are drawn, and the session window has many of them in a week', () =
   const main = all(draw(), 'stat-card').find((c) => c.dataset.email === 'main@example.com');
   const col = all(main, 'stat-col')[0];
   assert.ok(all(col, 'reset').length > 20, 'a five-hour window resets about 33 times a week');
+});
+
+console.log('\nthe numbers behind the chart (§10, acceptance §11 item 11)');
+
+test('every card has a table button, closed to begin with', () => {
+  for (const card of all(draw(), 'stat-card')) {
+    const btn = first(card, 'table-btn');
+    assert.ok(btn, 'a chart is role=img: without this the numbers are unreachable');
+    assert.equal(btn.tag, 'button');
+    assert.equal(btn.attrs['aria-expanded'], 'false');
+    assert.equal(first(card, 'values-slot').hidden, true);
+  }
+});
+
+test('the table is built only when asked for, and then stays', () => {
+  const card = all(draw(), 'stat-card')[0];
+  const btn = first(card, 'table-btn');
+  const slot = first(card, 'values-slot');
+  assert.equal(slot.children.length, 0, 'a week of samples per card is not built for nobody');
+  btn.listeners.click[0]();
+  assert.equal(slot.hidden, false);
+  assert.equal(btn.attrs['aria-expanded'], 'true');
+  assert.equal(slot.children.length, 1);
+  btn.listeners.click[0]();
+  assert.equal(slot.hidden, true, 'and closes again');
+  assert.equal(slot.children.length, 1, 'without rebuilding');
+});
+
+test('a column per series, a row per sample moment', () => {
+  const main = hist.accounts[0];
+  const series = hist.series.filter((s) => s.account_id === main.id);
+  const table = valuesTable(series, (x) => x.kind);
+  assert.deepEqual(table.children[0].children.map((c) => c.textContent),
+    ['time', 'session', 'weekly_all', 'weekly_scoped']);
+  const moments = new Set(series.flatMap((s) => s.points.map((p) => p.at)));
+  assert.equal(table.children.length - 1, moments.size);
+});
+
+test('a series with no sample at a moment leaves the cell EMPTY, not zero', () => {
+  // qa has a five-hour 429 hole; main does not. Together they force rows where one
+  // side has nothing to say.
+  const mainSession = hist.series.find((s) => s.account_id === hist.accounts[0].id);
+  const qaSeries = hist.series.filter((s) => s.account_id === hist.accounts[2].id);
+  const table = valuesTable([mainSession, ...qaSeries], (x) => x.kind);
+  const blanks = table.children.slice(1).filter((r) => r.children[2].textContent === '');
+  assert.ok(blanks.length >= 4, `the hole must show as empty cells, found ${blanks.length}`);
+  for (const r of blanks) {
+    assert.notEqual(r.children[2].textContent, '0%', 'no sample is not a measurement of zero');
+  }
 });
 
 test('model colours are fixed by name, not by position', () => {
