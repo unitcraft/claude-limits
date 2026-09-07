@@ -1,0 +1,93 @@
+{
+  "etag": "\"a1b2c3-1725641222\"",
+  "path": "C:\\Users\\dev\\AppData\\Roaming\\claude-limits\\claude-limits.toml",
+  "portable": false,
+  "config": {
+    "folders": [
+      {
+        "id": "0192a7f0-0000-7000-8000-000000001001",
+        "path": "C:/accounts",
+        "kind": "parent",
+        "source": "config",
+        "login_dirs": [
+          { "id": "0192a7f0-0000-7000-8000-000000002001", "name": "nv-lang" },
+          { "id": "0192a7f0-0000-7000-8000-000000002002", "name": "dev" },
+          { "id": "0192a7f0-0000-7000-8000-000000002003", "name": "qa" }
+        ],
+        "problem": null
+      },
+      {
+        "id": "0192a7f0-0000-7000-8000-000000001002",
+        "path": "~/.claude",
+        "kind": "single",
+        "source": "config",
+        "login_dirs": [
+          { "id": "0192a7f0-0000-7000-8000-000000002004", "name": ".claude" }
+        ],
+        "problem": null
+      },
+      {
+        "id": "0192a7f0-0000-7000-8000-000000001003",
+        "path": "D:/old/.claude-ops",
+        "kind": "empty",
+        "source": "config",
+        "login_dirs": [],
+        "problem": "no .credentials.json here"
+      }
+    ],
+    "poll": { "interval_sec": 300, "min_interval_sec": 60, "request_timeout_sec": 30 },
+    "thresholds": { "warning": 70, "critical": 90 },
+    "forecast": {
+      "enabled": true,
+      "work_days": ["mon", "tue", "wed", "thu", "fri"],
+      "work_from": "09:00",
+      "work_to": "19:00",
+      "off_hours_rate": 0,
+      "rate_window_days": 3
+    },
+    "server": {
+      "bind": "127.0.0.1",
+      "port": 7391,
+      "allow_lan": false,
+      "access_token_set": false,
+      "tls_cert": null,
+      "tls_key": null,
+      "tls_fingerprint": null
+    },
+    "ui": {
+      "accounts_order": ["main@example.com", "work@example.org"],
+      "hidden_accounts": [],
+      "hide_stale": false,
+      "time_bar": true
+    },
+    "widget": { "enabled": false, "always_on_top": true, "x": 1480, "y": 820, "visible": true },
+    "history": { "keep_days": 30, "rollup_keep_days": 400, "config_versions_keep": 20 },
+    "storage": { "data_dir": null, "backups_keep": 5, "memory_limit": "512MB", "threads": 2 }
+  },
+  "accounts_found": [
+    {
+      "id": "0192a7f0-0000-7000-8000-000000000001",
+      "email": "main@example.com",
+      "org": "Tech Center",
+      "dirs": [{ "id": "0192a7f0-0000-7000-8000-000000002001", "name": "nv-lang" }],
+      "hidden": false
+    },
+    {
+      "id": "0192a7f0-0000-7000-8000-000000000002",
+      "email": "work@example.org",
+      "org": "Personal",
+      "dirs": [
+        { "id": "0192a7f0-0000-7000-8000-000000002002", "name": "dev" },
+        { "id": "0192a7f0-0000-7000-8000-000000002004", "name": ".claude" }
+      ],
+      "hidden": false
+    },
+    {
+      "id": "0192a7f0-0000-7000-8000-000000000003",
+      "email": "qa@example.org",
+      "org": "Tech Center",
+      "dirs": [{ "id": "0192a7f0-0000-7000-8000-000000002003", "name": "qa" }],
+      "hidden": true
+    }
+  ]
+}

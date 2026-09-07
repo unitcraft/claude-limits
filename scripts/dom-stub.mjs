@@ -127,9 +127,29 @@ export class Node {
   get clientWidth() { return 342; }
 }
 
-export const matches = (n, sel) => (sel.startsWith('.')
-  ? String(n.className).split(' ').includes(sel.slice(1))
-  : n.tag === sel);
+/**
+ * `.class`, `tag`, and `[data-x]` / `[data-x="v"]`.
+ *
+ * The attribute form is here because the page uses it and the stub did not: every
+ * querySelectorAll('[data-path]') quietly returned nothing, which made showErrors
+ * paint nothing AND made the test for unmatched errors pass for the wrong reason —
+ * it found no paths, so every error looked unmatched. A selector the stub cannot
+ * parse must never silently mean "no elements".
+ */
+export const matches = (n, sel) => {
+  if (sel.startsWith('.')) return String(n.className).split(' ').includes(sel.slice(1));
+  if (sel.startsWith('[')) {
+    const m = /^\[([a-z-]+)(?:=["']?([^"'\]]*)["']?)?\]$/.exec(sel);
+    if (!m) throw new Error(`dom-stub: selector not supported: ${sel}`);
+    const key = m[1].startsWith('data-')
+      ? m[1].slice(5).replace(/-([a-z])/g, (_, c) => c.toUpperCase())
+      : m[1];
+    const have = m[1].startsWith('data-') ? n.dataset[key] : n.attrs[m[1]];
+    return m[2] === undefined ? have !== undefined : String(have) === m[2];
+  }
+  if (/[.[\]=#\s]/.test(sel)) throw new Error(`dom-stub: selector not supported: ${sel}`);
+  return n.tag === sel;
+};
 
 /**
  * Install a document whose getElementById answers from `views`, keyed by id.

@@ -447,6 +447,116 @@ main:has(.view-wide:not([hidden])) { max-width: var(--page-width-wide); }
   .stat-cols { grid-template-columns: 1fr; }
 }
 
+/* --------------------------------------------- settings panel (§5) ------- */
+
+.settings {
+  position: fixed;
+  top: 62px;
+  right: var(--pad);
+  z-index: 20;
+  width: 400px;
+  max-height: calc(100vh - 84px);
+  overflow-y: auto;
+  padding: 14px 16px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  box-shadow: 0 18px 46px rgba(0, 0, 0, .55);
+}
+.settings-head { margin-bottom: 10px; font-size: 15px; font-weight: 600; }
+.settings-section { padding: 10px 0; border-top: 1px solid var(--border); }
+.section-title { margin: 0 0 6px; font-size: 12px; font-weight: 600; color: var(--fg-soft); }
+.settings-note { margin: 0 0 8px; font-size: 11px; color: var(--fg-subtle); }
+
+.field { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 6px 10px; padding: 5px 0; font-size: 13px; }
+.field-label { color: var(--fg-soft); }
+.field-hint, .field-error { grid-column: 1 / 3; font-size: 11px; color: var(--fg-subtle); }
+/* Empty until the server says otherwise: the page never invents a validation text of
+   its own, so this line is either the server's words or nothing (§5). */
+.field-error:empty { display: none; }
+.field-error { color: var(--critical-text); }
+
+.input {
+  min-width: 96px;
+  min-height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-alt);
+  color: var(--fg);
+  font: 13px var(--font-mono);
+}
+.input:focus-visible { outline: 2px solid var(--fg-soft); outline-offset: 1px; }
+.input[data-invalid] { border-color: var(--critical); }
+
+.toggle {
+  position: relative;
+  width: 34px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  background: var(--track);
+  cursor: pointer;
+}
+.toggle::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--fg-muted);
+  transition: left .12s ease, background .12s ease;
+}
+.toggle[aria-checked="true"] { background: color-mix(in srgb, var(--normal) 45%, transparent); }
+.toggle[aria-checked="true"]::after { left: 16px; background: var(--fg); }
+.toggle:focus-visible { outline: 2px solid var(--fg-soft); outline-offset: 2px; }
+.toggle[disabled] { opacity: .45; cursor: default; }
+.toggle[data-invalid] { border-color: var(--critical); }
+
+.days { display: flex; gap: 4px; }
+.day {
+  width: 26px;
+  min-height: 26px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-alt);
+  color: var(--fg-muted);
+  font: 500 11px var(--font-ui);
+  cursor: pointer;
+}
+.day[aria-pressed="true"] { background: var(--surface-active); color: var(--fg); border-color: var(--border-strong); }
+.day:focus-visible { outline: 2px solid var(--fg-soft); outline-offset: 2px; }
+
+.folder-list { display: flex; flex-direction: column; gap: 6px; }
+.folder-row { display: grid; grid-template-columns: 1fr 28px; gap: 2px 8px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-alt); }
+.folder-row .folder-path { grid-row: 1; font: 11px var(--font-mono); color: var(--fg-soft); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.folder-note { grid-row: 2; grid-column: 1; font-size: 11px; color: var(--fg-subtle); }
+.folder-note[data-tone="warning"] { color: var(--warning); }
+.folder-drop { grid-row: 1 / 3; grid-column: 2; width: 28px; height: 28px; font-size: 15px; line-height: 1; }
+.folder-add { display: grid; grid-template-columns: 1fr auto; gap: 6px; margin-top: 8px; }
+.folder-add .input { min-width: 0; width: 100%; }
+.probe-note { grid-column: 1 / 3; font-size: 11px; color: var(--fg-subtle); }
+.probe-note[data-tone="warning"] { color: var(--warning); }
+
+.settings-foot { display: flex; justify-content: flex-end; gap: 8px; padding-top: 12px; border-top: 1px solid var(--border); }
+.btn {
+  min-height: 32px;
+  padding: 0 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--surface-alt);
+  color: var(--fg-soft);
+  font: 500 13px var(--font-ui);
+  cursor: pointer;
+}
+.btn:hover { background: var(--surface-hover); color: var(--fg); }
+.btn:focus-visible { outline: 2px solid var(--fg-soft); outline-offset: 2px; }
+.btn-primary { background: var(--surface-active); color: var(--fg); }
+
 /* A restarted backend may speak a newer api_version than this script reads, so the
    page asks to be reloaded instead of rendering a shape it was not written for
    (01.3 §5). Amber, not red: nothing is broken yet. */

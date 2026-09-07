@@ -12,6 +12,9 @@ import { el, renderList, renderCards, layoutCells } from './render.js';
 import { createReorder } from './reorder.js';
 import { renderStats, RANGES } from './stats.js';
 import { renderFolders } from './folders.js';
+import {
+  renderSettings, bodyOf, isEmptyDiff, showErrors, unmatchedErrors, probeSummary,
+} from './settings.js';
 
 const VIEWS = ['list', 'cards', 'stats'];
 const POLL_WHEN_DEGRADED_MS = 10_000;   // no SSE: ask for a snapshot this often
@@ -33,6 +36,7 @@ const state = {
   statsRange: '7d',
   statsGroup: 'account',
   statsLoading: false,
+  panel: null,          // the open settings panel, or null
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -348,6 +352,9 @@ function connect() {
   state.es.addEventListener('config', () => {
     state.lastEvent = Date.now();
     state.order = null;
+    // An open panel is now showing a stale etag and stale folder rows; the removed
+    // folder of sec.5.4 must disappear rather than sit there until the next open.
+    if (state.panel) { closeSettings(); openSettings(); }
     fetchSnapshot();
   });
   state.es.addEventListener('error', () => {
@@ -357,6 +364,148 @@ function connect() {
       if (!state.es || state.es.readyState === EventSource.CLOSED) connect();
     }, SSE_RETRY_MS);
   });
+}
+
+// --------------------------------------------------------------- settings ---
+
+/**
+ * Open the panel on a FRESH `GET /api/config` every time (01.1 sec.5). The etag it
+ * carries is the one the save sends back as `If-Match`, so a panel built from a
+ * remembered reply would collect a 412 for a file that changed while it sat closed.
+ */
+async function openSettings() {
+  if (state.panel) { closeSettings(); return; }
+  let reply;
+  try {
+    reply = await (await apiGet('/api/config')).json();
+  } catch (e) {
+    toast(`cannot read the settings (${e.message})`);
+    return;
+  }
+  const panel = renderSettings(reply);
+  panel.addEventListener('click', onPanelClick);
+  document.body.append(panel);
+  state.panel = panel;
+  const firstInput = panel.querySelector('.input');
+  if (firstInput && firstInput.focus) firstInput.focus();
+}
+
+function closeSettings() {
+  if (!state.panel) return;
+  state.panel.remove();
+  state.panel = null;
+}
+
+function onPanelClick(e) {
+  const target = e.target;
+  if (!target || !target.dataset) return;
+  const action = target.dataset.action;
+
+  // A toggle and a day button carry their state in ARIA, which is also what the
+  // collector reads: one place, so a control cannot look on and read off.
+  if (target.className === 'toggle' && !target.disabled) {
+    target.setAttribute('aria-checked', String(target.getAttribute('aria-checked') !== 'true'));
+    return;
+  }
+  if (target.className === 'day') {
+    target.setAttribute('aria-pressed', String(target.getAttribute('aria-pressed') !== 'true'));
+    return;
+  }
+  if (action === 'cancel') { closeSettings(); return; }
+  if (action === 'drop-folder') {
+    const row = target.parentElement;
+    if (row) row.remove();
+    return;
+  }
+  if (action === 'probe') { probeFolder(); return; }
+  if (action === 'save') { saveSettings(); }
+}
+
+/**
+ * `POST /api/folders/probe` (01.3 sec.3.9): say what is in a path BEFORE it is added.
+ * The path goes in the BODY, never in the URL -- a path in a query string ends up in
+ * every log and proxy on the way (01.3 sec.0).
+ */
+async function probeFolder() {
+  const panel = state.panel;
+  if (!panel) return;
+  const input = Array.from(panel.querySelectorAll('.input'))
+    .find((n) => n.dataset.path === 'folders.new');
+  const note = panel.querySelector('.probe-note');
+  const path = input && input.value ? input.value.trim() : '';
+  if (!path) { if (note) note.textContent = 'type a path first'; return; }
+  if (note) note.textContent = 'checking...';
+  try {
+    const res = await fetch('/api/folders/probe', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', accept: 'application/json' },
+      body: JSON.stringify({ path }),
+    });
+    const found = await res.json();
+    const line = probeSummary(res.ok ? found : null);
+    if (note) {
+      note.textContent = line.text;
+      if (line.tone) note.dataset.tone = line.tone; else delete note.dataset.tone;
+    }
+  } catch (err) {
+    if (note) note.textContent = `could not check: ${err.message}`;
+  }
+}
+
+/**
+ * One partial PUT with `If-Match` (01.3 sec.3.8), and the three answers that matter:
+ * 200 closes the panel, 422 paints the fields the server names, 412 says the file
+ * moved and offers to re-read it rather than overwriting what someone else saved.
+ */
+async function saveSettings() {
+  const panel = state.panel;
+  if (!panel) return;
+  const body = bodyOf(panel);
+  if (isEmptyDiff(body)) { closeSettings(); return; }
+
+  let res;
+  try {
+    res = await fetch('/api/config', {
+      method: 'PUT',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json',
+        ...(panel.dataset.etag ? { 'if-match': panel.dataset.etag } : {}),
+      },
+      body: JSON.stringify(body),
+    });
+  } catch (e) {
+    toast(`could not save (${e.message})`);
+    return;
+  }
+
+  if (res.ok) {
+    closeSettings();
+    fetchSnapshot();
+    return;
+  }
+  let problem = {};
+  try { problem = await res.json(); } catch { /* an error with no body is still an error */ }
+
+  if (res.status === 422 || res.status === 400) {
+    const errors = problem.errors || [];
+    showErrors(panel, errors);
+    const left = unmatchedErrors(panel, errors);
+    // Never a silent failure: an error the panel cannot place still has to be read,
+    // or a refused save looks exactly like a successful one.
+    if (!errors.length || left.length) {
+      toast(left.length ? left.map((x) => `${x.field}: ${x.message}`).join('; ')
+        : (problem.detail || `save refused (${res.status})`));
+    }
+    return;
+  }
+  if (res.status === 412 || res.status === 428) {
+    toast('the settings file changed elsewhere - reopening it');
+    closeSettings();
+    openSettings();
+    return;
+  }
+  toast(problem.detail || `save refused (${res.status})`);
 }
 
 // ---------------------------------------------------------------- refresh ---
@@ -413,6 +562,12 @@ function main() {
   setLive('connecting');
   $('[data-action="refresh"]').addEventListener('click', (e) =>
     refresh(e.currentTarget));
+  $('[data-action="settings"]').addEventListener('click', openSettings);
+  // Esc closes the panel wherever the focus is: a popover that can only be dismissed
+  // by finding its Cancel button is a trap for keyboard use (01.1 sec.10).
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && state.panel) closeSettings();
+  });
   checkApiVersion();
   fetchSnapshot();
   connect();
