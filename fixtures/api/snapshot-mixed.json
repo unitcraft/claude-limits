@@ -1,0 +1,93 @@
+{
+  "_pins": "The shape GET /api/snapshot actually returns (01.3 §3.3): accounts[] and limits[] FLAT, joined by account_id. Four accounts covering every state the page must draw: ok, locked at 100%, stale, unknown after a 429.",
+  "fetched_at": "2026-09-07T16:47:02Z",
+  "next_poll_at": "2026-09-07T16:52:02Z",
+  "tz": "Europe/Moscow",
+  "interval_sec": 300,
+  "restored": false,
+  "worst": { "account_id": "acc-0002", "kind": "session", "percent": 100, "severity": "critical" },
+  "accounts": [
+    {
+      "id": "acc-0001",
+      "email": "main@example.com",
+      "org": "Example Org",
+      "dirs": [
+        { "id": "d-1001", "path": "C:/accounts/nv-lang", "name": "nv-lang" },
+        { "id": "d-1002", "path": "C:/accounts/MGTS", "name": "MGTS" }
+      ],
+      "state": "ok", "message": null,
+      "polled_at": "2026-09-07T16:47:02Z", "next_poll_at": "2026-09-07T16:52:02Z",
+      "locked": false, "at_100": false
+    },
+    {
+      "id": "acc-0002",
+      "email": "heavy@example.com",
+      "org": "Example Org",
+      "dirs": [ { "id": "d-1003", "path": "C:/accounts/heavy", "name": "heavy" } ],
+      "state": "ok", "message": null,
+      "polled_at": "2026-09-07T16:47:02Z", "next_poll_at": "2026-09-07T16:52:02Z",
+      "locked": true, "at_100": true
+    },
+    {
+      "id": "acc-0003",
+      "email": "ops@example.org",
+      "org": "Example Inc",
+      "dirs": [ { "id": "d-1004", "path": "C:/accounts/ops", "name": "ops" } ],
+      "state": "stale",
+      "message": "token expired 5 Sep 18:02 · start Claude Code under this login",
+      "polled_at": null, "next_poll_at": null, "locked": false, "at_100": false
+    },
+    {
+      "id": "acc-0004",
+      "email": "qa@example.org",
+      "org": "Example Inc",
+      "dirs": [ { "id": "d-1005", "path": "C:/accounts/qa", "name": "qa" } ],
+      "state": "unknown",
+      "message": "HTTP 429 · retry 19:49 · data 19:41",
+      "polled_at": "2026-09-07T16:41:00Z", "next_poll_at": "2026-09-07T16:49:00Z",
+      "locked": false, "at_100": false
+    }
+  ],
+  "limits": [
+    {
+      "account_id": "acc-0001", "kind": "weekly_scoped", "model": "Opus", "label": "Opus 7d",
+      "percent": 12, "severity": "normal", "server_severity": "normal",
+      "locked": false, "locked_reason": null, "active": false,
+      "resets_at": "2026-09-13T07:00:00Z", "seconds_left": 483178, "reset_label": "Sun 10:00 (5d 14h)",
+      "window_sec": 604800, "elapsed_share": 0.2,
+      "forecast": null
+    },
+    {
+      "account_id": "acc-0001", "kind": "session", "model": null, "label": "session 5h",
+      "percent": 9, "severity": "normal", "server_severity": "normal",
+      "locked": false, "locked_reason": null, "active": true,
+      "resets_at": "2026-09-07T17:50:00Z", "seconds_left": 3780, "reset_label": "20:50 (1h 02m)",
+      "window_sec": 18000, "elapsed_share": 0.79,
+      "forecast": { "percent_at_reset": 11, "runs_out_at": null, "rate_per_hour": 2.3, "basis": "clock", "sample_minutes": 60, "label": "→ 11% at reset", "warning": false }
+    },
+    {
+      "account_id": "acc-0001", "kind": "weekly_all", "model": null, "label": "all 7d",
+      "percent": 74, "severity": "warning", "server_severity": "normal",
+      "locked": false, "locked_reason": null, "active": false,
+      "resets_at": "2026-09-09T10:00:00Z", "seconds_left": 234780, "reset_label": "Tue 13:00 (2d 17h)",
+      "window_sec": 604800, "elapsed_share": 0.61,
+      "forecast": { "percent_at_reset": 103, "runs_out_at": "2026-09-09T09:30:00Z", "rate_per_hour": 2.06, "basis": "working_hours", "sample_minutes": 2160, "label": "ends Tue ~12:30 (2d 17h)", "warning": true }
+    },
+    {
+      "account_id": "acc-0002", "kind": "session", "model": null, "label": "session 5h",
+      "percent": 100, "severity": "critical", "server_severity": "critical",
+      "locked": true, "locked_reason": "usage_limit_reached", "active": true,
+      "resets_at": "2026-09-07T18:10:00Z", "seconds_left": 4980, "reset_label": "21:10 (1h 23m)",
+      "window_sec": 18000, "elapsed_share": 0.72,
+      "forecast": null
+    },
+    {
+      "account_id": "acc-0002", "kind": "weekly_all", "model": null, "label": "all 7d",
+      "percent": 88, "severity": "warning", "server_severity": "warning",
+      "locked": false, "locked_reason": null, "active": false,
+      "resets_at": "2026-09-13T07:00:00Z", "seconds_left": 483178, "reset_label": "Sun 10:00 (5d 14h)",
+      "window_sec": 604800, "elapsed_share": 0.2,
+      "forecast": null
+    }
+  ]
+}
