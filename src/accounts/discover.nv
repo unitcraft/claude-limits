@@ -1,0 +1,191 @@
+// discover.nv — finding Claude Code logins in a folder (task T1.3).
+//
+// Sources: README §Accounts, plan 01 §7 (Каталоги) and §0 (правила опроса), subplan
+// 01.2 §3.2 (`folder_kind`, `dir_layout`), 01.3 §3.9 (what `kind` and `problem` mean).
+//
+// ZERO WRITES IS STRUCTURAL HERE, NOT COUNTED. The task card asks for a mocked `Fs`
+// proving discovery writes nothing. Rather than count writes through a handler, this
+// module talks to a `Dirs` effect that HAS NO WRITE OPERATION AT ALL: three reads and
+// nothing else. A test cannot observe a write because the code cannot express one,
+// and neither can the next person to edit this file — which is the actual guarantee
+// plan 01 decision 6 wants ("каталоги Claude Code остаются только для чтения").
+//
+// The production handler over the real filesystem lives in `real_dirs.nv`; it is the
+// only file in the project allowed to turn these three reads into `Fs` calls.
+
+module accounts.discover
+
+/// Reading a directory tree, and only reading it.
+///
+/// `list` returns bare entry NAMES, not paths: a name cannot accidentally be joined
+/// to the wrong parent, and the test handler then needs no path arithmetic.
+export type Dirs effect {
+    list(path str) -> []str          // entry names; empty for a missing directory
+    exists(path str) -> bool         // a file or a directory
+    is_dir(path str) -> bool
+}
+
+/// What a configured folder turned out to be (01.3 §3.9).
+export type FolderKind enum
+    | Single        // one login: credentials in this directory or in its .claude
+    | Parent        // several child directories, each a login
+    | Empty         // the path exists, no login inside
+    | Missing       // the path does not exist
+
+export fn FolderKind @to_str() -> str =>
+    match @ {
+        Single => "single"
+        Parent => "parent"
+        Empty => "empty"
+        Missing => "missing"
+    }
+
+/// One login directory: where its two files are.
+///
+/// `identity` and `credentials` are FULL paths and may sit in different directories —
+/// that is the whole difficulty of the default layout, where `.claude.json` is BESIDE
+/// `.claude/` rather than inside it (fixtures/dirs/default-layout).
+export type LoginDir value {
+    name str
+    path str
+    identity str        // .claude.json, "" if absent
+    credentials str     // .credentials.json, "" if absent
+}
+
+export type Folder value {
+    path str
+    kind FolderKind
+    logins []LoginDir
+    problem str         // "" when there is nothing to say
+}
+
+/// Constructors, because a bare record literal in a `return` is refused by codegen
+/// ("anonymous record literal without spread not supported"). In tail position the
+/// return type names it; behind `return` it does not, so the literal gets a home.
+export fn LoginDir.of(name str, path str, identity str, credentials str) -> LoginDir =>
+    { name, path, identity, credentials }
+
+export fn Folder.of(path str, kind FolderKind, logins []LoginDir, problem str) -> Folder =>
+    { path, kind, logins, problem }
+
+const CREDS = ".credentials.json"
+const IDENT = ".claude.json"
+const CLAUDE_DIR = ".claude"
+
+// ── paths ────────────────────────────────────────────────────────────────────
+
+/// Forward slashes, no trailing separator (task card: "UNC-путь WSL нормализуется").
+///
+/// A WSL path arrives as `\\wsl.localhost\Ubuntu\home\me\.claude\` and must become
+/// `//wsl.localhost/Ubuntu/home/me/.claude`. The leading `\\` is NOT special once the
+/// slashes are turned round: `//` at the start of a UNC path is meaningful and is
+/// preserved, while a trailing separator is noise that makes the same folder look
+/// like two different keys.
+export fn normalise(path str) -> str {
+    mut out = ""
+    for ch in path.chars() {
+        if ch == '\\' { out = "${out}/" } else { out = "${out}${ch}" }
+    }
+    if out == "/" { return out }
+    if out == "//" { return out }
+    match out.strip_suffix("/") {
+        Some(s) => s
+        None => out
+    }
+}
+
+/// Join, assuming both sides are already normalised.
+export fn under(base str, name str) -> str {
+    if base == "" { return name }
+    if name == "" { return base }
+    ro trimmed = match base.strip_suffix("/") {
+        Some(s) => s
+        None => base
+    }
+    "${trimmed}/${name}"
+}
+
+/// The last segment of a path — what a person calls the folder.
+export fn leaf(path str) -> str {
+    ro p = normalise(path)
+    match p.rsplit_once("/") {
+        Some((_, tail)) => if tail == "" { p } else { tail }
+        None => p
+    }
+}
+
+// ── the two layouts ──────────────────────────────────────────────────────────
+
+/// Is this directory itself a login, and where are its two files?
+///
+/// TWO LAYOUTS, and the first one is the trap (fixtures/dirs/README):
+///
+///   default        `~/.claude/.credentials.json` with `~/.claude.json` BESIDE it.
+///                  Reading the identity from inside `.claude/` finds no e-mail, and
+///                  the account then shows as a bare path with no name on it.
+///   CLAUDE_CONFIG_DIR   both files inside one directory.
+export fn login_at(path str) Dirs -> Option[LoginDir] {
+    ro dir = normalise(path)
+
+    // CLAUDE_CONFIG_DIR layout: both files here.
+    ro here_creds = under(dir, CREDS)
+    if Dirs.exists(here_creds) {
+        ro here_ident = under(dir, IDENT)
+        ro ident = if Dirs.exists(here_ident) { here_ident } else { "" }
+        return Some(LoginDir.of(leaf(dir), dir, ident, here_creds))
+    }
+
+    // Default layout: credentials inside `.claude/`, identity beside it.
+    ro nested = under(dir, CLAUDE_DIR)
+    ro nested_creds = under(nested, CREDS)
+    if Dirs.exists(nested_creds) {
+        ro beside_ident = under(dir, IDENT)
+        ro inner_ident = under(nested, IDENT)
+        mut ident = ""
+        if Dirs.exists(beside_ident) {
+            ident = beside_ident
+        } else if Dirs.exists(inner_ident) {
+            // Not the documented shape, but harmless to accept: if the identity is
+            // inside, use it rather than reporting an account with no name.
+            ident = inner_ident
+        }
+        return Some(LoginDir.of(leaf(dir), dir, ident, nested_creds))
+    }
+
+    None
+}
+
+/// Classify a configured folder and list every login under it.
+export fn scan(path str) Dirs -> Folder {
+    ro dir = normalise(path)
+
+    if !Dirs.exists(dir) {
+        return Folder.of(dir, Missing, [], "no such folder")
+    }
+    if !Dirs.is_dir(dir) {
+        return Folder.of(dir, Missing, [], "not a folder")
+    }
+
+    // A folder that is itself a login is `single`, and its children are NOT searched:
+    // a login directory contains a `.claude` of its own and searching on would report
+    // the same account twice.
+    match login_at(dir) {
+        Some(one) => return Folder.of(dir, Single, [one], "")
+        None => {}
+    }
+
+    mut found []LoginDir = []
+    for name in Dirs.list(dir) {
+        ro child = under(dir, name)
+        if !Dirs.is_dir(child) { continue }
+        match login_at(child) {
+            Some(one) => found.push(one)
+            None => {}
+        }
+    }
+
+    if found.len() == 0 {
+        return Folder.of(dir, Empty, [], "no ${CREDS} here")
+    }
+    Folder.of(dir, Parent, found, "")
+}

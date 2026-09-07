@@ -1,0 +1,219 @@
+// Tests for discover.nv — task T1.3.
+//
+//   ./nova.sh test src/accounts/ --filter discover
+//
+// The tree below mirrors `fixtures/dirs/` exactly, entry for entry. It is served
+// through a `Dirs` handler rather than read from disk for the same reason the config
+// tests embed their fixtures: a test that reads the filesystem depends on the working
+// directory the runner picks, and the fixtures' own README already pins what each
+// case means.
+//
+// ZERO WRITES: `Dirs` has three operations and all three are reads. The handler below
+// is the whole surface the discovery code can reach, so a write is not something this
+// test has to catch -- it is something the code cannot say. That is the acceptance
+// item "мок Fs подтверждает ноль записей", met by construction instead of by counting.
+
+module accounts.discover_test
+
+import discover.{Dirs, Folder, LoginDir, scan, login_at, normalise, under, leaf}
+
+// The fixture tree, as flat lists. Directories first, then files.
+//
+// FUNCTIONS, not `const` arrays: a module-level array constant does not survive
+// codegen here -- the emitted C references an undeclared `DIRS_PRESENT`. A function
+// returning the literal is the working form, and the literal is typed by the return.
+fn dirs_present() -> []str => [
+    "/fx",
+    "/fx/default-layout",
+    "/fx/default-layout/.claude",
+    "/fx/config-dir-layout",
+    "/fx/config-dir-layout/work",
+    "/fx/no-login",
+    "/fx/both-identities",
+    "/fx/both-identities/.claude",
+    "/fx/two-dirs-one-account",
+    "/fx/two-dirs-one-account/same-email-a",
+    "/fx/two-dirs-one-account/same-email-b",
+]
+
+fn files_present() -> []str => [
+    "/fx/default-layout/.claude.json",
+    "/fx/default-layout/.claude/.credentials.json",
+    "/fx/config-dir-layout/work/.claude.json",
+    "/fx/config-dir-layout/work/.credentials.json",
+    "/fx/no-login/README.txt",
+    // A directory where BOTH identity files exist. Not in fixtures/dirs, and added
+    // here on purpose: without it the rule "the one BESIDE wins" cannot fail, and a
+    // reverse probe that flips the priority stays green. Found exactly that way.
+    "/fx/both-identities/.claude.json",
+    "/fx/both-identities/.claude/.claude.json",
+    "/fx/both-identities/.claude/.credentials.json",
+    "/fx/two-dirs-one-account/same-email-a/.claude.json",
+    "/fx/two-dirs-one-account/same-email-a/.credentials.json",
+    "/fx/two-dirs-one-account/same-email-b/.claude.json",
+    "/fx/two-dirs-one-account/same-email-b/.credentials.json",
+]
+
+fn contains(list []str, want str) -> bool {
+    for x in list {
+        if x == want { return true }
+    }
+    false
+}
+
+/// Entry NAMES directly under `path`.
+fn children_of(path str) -> []str {
+    mut out []str = []
+    ro prefix = "${path}/"
+    for d in dirs_present() {
+        match d.strip_prefix(prefix) {
+            Some(rest) => if !rest.contains("/") { out.push(rest) }
+            None => {}
+        }
+    }
+    for f in files_present() {
+        match f.strip_prefix(prefix) {
+            Some(rest) => if !rest.contains("/") { out.push(rest) }
+            None => {}
+        }
+    }
+    out
+}
+
+fn fake_dirs[T](body fn() Dirs -> T) -> T =>
+    with Dirs = effect Dirs {
+        list(path) -> []str { children_of(path) }
+        exists(path) -> bool { contains(dirs_present(), path) || contains(files_present(), path) }
+        is_dir(path) -> bool { contains(dirs_present(), path) }
+    } {
+        body()
+    }
+
+// ── the two layouts ──────────────────────────────────────────────────────────
+
+test "default layout: credentials inside .claude, identity BESIDE it" {
+    ro got = fake_dirs(fn() -> Option[LoginDir] => login_at("/fx/default-layout"))
+    match got {
+        None => assert(false)
+        Some(one) => {
+            assert(one.credentials == "/fx/default-layout/.claude/.credentials.json")
+            // The trap: reading the identity from INSIDE .claude finds no e-mail and
+            // the account shows as a bare path.
+            assert(one.identity == "/fx/default-layout/.claude.json")
+            assert(one.name == "default-layout")
+        }
+    }
+}
+
+test "when both identity files exist, the one BESIDE .claude wins" {
+    ro got = fake_dirs(fn() -> Option[LoginDir] => login_at("/fx/both-identities"))
+    match got {
+        None => assert(false)
+        Some(one) => {
+            // Reading the identity from INSIDE .claude is the documented trap: that
+            // file carries no e-mail, and the account then shows as a bare path.
+            assert(one.identity == "/fx/both-identities/.claude.json")
+        }
+    }
+}
+
+test "CLAUDE_CONFIG_DIR layout: both files in one directory" {
+    ro got = fake_dirs(fn() -> Option[LoginDir] => login_at("/fx/config-dir-layout/work"))
+    match got {
+        None => assert(false)
+        Some(one) => {
+            assert(one.credentials == "/fx/config-dir-layout/work/.credentials.json")
+            assert(one.identity == "/fx/config-dir-layout/work/.claude.json")
+            assert(one.name == "work")
+        }
+    }
+}
+
+test "a directory with no credentials is not a login" {
+    ro got = fake_dirs(fn() -> Option[LoginDir] => login_at("/fx/no-login"))
+    assert(got.is_none())
+}
+
+// ── classifying a configured folder ──────────────────────────────────────────
+
+test "a folder that is itself a login is single, and its children are not searched" {
+    ro f = fake_dirs(fn() -> Folder => scan("/fx/default-layout"))
+    assert(f.kind.to_str() == "single")
+    assert(f.logins.len() == 1)
+    assert(f.problem == "")
+}
+
+test "a parent yields EVERY child that has a login" {
+    ro f = fake_dirs(fn() -> Folder => scan("/fx/two-dirs-one-account"))
+    assert(f.kind.to_str() == "parent")
+    assert(f.logins.len() == 2)
+    assert(f.logins[0].name == "same-email-a")
+    assert(f.logins[1].name == "same-email-b")
+}
+
+test "a parent skips children that are not logins" {
+    ro f = fake_dirs(fn() -> Folder => scan("/fx"))
+    assert(f.kind.to_str() == "parent")
+    // Under /fx only `default-layout` and `both-identities` are logins in their own
+    // right; config-dir-layout and two-dirs-one-account hold their logins one level
+    // deeper, and no-login has none at all. Scanning is ONE level, deliberately: a
+    // recursive walk of a home directory is slow and finds other people's trees.
+    assert(f.logins.len() == 2)
+    assert(f.logins[0].name == "default-layout")
+    assert(f.logins[1].name == "both-identities")
+}
+
+test "a folder with no login inside is empty, and says why" {
+    ro f = fake_dirs(fn() -> Folder => scan("/fx/no-login"))
+    assert(f.kind.to_str() == "empty")
+    assert(f.logins.len() == 0)
+    assert(f.problem == "no .credentials.json here")
+}
+
+test "a path that is not there is missing, not empty" {
+    ro f = fake_dirs(fn() -> Folder => scan("/fx/nowhere"))
+    assert(f.kind.to_str() == "missing")
+    assert(f.problem == "no such folder")
+}
+
+test "a file given where a folder was expected is missing, not a login" {
+    ro f = fake_dirs(fn() -> Folder => scan("/fx/no-login/README.txt"))
+    assert(f.kind.to_str() == "missing")
+    assert(f.problem == "not a folder")
+}
+
+// ── paths ────────────────────────────────────────────────────────────────────
+
+test "a WSL UNC path becomes forward slashes with no trailing separator" {
+    ro wsl = normalise("\\\\wsl.localhost\\Ubuntu\\home\\me\\.claude\\")
+    assert(wsl == "//wsl.localhost/Ubuntu/home/me/.claude")
+    // The leading `//` is meaningful on a UNC path and must survive.
+    assert(normalise("\\\\wsl.localhost\\Ubuntu").starts_with("//"))
+}
+
+test "normalise is idempotent, and a bare root survives" {
+    ro once = normalise("C:\\accounts\\")
+    assert(once == "C:/accounts")
+    assert(normalise(once) == once)
+    assert(normalise("/") == "/")
+    assert(normalise("//") == "//")
+}
+
+test "the same folder written two ways is ONE key" {
+    // Why normalisation exists at all: a trailing slash or a backslash would make one
+    // folder look like two, and the same account would be polled twice.
+    assert(normalise("C:\\a\\b") == normalise("C:/a/b/"))
+}
+
+test "under joins without doubling the separator" {
+    assert(under("/a", "b") == "/a/b")
+    assert(under("/a/", "b") == "/a/b")
+    assert(under("", "b") == "b")
+    assert(under("/a", "") == "/a")
+}
+
+test "leaf is what a person calls the folder" {
+    assert(leaf("/fx/two-dirs-one-account/same-email-a") == "same-email-a")
+    assert(leaf("C:\\Users\\dev\\.claude\\") == ".claude")
+    assert(leaf("solo") == "solo")
+}
