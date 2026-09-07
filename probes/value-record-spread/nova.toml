@@ -1,0 +1,20 @@
+# Probe: updating a `value` record with the spread form emits C that does not compile.
+#
+# Second carrier of one shape, both found on 2026-09-08 while writing plan 01:
+#   1. `req = req.header(...)` on a `mut @ -> @` builder (spike T0.2)
+#   2. `x = { ...x, field: v }` on a value record (task T1.1)
+# In both, the emitted C assigns a POINTER to a value and clang refuses. Neither is
+# rejected by the front end: the Nova reads fine and the failure arrives from the
+# C compiler, naming its own symbols.
+
+[lib]
+src = "src"
+
+[package]
+name = "probe_value_record_spread"
+version = "0.0.0"
+description = "Probe: spread-update of a value record emits pointer-to-value assignment"
+
+[[bin]]
+name = "probe-value-record-spread"
+path = "src/main.nv"

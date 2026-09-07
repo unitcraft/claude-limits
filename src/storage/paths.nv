@@ -1,0 +1,183 @@
+// paths.nv — where every file of claude-limits lives (task T1.1, subplan 01.2 §1).
+//
+// SHAPE: a pure core and a thin effectful skin. `resolve` takes a record of facts
+// about the machine and returns the paths; `discover` is the only part that touches
+// `Os` and `Fs` and does nothing but fill that record in.
+//
+// This is not ceremony. The table in 01.2 §1 has three overrides per entry, a
+// portable mode that moves everything, and two different platforms — that is a lot
+// of branches, and branches that can only be exercised by setting real environment
+// variables on a real machine are branches nobody exercises. With the split, the
+// whole table is checked in `paths_test.nv` without an OS.
+//
+// Paths are `str`, not `Path`: they are assembled lexically here and become `Path`
+// at the point of use (`s.to_path()`). A `Path` carries a host style, and this module
+// deliberately answers questions about the OTHER platform too — that is what makes
+// the Windows rows testable on Linux and back.
+
+module storage.paths
+
+/// Everything about the machine that the table of 01.2 §1 depends on. Empty string
+/// means "not set" throughout — the table itself has no meaningful empty values, so
+/// there is nothing to confuse it with.
+/// Fields are plain, not `ro`: this record is ASSEMBLED field by field, by `discover`
+/// and by the tests. The spread form `{ ...base, field: v }` would read better and is
+/// not usable — it emits C that assigns a pointer to a value and clang refuses, the
+/// same shape as the builder rebinding found in spike T0.2. Probe:
+/// `probes/value-record-spread/`.
+export type PathsInput value {
+    windows bool
+    exe_dir str
+    home str
+    appdata str            // %APPDATA%
+    local_appdata str      // %LOCALAPPDATA%
+    xdg_config str         // $XDG_CONFIG_HOME
+    xdg_data str           // $XDG_DATA_HOME
+    xdg_state str          // $XDG_STATE_HOME
+    portable bool          // a claude-limits.toml lies beside the binary
+    config_override str    // --config / CLAUDE_LIMITS_CONFIG
+    data_override str      // --data-dir / [storage] data_dir / CLAUDE_LIMITS_DATA
+    log_override str       // --log
+    key_override str       // CLAUDE_LIMITS_DB_KEY_FILE
+}
+
+/// Every path the app needs, resolved. Directories have no trailing separator.
+export type Paths value {
+    ro config_dir str
+    ro data_dir str
+    ro log_dir str
+    ro config_file str
+    ro db_file str
+    ro wal_file str
+    ro temp_dir str
+    ro backup_dir str
+    ro log_file str
+    ro key_file str
+    ro instance_file str
+    ro portable bool
+}
+
+const APP = "claude-limits"
+
+/// Join with the platform's separator, tolerating a trailing one on the left.
+///
+/// `strip_suffix` rather than index arithmetic: `str` has no `slice` and no `len` at
+/// all — a string has three diverging lengths, so the lens model retired both
+/// (E_STR_NO_LEN, D249). The API that remains is better anyway; the first version of
+/// this file counted bytes by hand.
+export fn join(base str, name str, windows bool) -> str {
+    if base == "" { return name }
+    if name == "" { return base }
+    ro sep = if windows { "\\" } else { "/" }
+    ro no_slash = match base.strip_suffix("/") {
+        Some(s) => s
+        None => base
+    }
+    ro trimmed = match no_slash.strip_suffix("\\") {
+        Some(s) => s
+        None => no_slash
+    }
+    "${trimmed}${sep}${name}"
+}
+
+/// The directory part of a file path, for the `--config FILE` override: the override
+/// names a FILE (01.2 §1), and the key and the instance id sit beside it.
+///
+/// On Windows BOTH separators count, so both are tried and the later cut wins. On
+/// POSIX a backslash is an ordinary character in a file name and must not cut.
+export fn dir_of(path str, windows bool) -> str {
+    ro by_slash = match path.rsplit_once("/") {
+        Some((head, _)) => head
+        None => ""
+    }
+    ro by_back = if windows {
+        match path.rsplit_once("\\") {
+            Some((head, _)) => head
+            None => ""
+        }
+    } else {
+        ""
+    }
+    // The longer head is the later separator: both are prefixes of the same string.
+    ro head = if by_back.byte_len() > by_slash.byte_len() { by_back } else { by_slash }
+    if head == "" { return path }
+    head
+}
+
+/// The whole table of 01.2 §1, as one pure function.
+///
+/// ORDER OF PRECEDENCE, and it is the order the table states: an explicit override
+/// beats portable mode, and portable mode beats the user's directories. A flag the
+/// person typed is the least surprising thing in the room; a file beside the binary
+/// is a decision they made earlier; the OS defaults are what happens when they said
+/// nothing at all.
+export fn resolve(input PathsInput) -> Paths {
+    ro win = input.windows
+    ro cfg_dir = config_dir_of(input)
+    ro dat_dir = data_dir_of(input, cfg_dir)
+    ro lg_dir = log_dir_of(input, dat_dir)
+
+    ro cfg_file = if input.config_override != "" {
+        input.config_override
+    } else {
+        join(cfg_dir, "${APP}.toml", win)
+    }
+
+    ro key = if input.key_override != "" {
+        input.key_override
+    } else {
+        join(cfg_dir, "${APP}.key", win)
+    }
+
+    {
+        config_dir: cfg_dir,
+        data_dir: dat_dir,
+        log_dir: lg_dir,
+        config_file: cfg_file,
+        db_file: join(dat_dir, "${APP}.duckdb", win),
+        // The WAL is not a separate setting: it is the database's own name plus a
+        // suffix, and 01.2 §1 says moving one without the other loses data. Deriving
+        // it here means the two can never drift apart.
+        wal_file: join(dat_dir, "${APP}.duckdb.wal", win),
+        temp_dir: join(dat_dir, "tmp", win),
+        backup_dir: join(dat_dir, "backup", win),
+        log_file: join(lg_dir, "${APP}.log", win),
+        // The key and the instance id live with the SETTINGS, not with the data
+        // (01.2 §1): a database copied to another machine must not carry the key that
+        // opens it.
+        key_file: key,
+        instance_file: join(cfg_dir, "${APP}.instance", win),
+        portable: input.portable,
+    }
+}
+
+fn config_dir_of(input PathsInput) -> str {
+    // An explicit --config names a FILE; everything that lives beside the settings
+    // follows it there.
+    if input.config_override != "" { return dir_of(input.config_override, input.windows) }
+    if input.portable { return input.exe_dir }
+    if input.windows { return join(input.appdata, APP, true) }
+    if input.xdg_config != "" { return join(input.xdg_config, APP, false) }
+    join(join(input.home, ".config", false), APP, false)
+}
+
+fn data_dir_of(input PathsInput, cfg_dir str) -> str {
+    if input.data_override != "" { return input.data_override }
+    // Portable keeps data BESIDE the binary in ./data, not in the binary's own
+    // directory: the reference script does the same, and a flash drive with the
+    // database loose among the executables is a mess.
+    if input.portable { return join(input.exe_dir, "data", input.windows) }
+    if input.windows { return join(input.local_appdata, APP, true) }
+    if input.xdg_data != "" { return join(input.xdg_data, APP, false) }
+    join(join(join(input.home, ".local", false), "share", false), APP, false)
+}
+
+fn log_dir_of(input PathsInput, dat_dir str) -> str {
+    if input.log_override != "" { return dir_of(input.log_override, input.windows) }
+    if input.portable { return join(input.exe_dir, "logs", input.windows) }
+    // Windows keeps logs under the DATA directory; Linux has a state directory of its
+    // own for exactly this (01.2 §1).
+    if input.windows { return join(dat_dir, "logs", true) }
+    if input.xdg_state != "" { return join(input.xdg_state, APP, false) }
+    join(join(join(input.home, ".local", false), "state", false), APP, false)
+}

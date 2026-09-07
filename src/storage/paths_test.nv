@@ -1,0 +1,196 @@
+// Tests for paths.nv — the table of subplan 01.2 §1, both directions (task T1.1).
+//
+//   ./nova.sh test src/storage/ --filter paths
+//
+// "Both directions" is the acceptance and it is meant literally: portable turns ON
+// with a file beside the binary AND OFF without it; an override wins AND its absence
+// leaves the default in place. A test that only checks the interesting branch passes
+// just as happily when the condition is inverted.
+//
+// No OS is touched. Every row of the table is a value in, a string out.
+
+module storage.paths_test
+
+import paths.{PathsInput, resolve, join, dir_of}
+
+fn win_input() -> PathsInput => {
+    windows: true,
+    exe_dir: "D:\\Apps\\claude-limits",
+    home: "C:\\Users\\dev",
+    appdata: "C:\\Users\\dev\\AppData\\Roaming",
+    local_appdata: "C:\\Users\\dev\\AppData\\Local",
+    xdg_config: "",
+    xdg_data: "",
+    xdg_state: "",
+    portable: false,
+    config_override: "",
+    data_override: "",
+    log_override: "",
+    key_override: "",
+}
+
+fn nix_input() -> PathsInput => {
+    windows: false,
+    exe_dir: "/opt/claude-limits",
+    home: "/home/dev",
+    appdata: "",
+    local_appdata: "",
+    xdg_config: "",
+    xdg_data: "",
+    xdg_state: "",
+    portable: false,
+    config_override: "",
+    data_override: "",
+    log_override: "",
+    key_override: "",
+}
+
+// ── the defaults, per platform ───────────────────────────────────────────────
+
+test "windows: settings in APPDATA, data in LOCALAPPDATA" {
+    ro p = resolve(win_input())
+    assert(p.config_dir == "C:\\Users\\dev\\AppData\\Roaming\\claude-limits")
+    assert(p.data_dir == "C:\\Users\\dev\\AppData\\Local\\claude-limits")
+    assert(p.config_file == "C:\\Users\\dev\\AppData\\Roaming\\claude-limits\\claude-limits.toml")
+    assert(p.db_file == "C:\\Users\\dev\\AppData\\Local\\claude-limits\\claude-limits.duckdb")
+}
+
+test "windows: logs sit under the data directory" {
+    ro p = resolve(win_input())
+    assert(p.log_dir == "C:\\Users\\dev\\AppData\\Local\\claude-limits\\logs")
+    assert(p.log_file == "C:\\Users\\dev\\AppData\\Local\\claude-limits\\logs\\claude-limits.log")
+}
+
+test "linux: XDG defaults when nothing is set" {
+    ro p = resolve(nix_input())
+    assert(p.config_dir == "/home/dev/.config/claude-limits")
+    assert(p.data_dir == "/home/dev/.local/share/claude-limits")
+    assert(p.log_dir == "/home/dev/.local/state/claude-limits")
+}
+
+test "linux: XDG variables win over the ~ fallbacks" {
+    mut i = nix_input()
+    i.xdg_config = "/cfg"
+    i.xdg_data = "/dat"
+    i.xdg_state = "/st"
+    ro p = resolve(i)
+    assert(p.config_dir == "/cfg/claude-limits")
+    assert(p.data_dir == "/dat/claude-limits")
+    assert(p.log_dir == "/st/claude-limits")
+}
+
+// ── the key and the instance id follow the SETTINGS ──────────────────────────
+
+test "the key lives with the settings, never with the data" {
+    ro p = resolve(win_input())
+    assert(p.key_file == "C:\\Users\\dev\\AppData\\Roaming\\claude-limits\\claude-limits.key")
+    assert(p.instance_file == "C:\\Users\\dev\\AppData\\Roaming\\claude-limits\\claude-limits.instance")
+    // The point of the rule: a database carried to another machine must not carry
+    // the key that opens it.
+    assert(!p.key_file.starts_with(p.data_dir))
+}
+
+test "the WAL is derived from the database, so the two cannot drift" {
+    ro p = resolve(nix_input())
+    assert(p.wal_file == "${p.db_file}.wal")
+}
+
+// ── portable, both directions ────────────────────────────────────────────────
+
+test "portable ON: everything moves beside the binary" {
+    mut i = win_input()
+    i.portable = true
+    ro p = resolve(i)
+    assert(p.portable)
+    assert(p.config_dir == "D:\\Apps\\claude-limits")
+    assert(p.data_dir == "D:\\Apps\\claude-limits\\data")
+    assert(p.log_dir == "D:\\Apps\\claude-limits\\logs")
+    assert(p.key_file == "D:\\Apps\\claude-limits\\claude-limits.key")
+}
+
+test "portable OFF: the same input lands in the user's directories" {
+    ro p = resolve(win_input())
+    assert(!p.portable)
+    assert(!p.data_dir.starts_with("D:\\Apps"))
+    assert(p.data_dir == "C:\\Users\\dev\\AppData\\Local\\claude-limits")
+}
+
+// ── overrides beat everything, and their absence changes nothing ─────────────
+
+test "--data-dir overrides even portable mode" {
+    mut i = nix_input()
+    i.portable = true
+    i.data_override = "/mnt/stick/db"
+    ro p = resolve(i)
+    assert(p.data_dir == "/mnt/stick/db")
+    assert(p.db_file == "/mnt/stick/db/claude-limits.duckdb")
+    // ... and does NOT drag the settings along: they are a different override.
+    assert(p.config_dir == "/opt/claude-limits")
+}
+
+test "--config names a FILE, and the key follows it there" {
+    mut i = nix_input()
+    i.config_override = "/etc/cl/custom.toml"
+    ro p = resolve(i)
+    assert(p.config_file == "/etc/cl/custom.toml")
+    assert(p.config_dir == "/etc/cl")
+    assert(p.key_file == "/etc/cl/claude-limits.key")
+    assert(p.instance_file == "/etc/cl/claude-limits.instance")
+}
+
+test "an explicit key file wins over the settings directory" {
+    mut i = nix_input()
+    i.key_override = "/secrets/cl.key"
+    ro p = resolve(i)
+    assert(p.key_file == "/secrets/cl.key")
+    assert(p.config_dir == "/home/dev/.config/claude-limits")
+}
+
+test "--log names a file and takes its directory" {
+    mut i = nix_input()
+    i.log_override = "/var/log/cl/app.log"
+    ro p = resolve(i)
+    assert(p.log_dir == "/var/log/cl")
+    assert(p.log_file == "/var/log/cl/claude-limits.log")
+}
+
+test "no override leaves every default exactly where it was" {
+    ro bare = resolve(nix_input())
+    mut i = nix_input()
+    i.config_override = ""
+    i.data_override = ""
+    i.log_override = ""
+    i.key_override = ""
+    ro same = resolve(i)
+    assert(bare.config_dir == same.config_dir)
+    assert(bare.data_dir == same.data_dir)
+    assert(bare.log_dir == same.log_dir)
+    assert(bare.key_file == same.key_file)
+}
+
+// ── the joining rules themselves ─────────────────────────────────────────────
+
+test "join uses the platform separator and eats a trailing one" {
+    assert(join("C:\\a", "b", true) == "C:\\a\\b")
+    assert(join("C:\\a\\", "b", true) == "C:\\a\\b")
+    assert(join("/a", "b", false) == "/a/b")
+    assert(join("/a/", "b", false) == "/a/b")
+    assert(join("", "b", false) == "b")
+    assert(join("/a", "", false) == "/a")
+}
+
+test "dir_of takes the last separator, and leaves a bare name alone" {
+    assert(dir_of("/etc/cl/custom.toml", false) == "/etc/cl")
+    assert(dir_of("C:\\etc\\cl\\custom.toml", true) == "C:\\etc\\cl")
+    assert(dir_of("custom.toml", false) == "custom.toml")
+    // A backslash is an ordinary character on POSIX, not a separator.
+    assert(dir_of("we\\ird.toml", false) == "we\\ird.toml")
+}
+
+test "the subdirectories of the data directory follow it" {
+    mut i = nix_input()
+    i.data_override = "/data"
+    ro p = resolve(i)
+    assert(p.temp_dir == "/data/tmp")
+    assert(p.backup_dir == "/data/backup")
+}
