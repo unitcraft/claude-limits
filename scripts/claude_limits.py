@@ -37,6 +37,7 @@ import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
+import pathlib
 from pathlib import Path
 
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
@@ -313,8 +314,29 @@ def colours_enabled(choice):
 
 # ---------------------------------------------------------------- printing --
 
-def snapshot(dirs, paint, bar_style):
-    """Prints every account found in dirs. Returns (accounts_found, seconds_to_back_off)."""
+def offline_usage(acc, offline_dir):
+    """A recorded reply instead of a live one: `<offline_dir>/<email>.json`, else
+    `<offline_dir>/normal.json`.
+
+    Why this exists: the phase-1 acceptance diffs THIS tool against the Nova build,
+    and if both sides called the endpoint, every acceptance run would spend two sets
+    of requests on it. That is how this machine earned a 429 on 2026-09-07. Offline
+    makes the diff deterministic and free — and it compares FORMATTING, which is what
+    the differential is actually about."""
+    d = pathlib.Path(offline_dir)
+    email = (acc.get("email") or "").lower()
+    for candidate in ([d / f"{email}.json"] if email else []) + [d / "normal.json"]:
+        if candidate.is_file():
+            return json.loads(candidate.read_text(encoding="utf-8"))
+    raise FileNotFoundError(f"no fixture for {email or acc['label']} in {d}")
+
+
+def snapshot(dirs, paint, bar_style, offline_dir=None):
+    """Prints every account found in dirs. Returns (accounts_found, seconds_to_back_off).
+
+    With `offline_dir` set, no request leaves the machine: replies come from the
+    recorded fixtures, and an expired token is still skipped so the two modes agree
+    on which accounts are reportable."""
     accounts = accounts_of(dirs)
     backoff = 0
     for acc in accounts:
@@ -325,6 +347,20 @@ def snapshot(dirs, paint, bar_style):
             # repeats. Only Claude Code refreshes it (README, Token lifetime).
             print("\n" + paint.dead(acc["label"]))
             print("  token expired on disk: start Claude Code under this directory to refresh it")
+            continue
+        if offline_dir:
+            try:
+                usage = offline_usage(acc, offline_dir)
+            except (FileNotFoundError, json.JSONDecodeError) as e:
+                print("\n" + paint.unknown(acc["label"]))
+                print(f"  offline: {e}")
+                continue
+            print("\n" + paint.live(acc["label"]))
+            if expired_note:
+                print(expired_note)
+            for kind, pct, sev, reset in rows_of(usage):
+                pct_s = "-" if pct is None else f"{pct:>3.0f}%"
+                print(f"  {kind:<22} {bar_of(pct, sev, bar_style, paint)} {pct_s:>4}  {sev:<8} resets {reset}")
             continue
         try:
             usage = fetch_usage(acc["token"])
@@ -374,6 +410,9 @@ def parse_args(argv):
     p.add_argument("--color", choices=["auto", "always", "never"], default="auto",
                    help="account headers green (live), red (token dead), yellow (server or network failed); "
                         "auto = only on a terminal")
+    p.add_argument("--offline", metavar="DIR",
+                   help="read recorded replies from DIR instead of calling the endpoint "
+                        "(fixtures/usage); makes the differential deterministic and free")
     p.add_argument("--bar-style", choices=["blocks", "ascii"],
                    help="progress bar glyphs: ascii [####....] (default) or blocks [████░░░░] "
                         "for fonts that have the block glyphs; also 'bar_style' in the config")
@@ -400,7 +439,7 @@ def main(argv):
     # An organisation name outside the console code page must never crash the daemon.
     sys.stdout.reconfigure(errors="replace")
     if not args.daemon:
-        found, _ = snapshot(dirs_from(args, config), paint, bar_style_of(args, config))
+        found, _ = snapshot(dirs_from(args, config), paint, bar_style_of(args, config), args.offline)
         return 0 if found else 1
 
     interval = interval_of(args, config)
@@ -410,7 +449,7 @@ def main(argv):
             config = load_config(args.config)          # edits apply without a restart
             interval = interval_of(args, config, quiet=True)
             print(f"\n=== {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ===")
-            _, backoff = snapshot(dirs_from(args, config), paint, bar_style_of(args, config))
+            _, backoff = snapshot(dirs_from(args, config), paint, bar_style_of(args, config), args.offline)
             wait = max(interval, backoff)
             if wait > interval:
                 print(f"\nbacking off: next snapshot in {wait} s")
