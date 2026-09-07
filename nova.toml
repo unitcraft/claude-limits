@@ -21,9 +21,25 @@ description = "Usage limits of several Claude accounts: local backend with a bro
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/unitcraft/claude-limits"
 
+# [[bin]] — ОБЪЯВЛЕНА СПЕКОЙ, НО ЕЩЁ НЕ РЕАЛИЗОВАНА В КОМПИЛЯТОРЕ (реестр №1027).
+# Замер 2026-09-07 (вопрос владельца «реально в бин?»). ПОПРАВКА К ПЕРВОЙ РЕДАКЦИИ
+# ЭТОГО КОММЕНТАРИЯ: я записал находку как «гид учит несуществующему» и был неправ —
+# рамку перевернул интегратор, и спека это подтверждает. Секцию объявляет СПЕКА,
+# нормативно: spec/decisions/07-modules.md:1076 (пример), :1097-1099 («array of
+# tables — позволяет несколько бинарей в одном пакете»), :1134, :1731. Значит гид
+# (docs/guide/authoring-a-module.md:66-68, :77) ВЕРЕН, а не реализован компилятор:
+# `grep '"bin"'` по manifest.rs даёт 0, по nova-cli/src тоже пусто.
+#
+# ПОЧЕМУ ЭТО МОЛЧИТ: парсер манифеста игнорирует незнакомые ключи НАМЕРЕННО —
+# manifest.rs:601 и :610, `_ => {} // ignore unknown keys для forward-compat`.
+# Сигнала не будет ни от кода, ни от ошибки: секция принимается и не делает ничего.
+#
+# ПОЭТОМУ: путь передаётся ЯВНО — `./nova.sh build --mode release src/main.nv -o …`;
+# `nova build` без пути точку входа не найдёт. Секция оставлена как единственная
+# запись о точке входа и как готовность к тому дню, когда её начнут читать.
 [[bin]]
 name = "claude-limits"
-path = "bin/claude_limits.nv"
+path = "src/main.nv"
 
 [dependencies]
 http = { git = "https://github.com/nv-lang/nova-http", version = "0.1" }
