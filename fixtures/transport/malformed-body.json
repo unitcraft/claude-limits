@@ -1,0 +1,9 @@
+{
+  "_pins": "200 with a body that is not valid JSON. The endpoint is undocumented and may change shape without notice, so a parse failure must be a named state, not a crash.",
+  "_expected": "state=unknown with a message saying the reply could not be parsed; the process does NOT panic; the other accounts in the same cycle are still reported — one malformed reply must not take the whole snapshot down",
+  "status": 200,
+  "headers": {
+    "Content-Type": "application/json"
+  },
+  "body": "{\"five_hour\": {\"utilization\": 61.0, \"resets_at\": \"2026-09-"
+}

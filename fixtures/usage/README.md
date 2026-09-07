@@ -17,9 +17,11 @@ is FOR — a fixture whose point nobody remembers gets "fixed" by the next reade
 | `locked.json` | `locked_reason` filled, session at 100 %, severity `critical` | showing a bare 100 % instead of the reason, and treating a blocked account as a normal reading |
 | `two-scoped-models.json` | TWO `weekly_scoped` rows, one of them with `resets_at: null` | drawing a fixed three bars: the count comes from `limits[]`, never from a constant |
 
-Still to add with the tasks that need them (plan 01 §7): invalid JSON, HTTP 401,
-HTTP 500, and a `Retry-After` 429. Those are not reply bodies but transport
-outcomes, so they belong with the `fetch.nv` tests rather than here.
+The transport outcomes plan 01 §7 also asks for — 401, 500, a malformed body and
+both shapes of 429 — live in [`fixtures/transport/`](../transport/README.md).
+They are not reply bodies: status and headers carry their meaning, and the body is
+empty or broken on purpose, so keeping them apart lets each fixture read as one
+thing.
 
 **`resets_at` can be `null`** even on a healthy window — it is absent until something
 is spent in that window. Measured on a live account 2026-09-06, not assumed;

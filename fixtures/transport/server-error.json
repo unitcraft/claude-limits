@@ -1,0 +1,9 @@
+{
+  "_pins": "500. The fault is the server's, so the account state must say 'unknown', never 'stale' — the token is fine and the user has nothing to fix.",
+  "_expected": "state=unknown; the message carries the status and a short prefix of the body; the previous good reading is KEPT and shown as aged rather than replaced by an error, because a page that blanks on a transient 500 is worse than one showing a stale number with its age",
+  "status": 500,
+  "headers": {
+    "Content-Type": "text/plain"
+  },
+  "body": "internal server error"
+}

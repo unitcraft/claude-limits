@@ -1,0 +1,9 @@
+{
+  "_pins": "401. The token is dead in a way the disk did not reveal — expiresAt still looked valid, but the server disagrees. Distinct from the stale case: there the client knows before asking.",
+  "_expected": "state=stale with the reason 'token rejected'; the account keeps its place in the snapshot; the NEXT cycle does not retry it faster than the interval — a rejected token retried in a loop is how 401 turns into 429 for the whole machine",
+  "status": 401,
+  "headers": {
+    "Content-Type": "application/json"
+  },
+  "body": "{\"error\":{\"type\":\"authentication_error\",\"message\":\"invalid bearer token\"}}"
+}

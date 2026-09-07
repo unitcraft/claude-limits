@@ -1,0 +1,9 @@
+{
+  "_pins": "429 WITHOUT Retry-After. The server may refuse without saying for how long, so the client must fall back to its own floor instead of retrying immediately or waiting forever.",
+  "_expected": "state=unknown; next_poll_at = now + 60s (the floor); the message says no Retry-After was given, rather than inventing a number",
+  "status": 429,
+  "headers": {
+    "Content-Type": "text/plain"
+  },
+  "body": "rate limit exceeded"
+}

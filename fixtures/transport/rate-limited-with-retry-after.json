@@ -1,0 +1,10 @@
+{
+  "_pins": "429 WITH Retry-After. The account goes to state `unknown`, and next_poll_at is the moment the server named, not our own floor. This is the case that actually happened to this machine on 2026-09-07 and is the reason the whole polling discipline exists.",
+  "_expected": "state=unknown; message names the wait; next_poll_at = now + 120s; the account is NOT dropped from the snapshot and NOT shown as an error",
+  "status": 429,
+  "headers": {
+    "Retry-After": "120",
+    "Content-Type": "text/plain"
+  },
+  "body": "rate limit exceeded"
+}
