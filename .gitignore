@@ -2,6 +2,11 @@
 # dependency versions and belongs in the repository.
 target/
 
+# Codegen leaves a <name>.c beside every <name>.nv it compiles. Hand-written
+# shims live under native/ and stay tracked.
+*.c
+!**/native/*.c
+
 # python
 __pycache__/
 *.pyc
