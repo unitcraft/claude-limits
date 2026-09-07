@@ -1,12 +1,13 @@
 // version.nv — the product's own name and version.
 //
 // This module is PURE on purpose: it returns the string and prints nothing.
-// `println` cannot be called from here at all. Measured on T0.0 with a probe:
-// `nova check version.nv` accepts `println` in this module (PASS), but codegen
-// refuses it — `undefined identifier println` — in every compilation unit that
-// imports the module. Printing therefore lives in the entry module only, and
-// everything a test needs from here is pure anyway. Full repro and both verdict
-// lines: docs/reports/T0.0.md.
+// `println` cannot be called from here — registry defect №1017 (К1, tag blocker):
+// `nova check` accepts it, codegen refuses it in every unit that imports the
+// module. The class is narrow, and knowing that matters when writing the rest of
+// the app: ONLY the two prelude variadics `print` and `println` are affected.
+// `panic`, `assert`, `Option`/`Result` do work in a library module, so error
+// signalling belongs where it happens; only formatting output has to travel out
+// as a value. Repro, spec citation and the narrowing: docs/reports/T0.0.md.
 //
 // Declaration form differs by depth, and the compiler is the authority here:
 // a file DIRECTLY in the source root carries the package name

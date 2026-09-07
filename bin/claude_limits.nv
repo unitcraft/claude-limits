@@ -5,11 +5,13 @@
 // the config, the pollers, the server and the widget arrive with Ф.1–Ф.3
 // (plan 01 §6); the module tree they grow into is plan 01 §3.2.
 //
-// `println` is called HERE and nowhere else, and that is a constraint of the
-// compiler rather than a matter of taste: measured on T0.0, `println` in any
-// non-entry module type-checks but fails codegen with `undefined identifier
-// println` in every unit that imports it. Anything printable therefore comes in
-// as a value from a pure module. Repro: docs/reports/T0.0.md.
+// `println` is called HERE and nowhere else, and that is a compiler constraint
+// rather than a matter of taste: registry defect №1017 (К1, tag blocker) — the
+// two prelude variadics `print` and `println` type-check in a non-entry module
+// and then fail codegen in every unit that imports it. The rest of the prelude is
+// unaffected: `panic`, `assert`, `Option`/`Result` work in library modules, so
+// only formatting output travels out as a value. Repro and the spec citation that
+// makes this a defect rather than a rule: docs/reports/T0.0.md.
 //
 // A consequence worth keeping: no test imports this file. It would pull `main` —
 // and its `println` — into the test's own compilation unit, which is how the

@@ -247,8 +247,11 @@ claude-limits/
 ├── nova.toml                 [package] + [[bin]] name="claude-limits" path="bin/claude_limits.nv"
 │                             + [dependencies] http, tls, polaris, duckdb, sdl (git, по тегам)
 ├── bin/claude_limits.nv      main: аргументы → конфиг → supervised { store; поллеры; сервер; [виджет] }
-│                             ЕДИНСТВЕННОЕ место печати: `println` вне entry-модуля CU
-│                             проходит чекер и падает в кодогене (T0.0, отчёт)
+│                             ЕДИНСТВЕННОЕ место печати: `print`/`println` вне entry-модуля
+│                             CU проходят чекер и падают в кодогене (реестр №1017, К1,
+│                             блокер тега). Остальная прелюдия работает: `panic`, `assert`,
+│                             `Option`/`Result` — из любого модуля; лог Ф.2 строится на
+│                             `Log`-эффекте Polaris и возврате строк, а не на печати
 ├── version.nv                строка версии, чистый модуль (T0.0); тест рядом  — чистое
 ├── accounts/                 обнаружение каталогов Claude Code, чтение двух файлов
 │   ├── discover.nv           default dir, CLAUDE_CONFIG_DIR, список, родитель, UNC-пути WSL (Fs, Os)
