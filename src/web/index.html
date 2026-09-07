@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>claude-limits</title>
+<!-- CSS and JS are SEPARATE FILES, not inline blocks. The page is served with
+     Content-Security-Policy: script-src 'self'; style-src 'self' (subplan 01.3 §1),
+     which refuses inline <style> and <script> — a page with them renders blank.
+     Reasoning and the resolved contradiction: subplan 01.1 §0.
+     Nothing here is loaded from another origin: the design artboard pulls its fonts
+     from fonts.googleapis.com, and copying that <link> would break both the rule and
+     the CSP (docs/design/browser-page/README.md). -->
+<link rel="stylesheet" href="app.css">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+</head>
+<body>
+
+<header class="topbar">
+  <a class="brand" href="#" data-action="home" title="back to the default view">
+    <svg class="brand-mark" width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
+      <path d="M2 4.5h14M2 9h14M2 13.5h9" stroke="currentColor" stroke-width="1.6"
+            stroke-linecap="round" fill="none"/>
+    </svg>
+    <span class="brand-name">claude-limits</span>
+  </a>
+
+  <span class="live" data-state="connecting">
+    <span class="live-dot" aria-hidden="true"></span>
+    <span class="live-label">connecting</span>
+  </span>
+
+  <span class="fetched" title="last successful poll of the endpoint">
+    <span data-field="fetched-at">--:--</span>
+    <span class="sep">&middot;</span>
+    <span data-field="fetched-ago">never</span>
+  </span>
+
+  <div class="views" role="tablist" aria-label="view">
+    <button class="icon-btn" role="tab" data-view="list" aria-selected="true" title="list">
+      <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+        <path d="M2 4h12M2 8h12M2 12h12" stroke="currentColor" stroke-width="1.5"
+              stroke-linecap="round" fill="none"/>
+      </svg>
+    </button>
+    <button class="icon-btn" role="tab" data-view="cards" aria-selected="false" title="cards">
+      <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+        <rect x="2" y="2.5" width="12" height="4.5" rx="1.2" stroke="currentColor"
+              stroke-width="1.4" fill="none"/>
+        <rect x="2" y="9" width="12" height="4.5" rx="1.2" stroke="currentColor"
+              stroke-width="1.4" fill="none"/>
+      </svg>
+    </button>
+    <button class="icon-btn" role="tab" data-view="stats" aria-selected="false" title="statistics">
+      <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+        <path d="M2.5 13V8M6.5 13V4M10.5 13V9.5M14.5 13V6" stroke="currentColor"
+              stroke-width="1.6" stroke-linecap="round" fill="none"/>
+      </svg>
+    </button>
+  </div>
+
+  <button class="icon-btn" data-action="refresh" title="poll now">
+    <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+      <path d="M13.5 8a5.5 5.5 0 1 1-1.8-4.07" stroke="currentColor" stroke-width="1.5"
+            fill="none" stroke-linecap="round"/>
+      <path d="M13.6 2.4v3.2h-3.2" stroke="currentColor" stroke-width="1.5"
+            fill="none" stroke-linecap="round"/>
+    </svg>
+  </button>
+
+  <button class="icon-btn" data-action="settings" title="settings">
+    <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+      <circle cx="8" cy="8" r="2.2" stroke="currentColor" stroke-width="1.4" fill="none"/>
+      <path d="M8 1.6v1.8M8 12.6v1.8M1.6 8h1.8M12.6 8h1.8M3.5 3.5l1.3 1.3M11.2 11.2l1.3 1.3M12.5 3.5l-1.3 1.3M4.8 11.2l-1.3 1.3"
+            stroke="currentColor" stroke-width="1.3" stroke-linecap="round" fill="none"/>
+    </svg>
+  </button>
+</header>
+
+<main>
+  <!-- One container per view; the skeleton leaves them empty on purpose (T2.19).
+       Rows and account blocks arrive with T2.20, cards with T2.21, charts later. -->
+  <section id="view-list" class="view" data-view="list"></section>
+  <section id="view-cards" class="view" data-view="cards" hidden></section>
+  <section id="view-stats" class="view view-wide" data-view="stats" hidden></section>
+
+  <!-- Shown until the first snapshot arrives, and whenever one cannot be had. Never
+       an empty page: a blank panel is indistinguishable from a broken one. -->
+  <p class="placeholder" data-field="placeholder">waiting for the first snapshot&hellip;</p>
+</main>
+
+<footer class="footer">
+  <span class="footer-left">
+    <span data-field="address">127.0.0.1:7391</span>
+    <span class="sep">&middot;</span>
+    <span data-field="counts">no logins yet</span>
+  </span>
+  <span class="footer-right">
+    <span data-field="interval">polling paused</span>
+  </span>
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>
