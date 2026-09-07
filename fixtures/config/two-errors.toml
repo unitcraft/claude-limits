@@ -1,0 +1,20 @@
+# PINS: two bad keys produce TWO entries in one errors[] list, not the first one only.
+#
+# The page renders every error beside its field (subplan 01.3 §3.8), so a validator
+# that stops at the first fault makes the user fix the file one round trip at a
+# time. This fixture is the reason the validator returns []ConfigError rather than
+# Result[(), ConfigError].
+#
+# Expected: exactly two entries — `server.port` out of range and `history.keep_days`
+# negative — each with its own field and code, in file order.
+
+schema = 1
+
+[[folders]]
+path = "~/.claude"
+
+[server]
+port = 99999
+
+[history]
+keep_days = -5

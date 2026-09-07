@@ -1,0 +1,18 @@
+# PINS: an interval below the floor is RAISED to 60 with a warning, not rejected.
+#
+# This is the one case where the validator must not simply refuse. The reference
+# tool does the same (scripts/claude_limits.py, interval_of): a value under 60
+# becomes 60 and says so once. The floor exists because the endpoint answers 429
+# to eager polling — measured on this machine, and it cost the whole machine a
+# rate limit for several minutes.
+#
+# Expected: config loads, poll.interval_sec == 60, exactly one warning naming the
+# key and both numbers. NOT an error, NOT a silent correction.
+
+schema = 1
+
+[[folders]]
+path = "~/.claude"
+
+[poll]
+interval_sec = 10

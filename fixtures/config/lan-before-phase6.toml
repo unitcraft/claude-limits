@@ -1,0 +1,19 @@
+# PINS: allow_lan = true is REFUSED until phase 6, and the listener stays on loopback.
+#
+# The page shows e-mails and organisation names, so opening it to the network is a
+# decision with a cost. Until phase 6 delivers TLS, a token and a login, the config
+# validator refuses the flag outright — plan 01 §0 and §6, subplan 01.3 §1.
+#
+# Expected: 422 with field `server.allow_lan` and the text
+# "LAN access arrives in a later version"; the server still binds 127.0.0.1; the
+# process does NOT panic and does NOT silently ignore the flag. Silently ignoring
+# would be the worst of the three: the user would believe the network is open.
+
+schema = 1
+
+[[folders]]
+path = "~/.claude"
+
+[server]
+bind = "0.0.0.0"
+allow_lan = true

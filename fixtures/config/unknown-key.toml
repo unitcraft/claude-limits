@@ -1,0 +1,19 @@
+# PINS: an unknown key is REFUSED by name, not ignored.
+#
+# Nova's own manifest parser takes the opposite decision — it ignores unknown keys
+# for forward compatibility (manifest.rs:601, :610) — and that is exactly how a
+# documented-but-unimplemented section stayed invisible for a year (registry
+# №1027, found in this project 2026-09-07). Our config makes the other choice on
+# purpose: a typo in a key the user believes is working is worse than a refusal.
+#
+# Expected: 422 with code `extra_forbidden` and the exact path of the offender
+# (`poll.intervl_sec`, not just "poll"). The suggestion of the nearest known key
+# is desirable, not required.
+
+schema = 1
+
+[[folders]]
+path = "~/.claude"
+
+[poll]
+intervl_sec = 300

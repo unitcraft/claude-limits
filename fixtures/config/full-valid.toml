@@ -1,0 +1,56 @@
+# fixtures/config/full-valid.toml — все ключи из инвентаря со значениями по умолчанию.
+# Собрано механически (haiku) из docs/reports/T1.2-config-inventory.md; источник правды — инвентарь.
+
+schema = 1
+
+[[folders]]
+# path = ...   # умолчания в инвентаре нет
+
+[poll]
+interval_sec = 300
+min_interval_sec = 60
+request_timeout_sec = 30
+
+[thresholds]
+warning = 70
+critical = 90
+
+[forecast]
+enabled = true
+work_days = ["mon","tue","wed","thu","fri"]
+work_from = "09:00"
+work_to = "19:00"
+off_hours_rate = 0
+rate_window_days = 3
+
+[server]
+bind = "127.0.0.1"
+port = 7391
+# access_token = ...   # умолчания в инвентаре нет
+allow_lan = false
+# tls_cert = ...   # умолчания в инвентаре нет
+# tls_key = ...   # умолчания в инвентаре нет
+
+[ui]
+# accounts_order = ...   # умолчания в инвентаре нет
+hidden_accounts = []
+hide_stale = false
+time_bar = true
+
+[widget]
+enabled = false
+always_on_top = true
+x = 1480
+y = 820
+visible = true
+
+[history]
+keep_days = 30
+rollup_keep_days = 400
+config_versions_keep = 20
+
+[storage]
+# data_dir = ...   # умолчания в инвентаре нет
+backups_keep = 5
+memory_limit = "512MB"
+threads = 2
