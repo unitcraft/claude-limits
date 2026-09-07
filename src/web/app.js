@@ -8,7 +8,8 @@
 //
 // Separate file rather than an inline <script>: the CSP refuses inline (01.1 §0).
 import { isRetryable, retryDelay, MAX_RETRIES } from './format.js';
-import { el, renderList, layoutCells } from './render.js';
+import { el, renderList, renderCards, layoutCells } from './render.js';
+import { createReorder } from './reorder.js';
 
 const VIEWS = ['list', 'cards', 'stats'];
 const POLL_WHEN_DEGRADED_MS = 10_000;   // no SSE: ask for a snapshot this often
@@ -24,6 +25,8 @@ const state = {
   pollTimer: null,
   tickTimer: null,
   apiVersion: null,
+  order: null,          // optimistic account order, live only until the server agrees
+  reorder: null,
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -160,6 +163,57 @@ function askReload() {
   $('main').prepend(note);
 }
 
+/**
+ * A short message that says something failed and then gets out of the way (01.1
+ * §4.1 names exactly one: `could not save order`).
+ *
+ * `role="status"` and not `alert`: a screen reader should finish the sentence it is
+ * on rather than be interrupted by a message about a card that has already moved
+ * back on its own.
+ */
+function toast(text) {
+  const t = el('div', 'toast', text);
+  t.setAttribute('role', 'status');
+  document.body.append(t);
+  setTimeout(() => t.remove(), 4000);
+}
+
+/**
+ * Persist the account order (01.3 §3.8): read the current `etag`, then a partial
+ * `PUT` carrying nothing but `ui.accounts_order`.
+ *
+ * The `etag` is re-read immediately before the write rather than remembered from the
+ * last poll. The config file is editable by hand and by another tab, and an `If-Match`
+ * from five minutes ago would collect a `412` on a file that changed for reasons
+ * having nothing to do with this order — turning a valid drag into a failure the
+ * person cannot explain. A race still exists in the milliseconds between the GET and
+ * the PUT, and that is precisely what `412` is for.
+ *
+ * NOT retried, on purpose. `isRetryable` refuses non-safe methods (01.3 §5): a
+ * repeated write can mean a second action rather than a second look, and after a
+ * successful PUT the repeat would get a `412` anyway (§3.8, idempotency by version).
+ */
+async function saveOrder(emails) {
+  const current = await apiGet('/api/config');
+  const etag = current.headers.get('ETag');
+  const res = await fetch('/api/config', {
+    method: 'PUT',
+    headers: {
+      'content-type': 'application/json',
+      accept: 'application/json',
+      ...(etag ? { 'if-match': etag } : {}),
+    },
+    body: JSON.stringify({ ui: { accounts_order: emails } }),
+  });
+  if (!res.ok) {
+    // The config moved under us: show what the server actually has rather than
+    // leaving the page on an order nobody stored.
+    if (res.status === 412 || res.status === 428) { state.order = null; fetchSnapshot(); }
+    throw new Error(`config PUT ${res.status}`);
+  }
+  state.order = emails;
+}
+
 function applySnapshot(snap) {
   state.snapshot = snap;
   state.lastEvent = Date.now();
@@ -179,7 +233,10 @@ function applySnapshot(snap) {
   }
   $('[data-field="placeholder"]').textContent = accounts.length ? '' : 'no logins found';
 
-  renderList(accounts, snap.limits);
+  renderList(accounts, snap.limits, state.order);
+  // The cards view is rendered even while hidden: switching views must not wait for
+  // the next poll, which is five minutes away by default.
+  renderCards(accounts, snap.limits, state.order);
   tick();
   document.dispatchEvent(new CustomEvent('snapshot', { detail: snap }));
 }
@@ -214,8 +271,11 @@ function connect() {
     checkApiVersion();
   });
   // Settings changed in another tab: the config is the backend's, not this tab's.
+  // The optimistic order goes with it — keeping it would let this tab override an
+  // order somebody else has just saved, and keep overriding it on every poll.
   state.es.addEventListener('config', () => {
     state.lastEvent = Date.now();
+    state.order = null;
     fetchSnapshot();
   });
   state.es.addEventListener('error', () => {
@@ -271,6 +331,12 @@ function initVisibility() {
 function main() {
   initViews();
   initVisibility();
+  state.reorder = createReorder({
+    container: document.getElementById('view-cards'),
+    commit: saveOrder,
+    toast,
+  });
+  state.reorder.attach();
   setLive('connecting');
   $('[data-action="refresh"]').addEventListener('click', (e) =>
     refresh(e.currentTarget));

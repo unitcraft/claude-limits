@@ -10,6 +10,7 @@ import {
   windowMs, elapsedShare, cellGeometry, formatDuration,
   formatResetMoment, formatReset, rowLabel, sortLimits, severityOf,
   isRetryable, retryDelay, MAX_RETRIES,
+  moveTo, applyOrder, dropIndexFor, landingIndex,
 } from '../src/web/format.js';
 
 let passed = 0;
@@ -195,6 +196,61 @@ test('backoff grows, is capped, and carries jitter of ±25%', () => {
 
 test('three attempts is the limit', () => {
   assert.equal(MAX_RETRIES, 3);
+});
+
+// -------------------------------------------------- account order (T2.22) --
+
+test('moveTo returns a new array and leaves the old one alone', () => {
+  const src = ['a', 'b', 'c'];
+  const out = moveTo(src, 0, 2);
+  assert.deepEqual(out, ['b', 'c', 'a']);
+  assert.deepEqual(src, ['a', 'b', 'c'], 'the caller keeps this one to roll back to');
+});
+
+test('moveTo clamps instead of dropping the item off the end', () => {
+  assert.deepEqual(moveTo(['a', 'b', 'c'], 0, 99), ['b', 'c', 'a']);
+  assert.deepEqual(moveTo(['a', 'b', 'c'], 2, -5), ['c', 'a', 'b']);
+  assert.deepEqual(moveTo(['a', 'b', 'c'], 7, 0), ['a', 'b', 'c'], 'a bogus source is a no-op');
+});
+
+test('applyOrder: named first in order, the rest in discovery order', () => {
+  const accs = [{ email: 'a@x' }, { email: 'b@x' }, { email: 'c@x' }, { email: 'd@x' }];
+  assert.deepEqual(applyOrder(accs, ['c@x', 'a@x']).map((a) => a.email),
+    ['c@x', 'a@x', 'b@x', 'd@x']);
+});
+
+test('applyOrder matches e-mails case-insensitively', () => {
+  const accs = [{ email: 'A@X.com' }, { email: 'b@x.com' }];
+  assert.deepEqual(applyOrder(accs, ['b@x.com', 'a@x.COM']).map((a) => a.email),
+    ['b@x.com', 'A@X.com']);
+});
+
+test('applyOrder with no order at all changes nothing', () => {
+  const accs = [{ email: 'b@x' }, { email: 'a@x' }];
+  assert.deepEqual(applyOrder(accs, null).map((a) => a.email), ['b@x', 'a@x']);
+  assert.deepEqual(applyOrder(accs, []).map((a) => a.email), ['b@x', 'a@x']);
+});
+
+test('applyOrder is stable: unlisted accounts do not shuffle between polls', () => {
+  const accs = 'abcdefghij'.split('').map((c) => ({ email: `${c}@x` }));
+  const once = applyOrder(accs, ['j@x']).map((a) => a.email);
+  assert.deepEqual(once, ['j@x', ...'abcdefghi'.split('').map((c) => `${c}@x`)]);
+});
+
+test('dropIndexFor: the midpoint is the boundary', () => {
+  const rects = [{ top: 0, bottom: 90 }, { top: 100, bottom: 190 }, { top: 200, bottom: 290 }];
+  assert.equal(dropIndexFor(rects, 10), 0, 'above the first midpoint: before everything');
+  assert.equal(dropIndexFor(rects, 44), 0);
+  assert.equal(dropIndexFor(rects, 46), 1, 'past the first midpoint: after the first');
+  assert.equal(dropIndexFor(rects, 160), 2);
+  assert.equal(dropIndexFor(rects, 999), 3, 'below everything: at the end');
+  assert.equal(dropIndexFor([], 50), 0, 'an empty list has exactly one slot');
+});
+
+test('landingIndex corrects only for a move downwards', () => {
+  assert.equal(landingIndex(0, 2), 1, 'the list closes up behind the card as it leaves');
+  assert.equal(landingIndex(3, 1), 1, 'moving up needs no correction');
+  assert.equal(landingIndex(2, 2), 2, 'dropping into its own slot is a no-op');
 });
 
 console.log(`\n${passed} passed${process.exitCode ? ', SOME FAILED' : ''}`);

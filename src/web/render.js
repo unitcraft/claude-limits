@@ -5,7 +5,9 @@
 // and it was wrong to keep: two renderers drift, and the test would then pass on
 // code nobody ships. Everything here takes a document and returns nodes; no fetch,
 // no timers, no EventSource.
-import { elapsedShare, cellGeometry, formatReset, rowLabel, sortLimits, severityOf } from './format.js';
+import {
+  elapsedShare, cellGeometry, formatReset, rowLabel, sortLimits, severityOf, applyOrder,
+} from './format.js';
 
 // ------------------------------------------------------------- rendering ----
 
@@ -121,7 +123,7 @@ export function renderAccount(acc, limits) {
  * focus and any open tooltip on every poll — five times a minute in the degraded
  * mode, which is exactly when the user is watching closely.
  */
-export function renderList(accounts, allLimits) {
+export function renderList(accounts, allLimits, order = null) {
   const view = document.getElementById('view-list');
   const have = new Map(Array.from(view.children).map((n) => [n.dataset.email, n]));
   const seen = new Set();
@@ -134,7 +136,9 @@ export function renderList(accounts, allLimits) {
     byAccount.get(l.account_id).push(l);
   }
 
-  accounts.forEach((acc, i) => {
+  // One order for every view (01.1 §4.1): a card dragged in the cards view moves in
+  // the list too, or the two views disagree about which account is first.
+  applyOrder(accounts, order).forEach((acc, i) => {
     const key = (acc.email || `?${i}`).toLowerCase();
     seen.add(key);
     const fresh = renderAccount(acc, byAccount.get(acc.id) || []);
@@ -148,13 +152,81 @@ export function renderList(accounts, allLimits) {
   layoutCells();
 }
 
+// ------------------------------------------------------ cards view (§4) -----
+
+/**
+ * One card: the same account block as the list, in a rounded panel with a drag
+ * handle on the left (01.1 §4).
+ *
+ * The handle is a real `<button>`, not the artboard's bare `<div>` with a grab
+ * cursor. 01.1 §10 requires every interactive element to be a real control with a
+ * visible focus ring, and the same section gives the handle a keyboard protocol
+ * (Space takes, arrows move, Space drops, Esc cancels) — which a div cannot receive
+ * at all. Its six dots are drawn in CSS rather than as an inline SVG so this
+ * function needs no `createElementNS`, and so the dots recolour with the card state
+ * by inheriting `currentColor`.
+ */
+export function renderCard(acc, limits) {
+  const card = el('article', 'card');
+  const handle = el('button', 'card-handle');
+  handle.setAttribute('type', 'button');
+  handle.setAttribute('aria-label', `reorder ${acc.email || 'account'}`);
+  handle.title = 'drag to reorder, or Space then arrows';
+  card.append(handle);
+
+  const body = renderAccount(acc, limits);
+  card.append(body);
+  card.dataset.state = body.dataset.state;
+  return card;
+}
+
+/**
+ * The cards view, updated point by point exactly as the list is, and for the same
+ * reason: a wholesale redraw during a drag would tear the card out from under the
+ * pointer.
+ *
+ * `order` is the page's optimistic order (01.1 §4.2) — the e-mails as they should
+ * appear right now, which between a drop and the server's answer is NOT the order
+ * the snapshot arrived in.
+ */
+export function renderCards(accounts, allLimits, order = null) {
+  const view = document.getElementById('view-cards');
+  if (!view) return;
+  const have = new Map(Array.from(view.children)
+    .filter((n) => n.className === 'card')
+    .map((n) => [n.dataset.email, n]));
+  const seen = new Set();
+
+  const byAccount = new Map();
+  for (const l of allLimits || []) {
+    if (!byAccount.has(l.account_id)) byAccount.set(l.account_id, []);
+    byAccount.get(l.account_id).push(l);
+  }
+
+  applyOrder(accounts, order).forEach((acc, i) => {
+    const key = (acc.email || `?${i}`).toLowerCase();
+    seen.add(key);
+    const fresh = renderCard(acc, byAccount.get(acc.id) || []);
+    fresh.dataset.email = key;
+    const old = have.get(key);
+    if (old) old.replaceWith(fresh);
+    else view.insertBefore(fresh, view.children[i] || null);
+  });
+
+  for (const [key, node] of have) if (!seen.has(key)) node.remove();
+}
+
 /**
  * The "cells" bar style needs pixel widths, so it is applied after layout and again
  * on resize (01.1 §2.2). Whole cells only — the geometry is in format.js and tested.
  */
 export function layoutCells() {
   if (document.body.dataset.barStyle !== 'cells') return;
-  for (const bar of $$('.bar')) {
+  // `document.querySelectorAll`, not the `$$` helper: that one lives in app.js, and
+  // when these functions moved here the call came with them and would have thrown a
+  // ReferenceError the first time anyone chose the cells style. It threw in nothing
+  // until then only because the default style is bars.
+  for (const bar of Array.from(document.querySelectorAll('.bar'))) {
     const fill = bar.querySelector('.bar-fill');
     const pct = parseFloat(fill.style.width) || 0;
     const g = cellGeometry(bar.parentElement.clientWidth, pct);

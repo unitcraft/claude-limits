@@ -160,3 +160,75 @@ export function retryDelay(attempt, retryAfterSeconds = null, rand = Math.random
 }
 
 export const MAX_RETRIES = 3;
+
+// ------------------------------------------------------- account order (§4) --
+
+/**
+ * Move item `from` to index `to`, returning a NEW array (01.1 §4.1).
+ *
+ * A copy rather than a splice in place, because the caller keeps the old array to
+ * roll back to when the server refuses the new order — and an in-place move would
+ * have destroyed exactly the thing the rollback needs.
+ */
+export function moveTo(list, from, to) {
+  const out = [...list];
+  if (from < 0 || from >= out.length) return out;
+  const clamped = clamp(to, 0, out.length - 1);
+  const [item] = out.splice(from, 1);
+  out.splice(clamped, 0, item);
+  return out;
+}
+
+/**
+ * Accounts in the configured order (01.1 §4.2): e-mails listed in
+ * `ui.accounts_order` first and in that order, everything else after, in the order
+ * it was discovered. The key is the e-mail, lowercased — one account may sit in
+ * several directories, and the config names it once.
+ *
+ * The backend already orders `accounts[]` this way (01.3 §3.3), so this exists for
+ * the moment BETWEEN a drag and the server's answer: the page shows the new order at
+ * once and the next snapshot confirms it. Without it a dropped card would jump back
+ * for a second and then settle, which reads as a bug even when it is not.
+ */
+export function applyOrder(accounts, order) {
+  if (!order || !order.length) return [...accounts];
+  const rank = new Map(order.map((e, i) => [String(e).toLowerCase(), i]));
+  const at = (a) => {
+    const r = rank.get(String(a.email || '').toLowerCase());
+    return r == null ? order.length : r;
+  };
+  // Index as the tiebreaker keeps it a STABLE sort even where the engine's is not,
+  // so unlisted accounts stay in discovery order rather than shuffling per poll.
+  return accounts
+    .map((a, i) => [a, i])
+    .sort((x, y) => at(x[0]) - at(y[0]) || x[1] - y[1])
+    .map(([a]) => a);
+}
+
+/**
+ * Which slot a pointer at `y` is over, given the cards' vertical extents (01.1 §4.1
+ * draws the drop line between cards). `rects` are `{top, bottom}` in the same
+ * coordinate space as `y`, in DOM order.
+ *
+ * The midpoint is the boundary: above it the card lands before, below it after. Any
+ * other rule makes the drop line flicker when the pointer hovers an edge.
+ */
+export function dropIndexFor(rects, y) {
+  for (let i = 0; i < rects.length; i++) {
+    if (y < (rects[i].top + rects[i].bottom) / 2) return i;
+  }
+  return rects.length;
+}
+
+/**
+ * The index the dragged card ends up at, given the SLOT the drop line sits in.
+ *
+ * These differ by one whenever the card moves down, because removing it first
+ * shifts every later slot up. Getting this wrong moves a card one place short and
+ * looks like the drag "not quite working" — the classic off-by-one of every
+ * reorder list, which is why it is a named function with a test rather than an
+ * expression inside an event handler.
+ */
+export function landingIndex(fromIndex, slot) {
+  return slot > fromIndex ? slot - 1 : slot;
+}

@@ -259,6 +259,92 @@ main:has(.view-wide:not([hidden])) { max-width: var(--page-width-wide); }
   .row-reset { grid-column: 2 / 4; align-items: flex-start; }
 }
 
+/* ------------------------------------------------------- cards view (§4) -- */
+/* The card IS the panel: the account block inside it gives up its own background,
+   border and padding, or the view would draw two frames around one account. */
+
+#view-cards { gap: 10px; }
+
+.card {
+  display: flex;
+  gap: 0;
+  padding: 12px 16px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+.card > .account { flex: 1; background: none; border: 0; border-radius: 0; padding: 0; }
+.card[data-state="stale"], .card[data-state="unknown"], .card[data-state="error"] {
+  background: var(--surface-alt);
+}
+.card[data-state="locked"] {
+  background: var(--surface-critical);
+  border-color: var(--border-critical);
+}
+
+/* Six dots in CSS rather than an inline SVG: the renderer then needs no
+   createElementNS, and the dots follow the card's own colour. */
+.card-handle {
+  flex: none;
+  width: 22px;
+  align-self: stretch;
+  margin: -12px 4px -14px -8px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background-color: transparent;
+  background-image:
+    radial-gradient(circle 1.5px at 4px 5px, currentColor 99%, transparent 100%),
+    radial-gradient(circle 1.5px at 11px 5px, currentColor 99%, transparent 100%),
+    radial-gradient(circle 1.5px at 4px 11px, currentColor 99%, transparent 100%),
+    radial-gradient(circle 1.5px at 11px 11px, currentColor 99%, transparent 100%),
+    radial-gradient(circle 1.5px at 4px 17px, currentColor 99%, transparent 100%),
+    radial-gradient(circle 1.5px at 11px 17px, currentColor 99%, transparent 100%);
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: 15px 22px;
+  color: #4f4870;
+  cursor: grab;
+}
+.card-handle:hover { color: var(--fg-muted); }
+.card-handle:focus-visible { outline: 2px solid var(--fg-soft); outline-offset: -2px; }
+.card[data-state="locked"] .card-handle { color: #c9a0a3; }
+
+/* Lifted: the exact shadow, rotation and offset of 01.1 §4.1. `data-grabbed` is set
+   by reorder.js for BOTH the pointer drag and the keyboard move, so a card taken
+   with Space looks taken. */
+.card[data-grabbed] {
+  box-shadow: 0 14px 34px rgba(0, 0, 0, .55), 0 2px 6px rgba(0, 0, 0, .4);
+  transform: translateX(10px) rotate(-.6deg);
+  cursor: grabbing;
+}
+.card[data-grabbed] .card-handle { cursor: grabbing; }
+
+/* Where it will land. 3 px, teal, inset 6 px — and pulled up by its own height plus
+   the gap so it sits BETWEEN the cards instead of pushing them apart as it moves. */
+.drop-line {
+  height: 3px;
+  margin: -2px 6px;
+  border-radius: 2px;
+  background: var(--normal);
+}
+
+/* A failure that has already been dealt with: the order rolled back on its own, this
+   only says why. Bottom centre, out of the way of the cards it is about. */
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  padding: 8px 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--surface-active);
+  color: var(--fg);
+  font-size: 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .45);
+}
+
 /* A restarted backend may speak a newer api_version than this script reads, so the
    page asks to be reloaded instead of rendering a shape it was not written for
    (01.3 §5). Amber, not red: nothing is broken yet. */
