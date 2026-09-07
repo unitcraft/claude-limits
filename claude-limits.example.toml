@@ -1,0 +1,23 @@
+# claude-limits.toml -- accounts and polling for scripts/claude_limits.py.
+# Copy to claude-limits.toml in the repository root (that name is gitignored:
+# it lists your own login directories) and edit.
+
+# Seconds between snapshots in --daemon mode.
+interval_sec = 300
+
+# Progress bar glyphs: "blocks" -> [████░░░░] (default), "ascii" -> [####....]
+# If the block bar shows empty, the terminal font has no block glyphs: turn off
+# terminal GPU acceleration or pick a font with them (see the README), or set
+# "ascii" here.
+bar_style = "blocks"
+
+# Every child directory of this folder that holds .credentials.json is a login.
+# This is the multi-account layout: one CLAUDE_CONFIG_DIR per child.
+accounts_parent = "C:/accounts"
+
+# Individual login directories. "~" expands to the home directory.
+# The default Claude Code login lives in ~/.claude (its .claude.json sits beside it).
+# A login inside WSL is reachable through its UNC path; single quotes keep the
+# backslashes literal in TOML:
+#   '\\wsl.localhost\<distro>\home\<user>\.claude'
+accounts = ["~/.claude"]
