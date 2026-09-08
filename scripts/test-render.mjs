@@ -192,8 +192,6 @@ test('a second render updates in place: same nodes, no duplicates', () => {
   assert.equal(cards.children.length, 4, 'a redraw that appends would show eight');
 });
 
-console.log(`\n${passed} passed${process.exitCode ? ', SOME FAILED' : ''}`);
-
 test('a hundred percent WITHOUT a reason colours the block, and locked still wins', () => {
   // 01.3 section 3.3 keeps these apart: `locked` means a window carries a
   // `locked_reason` -- the endpoint is refusing -- while `at_100` means a window
@@ -211,3 +209,5 @@ test('a hundred percent WITHOUT a reason colours the block, and locked still win
   const ordinary = renderAccount({ email: 'a@x', state: 'ok' }, []);
   assert.equal(ordinary.dataset.state, 'ok');
 });
+
+console.log(`\n${passed} passed${process.exitCode ? ', SOME FAILED' : ''}`);
