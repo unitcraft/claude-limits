@@ -11,6 +11,7 @@ import {
   formatResetMoment, formatReset, rowLabel, sortLimits, severityOf,
   isRetryable, retryDelay, MAX_RETRIES, refuseFor, REFUSAL_DEFAULT_SEC, REFUSAL_MAX_SEC,
   moveTo, applyOrder, dropIndexFor, landingIndex, orderRequest, configPut,
+  footerRight, legendText, footerCounts,
 } from '../src/web/format.js';
 
 let passed = 0;
@@ -355,6 +356,66 @@ test('landingIndex corrects only for a move downwards', () => {
   assert.equal(landingIndex(0, 2), 1, 'the list closes up behind the card as it leaves');
   assert.equal(landingIndex(3, 1), 1, 'moving up needs no correction');
   assert.equal(landingIndex(2, 2), 2, 'dropping into its own slot is a no-op');
+});
+
+// ------------------------------------------- the footer, 01.1 sec.1.2 -------
+
+test('the right half says how often AND when, as the artboard does', () => {
+  // The page printed only "polling every 300 s" until 2026-09-08. `next_poll_at` is
+  // in the payload and in the fixture, and it is the half a person waiting for a
+  // number actually wants.
+  const at = new Date('2026-09-07T16:52:02Z');
+  const hhmm = at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  assert.equal(footerRight(300, '2026-09-07T16:52:02Z'), `polling every 300 s \u00b7 next ${hhmm}`);
+});
+
+test('an unusable next_poll_at drops the clause instead of guessing', () => {
+  // `next NaN` is worse than no promise: it reads as a broken clock rather than as
+  // an absent one.
+  for (const bad of [null, undefined, '', 'soon', 'not-a-date']) {
+    assert.equal(footerRight(300, bad), 'polling every 300 s', `next=${JSON.stringify(bad)}`);
+  }
+});
+
+test('no interval at all means the polling is paused, not "every undefined s"', () => {
+  assert.equal(footerRight(null, '2026-09-07T16:52:02Z'), 'polling paused');
+  assert.equal(footerRight(0, null), 'polling paused');
+});
+
+test('the legend explains only the marks that are on screen', () => {
+  const both = legendText({ timeBar: true, forecast: true });
+  assert.match(both, /thin line = share of the window elapsed/);
+  assert.match(both, /hatched = forecast at reset \(working hours only\)/);
+  assert.ok(both.includes('\u00b7'), 'the two halves are separated as in sec.1.2');
+
+  assert.equal(legendText({ timeBar: true, forecast: false }),
+    'thin line = share of the window elapsed', 'no forecast, no hatch legend');
+  assert.equal(legendText({ timeBar: false, forecast: true }),
+    'hatched = forecast at reset (working hours only)');
+  assert.equal(legendText({ timeBar: false, forecast: false }), '',
+    'nothing drawn, nothing explained -- and the caller hides the separator on empty');
+});
+
+test('directories are counted DISTINCTLY: one parent folder holds several logins', () => {
+  // `POST /api/folders/probe` exists to report the logins found inside one folder,
+  // so two accounts naming the same directory is the normal case, not a corner. A
+  // sum over accounts counted it twice; the fixture has no sharing and hid that.
+  const shared = [
+    { dirs: [{ id: 'd-1' }, { id: 'd-2' }] },
+    { dirs: [{ id: 'd-2' }] },
+  ];
+  assert.equal(footerCounts(shared), '2 logins in 2 directories');
+});
+
+test('the footer counts read as English at one', () => {
+  assert.equal(footerCounts([{ dirs: [{ id: 'd-1' }] }]), '1 login in 1 directory');
+  assert.equal(footerCounts([]), '0 logins in 0 directories');
+  assert.equal(footerCounts([{}]), '1 login in 0 directories', 'an account with no dirs');
+});
+
+test('a directory identified by path rather than id still counts once', () => {
+  const byPath = [{ dirs: [{ path: 'D:/a' }] }, { dirs: [{ path: 'D:/a' }] }];
+  assert.equal(footerCounts(byPath), '2 logins in 1 directory');
 });
 
 console.log(`\n${passed} passed${process.exitCode ? ', SOME FAILED' : ''}`);

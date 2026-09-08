@@ -198,6 +198,50 @@ export function refuseFor(status, header, nowMs = Date.now()) {
   return REFUSAL_DEFAULT_SEC;
 }
 
+/**
+ * The right half of the footer (01.1 sec.1.2): `polling every 300 s . next 19:52`.
+ *
+ * The interval says how often; `next_poll_at` says WHEN, which is the half a person
+ * waiting for a number actually wants. Absent or unreadable, the clause is dropped
+ * rather than guessed -- `next NaN` is worse than no promise at all.
+ */
+export function footerRight(intervalSec, nextPollAt) {
+  if (!intervalSec) return 'polling paused';
+  const head = `polling every ${intervalSec} s`;
+  if (!nextPollAt) return head;
+  const at = new Date(nextPollAt);
+  if (Number.isNaN(at.getTime())) return head;
+  return `${head} \u00b7 next ${at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+}
+
+/**
+ * The legend, built from what is actually DRAWN rather than from the config
+ * (01.1 sec.1.2: the hatch half only when the forecast is on). A legend explaining a
+ * mark that is not on screen teaches the reader to distrust the other half of it.
+ */
+export function legendText({ timeBar, forecast }) {
+  const parts = [];
+  if (timeBar) parts.push('thin line = share of the window elapsed');
+  if (forecast) parts.push('hatched = forecast at reset (working hours only)');
+  return parts.join(' \u00b7 ');
+}
+
+/**
+ * Logins and the directories holding them, counted DISTINCTLY (01.1 sec.1.2).
+ *
+ * A sum over accounts double-counts a parent folder that holds several logins, and
+ * such a folder is not hypothetical: `POST /api/folders/probe` exists to report the
+ * logins found inside one. The fixture happens to have no sharing, so a sum passes
+ * there and misreports the moment somebody points the tool at their real folder.
+ */
+export function footerCounts(accounts) {
+  const n = accounts.length;
+  const dirs = new Set();
+  for (const a of accounts) for (const d of a.dirs || []) dirs.add(d.id || d.path || String(d));
+  const k = dirs.size;
+  return `${n} login${n === 1 ? '' : 's'} in ${k} director${k === 1 ? 'y' : 'ies'}`;
+}
+
 // ------------------------------------------------------- account order (§4) --
 
 /**

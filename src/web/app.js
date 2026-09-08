@@ -9,6 +9,7 @@
 // Separate file rather than an inline <script>: the CSP refuses inline (01.1 §0).
 import {
   isRetryable, retryDelay, MAX_RETRIES, refuseFor, orderRequest, configPut,
+  footerRight, legendText, footerCounts,
 } from './format.js';
 import { createLive, silentTooLong, SILENCE_LIMIT_MS } from './live.js';
 import { el, renderList, renderCards, layoutCells } from './render.js';
@@ -291,12 +292,25 @@ function applySnapshot(snap) {
     state.fetchedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
   const accounts = snap.accounts || [];
-  const dirs = accounts.reduce((n, a) => n + (a.dirs ? a.dirs.length : 0), 0);
   state.tz = snap.tz || state.tz;
-  $('[data-field="counts"]').textContent =
-    `${accounts.length} login${accounts.length === 1 ? '' : 's'} in ${dirs} director${dirs === 1 ? 'y' : 'ies'}`;
+  $('[data-field="counts"]').textContent = footerCounts(accounts);
+
+  // The legend describes what this snapshot actually draws (01.1 sec.1.2).
+  const limits = snap.limits || [];
+  // What is drawn, not what is configured: render.js draws the strip whenever a
+  // limit carries `resets_at` (it computes the share itself, 01.1 sec.2.6) and the
+  // ghost whenever a forecast came with it. Reading the same conditions here keeps
+  // the legend honest -- a legend built from the config would explain a mark that
+  // this particular snapshot does not show.
+  const legend = legendText({
+    timeBar: limits.some((l) => l.resets_at),
+    forecast: limits.some((l) => l.forecast),
+  });
+  $('[data-field="legend"]').textContent = legend;
+  $('[data-field="legend-sep"]').hidden = !legend;
   if (state.intervalSec) {
-    $('[data-field="interval"]').textContent = `polling every ${state.intervalSec} s`;
+    $('[data-field="interval"]').textContent =
+      footerRight(state.intervalSec, snap.next_poll_at);
   }
   $('[data-field="placeholder"]').textContent = accounts.length ? '' : 'no logins found';
 
