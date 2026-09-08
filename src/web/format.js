@@ -212,7 +212,7 @@ export function refuseFor(status, header, nowMs = Date.now()) {
  * A PARTIAL tree: only `ui.accounts_order`. Sending the whole config back would make
  * every save a chance to overwrite a setting somebody changed in another tab.
  */
-export function orderRequest(etag, emails) {
+export function configPut(etag, body) {
   return {
     method: 'PUT',
     headers: {
@@ -220,8 +220,13 @@ export function orderRequest(etag, emails) {
       accept: 'application/json',
       ...(etag ? { 'if-match': etag } : {}),
     },
-    body: JSON.stringify({ ui: { accounts_order: emails } }),
+    body: JSON.stringify(body),
   };
+}
+
+/** The order save is one such PUT with a body of exactly one branch. */
+export function orderRequest(etag, emails) {
+  return configPut(etag, { ui: { accounts_order: emails } });
 }
 
 /**

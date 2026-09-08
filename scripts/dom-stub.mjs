@@ -56,6 +56,14 @@ export class Node {
     return n;
   }
 
+  /** Sibling insert, as the DOM has it: node.after(x) puts x right behind node. */
+  after(...kids) {
+    const p = this.parent;
+    if (!p) return;
+    let ref = p.children[p.children.indexOf(this) + 1] || null;
+    for (const k of kids) { p.insertBefore(k, ref); ref = p.children[p.children.indexOf(k) + 1] || null; }
+  }
+
   replaceWith(n) {
     const p = this.parent;
     if (!p) return;

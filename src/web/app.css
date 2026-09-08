@@ -488,6 +488,20 @@ main:has(.view-wide:not([hidden])) { max-width: var(--page-width-wide); }
   box-shadow: 0 18px 46px rgba(0, 0, 0, .55);
 }
 .settings-head { margin-bottom: 10px; font-size: 15px; font-weight: 600; }
+.settings-conflict {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin-bottom: 10px; padding: 8px 10px; border-radius: 8px;
+  /* Amber, not red: nothing is broken, the save has to be repeated on a newer file. */
+  border: 1px solid var(--warning); color: var(--warning); font-size: 12px;
+}
+.settings-conflict-text { flex: 1 1 auto; }
+.settings-conflict-reload {
+  flex: 0 0 auto; padding: 4px 10px; border-radius: 6px; cursor: pointer;
+  border: 1px solid var(--warning); background: transparent;
+  color: var(--warning); font: inherit;
+}
+.settings-conflict-reload:focus-visible { outline: 2px solid var(--fg-soft); outline-offset: 2px; }
+
 .settings-section { padding: 10px 0; border-top: 1px solid var(--border); }
 .section-title { margin: 0 0 6px; font-size: 12px; font-weight: 600; color: var(--fg-soft); }
 .settings-note { margin: 0 0 8px; font-size: 11px; color: var(--fg-subtle); }

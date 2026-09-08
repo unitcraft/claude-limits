@@ -7,7 +7,9 @@
 // numbers. The arithmetic it does own lives in format.js and is tested under node.
 //
 // Separate file rather than an inline <script>: the CSP refuses inline (01.1 §0).
-import { isRetryable, retryDelay, MAX_RETRIES, refuseFor, orderRequest } from './format.js';
+import {
+  isRetryable, retryDelay, MAX_RETRIES, refuseFor, orderRequest, configPut,
+} from './format.js';
 import { createLive, silentTooLong, SILENCE_LIMIT_MS } from './live.js';
 import { el, renderList, renderCards, layoutCells } from './render.js';
 import { createReorder } from './reorder.js';
@@ -15,6 +17,7 @@ import { renderStats, RANGES } from './stats.js';
 import { renderFolders } from './folders.js';
 import {
   renderSettings, bodyOf, isEmptyDiff, showErrors, unmatchedErrors, probeSummary,
+  showConflict, clearConflict, conflictCurrent, syncFolders,
 } from './settings.js';
 
 const VIEWS = ['list', 'cards', 'stats'];
@@ -348,9 +351,11 @@ function handleEvent(name, data) {
   // order somebody else has just saved, and keep overriding it on every poll.
   if (name === 'config') {
     state.order = null;
-    // An open panel is now showing a stale etag and stale folder rows; the removed
-    // folder of sec.5.4 must disappear rather than sit there until the next open.
-    if (state.panel) { closeSettings(); openSettings(); }
+    // An open panel is now on a stale etag with stale folder rows, and the folder
+    // somebody removed must not sit there looking real. Refresh THAT -- closing the
+    // panel would discard whatever is half-typed in it, and unlike a 412 the person
+    // has not even asked to save yet.
+    if (state.panel) refreshOpenPanel();
     fetchSnapshot();
   }
   // 'ping' says only that the connection is alive, which live.js has already recorded.
@@ -363,6 +368,39 @@ function handleEvent(name, data) {
  * carries is the one the save sends back as `If-Match`, so a panel built from a
  * remembered reply would collect a 412 for a file that changed while it sat closed.
  */
+/**
+ * A `config` event arrived while the panel is open: re-read the file and rebuild the
+ * folder list from it, keeping the rest of the panel and its edits. If the list
+ * actually changed under somebody, say so -- a row vanishing on its own is alarming
+ * in a way an explained one is not.
+ */
+async function refreshOpenPanel() {
+  const panel = state.panel;
+  if (!panel) return;
+  let reply;
+  try {
+    reply = await (await apiGet('/api/config')).json();
+  } catch { return; }        // the panel keeps what it has; the next event tries again
+  if (state.panel !== panel) return;               // closed or replaced while we asked
+  if (syncFolders(panel, reply)) showConflict(panel, reply);
+}
+
+/**
+ * The person accepted the offer a 412 made. Rebuild from the `current` the error
+ * carried rather than issuing another GET: that is the version the server refused us
+ * over, and a fresh GET can already have moved past it.
+ */
+function reloadSettings() {
+  const old = state.panel;
+  if (!old) return;
+  const current = conflictCurrent(old);
+  if (!current) { closeSettings(); openSettings(); return; }
+  const panel = renderSettings(current);
+  panel.addEventListener('click', onPanelClick);
+  old.replaceWith(panel);
+  state.panel = panel;
+}
+
 async function openSettings() {
   if (state.panel) { closeSettings(); return; }
   let reply;
@@ -407,6 +445,7 @@ function onPanelClick(e) {
     if (row) row.remove();
     return;
   }
+  if (action === 'reload-settings') { reloadSettings(); return; }
   if (action === 'probe') { probeFolder(); return; }
   if (action === 'save') { saveSettings(); }
 }
@@ -452,18 +491,11 @@ async function saveSettings() {
   if (!panel) return;
   const body = bodyOf(panel);
   if (isEmptyDiff(body)) { closeSettings(); return; }
+  clearConflict(panel);        // a bar from the previous attempt is a stale statement
 
   let res;
   try {
-    res = await fetch('/api/config', {
-      method: 'PUT',
-      headers: {
-        'content-type': 'application/json',
-        accept: 'application/json',
-        ...(panel.dataset.etag ? { 'if-match': panel.dataset.etag } : {}),
-      },
-      body: JSON.stringify(body),
-    });
+    res = await fetch('/api/config', configPut(panel.dataset.etag, body));
   } catch (e) {
     toast(`could not save (${e.message})`);
     return;
@@ -489,10 +521,11 @@ async function saveSettings() {
     }
     return;
   }
+  // 01.3 sec.3.8: the body carries `current`, and the panel OFFERS to re-read. It
+  // does not re-read by force -- that would discard everything typed since the panel
+  // opened, at the one moment somebody is most likely to have typed a lot.
   if (res.status === 412 || res.status === 428) {
-    toast('the settings file changed elsewhere - reopening it');
-    closeSettings();
-    openSettings();
+    showConflict(panel, problem.current || null);
     return;
   }
   toast(problem.detail || `save refused (${res.status})`);

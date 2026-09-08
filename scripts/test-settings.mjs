@@ -15,6 +15,7 @@ installDocument({});
 const {
   renderSettings, collect, bodyOf, diffConfig, isEmptyDiff, folderRef,
   folderNote, showErrors, unmatchedErrors, probeSummary, BROWSER_ONLY,
+  showConflict, clearConflict, conflictCurrent, syncFolders,
 } = await import('../src/web/settings.js');
 
 let passed = 0;
@@ -218,6 +219,129 @@ test('the panel carries the etag it was built from', () => {
 test('the interval field repeats the minimum under itself', () => {
   const hint = at(build(), 'poll.interval_sec').parent.find((n) => n.className === 'field-hint');
   assert.match(hint.textContent, /minimum is 60 s/);
+});
+
+console.log('\na 412 OFFERS to re-read (01.3 sec.3.8, acceptance line 3)');
+
+const conflictReply = {
+  etag: '"newer-etag"',
+  config: { poll: { interval_sec: 900 }, ui: { time_bar: false } },
+  accounts_found: [],
+};
+
+test('the panel STAYS, and so does everything typed into it', () => {
+  // This is the whole point of the word "offers". Until 2026-09-08 a 412 closed the
+  // panel and reopened it, so ten minutes of settings vanished behind a toast at the
+  // one moment somebody is most likely to have typed a lot.
+  const panel = build();
+  const field = at(panel, 'poll.interval_sec');
+  field.value = '123';
+
+  showConflict(panel, conflictReply);
+
+  assert.equal(panel.dataset.conflict, 'true');
+  assert.equal(at(panel, 'poll.interval_sec').value, '123', 'the edit must survive the refusal');
+});
+
+test('the bar says what happened and offers the way out', () => {
+  const panel = build();
+  const bar = showConflict(panel, conflictReply);
+  assert.equal(bar.attrs.role, 'alert', 'a conflict nobody is told about is a lost save');
+  const btn = bar.find((n) => n.dataset && n.dataset.action === 'reload-settings');
+  assert.ok(btn, 'the offer needs something to accept it with');
+  assert.equal(btn.tag, 'button');
+  assert.equal(btn.attrs.type, 'button', 'without type= a button inside a form submits it');
+  assert.match(btn.textContent, /discard/, 'the button must say what it costs');
+});
+
+test('the bar carries the config the 412 sent, so accepting costs no second request', () => {
+  // And, more to the point, re-reads the version the server actually refused us over
+  // rather than whatever a later GET happens to return.
+  const panel = build();
+  showConflict(panel, conflictReply);
+  assert.equal(conflictCurrent(panel), conflictReply);
+  assert.equal(panel.querySelector('.settings-conflict').dataset.etag, '"newer-etag"');
+});
+
+test('a 412 with no `current` still tells the person, and asks for less', () => {
+  const panel = build();
+  const bar = showConflict(panel, null);
+  assert.equal(conflictCurrent(panel), null);
+  assert.match(bar.textContent, /did not send/);
+  assert.match(bar.find((n) => n.dataset && n.dataset.action === 'reload-settings').textContent,
+    /reopen/, 'nothing to discard against, so it offers a plain reopen');
+});
+
+test('a second attempt clears the first bar rather than stacking them', () => {
+  const panel = build();
+  showConflict(panel, conflictReply);
+  showConflict(panel, conflictReply);
+  assert.equal(panel.all((n) => n.className === 'settings-conflict').length, 1);
+  clearConflict(panel);
+  assert.equal(panel.all((n) => n.className === 'settings-conflict').length, 0);
+  assert.equal(panel.dataset.conflict, undefined, 'a stale flag would tint a clean panel');
+});
+
+test('the bar sits right under the header, where it is read before the fields', () => {
+  const panel = build();
+  showConflict(panel, conflictReply);
+  assert.equal(panel.children[0].className, 'settings-head');
+  assert.equal(panel.children[1].className, 'settings-conflict');
+});
+
+console.log('\na `config` event while the panel is open (acceptance line 5)');
+
+const rowPaths = (panel) =>
+  panel.all((n) => n.className === 'folder-row').map((r) => r.dataset.path);
+
+const withFolders = (folders, etag = '"e2"') => ({
+  etag,
+  config: { ...reply.config, folders },
+  accounts_found: reply.accounts_found || [],
+});
+
+test('a folder removed elsewhere disappears from the list', () => {
+  const panel = build();
+  const before = rowPaths(panel);
+  assert.ok(before.length >= 2, 'the fixture needs at least two folders for this to mean anything');
+
+  const changed = syncFolders(panel, withFolders(reply.config.folders.slice(1)));
+  assert.equal(changed, true);
+  assert.deepEqual(rowPaths(panel), before.slice(1));
+});
+
+test('and a folder added elsewhere appears', () => {
+  const panel = build();
+  const grown = [...reply.config.folders, { id: 'f-new', path: 'D:/added/elsewhere' }];
+  assert.equal(syncFolders(panel, withFolders(grown)), true);
+  assert.ok(rowPaths(panel).includes('D:/added/elsewhere'));
+});
+
+test('the panel takes the new etag, or the next Save fights a change it knows about', () => {
+  const panel = build();
+  syncFolders(panel, withFolders(reply.config.folders, '"newer"'));
+  assert.equal(panel.dataset.etag, '"newer"');
+});
+
+test('an event that changed nothing in the list reports no change', () => {
+  // The caller raises the conflict bar on `true`; saying so for an unchanged list
+  // would put an alarming notice on the panel every time any setting anywhere moved.
+  const panel = build();
+  assert.equal(syncFolders(panel, withFolders(reply.config.folders)), false);
+});
+
+test('EDITS ELSEWHERE IN THE PANEL SURVIVE the refresh', () => {
+  // This is the whole reason the event does not close the panel. Somebody typing an
+  // interval must not lose it because another tab touched an unrelated folder.
+  const panel = build();
+  at(panel, 'poll.interval_sec').value = '456';
+  syncFolders(panel, withFolders(reply.config.folders.slice(1)));
+  assert.equal(at(panel, 'poll.interval_sec').value, '456');
+});
+
+test('a panel with no folder list at all is left alone rather than crashing', () => {
+  const bare = new Node('div');
+  assert.equal(syncFolders(bare, withFolders([])), false);
 });
 
 console.log(`\n${passed} passed${process.exitCode ? ', SOME FAILED' : ''}`);

@@ -339,6 +339,83 @@ export function bodyOf(panel) {
  * value is wrong, and inventing one here is how two different messages for one rule
  * come to exist.
  */
+/**
+ * A `config` event says the settings file changed elsewhere. Rebuild the folder list
+ * from the new config -- a folder somebody deleted must not sit there looking real --
+ * and take the new etag with it, or the next Save collects a 412 over a change this
+ * page has already been told about.
+ *
+ * ONLY the folder list. The event is about the whole file, but the acceptance is
+ * about that list, and rebuilding the panel would throw away whatever is half-typed
+ * in it. Returns true when the list actually changed, so the caller can decide
+ * whether the person needs telling.
+ */
+export function syncFolders(panel, reply) {
+  const cfg = (reply && reply.config) || {};
+  const list = panel.querySelector('.folder-list');
+  if (!list) return false;
+
+  // Array.from: `children` is an HTMLCollection in a browser and has no .map.
+  const ids = (n) => Array.from(n.children, (r) => (r.dataset && (r.dataset.id || r.dataset.path)) || '').join('|');
+  const before = ids(list);
+
+  panel.dataset.etag = reply && reply.etag ? reply.etag : panel.dataset.etag;
+  panel.__base = cfg;
+  if (reply && reply.accounts_found) panel.__accounts = reply.accounts_found;
+
+  list.replaceChildren();
+  for (const f of cfg.folders || []) list.append(folderRow(f, panel.__accounts));
+  return ids(list) !== before;
+}
+
+/**
+ * The bar a 412 raises (01.3 sec.3.8): the file changed under this panel.
+ *
+ * It does NOT close the panel. "The panel offers to re-read" is the spec's wording,
+ * and the difference is somebody's typing: re-reading by force discards every edit
+ * they made, silently, at the one moment they are most likely to have made several.
+ *
+ * `current` is the fresh config the 412 carried with it. Keeping it on the bar means
+ * the re-read costs no second request -- and, more to the point, re-reads the version
+ * the server actually refused us over, not whatever a later GET happens to return.
+ */
+export function showConflict(panel, current) {
+  clearConflict(panel);
+  const bar = el('div', 'settings-conflict');
+  bar.setAttribute('role', 'alert');
+  bar.dataset.etag = (current && current.etag) || '';
+  bar.__current = current || null;
+
+  const said = current
+    ? 'the settings file changed elsewhere; your edits are still here'
+    : 'the settings file changed elsewhere, and the server did not send the new one';
+  bar.append(el('span', 'settings-conflict-text', said));
+
+  const btn = el('button', 'settings-conflict-reload',
+    current ? 'discard my edits and reload' : 'reopen the panel');
+  btn.setAttribute('type', 'button');
+  btn.dataset.action = 'reload-settings';
+  bar.append(btn);
+
+  panel.dataset.conflict = 'true';
+  const head = panel.querySelector('.settings-head');
+  if (head && head.after) head.after(bar); else panel.append(bar);
+  return bar;
+}
+
+/** A fresh save starts from a clean slate: an old conflict bar is a stale statement. */
+export function clearConflict(panel) {
+  delete panel.dataset.conflict;
+  const old = panel.querySelector('.settings-conflict');
+  if (old && old.remove) old.remove();
+}
+
+/** The config a conflict bar is holding, or null when the 412 carried none. */
+export function conflictCurrent(panel) {
+  const bar = panel.querySelector('.settings-conflict');
+  return bar ? bar.__current : null;
+}
+
 export function showErrors(panel, errors) {
   for (const slot of panel.querySelectorAll('.field-error')) slot.textContent = '';
   // Every control that can be named by an error, not only the text inputs: a toggle

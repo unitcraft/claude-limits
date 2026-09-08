@@ -10,7 +10,7 @@ import {
   windowMs, elapsedShare, cellGeometry, formatDuration,
   formatResetMoment, formatReset, rowLabel, sortLimits, severityOf,
   isRetryable, retryDelay, MAX_RETRIES, refuseFor, REFUSAL_DEFAULT_SEC, REFUSAL_MAX_SEC,
-  moveTo, applyOrder, dropIndexFor, landingIndex, orderRequest,
+  moveTo, applyOrder, dropIndexFor, landingIndex, orderRequest, configPut,
 } from '../src/web/format.js';
 
 let passed = 0;
@@ -266,6 +266,19 @@ test('zero means now, and is not confused with a missing header', () => {
 });
 
 // -------------------------------------------------- account order (T2.22) --
+
+test('the settings PUT is the same envelope, around whatever partial body (T2.25)', () => {
+  const r = configPut('"e1"', { poll: { interval_sec: 900 } });
+  assert.equal(r.method, 'PUT');
+  assert.equal(r.headers['if-match'], '"e1"');
+  assert.equal(r.headers.accept, 'application/json');
+  assert.deepEqual(JSON.parse(r.body), { poll: { interval_sec: 900 } },
+    'the body travels as given: deciding WHAT is partial is the panel\'s job, not this one\'s');
+});
+
+test('the order PUT is that envelope with one branch in it', () => {
+  assert.deepEqual(orderRequest('"e1"', ['a@x']), configPut('"e1"', { ui: { accounts_order: ['a@x'] } }));
+});
 
 test('the order PUT carries If-Match and only the ui subtree (T2.22)', () => {
   const r = orderRequest('W/"abc123"', ['b@x', 'a@x']);
