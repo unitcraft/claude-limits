@@ -1,0 +1,116 @@
+// errors.nv — every refusal this server can make, in one closed table (task T2.11).
+//
+// Source: 01.3 §6 (the codes, the `type` URI, the closed list), §0 (the statuses).
+//
+// A CLOSED LIST, and the code says so. 01.3 §6: "список закрыт, новый код — правка
+// этой таблицы". A refusal invented at the call site is a refusal no client can be
+// written against: the page switches on `code`, and a code that exists in one handler
+// and nowhere in the table is a string nobody knew to expect.
+//
+// `type` is derived from `code` rather than written twice — `urn:claude-limits:problem:`
+// plus the code with underscores turned into dashes. Two spellings of one identity is
+// how they come to disagree.
+
+module server.errors
+
+/// One refusal. The shape of RFC 9457 problem+json as 01.3 §0 uses it.
+export type ApiError value {
+    status int
+    code str
+    detail str
+    // Field-level complaints (`errors[]`), mandatory for 422 (§6).
+    fields []FieldError
+}
+
+export type FieldError value {
+    field str           // dotted notation: `poll.interval_sec`
+    message str
+}
+
+export fn FieldError.of(field str, message str) -> FieldError => { field, message }
+
+/// `urn:claude-limits:problem:method-not-allowed` from `method_not_allowed`.
+export fn type_uri(code str) -> str {
+    mut dashed = ""
+    for ch in code.chars() {
+        if ch == '_' { dashed = "${dashed}-" } else { dashed = "${dashed}${ch}" }
+    }
+    "urn:claude-limits:problem:${dashed}"
+}
+
+fn ApiError.of(status int, code str, detail str) -> ApiError =>
+    { status, code, detail, fields: [] }
+
+// ── the table of §6, one constructor per row ─────────────────────────────────
+//
+// Constructors rather than a free `ApiError.of` at the call site: the compiler then
+// refuses a code that is not in the table, which is what "closed list" has to mean to
+// be worth writing down.
+
+export fn ApiError.invalid_body(detail str) -> ApiError => ApiError.of(400, "invalid_body", detail)
+export fn ApiError.invalid_parameter(detail str) -> ApiError => ApiError.of(400, "invalid_parameter", detail)
+export fn ApiError.range_too_large(detail str) -> ApiError => ApiError.of(400, "range_too_large", detail)
+export fn ApiError.unauthenticated() -> ApiError => ApiError.of(401, "unauthenticated", "")
+export fn ApiError.loopback_only() -> ApiError => ApiError.of(403, "loopback_only", "")
+export fn ApiError.origin_required() -> ApiError => ApiError.of(403, "origin_required", "")
+export fn ApiError.not_found() -> ApiError => ApiError.of(404, "not_found", "")
+export fn ApiError.account_not_found() -> ApiError => ApiError.of(404, "account_not_found", "")
+export fn ApiError.method_not_allowed(allow str) -> ApiError => ApiError.of(405, "method_not_allowed", allow)
+export fn ApiError.account_stale() -> ApiError => ApiError.of(409, "account_stale", "")
+export fn ApiError.precondition_failed() -> ApiError => ApiError.of(412, "precondition_failed", "")
+export fn ApiError.body_too_large() -> ApiError => ApiError.of(413, "body_too_large", "")
+export fn ApiError.unsupported_media_type() -> ApiError => ApiError.of(415, "unsupported_media_type", "")
+export fn ApiError.precondition_required() -> ApiError => ApiError.of(428, "precondition_required", "")
+export fn ApiError.too_soon(retry_after_sec int) -> ApiError => ApiError.of(429, "too_soon", "${retry_after_sec}")
+export fn ApiError.too_many_auth_failures(retry_after_sec int) -> ApiError =>
+    ApiError.of(429, "too_many_auth_failures", "${retry_after_sec}")
+export fn ApiError.store_busy() -> ApiError => ApiError.of(503, "store_busy", "")
+export fn ApiError.too_many_subscribers() -> ApiError => ApiError.of(503, "too_many_subscribers", "")
+export fn ApiError.starting() -> ApiError => ApiError.of(503, "starting", "")
+export fn ApiError.config_readonly(detail str) -> ApiError => ApiError.of(500, "config_readonly", detail)
+
+/// 500 `internal`: the DETAIL NEVER LEAVES THE PROCESS (§6, "текст в лог; в ответе —
+/// `code`, `detail` без деталей, `request_id`").
+///
+/// The signature takes no detail at all, so a caller cannot pass one by accident. A
+/// stack trace or a path in a 500 tells a stranger about the machine, and the person
+/// who needs it has the log and the `request_id` to find it by.
+export fn ApiError.internal() -> ApiError => ApiError.of(500, "internal", "")
+
+/// The 422 family. `errors[]` is MANDATORY here (§6), so these take the list.
+export fn ApiError.invalid_config(fields []FieldError) -> ApiError =>
+    { status: 422, code: "invalid_config", detail: "", fields }
+
+export fn ApiError.extra_forbidden(fields []FieldError) -> ApiError =>
+    { status: 422, code: "extra_forbidden", detail: "", fields }
+
+export fn ApiError.invalid_request(fields []FieldError) -> ApiError =>
+    { status: 422, code: "invalid_request", detail: "", fields }
+
+/// Is this refusal well formed? A 422 without `errors[]` is a refusal the page cannot
+/// render beside a field, which is the only place a person can act on it.
+export fn well_formed(e ApiError) -> bool {
+    if e.status == 422 { return e.fields.len() > 0 }
+    true
+}
+
+/// The body, as problem+json. Written by hand rather than through a serialiser
+/// because it is four fields and the shape is fixed by RFC 9457.
+export fn to_json(e ApiError, request_id str, instance str) -> str {
+    mut out = "{\"type\":\"${type_uri(e.code)}\",\"code\":\"${e.code}\""
+    out = "${out},\"status\":${e.status}"
+    if e.detail != "" { out = "${out},\"detail\":\"${e.detail}\"" }
+    out = "${out},\"request_id\":\"${request_id}\""
+    out = "${out},\"instance\":\"${instance}\""
+    if e.fields.len() > 0 {
+        out = "${out},\"errors\":["
+        mut first = true
+        for f in e.fields {
+            if !first { out = "${out}," }
+            out = "${out}{\"field\":\"${f.field}\",\"message\":\"${f.message}\"}"
+            first = false
+        }
+        out = "${out}]"
+    }
+    "${out}}"
+}

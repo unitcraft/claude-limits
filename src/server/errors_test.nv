@@ -1,0 +1,94 @@
+// Tests for server/errors.nv — task T2.11, the pure half.
+//
+//   ./nova.sh test src/server/ --filter errors
+//
+// The wire-level acceptance of T2.11 (a 404 through `serve_once`, `X-Request-Id`,
+// the security headers) belongs to the routing frame and is not claimed here. What is
+// claimed is the CONTENT of a refusal: its code, its `type`, and the rule that a 422
+// without `errors[]` is not a refusal a person can act on.
+
+module server.errors_test
+
+import errors.{ApiError, FieldError, type_uri, well_formed, to_json}
+
+test "the type URI is derived from the code, not written twice" {
+    assert(type_uri("method_not_allowed") == "urn:claude-limits:problem:method-not-allowed")
+    assert(type_uri("not_found") == "urn:claude-limits:problem:not-found")
+    // Two spellings of one identity is how they come to disagree.
+    assert(type_uri("internal") == "urn:claude-limits:problem:internal")
+}
+
+test "each row of the table keeps its own status" {
+    assert(ApiError.invalid_body("").status == 400)
+    assert(ApiError.unauthenticated().status == 401)
+    assert(ApiError.loopback_only().status == 403)
+    assert(ApiError.not_found().status == 404)
+    assert(ApiError.method_not_allowed("GET").status == 405)
+    assert(ApiError.account_stale().status == 409)
+    assert(ApiError.precondition_failed().status == 412)
+    assert(ApiError.body_too_large().status == 413)
+    assert(ApiError.unsupported_media_type().status == 415)
+    assert(ApiError.precondition_required().status == 428)
+    assert(ApiError.too_soon(60).status == 429)
+    assert(ApiError.store_busy().status == 503)
+    assert(ApiError.internal().status == 500)
+}
+
+test "a 422 without errors[] is NOT well formed" {
+    // The page renders each message beside its field; a 422 with an empty list is a
+    // refusal nobody can act on.
+    ro empty = ApiError.invalid_config([])
+    assert(!well_formed(empty))
+    ro filled = ApiError.invalid_config([FieldError.of("poll.interval_sec", "minimum is 60 s")])
+    assert(well_formed(filled))
+}
+
+test "everything that is not a 422 is well formed without a field list" {
+    assert(well_formed(ApiError.not_found()))
+    assert(well_formed(ApiError.internal()))
+    assert(well_formed(ApiError.too_soon(30)))
+}
+
+test "the 500 carries NO detail, and cannot be given one" {
+    ro e = ApiError.internal()
+    assert(e.detail == "")
+    ro body = to_json(e, "req-1", "/api/x")
+    // A stack trace or a path in a 500 tells a stranger about the machine; the person
+    // who needs it has the log and the request id.
+    assert(!body.contains("detail"))
+    assert(body.contains("req-1"))
+}
+
+test "the body is problem+json with type, code, status, request id and instance" {
+    ro body = to_json(ApiError.not_found(), "req-7", "/api/nope")
+    assert(body.contains("\"type\":\"urn:claude-limits:problem:not-found\""))
+    assert(body.contains("\"code\":\"not_found\""))
+    assert(body.contains("\"status\":404"))
+    assert(body.contains("\"request_id\":\"req-7\""))
+    assert(body.contains("\"instance\":\"/api/nope\""))
+}
+
+test "field errors are rendered, all of them, in order" {
+    ro e = ApiError.invalid_config([
+        FieldError.of("poll.interval_sec", "minimum is 60 s"),
+        FieldError.of("thresholds.critical", "critical must be above warning"),
+    ])
+    ro body = to_json(e, "req-2", "/api/config")
+    assert(body.contains("\"errors\":["))
+    assert(body.contains("poll.interval_sec"))
+    assert(body.contains("thresholds.critical"))
+    // Both in one response: a panel that shows one fault at a time makes a person
+    // save four times to learn four things.
+    assert(body.contains("},{"))
+}
+
+test "the Allow list of a 405 travels in the refusal" {
+    ro e = ApiError.method_not_allowed("GET, HEAD")
+    assert(e.status == 405)
+    assert(e.detail == "GET, HEAD")
+}
+
+test "a 429 carries the seconds to wait" {
+    assert(ApiError.too_soon(60).detail == "60")
+    assert(ApiError.too_many_auth_failures(30).detail == "30")
+}
