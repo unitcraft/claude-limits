@@ -1,15 +1,14 @@
-// Tests for server/errors.nv — task T2.11, the pure half.
+// Tests for server/errors.nv — task T2.11, the content of a refusal.
 //
 //   ./nova.sh test src/server/ --filter errors
 //
 // The wire-level acceptance of T2.11 (a 404 through `serve_once`, `X-Request-Id`,
-// the security headers) belongs to the routing frame and is not claimed here. What is
-// claimed is the CONTENT of a refusal: its code, its `type`, and the rule that a 422
-// without `errors[]` is not a refusal a person can act on.
+// the security headers) lives in routes_test.nv. What is claimed here is the BODY:
+// its keys, its `type`, and the rules that make a refusal actionable.
 
 module server.errors_test
 
-import errors.{ApiError, FieldError, type_uri, well_formed, to_json}
+import errors.{ApiError, FieldError, type_uri, well_formed, to_json, all_codes}
 
 test "the type URI is derived from the code, not written twice" {
     assert(type_uri("method_not_allowed") == "urn:claude-limits:problem:method-not-allowed")
@@ -32,63 +31,152 @@ test "each row of the table keeps its own status" {
     assert(ApiError.too_soon(60).status == 429)
     assert(ApiError.store_busy().status == 503)
     assert(ApiError.internal().status == 500)
+    assert(ApiError.config_readonly().status == 500)
 }
+
+// ── the closed list, checked rather than described ───────────────────────────
+
+/// Every constructor, called once. A code reachable from a handler but missing
+/// from `all_codes()` shows up here as a mismatch, which is the only way "closed
+/// list" can be enforced by anything other than a reader's attention.
+fn every_error() -> []ApiError => [
+    ApiError.invalid_body("x"), ApiError.invalid_parameter("x"), ApiError.range_too_large("x"),
+    ApiError.unauthenticated(),
+    ApiError.loopback_only(), ApiError.origin_required(),
+    ApiError.not_found(), ApiError.account_not_found(),
+    ApiError.method_not_allowed("GET"),
+    ApiError.account_stale(),
+    ApiError.precondition_failed(),
+    ApiError.body_too_large(),
+    ApiError.unsupported_media_type(),
+    ApiError.invalid_config([FieldError.of("a", "c", "m")]),
+    ApiError.extra_forbidden([FieldError.of("a", "c", "m")]),
+    ApiError.invalid_request([FieldError.of("a", "c", "m")]),
+    ApiError.precondition_required(),
+    ApiError.too_soon(60), ApiError.too_many_auth_failures(30),
+    ApiError.store_busy(), ApiError.too_many_subscribers(), ApiError.starting(),
+    ApiError.internal(), ApiError.config_readonly(),
+]
+
+test "the constructors and all_codes() are the same list, in the same order" {
+    ro codes = all_codes()
+    ro errs = every_error()
+    assert(codes.len() == errs.len())
+    mut i = 0
+    while i < errs.len() {
+        assert(errs[i].code == codes[i])
+        i += 1
+    }
+}
+
+test "every code has a title and a type URI of its own" {
+    // A count in a comment goes stale silently; this walks the table instead.
+    ro errs = every_error()
+    for e in errs {
+        assert(e.title != "")
+        assert(type_uri(e.code) != "urn:claude-limits:problem:")
+    }
+    // Distinct URIs: two rows sharing one `type` would be two refusals a client
+    // cannot tell apart.
+    mut i = 0
+    while i < errs.len() {
+        mut j = i + 1
+        while j < errs.len() {
+            assert(type_uri(errs[i].code) != type_uri(errs[j].code))
+            j += 1
+        }
+        i += 1
+    }
+}
+
+test "every refusal in the table is well formed" {
+    for e in every_error() { assert(well_formed(e)) }
+}
+
+// ── the rules that make a refusal actionable ─────────────────────────────────
 
 test "a 422 without errors[] is NOT well formed" {
     // The page renders each message beside its field; a 422 with an empty list is a
     // refusal nobody can act on.
-    ro empty = ApiError.invalid_config([])
-    assert(!well_formed(empty))
-    ro filled = ApiError.invalid_config([FieldError.of("poll.interval_sec", "minimum is 60 s")])
-    assert(well_formed(filled))
+    assert(!well_formed(ApiError.invalid_config([])))
+    assert(well_formed(ApiError.invalid_config([FieldError.of("poll.interval_sec", "less_than_min", "minimum is 60 s")])))
 }
 
-test "everything that is not a 422 is well formed without a field list" {
+test "a 429 or a 503 without Retry-After is NOT well formed" {
+    // Section 8 item 11 requires the header on every one of them, so the seconds
+    // are part of the constructor and cannot be forgotten at a call site.
+    assert(ApiError.too_soon(60).retry_after == Some(60))
+    assert(ApiError.store_busy().retry_after == Some(5))
+    assert(ApiError.too_many_subscribers().retry_after == Some(30))
+    assert(ApiError.starting().retry_after == Some(1))
+    mut broken = ApiError.store_busy()
+    broken.retry_after = None
+    assert(!well_formed(broken))
+}
+
+test "a 405 without an Allow list is NOT well formed" {
+    assert(!well_formed(ApiError.method_not_allowed("")))
+    assert(ApiError.method_not_allowed("GET, HEAD").allow == "GET, HEAD")
+}
+
+test "everything that is not a 422, 429, 503 or 405 needs neither list nor seconds" {
     assert(well_formed(ApiError.not_found()))
     assert(well_formed(ApiError.internal()))
-    assert(well_formed(ApiError.too_soon(30)))
+    assert(ApiError.not_found().retry_after == None)
 }
 
-test "the 500 carries NO detail, and cannot be given one" {
-    ro e = ApiError.internal()
-    assert(e.detail == "")
-    ro body = to_json(e, "req-1", "/api/x")
-    // A stack trace or a path in a 500 tells a stranger about the machine; the person
-    // who needs it has the log and the request id.
-    assert(!body.contains("detail"))
+// ── the two 500s ─────────────────────────────────────────────────────────────
+
+test "neither 500 carries a detail, and neither can be given one" {
+    assert(ApiError.internal().detail == "")
+    assert(ApiError.config_readonly().detail == "")
+    ro body = to_json(ApiError.config_readonly(), "req-1", "/api/config")
+    // The settings path carries the operating system user's name. It goes to the
+    // log; the person who needs it has the request id to find it by.
+    assert(body.contains("\"detail\":null"))
     assert(body.contains("req-1"))
 }
 
-test "the body is problem+json with type, code, status, request id and instance" {
+// ── the wire shape of the body ───────────────────────────────────────────────
+
+test "the body carries every key of section 0, present even when null" {
     ro body = to_json(ApiError.not_found(), "req-7", "/api/nope")
     assert(body.contains("\"type\":\"urn:claude-limits:problem:not-found\""))
-    assert(body.contains("\"code\":\"not_found\""))
+    assert(body.contains("\"title\":\"Not found\""))
     assert(body.contains("\"status\":404"))
-    assert(body.contains("\"request_id\":\"req-7\""))
+    assert(body.contains("\"detail\":null"))
     assert(body.contains("\"instance\":\"/api/nope\""))
+    assert(body.contains("\"code\":\"not_found\""))
+    assert(body.contains("\"request_id\":\"req-7\""))
+    assert(body.contains("\"retry_after\":null"))
+    // An absent value is null, NOT a missing key (section 0).
+    assert(!body.contains("\"errors\""))
 }
 
-test "field errors are rendered, all of them, in order" {
+test "retry_after is a number in the body, not text inside detail" {
+    ro body = to_json(ApiError.too_soon(60), "req-3", "/api/snapshot/refresh")
+    assert(body.contains("\"retry_after\":60"))
+    assert(body.contains("\"detail\":null"))
+}
+
+test "field errors are rendered, all of them, in order, with their own code" {
     ro e = ApiError.invalid_config([
-        FieldError.of("poll.interval_sec", "minimum is 60 s"),
-        FieldError.of("thresholds.critical", "critical must be above warning"),
+        FieldError.of("poll.interval_sec", "less_than_min", "minimum is 60 s"),
+        FieldError.of("thresholds.critical", "out_of_order", "critical must be above warning"),
     ])
     ro body = to_json(e, "req-2", "/api/config")
     assert(body.contains("\"errors\":["))
-    assert(body.contains("poll.interval_sec"))
+    assert(body.contains("\"field\":\"poll.interval_sec\",\"code\":\"less_than_min\""))
     assert(body.contains("thresholds.critical"))
     // Both in one response: a panel that shows one fault at a time makes a person
     // save four times to learn four things.
     assert(body.contains("},{"))
 }
 
-test "the Allow list of a 405 travels in the refusal" {
-    ro e = ApiError.method_not_allowed("GET, HEAD")
-    assert(e.status == 405)
-    assert(e.detail == "GET, HEAD")
-}
-
-test "a 429 carries the seconds to wait" {
-    assert(ApiError.too_soon(60).detail == "60")
-    assert(ApiError.too_many_auth_failures(30).detail == "30")
+test "a quote in a detail does not break the body" {
+    // The first version of this file interpolated `detail` raw. A message quoting
+    // the offending value -- and messages do -- closed the JSON string early.
+    ro body = to_json(ApiError.invalid_body("expected \"poll\""), "req-4", "/api/config")
+    assert(body.contains("\"detail\":\"expected \\\"poll\\\"\""))
+    assert(body.ends_with("}"))
 }

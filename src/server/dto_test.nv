@@ -1,0 +1,55 @@
+// Tests for server/dto.nv — task T2.11, the serialisation rules.
+//
+//   ./nova.sh test src/server/ --filter dto
+
+module server.dto_test
+
+import dto.{Disclosure, pii_path, pii_path_list, labelled, labelled_str, body}
+
+test "a path is hidden from a LAN client and shown on loopback" {
+    // 01.2 section 10 puts a filesystem path in class `pii-path`: on every
+    // platform this runs on it carries the operating system user's name.
+    ro home = "C:\\Users\\evgeniy\\.claude"
+    assert(pii_path(Disclosure.Loopback, "path", home) == "\"path\":\"C:\\\\Users\\\\evgeniy\\\\.claude\"")
+    assert(pii_path(Disclosure.Lan, "path", home) == "\"path\":null")
+}
+
+test "hidden is null, not an empty string" {
+    // The page must tell "hidden from you" apart from "there is no path".
+    assert(pii_path(Disclosure.Lan, "path", "") == "\"path\":null")
+    assert(pii_path(Disclosure.Loopback, "path", "") == "\"path\":null")
+    assert(pii_path(Disclosure.Loopback, "path", "/x") == "\"path\":\"/x\"")
+}
+
+test "a LAN client gets an empty list, not a list of nulls" {
+    // The COUNT of login directories is itself a fact about the machine.
+    ro dirs = ["/home/a/.claude", "/home/b/.claude"]
+    assert(pii_path_list(Disclosure.Lan, "dirs", dirs) == "\"dirs\":[]")
+    assert(pii_path_list(Disclosure.Loopback, "dirs", dirs) == "\"dirs\":[\"/home/a/.claude\",\"/home/b/.claude\"]")
+    assert(pii_path_list(Disclosure.Loopback, "dirs", []) == "\"dirs\":[]")
+}
+
+test "a caption travels beside its machine value, never instead of it" {
+    // 01.3 section 0, deviation D2. One function emits the pair, so there is no
+    // way to emit the label and forget the value.
+    assert(labelled("seconds_left", 235800, "2d 17h") == "\"seconds_left\":235800,\"seconds_left_label\":\"2d 17h\"")
+    assert(labelled_str("resets_at", "2026-09-08T18:00:00Z", "in 3h") == "\"resets_at\":\"2026-09-08T18:00:00Z\",\"resets_at_label\":\"in 3h\"")
+}
+
+test "the pair splices into an object as two fields" {
+    ro b = body([labelled("seconds_left", 60, "1m")])
+    assert(b == "{\"seconds_left\":60,\"seconds_left_label\":\"1m\"}")
+    // A script reading the number and a page reading the words see one response.
+    assert(b.contains("\"seconds_left\":60"))
+    assert(b.contains("\"seconds_left_label\":\"1m\""))
+}
+
+test "a body is a JSON object even when it is empty" {
+    assert(body([]) == "{}")
+}
+
+test "a quote in a path does not break the body" {
+    ro odd = "/home/o\"brien/.claude"
+    ro b = body([pii_path(Disclosure.Loopback, "path", odd)])
+    assert(b == "{\"path\":\"/home/o\\\"brien/.claude\"}")
+}

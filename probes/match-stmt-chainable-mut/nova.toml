@@ -1,0 +1,8 @@
+[lib]
+src = "src"
+
+[package]
+name = "match_stmt_chainable_mut"
+version = "0.0.0"
+description = "Probe: a statement-position match whose arms call a chainable mut @ method emits uncompilable C"
+license = "MIT OR Apache-2.0"

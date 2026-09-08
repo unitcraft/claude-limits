@@ -1,0 +1,91 @@
+// dto.nv — the serialisation rules every response obeys (task T2.11).
+//
+// Source: 01.3 §0 (`*_label` beside the machine value, never instead — deviation
+// D2; an absent value is `null`), §3.2 (what a LAN client is allowed to see),
+// §4 ("сериализация в LAN обнуляет поля класса pii-path"); 01.2 §10 (the register
+// of personal data, which is what names the classes).
+//
+// WHAT IS HERE AND WHAT IS NOT. The response TYPES — `Health`, `Snapshot`,
+// `Config` and the rest — arrive with the routes that return them (T2.12–T2.15):
+// a record with no handler is a shape nobody has had to make fit anything. What
+// arrives now is the part that is the SAME for all of them and would otherwise be
+// re-decided in each handler:
+//
+//   * how far a given client is allowed to see (`Disclosure`);
+//   * the fields that are blanked when it is not allowed (`pii_path`);
+//   * the rule that a human caption travels BESIDE its machine value, never
+//     instead of it (`labelled`).
+//
+// The third one exists because it is the deviation the plan argues for at length
+// (§0, D2: "страница и виджет показывают одно и то же"), and a rule that lives
+// only in prose is a rule the fourth handler forgets.
+
+module server.dto
+
+import json.{quote, field_str, field_str_or_null, field_int, field_raw, object}
+
+/// How much this response may say.
+///
+/// The axis is the CLIENT, not the route: the same `/api/health` answers a
+/// loopback caller with paths and a LAN caller without them (§3.2, §8 п. 8's
+/// "`/api/health` из LAN — без путей и версии").
+export type Disclosure enum Loopback | Lan
+
+/// A field of class `pii-path` (01.2 §10): a filesystem path, which on every
+/// platform this runs on contains the operating system user's name.
+///
+/// `null` for a LAN client, the value itself on loopback. Not "" and not an
+/// omitted key — §0 wants an absent value spelled `null`, so the page can tell
+/// "hidden from you" apart from "empty".
+export fn pii_path(d Disclosure, name str, value str) -> str {
+    match d {
+        Disclosure.Loopback => field_str_or_null(name, value)
+        Disclosure.Lan => "${quote(name)}:null"
+    }
+}
+
+/// The same for a whole list of paths: a LAN client gets an empty list, not a
+/// list of nulls, because the count of directories is itself a fact about the
+/// machine.
+export fn pii_path_list(d Disclosure, name str, values []str) -> str {
+    match d {
+        Disclosure.Loopback => {
+            mut items = []str.new()
+            for v in values { items.push("\"${v}\"") }
+            field_raw(name, "[${join_commas(items)}]")
+        }
+        Disclosure.Lan => field_raw(name, "[]")
+    }
+}
+
+fn join_commas(items []str) -> str {
+    consume sb = StringBuilder.new()
+    mut first = true
+    for it in items {
+        if !first { sb.append(",") }
+        sb.append(it)
+        first = false
+    }
+    sb.into_str()
+}
+
+/// A machine value and its caption, as TWO fields.
+///
+/// 01.3 §0, deviation D2: "готовые подписи вида `2d 17h` сервер даёт полями
+/// `*_label` РЯДОМ с машинным значением, НИКОГДА вместо него". The page and the
+/// widget then show the same words without either of them re-deriving them, and a
+/// script still gets the number.
+///
+/// Returning both fields from one call is what makes that mechanical: there is no
+/// way to emit the label and forget the value, because one function emits the
+/// pair. The caller splices the result into an `object([...])`.
+export fn labelled(name str, seconds int, label str) -> str =>
+    "${field_int(name, seconds)},${field_str("${name}_label", label)}"
+
+/// The same for a value that is already serialised (a string, a timestamp).
+export fn labelled_str(name str, value str, label str) -> str =>
+    "${field_str(name, value)},${field_str("${name}_label", label)}"
+
+/// A whole object from fields, re-exported so a handler needs one import to build
+/// a body rather than two.
+export fn body(fields []str) -> str => object(fields)

@@ -1,0 +1,89 @@
+// Tests for server/json.nv — task T2.11.
+//
+//   ./nova.sh test src/server/ --filter json
+
+module server.json_test
+
+// An import list cannot break across lines (the parser wants the closing brace on
+// the same line), so this one stays long.
+import json.{escape, quote, field_str, field_str_or_null, field_int, field_int_or_null, field_bool, field_raw, object, array, array_str}
+
+test "a quote inside a value does not close the string" {
+    // This is the whole reason the file exists: `"${x}"` would have written the
+    // quote raw and handed the page a body its parser rejects.
+    assert(escape("say \"hi\"") == "say \\\"hi\\\"")
+    assert(quote("say \"hi\"") == "\"say \\\"hi\\\"\"")
+}
+
+test "a backslash is doubled, and a doubled backslash is not undone" {
+    assert(escape("C:\\Users") == "C:\\\\Users")
+    // A Windows path is the value most likely to arrive here: the config file
+    // path, a login directory. Two of them in one string still round-trip.
+    assert(escape("a\\b\\c") == "a\\\\b\\\\c")
+}
+
+test "the three control characters with short escapes get them" {
+    assert(escape("a\nb") == "a\\nb")
+    assert(escape("a\rb") == "a\\rb")
+    assert(escape("a\tb") == "a\\tb")
+}
+
+test "every other control character goes out as u00XX" {
+    // 0x01 has no short form; a parser that meets a raw one rejects the body.
+    ro s = escape("a${'\u{01}'}b")
+    assert(s == "a\\u0001b")
+    assert(escape("${'\u{1f}'}") == "\\u001f")
+}
+
+test "a slash is left alone" {
+    // Legal unescaped, and escaping it makes every `instance` path harder to
+    // read for no gain.
+    assert(escape("/api/config") == "/api/config")
+}
+
+test "printable text passes through untouched" {
+    assert(escape("minimum is 60 s") == "minimum is 60 s")
+    assert(quote("") == "\"\"")
+}
+
+test "an absent value is null, not a missing key" {
+    // 01.3 section 0. A page that switches on `\"detail\" in body` and one that
+    // switches on `body.detail === null` are two pages.
+    assert(field_str_or_null("detail", "") == "\"detail\":null")
+    assert(field_str_or_null("detail", "x") == "\"detail\":\"x\"")
+    assert(field_int_or_null("retry_after", None) == "\"retry_after\":null")
+    assert(field_int_or_null("retry_after", Some(30)) == "\"retry_after\":30")
+}
+
+test "the scalar fields write their own type, not a string of it" {
+    assert(field_int("status", 404) == "\"status\":404")
+    assert(field_bool("locked", true) == "\"locked\":true")
+    assert(field_bool("locked", false) == "\"locked\":false")
+    assert(field_str("code", "not_found") == "\"code\":\"not_found\"")
+}
+
+test "a raw field nests JSON instead of stringifying it" {
+    ro inner = object([field_int("a", 1)])
+    assert(field_raw("current", inner) == "\"current\":{\"a\":1}")
+    // Escaping it here would turn a nested object into a string containing one.
+    assert(!field_raw("current", inner).contains("\\\""))
+}
+
+test "an empty list is a list, and an empty object is an object" {
+    assert(array([]) == "[]")
+    assert(object([]) == "{}")
+    assert(array_str([]) == "[]")
+}
+
+test "containers join with commas and no spaces" {
+    ro two = object([field_str("code", "x"), field_int("status", 1)])
+    assert(two == "{\"code\":\"x\",\"status\":1}")
+    assert(array([object([]), object([])]) == "[{},{}]")
+    assert(array_str(["GET", "HEAD"]) == "[\"GET\",\"HEAD\"]")
+}
+
+test "a name is escaped too" {
+    // No key in this API needs it, but a writer that escapes values and not keys
+    // is a writer with one unguarded edge.
+    assert(field_int("a\"b", 1) == "\"a\\\"b\":1")
+}

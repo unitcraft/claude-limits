@@ -1,0 +1,152 @@
+// json.nv — writing JSON by hand, with the escaping that string interpolation
+// does not do for you (task T2.11).
+//
+// Source: 01.3 §0 ("JSON": ключи `snake_case`, отсутствующее значение — `null`,
+// а не пропуск ключа; списки — всегда списки, даже пустые; верхний уровень —
+// всегда объект), §4 (`json.nv`).
+//
+// WHY A FILE AT ALL, when a body is four fields and `"${x}"` writes it in one
+// line: because `"${x}"` writes the value RAW. A `detail` carrying a quote, a
+// backslash or a newline — and a detail is the one field built from a message
+// someone else wrote — closes the string early and hands the page a body its
+// parser rejects. The first version of `errors.nv` interpolated `detail`
+// straight into the body; this file is the fix, and `escape` is why it exists.
+//
+// Not a serialiser and not a reflection pass: eight functions that compose. The
+// shapes they build are fixed by the plan, so the value of a generic writer here
+// would be the value of a thing nobody calls.
+//
+// NOT HERE, on purpose: fixed-precision numbers (`elapsed_share`,
+// `rate_per_hour` — 01.3 §0 wants 2–3 digits). No response carries one yet, and
+// a rounding primitive with no caller is a primitive whose corner cases nobody
+// has met. It arrives with the first DTO that needs it (T2.12).
+
+module server.json
+
+/// `\u00XX` for a control character. Lower-case hex, as every JSON writer emits
+/// it — the case is not significant to a parser, but a stable spelling is what
+/// lets a test compare bodies as strings.
+fn hex4(cp int) -> str {
+    ro digits = "0123456789abcdef"
+    consume sb = StringBuilder.new()
+    sb.append("\\u")
+    mut shift = 12
+    while shift >= 0 {
+        ro nib = (cp >> shift) & 15
+        sb.append(digits[nib..nib + 1])
+        shift -= 4
+    }
+    sb.into_str()
+}
+
+/// Escape a string for the inside of a JSON string literal (RFC 8259 §7).
+///
+/// The two-character escapes come first because they are shorter and are what a
+/// human reading a log expects to see; everything else below 0x20 goes out as
+/// `\u00XX`. `/` is NOT escaped: it is legal unescaped, and escaping it makes
+/// every `instance` path in an error body harder to read for no gain.
+export fn escape(s str) -> str {
+    consume sb = StringBuilder.new()
+    for c in s.chars() {
+        ro cp = c as int
+        if c == '"' {
+            sb.append("\\\"")
+        } else if c == '\\' {
+            sb.append("\\\\")
+        } else if c == '\n' {
+            sb.append("\\n")
+        } else if c == '\r' {
+            sb.append("\\r")
+        } else if c == '\t' {
+            sb.append("\\t")
+        } else if cp == 8 {
+            sb.append("\\b")
+        } else if cp == 12 {
+            sb.append("\\f")
+        } else if cp < 0x20 {
+            sb.append(hex4(cp))
+        } else {
+            sb.append(c)
+        }
+    }
+    sb.into_str()
+}
+
+/// A quoted, escaped JSON string.
+export fn quote(s str) -> str => "\"${escape(s)}\""
+
+// ── fields ───────────────────────────────────────────────────────────────────
+//
+// Each returns one `"name":value` pair. They are separate functions rather than
+// one function taking a tagged union because the call site then says which shape
+// it meant, and a `null` written where a number belongs is a contract change the
+// page notices only at runtime.
+
+/// `"name":"value"`, escaped.
+export fn field_str(name str, v str) -> str => "${quote(name)}:${quote(v)}"
+
+/// `"name":"value"`, or `"name":null` when `v` is empty.
+///
+/// 01.3 §0: an absent value is `null`, NOT a missing key. A page that switches on
+/// `"detail" in body` and a page that switches on `body.detail === null` are two
+/// pages; only one of them keeps working when the key starts appearing.
+export fn field_str_or_null(name str, v str) -> str =>
+    if v == "" { "${quote(name)}:null" } else { field_str(name, v) }
+
+/// `"name":123`.
+export fn field_int(name str, v int) -> str => "${quote(name)}:${v}"
+
+/// `"name":123` or `"name":null`.
+export fn field_int_or_null(name str, v Option[int]) -> str {
+    match v {
+        Some(n) => field_int(name, n)
+        None    => "${quote(name)}:null"
+    }
+}
+
+/// `"name":true` / `"name":false`.
+export fn field_bool(name str, v bool) -> str =>
+    if v { "${quote(name)}:true" } else { "${quote(name)}:false" }
+
+/// `"name":<already-serialised JSON>` — for nesting an object or an array built
+/// by `object`/`array` below. The value is NOT escaped: it is JSON already, and
+/// escaping it would turn a nested object into a string containing one.
+export fn field_raw(name str, raw str) -> str => "${quote(name)}:${raw}"
+
+// ── containers ───────────────────────────────────────────────────────────────
+
+/// `{a,b,c}` from already-serialised fields. An empty list gives `{}`.
+export fn object(fields []str) -> str {
+    consume sb = StringBuilder.new()
+    sb.append("{")
+    mut first = true
+    for f in fields {
+        if !first { sb.append(",") }
+        sb.append(f)
+        first = false
+    }
+    sb.append("}")
+    sb.into_str()
+}
+
+/// `[a,b,c]` from already-serialised items. An empty list gives `[]`, which is
+/// the point: 01.3 §0 says a list is always a list, even empty.
+export fn array(items []str) -> str {
+    consume sb = StringBuilder.new()
+    sb.append("[")
+    mut first = true
+    for it in items {
+        if !first { sb.append(",") }
+        sb.append(it)
+        first = false
+    }
+    sb.append("]")
+    sb.into_str()
+}
+
+/// `["a","b"]` from plain strings — the common case of `array` over `quote`.
+export fn array_str(items []str) -> str {
+    mut out = []str.new()
+    for it in items { out.push(quote(it)) }
+    array(out)
+}

@@ -1,6 +1,7 @@
 // errors.nv — every refusal this server can make, in one closed table (task T2.11).
 //
-// Source: 01.3 §6 (the codes, the `type` URI, the closed list), §0 (the statuses).
+// Source: 01.3 §6 (the codes, the `type` URI, the closed list), §0 (the wire shape
+// of a problem body, and which keys are always present).
 //
 // A CLOSED LIST, and the code says so. 01.3 §6: "список закрыт, новый код — правка
 // этой таблицы". A refusal invented at the call site is a refusal no client can be
@@ -10,107 +11,257 @@
 // `type` is derived from `code` rather than written twice — `urn:claude-limits:problem:`
 // plus the code with underscores turned into dashes. Two spellings of one identity is
 // how they come to disagree.
+//
+// CORRECTION to the first version of this file (same task, before the wire half was
+// built): it was written from §6 alone and contradicted §0 in four places, all of
+// which a client would have hit.
+//   - No `title`. RFC 9457 names it a core member and §0's own example carries one.
+//   - No `retry_after`. §0 declares it a contract extension field present on every
+//     problem body (`null` when there is nothing to wait for); I had smuggled the
+//     seconds into `detail` as a bare number, which is a field the page would have
+//     had to parse as text to use.
+//   - `errors[]` entries had no `code`. §0's example has `field`, `code`, `message`;
+//     the page groups by `code` to decide the wording it shows.
+//   - `config_readonly` took a detail and put it on the wire. §6 puts BOTH 500s under
+//     "текст в лог; в ответе — code, detail без деталей" — I had applied that to
+//     `internal` only, so the one 500 that names a filesystem path was the one that
+//     leaked it.
+// The count that used to stand in this banner ("nineteen of them") was also wrong —
+// there are twenty-four. It is not written down any more: a number in prose goes stale
+// silently, and `all_codes()` below is the same fact in a form a test can check.
 
 module server.errors
+
+import json.{field_str, field_str_or_null, field_int, field_int_or_null, field_raw, object, array}
 
 /// One refusal. The shape of RFC 9457 problem+json as 01.3 §0 uses it.
 export type ApiError value {
     status int
     code str
+    /// Short human phrase, fixed per code (RFC 9457 calls it a core member).
+    title str
+    /// Free text, or "" for `null` on the wire. Never repeats the value it was
+    /// given whole and never names an internal path (§0, convention §5.7).
     detail str
-    // Field-level complaints (`errors[]`), mandatory for 422 (§6).
+    /// Seconds to wait; duplicates the `Retry-After` header (§0). `None` renders
+    /// as `null`, which §0 requires — an absent value is not a missing key.
+    retry_after Option[int]
+    /// The `Allow` header of a 405, kept as its own field so the ONE place that
+    /// knows the method set is the one that built the refusal. "" otherwise.
+    allow str
+    /// Field-level complaints (`errors[]`), mandatory for 422 (§6).
     fields []FieldError
 }
 
+/// One entry of `errors[]`. Three members, as §0's example has them: `field` is a
+/// dotted path into the body or a parameter name, `code` is what the page groups
+/// by, `message` is what a person reads.
 export type FieldError value {
-    field str           // dotted notation: `poll.interval_sec`
+    field str
+    code str
     message str
 }
 
-export fn FieldError.of(field str, message str) -> FieldError => { field, message }
+export fn FieldError.of(field str, code str, message str) -> FieldError => { field, code, message }
 
 /// `urn:claude-limits:problem:method-not-allowed` from `method_not_allowed`.
 export fn type_uri(code str) -> str {
-    mut dashed = ""
+    consume sb = StringBuilder.new()
+    sb.append("urn:claude-limits:problem:")
     for ch in code.chars() {
-        if ch == '_' { dashed = "${dashed}-" } else { dashed = "${dashed}${ch}" }
+        if ch == '_' { sb.append('-') } else { sb.append(ch) }
     }
-    "urn:claude-limits:problem:${dashed}"
+    sb.into_str()
 }
 
-fn ApiError.of(status int, code str, detail str) -> ApiError =>
-    { status, code, detail, fields: [] }
+fn ApiError.of(status int, code str, title str, detail str) -> ApiError =>
+    { status, code, title, detail, retry_after: None, allow: "", fields: [] }
 
 // ── the table of §6, one constructor per row ─────────────────────────────────
 //
 // Constructors rather than a free `ApiError.of` at the call site: the compiler then
 // refuses a code that is not in the table, which is what "closed list" has to mean to
-// be worth writing down.
+// be worth writing down. The title is a literal ON the row rather than a lookup keyed
+// by code, so a new row cannot be added without one.
 
-export fn ApiError.invalid_body(detail str) -> ApiError => ApiError.of(400, "invalid_body", detail)
-export fn ApiError.invalid_parameter(detail str) -> ApiError => ApiError.of(400, "invalid_parameter", detail)
-export fn ApiError.range_too_large(detail str) -> ApiError => ApiError.of(400, "range_too_large", detail)
-export fn ApiError.unauthenticated() -> ApiError => ApiError.of(401, "unauthenticated", "")
-export fn ApiError.loopback_only() -> ApiError => ApiError.of(403, "loopback_only", "")
-export fn ApiError.origin_required() -> ApiError => ApiError.of(403, "origin_required", "")
-export fn ApiError.not_found() -> ApiError => ApiError.of(404, "not_found", "")
-export fn ApiError.account_not_found() -> ApiError => ApiError.of(404, "account_not_found", "")
-export fn ApiError.method_not_allowed(allow str) -> ApiError => ApiError.of(405, "method_not_allowed", allow)
-export fn ApiError.account_stale() -> ApiError => ApiError.of(409, "account_stale", "")
-export fn ApiError.precondition_failed() -> ApiError => ApiError.of(412, "precondition_failed", "")
-export fn ApiError.body_too_large() -> ApiError => ApiError.of(413, "body_too_large", "")
-export fn ApiError.unsupported_media_type() -> ApiError => ApiError.of(415, "unsupported_media_type", "")
-export fn ApiError.precondition_required() -> ApiError => ApiError.of(428, "precondition_required", "")
-export fn ApiError.too_soon(retry_after_sec int) -> ApiError => ApiError.of(429, "too_soon", "${retry_after_sec}")
-export fn ApiError.too_many_auth_failures(retry_after_sec int) -> ApiError =>
-    ApiError.of(429, "too_many_auth_failures", "${retry_after_sec}")
-export fn ApiError.store_busy() -> ApiError => ApiError.of(503, "store_busy", "")
-export fn ApiError.too_many_subscribers() -> ApiError => ApiError.of(503, "too_many_subscribers", "")
-export fn ApiError.starting() -> ApiError => ApiError.of(503, "starting", "")
-export fn ApiError.config_readonly(detail str) -> ApiError => ApiError.of(500, "config_readonly", detail)
+export fn ApiError.invalid_body(detail str) -> ApiError =>
+    ApiError.of(400, "invalid_body", "Malformed body", detail)
+export fn ApiError.invalid_parameter(detail str) -> ApiError =>
+    ApiError.of(400, "invalid_parameter", "Invalid parameter", detail)
+export fn ApiError.range_too_large(detail str) -> ApiError =>
+    ApiError.of(400, "range_too_large", "Range too large", detail)
+export fn ApiError.unauthenticated() -> ApiError =>
+    ApiError.of(401, "unauthenticated", "Not authenticated", "")
+export fn ApiError.loopback_only() -> ApiError =>
+    ApiError.of(403, "loopback_only", "Local access only", "")
+export fn ApiError.origin_required() -> ApiError =>
+    ApiError.of(403, "origin_required", "Origin required", "")
+export fn ApiError.not_found() -> ApiError =>
+    ApiError.of(404, "not_found", "Not found", "")
+export fn ApiError.account_not_found() -> ApiError =>
+    ApiError.of(404, "account_not_found", "Account not found", "")
+export fn ApiError.account_stale() -> ApiError =>
+    ApiError.of(409, "account_stale", "Account changed", "")
+export fn ApiError.precondition_failed() -> ApiError =>
+    ApiError.of(412, "precondition_failed", "Precondition failed", "")
+export fn ApiError.body_too_large() -> ApiError =>
+    ApiError.of(413, "body_too_large", "Body too large", "")
+export fn ApiError.unsupported_media_type() -> ApiError =>
+    ApiError.of(415, "unsupported_media_type", "Unsupported media type", "")
+export fn ApiError.precondition_required() -> ApiError =>
+    ApiError.of(428, "precondition_required", "Precondition required", "")
 
-/// 500 `internal`: the DETAIL NEVER LEAVES THE PROCESS (§6, "текст в лог; в ответе —
-/// `code`, `detail` без деталей, `request_id`").
+/// 405. The `Allow` list travels IN the refusal, not beside it: the header and the
+/// body are then written from one value, and a route that gains a method cannot
+/// end up advertising one set and rejecting another.
+export fn ApiError.method_not_allowed(allow str) -> ApiError {
+    mut e = ApiError.of(405, "method_not_allowed", "Method not allowed", "")
+    e.allow = allow
+    e
+}
+
+// The 429 and 503 rows: §8 п. 11 requires `Retry-After` on EVERY one of them, so the
+// seconds are part of the constructor rather than something a call site may forget.
+
+export fn ApiError.too_soon(retry_after_sec int) -> ApiError {
+    mut e = ApiError.of(429, "too_soon", "Too soon", "")
+    e.retry_after = Some(retry_after_sec)
+    e
+}
+
+export fn ApiError.too_many_auth_failures(retry_after_sec int) -> ApiError {
+    mut e = ApiError.of(429, "too_many_auth_failures", "Too many failed attempts", "")
+    e.retry_after = Some(retry_after_sec)
+    e
+}
+
+/// 503 while the store fiber does not answer within five seconds (§4 fixes both the
+/// timeout and this number).
+export fn ApiError.store_busy() -> ApiError {
+    mut e = ApiError.of(503, "store_busy", "Store busy", "")
+    e.retry_after = Some(5)
+    e
+}
+
+/// 503 for the 33rd SSE subscriber; the thirty seconds are the T2.13 card's.
+export fn ApiError.too_many_subscribers() -> ApiError {
+    mut e = ApiError.of(503, "too_many_subscribers", "Too many subscribers", "")
+    e.retry_after = Some(30)
+    e
+}
+
+/// 503 during the first seconds after start (§6).
 ///
-/// The signature takes no detail at all, so a caller cannot pass one by accident. A
-/// stack trace or a path in a 500 tells a stranger about the machine, and the person
-/// who needs it has the log and the `request_id` to find it by.
-export fn ApiError.internal() -> ApiError => ApiError.of(500, "internal", "")
+/// MY CHOICE, and no document gives it: one second. §8 п. 11 demands a `Retry-After`
+/// on every 503, §6 says this state lasts "первые секунды после старта", and a page
+/// that waits longer than the condition shows an empty widget for no reason.
+export fn ApiError.starting() -> ApiError {
+    mut e = ApiError.of(503, "starting", "Starting up", "")
+    e.retry_after = Some(1)
+    e
+}
 
-/// The 422 family. `errors[]` is MANDATORY here (§6), so these take the list.
-export fn ApiError.invalid_config(fields []FieldError) -> ApiError =>
-    { status: 422, code: "invalid_config", detail: "", fields }
+// ── the two 500s ─────────────────────────────────────────────────────────────
+//
+// §6 puts both under "текст в лог; в ответе — `code`, `detail` без деталей,
+// `request_id`", so NEITHER takes a detail parameter. Not an empty string they might
+// be handed — no parameter at all: a signature that accepts a detail is a signature
+// someone will pass a stack trace to. The text belongs in the log, and the person who
+// needs it has the `request_id` to find it by.
 
-export fn ApiError.extra_forbidden(fields []FieldError) -> ApiError =>
-    { status: 422, code: "extra_forbidden", detail: "", fields }
+export fn ApiError.internal() -> ApiError =>
+    ApiError.of(500, "internal", "Internal error", "")
 
-export fn ApiError.invalid_request(fields []FieldError) -> ApiError =>
-    { status: 422, code: "invalid_request", detail: "", fields }
+/// The settings file could not be written. The PATH — which carries the operating
+/// system user's name — goes to the log, never here.
+export fn ApiError.config_readonly() -> ApiError =>
+    ApiError.of(500, "config_readonly", "Settings file is read-only", "")
+
+// ── the 422 family ───────────────────────────────────────────────────────────
+//
+// `errors[]` is MANDATORY here (§6), so these take the list and `well_formed` below
+// refuses an empty one.
+
+export fn ApiError.invalid_config(fields []FieldError) -> ApiError {
+    mut e = ApiError.of(422, "invalid_config", "Invalid settings", "")
+    e.fields = fields
+    e
+}
+
+export fn ApiError.extra_forbidden(fields []FieldError) -> ApiError {
+    mut e = ApiError.of(422, "extra_forbidden", "Unknown field", "")
+    e.fields = fields
+    e
+}
+
+export fn ApiError.invalid_request(fields []FieldError) -> ApiError {
+    mut e = ApiError.of(422, "invalid_request", "Invalid request", "")
+    e.fields = fields
+    e
+}
+
+/// Every code in the table, in the order of §6.
+///
+/// This exists so the closed list can be CHECKED rather than described. A count in a
+/// comment goes stale the day a row is added and says nothing when it does; a test
+/// that walks this list and asserts each entry has a title and a distinct `type` URI
+/// fails loudly.
+export fn all_codes() -> []str => [
+    "invalid_body", "invalid_parameter", "range_too_large",
+    "unauthenticated",
+    "loopback_only", "origin_required",
+    "not_found", "account_not_found",
+    "method_not_allowed",
+    "account_stale",
+    "precondition_failed",
+    "body_too_large",
+    "unsupported_media_type",
+    "invalid_config", "extra_forbidden", "invalid_request",
+    "precondition_required",
+    "too_soon", "too_many_auth_failures",
+    "store_busy", "too_many_subscribers", "starting",
+    "internal", "config_readonly",
+]
 
 /// Is this refusal well formed? A 422 without `errors[]` is a refusal the page cannot
-/// render beside a field, which is the only place a person can act on it.
+/// render beside a field, which is the only place a person can act on it. A 429 or a
+/// 503 without `Retry-After` fails §8 п. 11.
 export fn well_formed(e ApiError) -> bool {
-    if e.status == 422 { return e.fields.len() > 0 }
+    if e.status == 422 && e.fields.len() == 0 { return false }
+    if (e.status == 429 || e.status == 503) && e.retry_after.is_none() { return false }
+    if e.status == 405 && e.allow == "" { return false }
     true
 }
 
-/// The body, as problem+json. Written by hand rather than through a serialiser
-/// because it is four fields and the shape is fixed by RFC 9457.
+/// The problem+json body (§0). Every key is always present — an absent value is
+/// `null`, not a missing key — EXCEPT `errors`, which §0 declares belongs to
+/// validation errors only ("`errors[]` — только у ошибок валидации"). That sentence
+/// is the specific rule and the always-a-list sentence is the general one, so the
+/// specific rule wins here; the choice is written down because it is a choice.
+///
+/// Written through `json.nv` rather than interpolation: `detail` is built from text
+/// someone else wrote, and a quote in it would close the string early.
 export fn to_json(e ApiError, request_id str, instance str) -> str {
-    mut out = "{\"type\":\"${type_uri(e.code)}\",\"code\":\"${e.code}\""
-    out = "${out},\"status\":${e.status}"
-    if e.detail != "" { out = "${out},\"detail\":\"${e.detail}\"" }
-    out = "${out},\"request_id\":\"${request_id}\""
-    out = "${out},\"instance\":\"${instance}\""
+    mut fields = [
+        field_str("type", type_uri(e.code)),
+        field_str("title", e.title),
+        field_int("status", e.status),
+        field_str_or_null("detail", e.detail),
+        field_str("instance", instance),
+        field_str("code", e.code),
+        field_str("request_id", request_id),
+        field_int_or_null("retry_after", e.retry_after),
+    ]
     if e.fields.len() > 0 {
-        out = "${out},\"errors\":["
-        mut first = true
+        mut items = []str.new()
         for f in e.fields {
-            if !first { out = "${out}," }
-            out = "${out}{\"field\":\"${f.field}\",\"message\":\"${f.message}\"}"
-            first = false
+            items.push(object([
+                field_str("field", f.field),
+                field_str("code", f.code),
+                field_str("message", f.message),
+            ]))
         }
-        out = "${out}]"
+        fields.push(field_raw("errors", array(items)))
     }
-    "${out}}"
+    object(fields)
 }

@@ -1,0 +1,331 @@
+// routes.nv — the frame every API response passes through (task T2.11).
+//
+// Source: 01.3 §0 (the headers of every response, `400`/`422`, `415`, `413`),
+// §4 (the middleware order and this file's job), §6 (the codes), §8 п. 1 and п. 11
+// (the acceptance).
+//
+// ── Why a wrapper per handler and NOT Polaris middleware ─────────────────────
+//
+// §4 lists the frame as a middleware chain, and Polaris has one (`Router.@use`).
+// I did not use it, and the reason is a measured property of that router rather
+// than a preference:
+//
+//   `Router.@fallback` — the GLOBAL 404 — is NOT wrapped by layers. Polaris says
+//   so in `middleware.nv`'s own banner: layers are baked into handlers inside
+//   `@insert_segs` at registration time, and the fallback "isn't a registered
+//   route in the trie at all, so per-Handler wrap-at-registration has no hook for
+//   it" (their words; they call it Axum's `route_layer` rather than `.layer()`).
+//
+// The very first line of this card's acceptance is an unknown `/api/x` answering
+// `404` — and §8 п. 11 wants `X-Request-Id` on EVERY response, that one included.
+// A layer-based frame would have left the one response the card names first
+// without a single header, and the test would have been green for every other
+// route while the named case failed.
+//
+// So the frame is `api(instance, handler)`: an adapter applied to each handler,
+// the 404 fallback and the 405 fallbacks included. Nothing reaches the wire
+// without passing through it, and that is a property of THIS file rather than of
+// someone else's registration order.
+//
+// ── Where the order of §4 changed, and why ───────────────────────────────────
+//
+// §4 orders the chain `request_id -> limits -> security_headers -> ...`. Taken
+// literally, a `413` raised by `limits` short-circuits BEFORE `security_headers`
+// runs, so the 300 KB body of the card's own acceptance would come back without
+// `nosniff`, `no-referrer` or `DENY`. Here the headers are stamped on the way
+// OUT, after the handler (or the refusal) has produced a response — every
+// response gets them, which is what §8 п. 11 asks for and what §4 was trying to
+// describe. The plan is amended to match rather than the other way round; §4 is a
+// sketch of an implementation, §8 is acceptance.
+//
+// ── Not here, on purpose ─────────────────────────────────────────────────────
+//
+//   * The access log (§4). It needs a `Log` handler and a file, neither of which
+//     the acceptance of this card touches; T2.11's own line about logs is §8
+//     п. 11's "журнал доступа содержит `request_id`", and the id it must contain
+//     is produced here and passed to the handler in `Ctx`.
+//   * Auth (§1, §4). Phase Ф.6 by §8 п. 8's own first sentence.
+//   * The route table of §2. The paths arrive with their handlers (T2.12–T2.15);
+//     what arrives here is the thing they are mounted INTO. An empty table today
+//     is honest; a table of stubs would be thirteen handlers nobody wrote.
+
+module server.routes
+
+import polaris.{Router, MethodRouter, ServerRequest, ServerResponse, Handler}
+import http.{HttpError}
+import std.identifiers.uuid.{Uuid}
+import errors.{ApiError, to_json}
+
+/// Bumped on an INCOMPATIBLE change (01.3 §5). The page reads it from
+/// `/api/health` at load and asks for a reload when the binary moved on.
+export const API_VERSION = 1
+
+/// 256 KB (01.3 §0, §4). A `PUT /api/config` with a hundred folders is kilobytes;
+/// anything past this is not a settings body.
+export const MAX_BODY_BYTES = 262144
+
+// ── what a handler is given ──────────────────────────────────────────────────
+
+/// Everything a handler needs that is not in the request itself.
+///
+/// `request_id` is IN here rather than read back out of the request, because
+/// Polaris's `ServerRequest` has no header setter — there is no way to put a
+/// generated id back where an inner handler could find it. Passing it as an
+/// argument means it is computed exactly once per request and the body, the
+/// header and the log line all quote the same value.
+export type Ctx value {
+    req ServerRequest
+    request_id str
+    /// The path TEMPLATE (`/api/config`), which is what `instance` means in
+    /// §0 — not the concrete path, so two requests to one route report one
+    /// `instance`. For the 404 fallback there is no template, and the concrete
+    /// path is used instead.
+    instance str
+}
+
+/// A handler of this server: the request plus its id and route.
+export type ApiHandler fn(Ctx) -> ServerResponse
+
+// ── methods ──────────────────────────────────────────────────────────────────
+
+/// The methods this API uses (§0: `GET` read, `POST` action, `PUT` whole-config
+/// replace, `DELETE` only `/api/session`).
+///
+/// An enum rather than a string so that mounting a route cannot fall through a
+/// default arm and silently drop it: the compiler checks the match in `mount`.
+export type HttpMethod enum Get | Post | Put | Delete
+
+export fn HttpMethod @str() -> str {
+    match @ {
+        HttpMethod.Get => "GET"
+        HttpMethod.Post => "POST"
+        HttpMethod.Put => "PUT"
+        HttpMethod.Delete => "DELETE"
+    }
+}
+
+/// One method of one route.
+export type Endpoint value { method HttpMethod, handler ApiHandler }
+
+export fn on(method HttpMethod, handler ApiHandler) -> Endpoint => { method, handler }
+
+/// One route: a path template and the methods it answers.
+export type Route value { path str, endpoints []Endpoint }
+
+export fn route(path str, endpoints []Endpoint) -> Route => { path, endpoints }
+
+// ── the frame ────────────────────────────────────────────────────────────────
+
+/// Stamp the headers §0 requires on EVERY response, errors and `204` included.
+///
+/// `Server` is not among them and is not added anywhere: §0 forbids any header
+/// naming the framework or its version, and §8 п. 11 checks for its absence.
+fn stamp(mut resp ServerResponse, request_id str) -> ServerResponse {
+    resp.header("X-Request-Id", request_id)
+    resp.header("X-Api-Version", "${API_VERSION}")
+    resp.header("Cache-Control", "no-store")
+    resp.header("X-Content-Type-Options", "nosniff")
+    resp.header("Referrer-Policy", "no-referrer")
+    resp.header("X-Frame-Options", "DENY")
+    resp
+}
+
+/// Render a refusal as `application/problem+json` (§0).
+///
+/// The `Retry-After` header and the `retry_after` body field come from ONE value
+/// on the `ApiError`, so a 429 cannot advertise one number and carry another.
+/// Same for `Allow` on a 405.
+export fn problem(e ApiError, request_id str, instance str) -> ServerResponse {
+    ro body = to_json(e, request_id, instance)
+    mut resp = ServerResponse.bytes(e.status, "application/problem+json; charset=utf-8", body.bytes())
+    match e.retry_after {
+        Some(n) => { resp.header("Retry-After", "${n}") }
+        None => {}
+    }
+    if e.allow != "" { resp.header("Allow", e.allow) }
+    resp
+}
+
+/// Is this incoming `X-Request-Id` worth keeping?
+///
+/// The rule is "it parses as a UUID". §8 п. 11 says a GENERATED id is a UUID v7;
+/// for an incoming one it says only "валидный ... переиспользован". I do NOT
+/// require version 7: a caller's v4 correlation id is still a correlation id, and
+/// discarding it breaks the join between their log and ours for no gain. Parsing
+/// as a UUID is what bounds the value — 36 characters of hex and dashes cannot
+/// forge a header break or bloat a log line.
+fn reusable_id(v str) -> bool => v.to_uuid().is_ok()
+
+fn request_id_of(req ServerRequest) Time Random -> str {
+    match req.header("x-request-id") {
+        Some(id) => if reusable_id(id) { return id }
+        None => {}
+    }
+    Uuid.v7().to_str()
+}
+
+/// Does this request declare a JSON body?
+///
+/// `application/json` with or without parameters (`; charset=utf-8`). Compared
+/// case-insensitively: §0 fixes what we SEND, and a client that sends
+/// `Application/JSON` is within the HTTP spec.
+fn is_json_body(req ServerRequest) -> bool {
+    match req.header("content-type") {
+        Some(ct) => ct.to_ascii_lower().trim_ascii().starts_with("application/json")
+        None => false
+    }
+}
+
+/// The `limits` step of §4: what is refused before a handler ever sees it.
+///
+/// SIZE IS CHECKED FIRST, and the order is deliberate: a 300 KB `text/plain` body
+/// is both too large and the wrong type, and answering `415` would tell the
+/// sender to fix the smaller of its two problems. §4 lists size first inside this
+/// step; the test pins it, because an ordering that only a reader enforces is an
+/// ordering that changes when the two `if`s are reflowed.
+fn precheck(req ServerRequest) -> Option[ApiError] {
+    if req.body_bytes().len() > MAX_BODY_BYTES { return Some(ApiError.body_too_large()) }
+    if req.body_bytes().len() > 0 && !is_json_body(req) {
+        return Some(ApiError.unsupported_media_type())
+    }
+    None
+}
+
+// Hoisted out of the closure in `api` below and taking everything as a parameter:
+// calling a CAPTURED fn value by identifier is the live mis-codegen Polaris
+// documents as [M-16] and works around the same way throughout `middleware.nv`.
+fn run_api(instance str, h ApiHandler, req ServerRequest) Time Random -> ServerResponse {
+    ro rid = request_id_of(req)
+    ro inst = if instance == "" { req.path() } else { instance }
+    // `stamp` takes its response as a `mut` in-out parameter, so each arm binds
+    // one before handing it over: a temporary has no storage to write back into.
+    match precheck(req) {
+        Some(e) => {
+            mut refused = problem(e, rid, inst)
+            stamp(refused, rid)
+        }
+        None => {
+            ro ctx = Ctx{ req, request_id: rid, instance: inst }
+            mut answered = h(ctx)
+            stamp(answered, rid)
+        }
+    }
+}
+
+/// Wrap an `ApiHandler` into the `Handler` Polaris registers: compute the request
+/// id, apply the limits of §0, stamp the headers of §0 on the way out.
+///
+/// `instance` is the path template; `""` means "use the concrete path", which is
+/// what the 404 fallback wants and nothing else does.
+export fn api(instance str, h ApiHandler) -> Handler {
+    ro inst = instance
+    ro inner = h
+    fn(req ServerRequest) -> ServerResponse => run_api(inst, inner, req)
+}
+
+// ── mounting ─────────────────────────────────────────────────────────────────
+
+/// The `Allow` value for a set of methods, in a fixed order.
+///
+/// `HEAD` is added whenever `GET` is present. Polaris SERVES `HEAD` from the
+/// `GET` handler (`find_handler`) but leaves it out of `allowed_methods()`, so its
+/// own 405 would advertise `GET` for a route that answers `HEAD` too. §8 п. 1
+/// spells the expected header out: `Allow: GET, HEAD`.
+///
+/// The order is canonical rather than declaration order: a header that changes
+/// when two lines are swapped is a header no test can compare.
+export fn allow_header(endpoints []Endpoint) -> str {
+    mut has_get = false
+    mut has_post = false
+    mut has_put = false
+    mut has_delete = false
+    for e in endpoints {
+        match e.method {
+            HttpMethod.Get => { has_get = true }
+            HttpMethod.Post => { has_post = true }
+            HttpMethod.Put => { has_put = true }
+            HttpMethod.Delete => { has_delete = true }
+        }
+    }
+    mut parts = []str.new()
+    if has_get { parts.push("GET") }
+    if has_get { parts.push("HEAD") }
+    if has_post { parts.push("POST") }
+    if has_put { parts.push("PUT") }
+    if has_delete { parts.push("DELETE") }
+    mut out = ""
+    mut first = true
+    for p in parts {
+        if !first { out = "${out}, " }
+        out = "${out}${p}"
+        first = false
+    }
+    out
+}
+
+// The per-route 405. Hoisted, param-captured, for the same [M-16] reason as
+// `run_api`.
+fn refuse_method(allow str, ctx Ctx) -> ServerResponse =>
+    problem(ApiError.method_not_allowed(allow), ctx.request_id, ctx.instance)
+
+fn method_fallback(path str, allow str) -> Handler {
+    ro a = allow
+    api(path, fn(ctx Ctx) -> ServerResponse => refuse_method(a, ctx))
+}
+
+fn refuse_unknown(ctx Ctx) -> ServerResponse =>
+    problem(ApiError.not_found(), ctx.request_id, ctx.instance)
+
+/// The global 404. Mounted through `api("")`, so its `instance` is the path that
+/// was actually asked for — there is no template for a route that does not exist.
+export fn not_found_handler() -> Handler => api("", fn(ctx Ctx) -> ServerResponse => refuse_unknown(ctx))
+
+// One method onto one `MethodRouter`. These four wrappers exist because of a
+// codegen defect, not for style: a `match` used as a STATEMENT still materialises
+// a result slot and declares it BY VALUE, while a chainable `mut @` method returns
+// a POINTER in C. Arms that call `mr.get(h)` directly therefore emit
+//
+//     NovaValue_MethodRouter _nv_match_7185;
+//     _nv_match_7185 = Nova_MethodRouter_method_get(&(mr), h);
+//
+// which clang rejects ("assigning to ... from incompatible type ... *"), while
+// `nova check` stays green. Isolated with three controls in
+// `probes/match-stmt-chainable-mut/` (registry entry TBD); the arms below return
+// unit, which is the control that builds. The exhaustive `match` is KEPT -- a
+// route silently dropped because a new method fell through a default arm is a
+// worse failure than the one being worked around.
+fn add_get(mut mr MethodRouter, h Handler) -> () { mr.get(h) }
+fn add_post(mut mr MethodRouter, h Handler) -> () { mr.post(h) }
+fn add_put(mut mr MethodRouter, h Handler) -> () { mr.put(h) }
+fn add_delete(mut mr MethodRouter, h Handler) -> () { mr.delete(h) }
+
+/// Mount one route onto a router: every method it declares, plus the 405 for the
+/// ones it does not.
+export fn mount(mut r Router, rt Route) -> Result[Router, HttpError] {
+    mut mr = MethodRouter.new()
+    for e in rt.endpoints {
+        ro h = api(rt.path, e.handler)
+        match e.method {
+            HttpMethod.Get => add_get(mr, h)
+            HttpMethod.Post => add_post(mr, h)
+            HttpMethod.Put => add_put(mr, h)
+            HttpMethod.Delete => add_delete(mr, h)
+        }
+    }
+    mr.fallback(method_fallback(rt.path, allow_header(rt.endpoints)))
+    r.route(rt.path, mr)?
+    Ok(r)
+}
+
+/// Build the API router: every route mounted, the 404 fallback installed.
+///
+/// The 404 fallback is set LAST and set explicitly, because Polaris does not wrap
+/// it in anything — see this file's banner.
+export fn build(routes []Route) -> Result[Router, HttpError] {
+    mut r = Router.new()
+    for rt in routes {
+        r = mount(r, rt)?
+    }
+    r.fallback(not_found_handler())
+    Ok(r)
+}

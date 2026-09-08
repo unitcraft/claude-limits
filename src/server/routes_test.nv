@@ -1,0 +1,302 @@
+// Tests for server/routes.nv — task T2.11, the wire.
+//
+//   ./nova.sh test src/server/ --filter routes
+//
+// This file IS the acceptance line of the card, run through `serve_once` without
+// a socket (01.3 §8's own instruction): an unknown `/api/x` answers 404
+// problem+json with `type`, `code`, `request_id` and `instance`; `POST
+// /api/snapshot` answers 405 with `Allow`; `text/plain` in a `PUT` answers 415; a
+// 300 KB body answers 413; every response carries `X-Request-Id` (a valid
+// incoming one reused), `X-Api-Version`, `Cache-Control`, `nosniff`,
+// `no-referrer` and `DENY`; and no response carries `Server`.
+
+module server.routes_test
+
+import polaris.{Router, ServerRequest, ServerResponse, serve_once}
+import std.identifiers.uuid.{UuidVersion}
+import std.testing.handlers as th
+import routes.{Ctx, HttpMethod, on, route, build, allow_header, API_VERSION}
+
+// ── helpers: raw requests in, raw bytes out ──────────────────────────────────
+
+fn wire_str(wire []u8) -> str => unsafe { wire.to_str_unchecked() }
+
+fn req(method str, path str) -> []u8 => "${method} ${path} HTTP/1.1\r\nHost: x\r\n\r\n".bytes()
+
+fn req_h(method str, path str, hname str, hval str) -> []u8 =>
+    "${method} ${path} HTTP/1.1\r\nHost: x\r\n${hname}: ${hval}\r\n\r\n".bytes()
+
+fn req_body(method str, path str, ctype str, body str) -> []u8 =>
+    "${method} ${path} HTTP/1.1\r\nHost: x\r\nContent-Type: ${ctype}\r\nContent-Length: ${body.byte_len()}\r\n\r\n${body}".bytes()
+
+fn status_of(wire []u8) -> str {
+    ro s = wire_str(wire)
+    match s.find("\r\n") { Some(i) => s[0..i], None => s }
+}
+
+/// The header block as it went out, byte for byte.
+fn head_of(wire []u8) -> str {
+    ro s = wire_str(wire)
+    match s.find("\r\n\r\n") { Some(i) => s[0..i], None => s }
+}
+
+fn body_of(wire []u8) -> str {
+    ro s = wire_str(wire)
+    match s.find("\r\n\r\n") { Some(i) => s[i + 4..s.byte_len()], None => "" }
+}
+
+/// The value of one header, "" when absent.
+///
+/// The NAME is matched case-insensitively (HTTP field names are), but the VALUE
+/// comes back exactly as sent -- the first version of this helper lower-cased the
+/// whole block and then compared "deny" with "DENY", failing four tests over a
+/// fault in the test rather than in the server.
+///
+/// The needle carries the preceding CRLF so that `x-request-id` cannot be found
+/// inside `x-request-id-original`.
+fn hdr(wire []u8, name str) -> str {
+    ro padded = "\r\n${head_of(wire)}"
+    ro needle = "\r\n${name.to_ascii_lower()}: "
+    match padded.to_ascii_lower().find(needle) {
+        Some(i) => {
+            ro rest = padded[i + needle.byte_len()..padded.byte_len()]
+            match rest.find("\r\n") { Some(j) => rest[0..j], None => rest }
+        }
+        None => ""
+    }
+}
+
+fn has_header(wire []u8, name str) -> bool {
+    ro padded = "\r\n${head_of(wire)}"
+    padded.to_ascii_lower().contains("\r\n${name.to_ascii_lower()}:")
+}
+
+// ── the router under test ────────────────────────────────────────────────────
+//
+// Stub handlers, not the real ones: T2.11 builds the frame, and T2.12–T2.15 bring
+// the handlers that go in it. What is being tested is what happens AROUND a
+// handler, so a handler that answers `{}` is the right handler here.
+
+fn ok_json(ctx Ctx) -> ServerResponse =>
+    ServerResponse.bytes(200, "application/json; charset=utf-8", "{}".bytes())
+
+fn app() -> Router {
+    build([
+        route("/api/snapshot", [on(HttpMethod.Get, ok_json)]),
+        route("/api/config", [on(HttpMethod.Get, ok_json), on(HttpMethod.Put, ok_json)]),
+    ])!!
+}
+
+fn serve(raw []u8) Time Random -> []u8 => serve_once(app(), raw)
+
+fn big_body(n int) -> str {
+    consume sb = StringBuilder.new()
+    sb.append_repeat("x", n)
+    sb.into_str()
+}
+
+// ── the acceptance line of the card ──────────────────────────────────────────
+
+test "an unknown /api/x is 404 problem+json with type, code, request_id, instance" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro w = serve(req("GET", "/api/x"))
+        assert(status_of(w) == "HTTP/1.1 404 Not Found")
+        assert(hdr(w, "content-type") == "application/problem+json; charset=utf-8")
+        ro b = body_of(w)
+        assert(b.contains("\"type\":\"urn:claude-limits:problem:not-found\""))
+        assert(b.contains("\"code\":\"not_found\""))
+        assert(b.contains("\"request_id\":\""))
+        // There is no path template for a route that does not exist, so `instance`
+        // is the path that was actually asked for.
+        assert(b.contains("\"instance\":\"/api/x\""))
+    }
+}
+
+test "the 404 carries the headers too -- it is the response Polaris does not wrap" {
+    // The whole reason this file's frame is a per-handler wrapper and not a
+    // Polaris layer: `Router.@fallback` is exempt from layers, so a layer-based
+    // frame would have left exactly this response bare.
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro w = serve(req("GET", "/api/x"))
+        assert(hdr(w, "x-request-id") != "")
+        assert(hdr(w, "x-api-version") == "${API_VERSION}")
+        assert(hdr(w, "cache-control") == "no-store")
+        assert(hdr(w, "x-content-type-options") == "nosniff")
+        assert(hdr(w, "referrer-policy") == "no-referrer")
+        assert(hdr(w, "x-frame-options") == "DENY")
+    }
+}
+
+test "POST /api/snapshot is 405 with Allow: GET, HEAD" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro w = serve(req("POST", "/api/snapshot"))
+        assert(status_of(w) == "HTTP/1.1 405 Method Not Allowed")
+        // HEAD is in the list because Polaris SERVES it from the GET handler while
+        // leaving it out of its own `allowed_methods()`. Advertising `GET` alone
+        // for a route that answers `HEAD` is the bug this line pins.
+        assert(hdr(w, "allow") == "GET, HEAD")
+        ro b = body_of(w)
+        assert(b.contains("\"code\":\"method_not_allowed\""))
+        assert(b.contains("\"instance\":\"/api/snapshot\""))
+    }
+}
+
+test "the 405 of a two-method route lists both, in canonical order" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro w = serve(req("DELETE", "/api/config"))
+        assert(status_of(w) == "HTTP/1.1 405 Method Not Allowed")
+        assert(hdr(w, "allow") == "GET, HEAD, PUT")
+    }
+}
+
+test "text/plain in a PUT is 415" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro w = serve(req_body("PUT", "/api/config", "text/plain", "hello"))
+        assert(status_of(w) == "HTTP/1.1 415 Unsupported Media Type")
+        assert(body_of(w).contains("\"code\":\"unsupported_media_type\""))
+    }
+}
+
+test "application/json with a charset parameter is accepted" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro w = serve(req_body("PUT", "/api/config", "application/json; charset=utf-8", "{}"))
+        assert(status_of(w) == "HTTP/1.1 200 OK")
+    }
+}
+
+test "a body of 300 KB is 413" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro w = serve(req_body("PUT", "/api/config", "application/json", big_body(300000)))
+        assert(status_of(w) == "HTTP/1.1 413 Content Too Large")
+        assert(body_of(w).contains("\"code\":\"body_too_large\""))
+    }
+}
+
+test "size is judged before content type" {
+    // A 300 KB text/plain body is both too large and the wrong type. Answering 415
+    // would tell the sender to fix the smaller of its two problems. An ordering
+    // that only a reader enforces changes when the two ifs are reflowed.
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro w = serve(req_body("PUT", "/api/config", "text/plain", big_body(300000)))
+        assert(status_of(w) == "HTTP/1.1 413 Content Too Large")
+    }
+}
+
+test "a body just under the limit passes the size check" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro w = serve(req_body("PUT", "/api/config", "application/json", big_body(262144)))
+        assert(status_of(w) == "HTTP/1.1 200 OK")
+    }
+}
+
+// ── the headers, on every kind of response ───────────────────────────────────
+
+/// The six headers of section 0, on whatever response is handed in.
+fn assert_framed(w []u8) -> () {
+    assert(hdr(w, "x-request-id") != "")
+    assert(hdr(w, "x-api-version") == "${API_VERSION}")
+    assert(hdr(w, "cache-control") == "no-store")
+    assert(hdr(w, "x-content-type-options") == "nosniff")
+    assert(hdr(w, "referrer-policy") == "no-referrer")
+    assert(hdr(w, "x-frame-options") == "DENY")
+}
+
+test "every response carries the six headers -- success and each refusal" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        assert_framed(serve(req("GET", "/api/snapshot")))
+        assert_framed(serve(req("GET", "/api/x")))
+        assert_framed(serve(req("POST", "/api/snapshot")))
+        assert_framed(serve(req_body("PUT", "/api/config", "text/plain", "hi")))
+        assert_framed(serve(req_body("PUT", "/api/config", "application/json", big_body(300000))))
+    }
+}
+
+test "no response names the framework" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        assert(!has_header(serve(req("GET", "/api/snapshot")), "server"))
+        assert(!has_header(serve(req("GET", "/api/x")), "server"))
+        assert(!has_header(serve(req("POST", "/api/snapshot")), "server"))
+        assert(!head_of(serve(req("GET", "/api/x"))).to_ascii_lower().contains("polaris"))
+    }
+}
+
+// ── the request id ───────────────────────────────────────────────────────────
+
+test "a generated id is a UUID v7" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro id = hdr(serve(req("GET", "/api/snapshot")), "x-request-id")
+        match id.to_uuid() {
+            Ok(u) => assert(u.version() == UuidVersion.V7)
+            Err(_) => assert(false)
+        }
+    }
+}
+
+test "a valid incoming id is reused, in the header and in the body" {
+    ro given = "0192a7f0-3c4d-7e21-8a55-0b9c1d2e3f40"
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro w = serve(req_h("GET", "/api/x", "X-Request-Id", given))
+        assert(hdr(w, "x-request-id") == given)
+        // The body and the header quote ONE value: the id is computed once per
+        // request and passed to the handler, not read back out of the response.
+        assert(body_of(w).contains("\"request_id\":\"${given}\""))
+    }
+}
+
+test "a junk incoming id is replaced, not echoed" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro w = serve(req_h("GET", "/api/x", "X-Request-Id", "not-a-uuid; drop table"))
+        ro got = hdr(w, "x-request-id")
+        assert(got != "not-a-uuid; drop table")
+        assert(got.to_uuid().is_ok())
+    }
+}
+
+test "two requests get two different ids" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro a = hdr(serve(req("GET", "/api/snapshot")), "x-request-id")
+        ro b = hdr(serve(req("GET", "/api/snapshot")), "x-request-id")
+        assert(a != b)
+    }
+}
+
+// ── the Allow list, on its own ───────────────────────────────────────────────
+
+test "allow_header adds HEAD beside GET and keeps a canonical order" {
+    assert(allow_header([on(HttpMethod.Get, ok_json)]) == "GET, HEAD")
+    // Declaration order must not reach the wire: a header that changes when two
+    // lines are swapped is a header no test can compare.
+    ro one = allow_header([on(HttpMethod.Put, ok_json), on(HttpMethod.Get, ok_json)])
+    ro two = allow_header([on(HttpMethod.Get, ok_json), on(HttpMethod.Put, ok_json)])
+    assert(one == "GET, HEAD, PUT")
+    assert(one == two)
+    assert(allow_header([on(HttpMethod.Post, ok_json)]) == "POST")
+    assert(allow_header([on(HttpMethod.Delete, ok_json)]) == "DELETE")
+}
+
+// ── the routes that do work still work ───────────────────────────────────────
+
+test "a mounted GET answers through the frame, not around it" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro w = serve(req("GET", "/api/snapshot"))
+        assert(status_of(w) == "HTTP/1.1 200 OK")
+        assert(body_of(w) == "{}")
+        assert(hdr(w, "content-type") == "application/json; charset=utf-8")
+    }
+}
+
+test "HEAD is served from the GET handler and still gets the headers" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro w = serve(req("HEAD", "/api/snapshot"))
+        assert(status_of(w) == "HTTP/1.1 200 OK")
+        assert(hdr(w, "x-request-id") != "")
+    }
+}
+
+test "a request with no body is not asked for a content type" {
+    // The 415 rule is "тело не application/json ТАМ, ГДЕ ТЕЛО НУЖНО" (section 0):
+    // a GET with no body and no `Content-Type` is not a media-type problem.
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        assert(status_of(serve(req("GET", "/api/config"))) == "HTTP/1.1 200 OK")
+    }
+}

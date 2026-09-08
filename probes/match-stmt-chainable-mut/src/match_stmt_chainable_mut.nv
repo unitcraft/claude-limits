@@ -1,0 +1,89 @@
+// Probe: a `match` in STATEMENT position whose arms call a chainable
+// `mut @` method emits C that does not compile.
+//
+// Found while writing `src/server/routes.nv` (claude-limits task T2.11), where
+// the arms were `mr.get(h)` / `mr.post(h)` on Polaris's `MethodRouter`.
+//
+//   ./nova.sh check probes/match-stmt-chainable-mut/src/main.nv   -> ok
+//   ./nova.sh build probes/match-stmt-chainable-mut/src/main.nv   -> CC-FAIL
+//
+// The generated C for the failing form (from the real case, routes_test.c:55444):
+//
+//     NovaValue_MethodRouter _nv_match_7185;                 // slot BY VALUE
+//     ...
+//     _nv_match_7185 = Nova_MethodRouter_method_get(&(mr), h);   // returns a POINTER
+//
+//   error: assigning to 'NovaValue_MethodRouter' from incompatible type
+//          'NovaValue_MethodRouter *'; dereference with *
+//
+// A chainable `mut @` method returns `@` — a pointer in C. A `match` used as a
+// statement still materialises a result slot, and it declares that slot by value.
+// The two disagree, and only the C compiler notices: `nova check` is green.
+//
+// The three forms below differ in ONE thing each, so the report says which
+// ingredient carries the fault rather than "something about matches".
+
+module match_stmt_chainable_mut
+
+type Box value { mut n int }
+
+fn Box mut @bump() -> @ { @n += 1 }
+
+/// Same shape but NOT chainable: returns unit instead of `@`.
+fn Box mut @bump_unit() -> () { @n += 1 }
+
+type Pick enum A | B
+
+// ── the failing form ─────────────────────────────────────────────────────────
+
+fn failing(p Pick) -> int {
+    mut b = Box{ n: 0 }
+    match p {
+        Pick.A => { b.bump() }
+        Pick.B => { b.bump() }
+    }
+    b.n
+}
+
+// ── control 1: the same match, arms returning unit ───────────────────────────
+//
+// If this one builds, the fault is the CHAINABLE return (`-> @`), not the match.
+
+fn control_unit_arms(p Pick) -> int {
+    mut b = Box{ n: 0 }
+    match p {
+        Pick.A => { b.bump_unit() }
+        Pick.B => { b.bump_unit() }
+    }
+    b.n
+}
+
+// ── control 2: the same chainable call, no match ─────────────────────────────
+//
+// If this one builds, the fault is the MATCH in statement position, not the
+// chainable method on its own.
+
+fn control_no_match() -> int {
+    mut b = Box{ n: 0 }
+    b.bump()
+    b.n
+}
+
+// ── control 3: the chainable call behind an if, not a match ──────────────────
+//
+// The workaround candidate. If this builds and `failing` does not, an `if` chain
+// is the way out until the codegen is fixed.
+
+fn control_if_chain(p Pick) -> int {
+    mut b = Box{ n: 0 }
+    if p == Pick.A { b.bump() }
+    if p == Pick.B { b.bump() }
+    b.n
+}
+
+fn main() Io -> () {
+    print("failing:          ${failing(Pick.A)}")
+    print("control_unit:     ${control_unit_arms(Pick.A)}")
+    print("control_no_match: ${control_no_match()}")
+    print("control_if_chain: ${control_if_chain(Pick.A)}")
+}
