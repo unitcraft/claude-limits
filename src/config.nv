@@ -656,3 +656,96 @@ fn assign(section str, key str, value str, mut cfg Config, mut errs []ConfigErro
     // An unknown section was already reported when it opened; its keys are not
     // reported again, or one bad heading would produce a wall of noise.
 }
+
+// ── writing it back ──────────────────────────────────────────────────────────
+//
+// CANONICAL SERIALISATION (01.2 §2.2): one shape, always. Sections in a fixed order,
+// keys in a fixed order within them, one value per line, and every setting written —
+// including the ones left at their default.
+//
+// Why write the defaults out rather than omit them: the file is where a person edits,
+// and a key they cannot see is a key they do not know exists. The cost is a longer
+// file; the alternative costs them a trip to the documentation.
+//
+// The property the acceptance names — "writing again with nothing changed gives a
+// byte-identical file" — is what makes `If-Match` mean anything. If serialisation
+// wandered, every save would look like an outside edit to the next one.
+
+fn quote(s str) -> str => "\"${s}\""
+
+fn list_of(items []str) -> str {
+    if items.len() == 0 { return "[]" }
+    mut out = "["
+    mut first = true
+    for x in items {
+        if !first { out = "${out}, " }
+        out = "${out}${quote(x)}"
+        first = false
+    }
+    "${out}]"
+}
+
+fn bool_of(b bool) -> str => if b { "true" } else { "false" }
+
+/// The whole config as canonical TOML.
+export fn render(cfg Config) -> str {
+    mut out = "# claude-limits.toml — settings. Written by the app on Save.\n"
+    out = "${out}schema = ${cfg.schema}\n"
+
+    for path in cfg.folders {
+        out = "${out}\n[[folders]]\npath = ${quote(path)}\n"
+    }
+
+    out = "${out}\n[poll]\n"
+    out = "${out}interval_sec = ${cfg.poll.interval_sec}\n"
+    out = "${out}min_interval_sec = ${cfg.poll.min_interval_sec}\n"
+    out = "${out}request_timeout_sec = ${cfg.poll.request_timeout_sec}\n"
+
+    out = "${out}\n[thresholds]\n"
+    out = "${out}warning = ${cfg.thresholds.warning}\n"
+    out = "${out}critical = ${cfg.thresholds.critical}\n"
+
+    out = "${out}\n[forecast]\n"
+    out = "${out}enabled = ${bool_of(cfg.forecast.enabled)}\n"
+    out = "${out}work_days = ${list_of(cfg.forecast.work_days)}\n"
+    out = "${out}work_from = ${quote(cfg.forecast.work_from)}\n"
+    out = "${out}work_to = ${quote(cfg.forecast.work_to)}\n"
+    out = "${out}off_hours_rate = ${cfg.forecast.off_hours_rate}\n"
+    out = "${out}rate_window_days = ${cfg.forecast.rate_window_days}\n"
+
+    out = "${out}\n[server]\n"
+    out = "${out}bind = ${quote(cfg.server.bind)}\n"
+    out = "${out}port = ${cfg.server.port}\n"
+    out = "${out}allow_lan = ${bool_of(cfg.server.allow_lan)}\n"
+    // THE TOKEN IS NEVER WRITTEN BY THIS FUNCTION. `render` serves both the file and
+    // the history row, and 01.2 §3.14 wants `***` in the latter — a serialiser that
+    // emits a secret for one caller emits it for both. The key is simply absent here;
+    // the token is written by the one place that owns it.
+    out = "${out}tls_cert = ${quote(cfg.server.tls_cert)}\n"
+    out = "${out}tls_key = ${quote(cfg.server.tls_key)}\n"
+
+    out = "${out}\n[ui]\n"
+    out = "${out}accounts_order = ${list_of(cfg.ui.accounts_order)}\n"
+    out = "${out}hidden_accounts = ${list_of(cfg.ui.hidden_accounts)}\n"
+    out = "${out}hide_stale = ${bool_of(cfg.ui.hide_stale)}\n"
+    out = "${out}time_bar = ${bool_of(cfg.ui.time_bar)}\n"
+
+    out = "${out}\n[widget]\n"
+    out = "${out}enabled = ${bool_of(cfg.widget.enabled)}\n"
+    out = "${out}always_on_top = ${bool_of(cfg.widget.always_on_top)}\n"
+    out = "${out}x = ${cfg.widget.x}\n"
+    out = "${out}y = ${cfg.widget.y}\n"
+    out = "${out}visible = ${bool_of(cfg.widget.visible)}\n"
+
+    out = "${out}\n[history]\n"
+    out = "${out}keep_days = ${cfg.history.keep_days}\n"
+    out = "${out}rollup_keep_days = ${cfg.history.rollup_keep_days}\n"
+    out = "${out}config_versions_keep = ${cfg.history.config_versions_keep}\n"
+
+    out = "${out}\n[storage]\n"
+    out = "${out}data_dir = ${quote(cfg.storage.data_dir)}\n"
+    out = "${out}backups_keep = ${cfg.storage.backups_keep}\n"
+    out = "${out}memory_limit = ${quote(cfg.storage.memory_limit)}\n"
+    out = "${out}threads = ${cfg.storage.threads}\n"
+    out
+}

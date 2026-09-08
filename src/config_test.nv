@@ -8,7 +8,7 @@
 
 module claude_limits.config_test
 
-import claude_limits.config.{Config, ConfigError, parse, validate, repair_for_start}
+import claude_limits.config.{Config, ConfigError, parse, validate, repair_for_start, render}
 // The fixtures come in through `embed_str`, a COMPILE-TIME intrinsic, so the tests
 // touch no filesystem and carry no `Fs` effect. Two reasons, and the second is the
 // one that decided it:
@@ -209,4 +209,77 @@ test "a stray key at the root is an unknown setting, not a broken file" {
             assert(errs[0].code == "extra_forbidden")
         }
     }
+}
+
+// -- canonical serialisation (T2.8, the pure half) ---------------------------
+
+test "rendering the defaults and reading them back gives the defaults" {
+    ro text = render(Config.defaults())
+    match parse(text) {
+        Err(why) => assert(false)
+        Ok((cfg, errs)) => {
+            // Nothing the writer emits may be unknown to the reader. If it were, the
+            // app would refuse its own file the first time it saved one.
+            assert(errs.len() == 0)
+            assert(cfg.poll.interval_sec == 300)
+            assert(cfg.thresholds.critical == 90)
+            assert(cfg.forecast.work_days.len() == 5)
+            assert(cfg.ui.time_bar)
+            assert(cfg.storage.memory_limit == "512MB")
+        }
+    }
+}
+
+test "writing twice with nothing changed is BYTE-IDENTICAL" {
+    // The property the acceptance names, and the one If-Match depends on: if
+    // serialisation wandered, every save would look like an outside edit to the next.
+    ro once = render(Config.defaults())
+    match parse(once) {
+        Err(_) => assert(false)
+        Ok((cfg, _)) => assert(render(cfg) == once)
+    }
+}
+
+test "a changed value survives the round trip, and only it changes" {
+    mut c = Config.defaults()
+    c.poll.interval_sec = 120
+    c.ui.hide_stale = true
+    c.forecast.work_days = ["mon", "wed"]
+    ro text = render(c)
+    match parse(text) {
+        Err(_) => assert(false)
+        Ok((back, errs)) => {
+            assert(errs.len() == 0)
+            assert(back.poll.interval_sec == 120)
+            assert(back.ui.hide_stale)
+            assert(back.forecast.work_days.len() == 2)
+            // untouched neighbours
+            assert(back.thresholds.warning == 70)
+            assert(back.widget.always_on_top)
+        }
+    }
+}
+
+test "folders round-trip as their paths" {
+    mut c = Config.defaults()
+    c.folders = ["C:/accounts", "~/.claude"]
+    match parse(render(c)) {
+        Err(_) => assert(false)
+        Ok((back, _)) => {
+            assert(back.folders.len() == 2)
+            assert(back.folders[0] == "C:/accounts")
+            assert(back.folders[1] == "~/.claude")
+        }
+    }
+}
+
+test "the rendered file NEVER contains the access token" {
+    mut c = Config.defaults()
+    c.server.access_token = "sk-ant-fixture-SECRET"
+    ro text = render(c)
+    // `render` serves the file AND the history row, where 01.2 section 3.14 wants
+    // `***`. A serialiser that emits a secret for one caller emits it for both.
+    assert(!text.contains("sk-ant"))
+    assert(!text.contains("SECRET"))
+    assert(!text.contains("access_token"))
 }
