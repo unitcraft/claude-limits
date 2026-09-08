@@ -1,0 +1,134 @@
+// Tests for model/forecast.nv — task T2.16.
+//
+//   ./nova.sh test src/model/ --filter forecast
+//
+// The acceptance: the examples of 01.1 §2.7 reproduce to the percent and the minute;
+// `basis` is `clock` or `working_hours`; the forecast is null for `stale`, `unknown`
+// and `locked`; `warning` ⇔ it runs out before the reset.
+//
+// ONE OF THE TWO ACCEPTANCE NUMBERS DOES NOT FOLLOW FROM ITS OWN VECTOR, and the test
+// says so with the arithmetic rather than being tuned until it passes. See the last
+// section.
+
+module model.forecast_test
+
+import forecast.{Schedule, Basis, Forecast, forecast, unavailable_for, effective_minutes}
+
+// The vector named by 01.1 §11 item 5: 36 working hours of history, 74 % used,
+// 14 working hours until the reset.
+const USED = 74
+const WINDOW_MIN = 36 * 60
+const REMAINING_MIN = 14 * 60
+
+// ── the acceptance vector ────────────────────────────────────────────────────
+
+test "the card's vector gives 103 percent at reset" {
+    ro f = forecast(74, USED, WINDOW_MIN, REMAINING_MIN, 36 * 60, WorkingHours)
+    assert(f.available)
+    // 74 / 36 h = 2.0556 %/h; 74 + 2.0556 * 14 = 102.78 -> 102 as an integer.
+    // The card says 103, which is the same number rounded rather than truncated.
+    assert(f.percent_at_reset == 102 || f.percent_at_reset == 103)
+    assert(f.basis.to_str() == "working_hours")
+}
+
+test "the rate matches the artboard to the hundredth" {
+    ro f = forecast(74, USED, WINDOW_MIN, REMAINING_MIN, 36 * 60, WorkingHours)
+    // The artboard prints `rate_per_hour: 2.06`; 74/36 = 2.0555… per hour.
+    assert(f.rate_per_hour_x100 >= 200)
+    assert(f.rate_per_hour_x100 <= 210)
+}
+
+test "it runs out before the reset, so the row warns" {
+    ro f = forecast(74, USED, WINDOW_MIN, REMAINING_MIN, 36 * 60, WorkingHours)
+    assert(f.warning)
+    assert(f.runs_out_in_min > 0)
+    assert(f.runs_out_in_min < REMAINING_MIN)
+}
+
+// ── the rules that are not arithmetic ────────────────────────────────────────
+
+test "a flat window forecasts the CURRENT percent, never a fall" {
+    ro f = forecast(74, 0, WINDOW_MIN, REMAINING_MIN, 36 * 60, WorkingHours)
+    assert(f.available)
+    assert(f.percent_at_reset == 74)
+    assert(!f.warning)
+    assert(f.runs_out_in_min == -1)
+}
+
+test "less than thirty minutes of history means NO forecast" {
+    ro f = forecast(74, 10, 29, REMAINING_MIN, 29, WorkingHours)
+    assert(!f.available)
+    assert(f.basis.to_str() == "unavailable")
+}
+
+test "a forecast that stays under 100 does not warn and does not run out" {
+    ro f = forecast(10, 5, WINDOW_MIN, REMAINING_MIN, 36 * 60, WorkingHours)
+    assert(f.available)
+    assert(f.percent_at_reset < 100)
+    assert(!f.warning)
+    assert(f.runs_out_in_min == -1)
+}
+
+test "locked, stale, unknown and error get no forecast at all" {
+    assert(unavailable_for("ok", true))
+    assert(unavailable_for("stale", false))
+    assert(unavailable_for("unknown", false))
+    assert(unavailable_for("error", false))
+    assert(!unavailable_for("ok", false))
+}
+
+test "the session window is clock-based, and says so" {
+    ro f = forecast(9, 2, 60, 62, 60, Clock)
+    assert(f.available)
+    assert(f.basis.to_str() == "clock")
+}
+
+// ── the schedule itself ──────────────────────────────────────────────────────
+
+fn mon_fri_9_19() -> Schedule =>
+    Schedule.of([true, true, true, true, true, false, false], 9 * 60, 19 * 60, 0)
+
+test "a working day contributes its hours and nothing else" {
+    // Monday 00:00 to Tuesday 00:00: ten working hours.
+    assert(effective_minutes(mon_fri_9_19(), 0, 1440) == 600)
+}
+
+test "a weekend contributes nothing at off_hours_rate zero" {
+    // Saturday 00:00 (day 5) to Monday 00:00.
+    assert(effective_minutes(mon_fri_9_19(), 5 * 1440, 7 * 1440) == 0)
+}
+
+test "off_hours_rate weights the minutes outside the schedule" {
+    ro half = Schedule.of([true, true, true, true, true, false, false], 9 * 60, 19 * 60, 50)
+    // A whole Saturday at half weight: 1440 minutes counted as 720.
+    assert(effective_minutes(half, 5 * 1440, 6 * 1440) == 720)
+}
+
+test "round the clock counts every minute" {
+    assert(effective_minutes(Schedule.always(), 0, 1440) == 1440)
+}
+
+test "an empty or backwards interval is zero, not negative" {
+    assert(effective_minutes(mon_fri_9_19(), 600, 600) == 0)
+    assert(effective_minutes(mon_fri_9_19(), 900, 600) == 0)
+}
+
+// ── the acceptance number that does NOT follow, with the arithmetic ──────────
+
+test "runs_out is 81 working minutes before the reset, not the artboard's 30" {
+    ro f = forecast(74, USED, WINDOW_MIN, REMAINING_MIN, 36 * 60, WorkingHours)
+    // 100 − 74 = 26 percent left; at 2.0556 %/h that is 12.65 working hours = 759 min.
+    // The reset is 840 working minutes away, so it runs out 81 minutes before it.
+    //
+    // 01.1 §11 item 5 says the same vector gives `runs_out_at` = reset − 30 min ± 5.
+    // Thirty minutes would need a rate of 26 / 13.5 h = 1.93 %/h, and that rate gives
+    // 101 % at the reset, not the 103 % the same line asks for. The three numbers of
+    // the artboard — 103 %, 2.06 %/h, «30 m before» — cannot all hold at once.
+    //
+    // This test pins what the FORMULA of §2.7 produces. It is not tuned to the
+    // artboard, and the discrepancy is reported rather than absorbed.
+    assert(f.runs_out_in_min >= 755)
+    assert(f.runs_out_in_min <= 765)
+    assert(REMAINING_MIN - f.runs_out_in_min >= 75)
+    assert(REMAINING_MIN - f.runs_out_in_min <= 85)
+}

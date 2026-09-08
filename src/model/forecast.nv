@@ -1,0 +1,145 @@
+// forecast.nv — how much of the window will be spent by the reset (task T2.16).
+//
+// Source: 01.1 §2.7 (the formulas, transcribed not reinvented), §5.3 (the settings),
+// 01.3 §3.3 (`forecast`, `basis`).
+//
+// PURE. `now`, the schedule and the history all arrive as arguments.
+//
+// TWO BASES, and the difference is not cosmetic (§2.7):
+//   `clock`          — the five-hour session window: calendar minutes, the working
+//                      schedule does not apply to it.
+//   `working_hours`  — the weekly windows: only minutes inside the schedule count,
+//                      with minutes outside weighted by `off_hours_rate`.
+//
+// A person who works Mon–Fri does not spend their weekly limit on Sunday, and a
+// forecast that spreads the burn over the weekend tells them they are fine when they
+// are not.
+
+module model.forecast
+
+/// Minutes inside the working schedule, per weekday. `days[0]` is Monday.
+///
+/// A schedule rather than a pair of clock times: `work_from`/`work_to` are the same
+/// every working day (§5.3), and the only thing the arithmetic needs is how many
+/// minutes a given day contributes.
+export type Schedule value {
+    days []bool         // seven entries, Monday first
+    from_min int        // minutes from midnight, e.g. 09:00 -> 540
+    to_min int          // e.g. 19:00 -> 1140; may be less than from_min (over midnight)
+    off_hours_rate int  // 0..100, the weight of a minute outside the schedule
+}
+
+export fn Schedule.of(days []bool, from_min int, to_min int, off_hours_rate int) -> Schedule =>
+    { days, from_min, to_min, off_hours_rate }
+
+/// Round the clock, every day: the shape the acceptance uses for its second vector.
+export fn Schedule.always() -> Schedule =>
+    { days: [true, true, true, true, true, true, true], from_min: 0, to_min: 1440, off_hours_rate: 100 }
+
+/// Why a forecast is or is not available (01.3 §3.3 `basis`).
+export type Basis enum
+    | Clock
+    | WorkingHours
+    | Unavailable       // `forecast: null` in the reply
+
+export fn Basis @to_str() -> str =>
+    match @ {
+        Clock => "clock"
+        WorkingHours => "working_hours"
+        Unavailable => "unavailable"
+    }
+
+export type Forecast value {
+    available bool
+    percent_at_reset int
+    runs_out_in_min int     // working minutes from `now`; -1 when it does not run out
+    rate_per_hour_x100 int  // rate in hundredths of a percent per hour, to stay integral
+    basis Basis
+    warning bool            // runs out BEFORE the reset
+}
+
+fn Forecast.none(basis Basis) -> Forecast =>
+    { available: false, percent_at_reset: 0, runs_out_in_min: -1,
+      rate_per_hour_x100: 0, basis, warning: false }
+
+/// History shorter than this is not enough to predict anything (§2.7).
+const MIN_HISTORY_MIN = 30
+
+/// The forecast, given how much was spent over how many EFFECTIVE minutes.
+///
+/// `used_percent` is the rise over the rate window; `window_min` the effective minutes
+/// of that window; `remaining_min` the effective minutes left until the reset. What
+/// makes a minute effective — calendar or scheduled — is the caller's decision, and
+/// that is exactly the `basis`.
+///
+/// Percentages are integers throughout and the rate is kept in hundredths: a forecast
+/// shown to a person is a whole percent, and carrying a float here would only add a
+/// way for two implementations of the same caption to disagree in the last digit.
+export fn forecast(percent_now int, used_percent int, window_min int,
+                   remaining_min int, history_min int, basis Basis) -> Forecast {
+    if basis.to_str() == "unavailable" { return Forecast.none(Unavailable) }
+    if history_min < MIN_HISTORY_MIN { return Forecast.none(Unavailable) }
+    if window_min <= 0 { return Forecast.none(Unavailable) }
+
+    // Rate in TEN-THOUSANDTHS of a percent per minute.
+    //
+    // The scale is not decoration. At hundredths, 74 % over 36 hours came out as
+    // `7400 / 2160 = 3` — integer division threw away 0.42, the rate became 1.80 %/h
+    // instead of 2.06, and the forecast moved by six points. Ten-thousandths keep
+    // four digits, which is three more than a forecast ever shows.
+    ro rate_x10000 = (used_percent * 10000) / window_min
+
+    // `rate <= 0` means the spend did not grow over the window: the honest forecast is
+    // "it stays where it is", not a fall (§2.7).
+    if rate_x10000 <= 0 {
+        return { available: true, percent_at_reset: percent_now, runs_out_in_min: -1,
+                 rate_per_hour_x100: 0, basis, warning: false }
+    }
+
+    ro at_reset = percent_now + (rate_x10000 * remaining_min) / 10000
+    ro left = 100 - percent_now
+    ro runs_out = if at_reset < 100 { -1 } else { (left * 10000) / rate_x10000 }
+
+    { available: true,
+      percent_at_reset: at_reset,
+      runs_out_in_min: runs_out,
+      rate_per_hour_x100: (rate_x10000 * 60) / 100,
+      basis,
+      // `warning` ⇔ it runs out BEFORE the reset (§2.7, and 01.3 §3.3:
+      // `warning: true` ⇔ `runs_out_at` earlier than `resets_at`).
+      warning: runs_out >= 0 && runs_out < remaining_min }
+}
+
+/// No forecast for these, whatever the numbers say (§2.7).
+///
+/// A locked account is already at the wall; a `stale`, `unknown` or `error` account
+/// has no fresh reading to extrapolate from, and a line drawn through stale data is
+/// the most confident kind of wrong.
+export fn unavailable_for(state str, is_locked bool) -> bool {
+    if is_locked { return true }
+    if state == "stale" { return true }
+    if state == "unknown" { return true }
+    if state == "error" { return true }
+    false
+}
+
+/// Effective minutes between two moments, both given as minutes since a Monday 00:00
+/// of the same week-grid. Minutes outside the schedule count at `off_hours_rate`.
+export fn effective_minutes(sched Schedule, from_min int, to_min int) -> int {
+    if to_min <= from_min { return 0 }
+    mut total = 0
+    mut t = from_min
+    while t < to_min {
+        ro day = (t / 1440) % 7
+        ro in_day = t % 1440
+        ro working_day = if day < sched.days.len() { sched.days[day] } else { false }
+        ro inside = working_day && in_day >= sched.from_min && in_day < sched.to_min
+        if inside {
+            total += 100
+        } else {
+            total += sched.off_hours_rate
+        }
+        t += 1
+    }
+    total / 100
+}
