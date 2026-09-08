@@ -1,0 +1,43 @@
+// Probe: a top-level function named `handler`, in a package that depends on polaris.
+//
+// Build it as written and polaris fails to type-check ITS OWN internals:
+//
+//   nova-polaris/src/serve/serve_tls.nv:92:70: error: [E7301] cannot pass `fn(..)`
+//   as argument `handler` of type `fn([]u8) -> ServerResponse`
+//   note: parameter `handler` declared here --> src/net/servernet_tls.nv:44:59
+//
+// THE CONTROL IS A RENAME AND NOTHING ELSE. Change `fn handler` to `fn my_handler`
+// below -- do not touch anything else, do not even change the call -- and the build
+// succeeds. That is the whole probe: the shape is legal, the NAME is not.
+//
+// The function is never called. Declaring it is enough.
+//
+// Why it matters beyond this package: `handler` is the first name anyone reaches for
+// when writing a web service, the failure appears inside a dependency, and the line
+// it points at belongs to someone else's source.
+
+module probe_handler_name_collision.main
+
+import polaris.{Router, ServerRequest, ServerResponse, StatusCode}
+import polaris.net.{ServerPolicy}
+import polaris.serve.{serve_router}
+import std.net.{TcpListener}
+
+// THE PROBE: rename this one identifier to make the build pass.
+fn handler(req ServerRequest) -> ServerResponse =>
+    ServerResponse.text(StatusCode.OK, "never called")
+
+fn build_router() -> Router =>
+    Router.new()
+        .get("/api/health", fn(req ServerRequest) -> ServerResponse =>
+            ServerResponse.text(StatusCode.OK, "ok"))!!
+
+fn main() Net Detach -> () {
+    ro app = build_router()
+    supervised {
+        spawn {
+            consume listener = TcpListener.bind("127.0.0.1:7393")!!
+            serve_router(listener, app, ServerPolicy.new())
+        }
+    }
+}

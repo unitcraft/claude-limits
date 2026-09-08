@@ -1,0 +1,20 @@
+# Probe: a top-level function named `handler` breaks polaris's own type-checking.
+#
+# Found 2026-09-08 while writing spike T0.4. The dependency fails inside a file the
+# user never opened, pointing at a line the user cannot fix -- and the name that does
+# it is the most natural name there is for a web handler.
+
+[lib]
+src = "src"
+
+[package]
+name = "probe_handler_name_collision"
+version = "0.0.0"
+description = "Probe: a user function named `handler` makes nova-polaris fail to type-check itself"
+
+[[bin]]
+name = "probe-handler-name-collision"
+path = "src/main.nv"
+
+[dependencies]
+polaris = { git = "https://github.com/nv-lang/nova-polaris", version = "0.1" }

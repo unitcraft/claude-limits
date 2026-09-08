@@ -1,0 +1,33 @@
+# Spike T0.4 -- shared state across fibers (plan 01 F.0 item 4, section 3.1).
+#
+# TWO QUESTIONS, and the second depends on the first:
+#   1. do connection fibers run on OTHER OS threads than the poller?
+#   2. is the `store` fiber mandatory, or is it a design choice?
+#
+# If every fiber shares one OS thread, a plain counter cannot be torn and `store`
+# is a matter of taste. If they do not, `store` is the only thing standing between
+# the app and a data race, and section 3.1's diagram becomes a requirement rather
+# than a picture.
+#
+# The C shim is a DIRECT dependency of this package, which is also a small check on
+# registry 1033: a direct `[ffi]` shim links (probes/brotli-shim-link), a transitive
+# one does not.
+
+[lib]
+src = "src"
+
+[package]
+name = "spike_shared_state"
+version = "0.0.0"
+description = "T0.4 spike: a poller fiber, a server, and whether they share an OS thread"
+
+[[bin]]
+name = "spike-shared-state"
+path = "src/main.nv"
+
+[ffi]
+c_shims = ["native/tid.c", "native/tid.h"]
+include_dirs = ["native/"]
+
+[dependencies]
+polaris = { git = "https://github.com/nv-lang/nova-polaris", version = "0.1" }

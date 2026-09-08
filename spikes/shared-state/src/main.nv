@@ -1,0 +1,95 @@
+// Spike T0.4 — shared state across fibers (plan 01 Ф.0 п.4, §3.1).
+//
+// TWO QUESTIONS, and the second depends on the first:
+//
+//   1. do the per-connection fibers run on OTHER OS threads than the poller?
+//   2. is the `store` fiber of §3.1 MANDATORY, or a design choice?
+//
+// If every fiber shares one OS thread, a plain counter cannot be torn and `store` is
+// a matter of taste. If they do not, `store` is the only thing between the app and a
+// data race, and the diagram in §3.1 becomes a requirement rather than a picture.
+//
+// WHY THIS IS ASKED AT ALL. §3.1 says the main fiber is pinned to the real main OS
+// thread, and the plan records that this rests on a COMMENT IN THE COMPILER
+// (`emit_c.rs:30324`), not on a D-block — so it can change without an amendment.
+//
+// THE STATE IS DELIBERATELY UNGUARDED: a spike that protects the state cannot answer
+// whether protection was necessary.
+//
+// THE FUNCTION BELOW IS NOT CALLED `handler`, AND THAT IS NOT A STYLE CHOICE. A
+// top-level function named `handler` in a package that depends on polaris makes
+// polaris fail to type-check ITS OWN internals:
+//   nova-polaris/src/serve/serve_tls.nv:92: [E7301] cannot pass `fn(..)` as argument
+//   `handler` of type `fn([]u8) -> ServerResponse`
+// Renaming it — and nothing else — fixes the build. Isolated in
+// `probes/handler-name-collision/`. The most natural name for a web handler is the
+// one that breaks.
+
+module spike_shared_state.main
+
+import polaris.{Router, ServerRequest, ServerResponse, StatusCode}
+import polaris.net.{ServerPolicy}
+import polaris.serve.{serve_router}
+import std.net.{TcpListener}
+import std.time.duration
+
+/// The OS thread this fiber is on, right now. Four lines of C in `native/tid.c`.
+extern "C" fn spike_os_thread_id() -> int
+
+// ── the shared state, unguarded on purpose ───────────────────────────────────
+//
+// A RECORD, because `mut X = …` at module level is refused outright
+// (E_MUT_AT_MODULE_LEVEL, D184). That refusal is already half of question 2: the
+// language will not hand you the naive shared global, so what remains to ask is
+// whether a shared RECORD can be mutated from two fibers at once.
+
+type State {
+    ticks int          // written ONLY by the poller fiber
+    hits int           // written by every connection fiber
+    poller_tid int     // the poller's OS thread, recorded once
+    main_tid int       // main's OS thread, recorded before anything is spawned
+}
+
+fn State.new() -> State => { ticks: 0, hits: 0, poller_tid: 0, main_tid: 0 }
+
+fn state_response(req ServerRequest, mut st State) -> ServerResponse {
+    st.hits += 1
+    ro mine = spike_os_thread_id()
+    ro body = "ticks=${st.ticks} hits=${st.hits} conn_tid=${mine} poller_tid=${st.poller_tid} main_tid=${st.main_tid}"
+    ServerResponse.text(StatusCode.OK, body)
+}
+
+fn build_router(mut st State) -> Router =>
+    Router.new()
+        .get("/api/state", fn(req ServerRequest) -> ServerResponse => state_response(req, st))!!
+        .get("/api/health", fn(req ServerRequest) -> ServerResponse =>
+            ServerResponse.text(StatusCode.OK, "ok"))!!
+
+fn main() Net Time Detach Io -> () {
+    mut st = State.new()
+    st.main_tid = spike_os_thread_id()
+
+    // Built BEFORE `spawn`: a router built inside a fiber trips E_FIBER_UNSAFE_CALL
+    // (D446), found by the T0.1 spike.
+    ro app = build_router(st)
+    println("spike T0.4 on http://127.0.0.1:7392/api/state -- main_tid=${st.main_tid}")
+
+    supervised {
+        // The poller: one increment every 50 ms for six seconds, then it stops and
+        // the supervised scope ends.
+        spawn {
+            st.poller_tid = spike_os_thread_id()
+            mut i = 0
+            while i < 120 {
+                st.ticks += 1
+                50.to_millis().sleep()
+                i += 1
+            }
+        }
+        // The server: the accept loop in a spawned fiber, the shape the real app needs.
+        spawn {
+            consume listener = TcpListener.bind("127.0.0.1:7392")!!
+            serve_router(listener, app, ServerPolicy.new())
+        }
+    }
+}
