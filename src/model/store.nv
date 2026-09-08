@@ -1,0 +1,173 @@
+// store.nv — the owner of the snapshot and of the SSE subscriptions (task T2.9).
+//
+// Sources: plan 01 §3.1 (fibers, `Chan`), 01.3 §3.4 (subscriptions, monotonic `id`,
+// ring buffer 100, limit 32), 01.2 §3.16 (restore at start), and the T0.4 verdict.
+//
+// WHY A STORE FIBER AT ALL, since T0.4 measured no lost updates over 400 concurrent
+// increments across ten OS threads: because that absence is UNDOCUMENTED. Nothing in
+// `spec/decisions/06-concurrency.md` promises fiber mutations cannot interleave, and
+// the plan already leans once on an unwritten property (main-thread pinning rests on
+// a comment in `emit_c.rs`). Leaning twice would be doubling a bet that today's
+// behaviour is a promise. The verdict says it in those words.
+//
+// THIS FILE IS THE STATE MACHINE, NOT THE FIBER. Everything here is pure: `Registry`
+// takes an event and returns what to deliver. The fiber that owns one of these and
+// pumps a `Chan` is thin by design, because a rule tested through a fiber is a rule
+// tested through a scheduler.
+
+module model.store
+
+/// One SSE event, as §3.4 shapes it.
+export type Event value {
+    id int              // monotonic across the whole process, never reused
+    name str            // snapshot | config | folders | notice | ping | bye
+    data str
+}
+
+export fn Event.of(id int, name str, data str) -> Event => { id, name, data }
+
+/// A subscriber's place in the registry.
+export type Subscriber value {
+    id int
+    alive bool
+}
+
+/// The registry: who is listening, what has been sent, and what the next id is.
+export type Registry value {
+    subscribers []Subscriber
+    ring []Event        // the last RING_MAX events, oldest first
+    next_id int
+    rejected int        // how many were turned away over the limit, for /api/health
+}
+
+/// 01.3 §3.4: at most 32 subscribers, a ring buffer of 100 events.
+///
+/// The limit is not arbitrary politeness. Each subscriber holds a channel and a fiber;
+/// a page left open in thirty tabs is a real thing, and the thirty-third must be told
+/// no rather than quietly costing everyone memory.
+const MAX_SUBSCRIBERS = 32
+const RING_MAX = 100
+
+export fn Registry.new() -> Registry =>
+    { subscribers: [], ring: [], next_id: 1, rejected: 0 }
+
+export fn Registry @count() -> int {
+    mut n = 0
+    for s in @subscribers {
+        if s.alive { n += 1 }
+    }
+    n
+}
+
+/// Take a subscriber, or refuse. Returns the new id, or -1 when full.
+///
+/// IN-OUT (`mut`): the registry is the caller's, and it is the single owner —
+/// the whole point of the store fiber.
+export fn subscribe(mut reg Registry) -> int {
+    if reg.count() >= MAX_SUBSCRIBERS {
+        reg.rejected += 1
+        return -1
+    }
+    ro id = reg.next_id
+    reg.next_id += 1
+    reg.subscribers.push({ id, alive: true })
+    id
+}
+
+/// Drop a subscriber. Idempotent: a client that disconnects twice is ordinary.
+export fn unsubscribe(mut reg Registry, id int) -> () {
+    mut i = 0
+    while i < reg.subscribers.len() {
+        if reg.subscribers[i].id == id {
+            mut s = reg.subscribers[i]
+            s.alive = false
+            reg.subscribers[i] = s
+        }
+        i += 1
+    }
+}
+
+/// Publish an event to everyone, remembering it in the ring.
+///
+/// The id is MONOTONIC AND NEVER REUSED, which is what makes `Last-Event-ID` work: a
+/// client that reconnects says where it stopped, and an id that had been handed out
+/// twice would silently skip whatever came between.
+export fn publish(mut reg Registry, name str, data str) -> Event {
+    ro ev = Event.of(reg.next_id, name, data)
+    reg.next_id += 1
+    reg.ring.push(ev)
+    // The ring keeps the LAST hundred. A client gone longer than that cannot be
+    // caught up event by event and is sent a fresh snapshot instead — which is why
+    // `missed()` below answers a question rather than returning events.
+    while reg.ring.len() > RING_MAX {
+        reg.ring.remove(0)
+    }
+    ev
+}
+
+/// The events a client with `Last-Event-ID: after` has not seen.
+export fn since(reg Registry, after int) -> []Event {
+    mut out []Event = []
+    for ev in reg.ring {
+        if ev.id > after { out.push(ev) }
+    }
+    out
+}
+
+/// Has this client fallen off the end of the ring?
+///
+/// Answered separately from `since` because the two mean different things to the
+/// caller: `since` returns what can be replayed, this says whether replay is COMPLETE.
+/// A client that missed more than the ring holds must be sent a whole snapshot, and a
+/// caller that only looked at `since` would send it a partial history and call it
+/// caught up.
+export fn missed(reg Registry, after int) -> bool {
+    if reg.ring.len() == 0 { return false }
+    ro oldest = reg.ring[0]
+    after < oldest.id - 1
+}
+
+// ── merging poll results ─────────────────────────────────────────────────────
+
+/// One account's last reading, as the store holds it.
+export type AccountSlot value {
+    email str
+    state str
+    polled_at_ms int
+    windows_count int
+}
+
+export fn AccountSlot.of(email str, state str, polled_at_ms int, windows_count int) -> AccountSlot =>
+    { email, state, polled_at_ms, windows_count }
+
+/// The snapshot the store owns.
+export type Snapshot value {
+    accounts []AccountSlot
+    fetched_at_ms int
+    restored bool       // 01.2 §3.16: this came back from the database at start
+}
+
+export fn Snapshot.empty() -> Snapshot => { accounts: [], fetched_at_ms: 0, restored: false }
+
+/// Merge one poller's result into the snapshot, keyed by e-mail.
+///
+/// KEYED BY E-MAIL, NOT BY POSITION, and not appended: one account is one row however
+/// many times it is polled. Appending would grow the list on every tick and the page
+/// would show the same person once per poll.
+///
+/// `fetched_at` moves to the LATEST reading rather than the earliest: the header says
+/// how fresh the freshest thing is, and taking the minimum would make one stuck
+/// account age the whole page.
+export fn merge(mut snap Snapshot, slot AccountSlot) -> () {
+    mut i = 0
+    while i < snap.accounts.len() {
+        if snap.accounts[i].email == slot.email {
+            snap.accounts[i] = slot
+            if slot.polled_at_ms > snap.fetched_at_ms { snap.fetched_at_ms = slot.polled_at_ms }
+            return ()
+        }
+        i += 1
+    }
+    snap.accounts.push(slot)
+    if slot.polled_at_ms > snap.fetched_at_ms { snap.fetched_at_ms = slot.polled_at_ms }
+}

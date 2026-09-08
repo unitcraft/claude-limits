@@ -1,0 +1,168 @@
+// Tests for model/store.nv — task T2.9, the part that needs neither net nor database.
+//
+//   ./nova.sh test src/model/ --filter store
+//
+// Of the acceptance: poller results merge into a Snapshot, subscribers get events with
+// a monotonic id, the 33rd subscriber is refused. The remaining item — "at start the
+// snapshot is restored from the database with restored: true" — needs T2.4 and is not
+// claimed here; the field exists and is tested as a field.
+
+module model.store_test
+
+import store.{Registry, Event, Snapshot, AccountSlot, subscribe, unsubscribe, publish, since, missed, merge}
+
+fn slot(email str, state str, at int) -> AccountSlot => AccountSlot.of(email, state, at, 3)
+
+// ── subscribers ──────────────────────────────────────────────────────────────
+
+test "the 33rd subscriber is refused, and the refusal is counted" {
+    mut reg = Registry.new()
+    mut i = 0
+    while i < 32 {
+        assert(subscribe(reg) > 0)
+        i += 1
+    }
+    assert(reg.count() == 32)
+    // A page left open in thirty tabs is a real thing; the 33rd is told no rather
+    // than quietly costing everyone memory.
+    assert(subscribe(reg) == -1)
+    assert(reg.count() == 32)
+    assert(reg.rejected == 1)
+}
+
+test "a departure makes room for exactly one more" {
+    mut reg = Registry.new()
+    mut ids []int = []
+    mut i = 0
+    while i < 32 {
+        ids.push(subscribe(reg))
+        i += 1
+    }
+    assert(subscribe(reg) == -1)
+    unsubscribe(reg, ids[0])
+    assert(reg.count() == 31)
+    assert(subscribe(reg) > 0)
+    assert(reg.count() == 32)
+}
+
+test "unsubscribing twice is ordinary, not an error" {
+    mut reg = Registry.new()
+    ro id = subscribe(reg)
+    unsubscribe(reg, id)
+    unsubscribe(reg, id)
+    assert(reg.count() == 0)
+}
+
+test "an unknown id is ignored rather than corrupting the registry" {
+    mut reg = Registry.new()
+    ro id = subscribe(reg)
+    unsubscribe(reg, 9999)
+    assert(reg.count() == 1)
+    unsubscribe(reg, id)
+    assert(reg.count() == 0)
+}
+
+// ── event ids ────────────────────────────────────────────────────────────────
+
+test "event ids are monotonic and NEVER reused" {
+    mut reg = Registry.new()
+    ro a = publish(reg, "snapshot", "{}")
+    ro b = publish(reg, "ping", "{}")
+    ro c = publish(reg, "snapshot", "{}")
+    assert(a.id < b.id)
+    assert(b.id < c.id)
+    // A reused id would make Last-Event-ID skip whatever came between, silently.
+    assert(a.id != c.id)
+}
+
+test "subscribing and publishing draw from the SAME counter" {
+    mut reg = Registry.new()
+    ro s1 = subscribe(reg)
+    ro e1 = publish(reg, "snapshot", "{}")
+    ro s2 = subscribe(reg)
+    // One counter, so no id is ever handed to two different things.
+    assert(s1 < e1.id)
+    assert(e1.id < s2)
+}
+
+test "since() replays exactly what a client has not seen" {
+    mut reg = Registry.new()
+    ro a = publish(reg, "snapshot", "one")
+    ro b = publish(reg, "snapshot", "two")
+    ro c = publish(reg, "snapshot", "three")
+    assert(since(reg, a.id).len() == 2)
+    assert(since(reg, c.id).len() == 0)
+    assert(since(reg, 0).len() == 3)
+    assert(since(reg, a.id)[0].data == "two")
+    assert(b.id > a.id)
+}
+
+test "the ring keeps the last hundred and drops the oldest" {
+    mut reg = Registry.new()
+    mut i = 0
+    while i < 150 {
+        publish(reg, "ping", "{}")
+        i += 1
+    }
+    assert(reg.ring.len() == 100)
+    // The first fifty are gone, so a client stuck at the very beginning cannot be
+    // replayed event by event.
+    assert(missed(reg, 0))
+}
+
+test "missed() is a DIFFERENT question from since()" {
+    mut reg = Registry.new()
+    ro a = publish(reg, "snapshot", "one")
+    publish(reg, "snapshot", "two")
+    // Inside the ring: replay is complete.
+    assert(!missed(reg, a.id))
+    assert(since(reg, a.id).len() == 1)
+    // A caller that only looked at `since` would send a partial history and call the
+    // client caught up; `missed` is what says "send a whole snapshot instead".
+    mut i = 0
+    while i < 200 {
+        publish(reg, "ping", "{}")
+        i += 1
+    }
+    assert(missed(reg, a.id))
+}
+
+test "an empty ring has missed nothing" {
+    ro reg = Registry.new()
+    assert(!missed(reg, 0))
+    assert(since(reg, 0).len() == 0)
+}
+
+// ── merging ──────────────────────────────────────────────────────────────────
+
+test "a second reading REPLACES the account, never appends it" {
+    mut snap = Snapshot.empty()
+    merge(snap, slot("main@example.com", "ok", 1000))
+    merge(snap, slot("main@example.com", "stale", 2000))
+    // Appending would grow the list on every tick and show one person once per poll.
+    assert(snap.accounts.len() == 1)
+    assert(snap.accounts[0].state == "stale")
+}
+
+test "different accounts keep their own rows, in arrival order" {
+    mut snap = Snapshot.empty()
+    merge(snap, slot("b@x.com", "ok", 1000))
+    merge(snap, slot("a@x.com", "ok", 1100))
+    assert(snap.accounts.len() == 2)
+    assert(snap.accounts[0].email == "b@x.com")
+    assert(snap.accounts[1].email == "a@x.com")
+}
+
+test "fetched_at follows the LATEST reading, not the earliest" {
+    mut snap = Snapshot.empty()
+    merge(snap, slot("a@x.com", "ok", 5000))
+    merge(snap, slot("b@x.com", "ok", 3000))
+    // Taking the minimum would let one stuck account age the whole page.
+    assert(snap.fetched_at_ms == 5000)
+}
+
+test "a fresh snapshot is not marked restored" {
+    ro snap = Snapshot.empty()
+    assert(!snap.restored)
+    // The restore path itself is T2.4's, and is not claimed by this test.
+}
