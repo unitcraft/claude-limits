@@ -112,6 +112,22 @@ if (art.status === 0) {
   for (const l of artOut.split('\n').slice(-10)) console.log(`         ${l}`);
 }
 
+// Citations into the subplans must point at sections those plans actually have.
+// One broken reference out of 373 devalues the other 372, because a reader who
+// follows one and finds nothing stops following any.
+const cit = spawnSync('python', [path.join(here, 'check-citations.py')], {
+  cwd: repo, encoding: 'utf8',
+});
+const citOut = (cit.stdout || '').trim();
+const citLast = citOut ? citOut.split('\n').find((l) => l.startsWith('CITATIONS')) : '';
+if (cit.status === 0) {
+  line('ok', 'check-citations.py', citLast || 'clean');
+} else {
+  failed += 1;
+  line('FAIL', 'check-citations.py', citLast || `exit ${cit.status}`);
+  for (const l of citOut.split('\n').slice(-10)) console.log(`         ${l}`);
+}
+
 console.log(`\n${suites.length} suites + the page guard, ${total} tests`);
 console.log(failed ? `WEB CHECK: FAILED (${failed})` : 'WEB CHECK: clean');
 process.exit(failed ? 1 : 0);
