@@ -1,0 +1,280 @@
+// Tests for handlers/events.nv — task T2.13, `GET /api/events`.
+//
+//   ./nova.sh test src/server/ --filter events
+//
+// (ONE path. `nova test src/server/ src/server/handlers/` builds the subdirectory
+// twice in parallel and the two runs fight over the same files.)
+//
+// The acceptance items of the card that are decisions rather than scheduling: the
+// first event is a `snapshot`; a `Last-Event-ID` three behind gets exactly those
+// three; two hundred behind gets a fresh `snapshot`; the 33rd subscriber gets a
+// `503` with `Retry-After: 30`. `ping` on silence and `bye` at shutdown belong to
+// the loop that reads the store's channel, and their FRAMING is checked here.
+
+module handlers.events_test
+
+import claude_limits.server.routes.{HttpMethod, on, route, build}
+import claude_limits.model.store.{Registry, Event, publish, subscribe}
+import polaris.{Router, serve_once}
+import std.testing.handlers as th
+import events.{EventsState, Opening, frame, frames, last_seen, opening, opening_bytes, events_handler}
+
+fn wire_str(wire []u8) -> str => unsafe { wire.to_str_unchecked() }
+
+fn req() -> []u8 => "GET /api/events HTTP/1.1\r\nHost: x\r\n\r\n".bytes()
+
+fn req_last(id str) -> []u8 =>
+    "GET /api/events HTTP/1.1\r\nHost: x\r\nLast-Event-ID: ${id}\r\n\r\n".bytes()
+
+fn status_of(wire []u8) -> str {
+    ro s = wire_str(wire)
+    match s.find("\r\n") { Some(i) => s[0..i], None => s }
+}
+
+fn head_of(wire []u8) -> str {
+    ro s = wire_str(wire)
+    match s.find("\r\n\r\n") { Some(i) => s[0..i], None => s }
+}
+
+fn body_of(wire []u8) -> str {
+    ro s = wire_str(wire)
+    match s.find("\r\n\r\n") { Some(i) => s[i + 4..s.byte_len()], None => "" }
+}
+
+fn hdr(wire []u8, name str) -> str {
+    ro padded = "\r\n${head_of(wire)}"
+    ro needle = "\r\n${name.to_ascii_lower()}: "
+    match padded.to_ascii_lower().find(needle) {
+        Some(i) => {
+            ro rest = padded[i + needle.byte_len()..padded.byte_len()]
+            match rest.find("\r\n") { Some(j) => rest[0..j], None => rest }
+        }
+        None => ""
+    }
+}
+
+fn count_of(hay str, needle str) -> int {
+    mut n = 0
+    mut rest = hay
+    loop {
+        match rest.find(needle) {
+            None => break
+            Some(i) => {
+                n += 1
+                rest = rest[i + needle.byte_len()..rest.byte_len()]
+            }
+        }
+    }
+    n
+}
+
+const SNAP = "{\"fetched_at\":\"2026-09-08T16:47:02Z\",\"accounts\":[],\"limits\":[]}"
+
+/// A registry with `n` events already published.
+fn with_events(n int) -> Registry {
+    mut reg = Registry.new()
+    mut i = 0
+    while i < n {
+        ro _ = publish(reg, "snapshot", "{\"seq\":${i}}")
+        i += 1
+    }
+    reg
+}
+
+fn state_of(reg Registry, rest []Event) -> EventsState => { reg, snapshot_body: SNAP, rest }
+
+fn app(reg Registry, rest []Event) -> Router {
+    ro r = reg
+    ro tail = rest
+    build([route("/api/events", [on(HttpMethod.Get, events_handler(fn() -> EventsState => state_of(r, tail)))])])!!
+}
+
+fn serve(reg Registry, rest []Event, raw []u8) Time Random -> []u8 => serve_once(app(reg, rest), raw)
+
+// ── framing ──────────────────────────────────────────────────────────────────
+
+test "an event carries id, name and data, and ends with a blank line" {
+    // Polaris's own `sse_event` writes no `id:` line. Section 3.4 puts a monotonic
+    // id on every event precisely so a client can come back with `Last-Event-ID`;
+    // an event without one cannot be resumed from.
+    assert(frame(Event.of(7, "snapshot", "{}")) == "id: 7\nevent: snapshot\ndata: {}\n\n")
+    assert(frame(Event.of(1, "ping", "{\"at\":\"x\"}")) == "id: 1\nevent: ping\ndata: {\"at\":\"x\"}\n\n")
+}
+
+test "a payload with a newline becomes several data lines" {
+    // A raw newline would end the event early and the client would parse the rest
+    // as a new one. A `notice` quoting a settings-file error is the first payload
+    // that will have one.
+    ro f = frame(Event.of(3, "notice", "line one\nline two"))
+    assert(f == "id: 3\nevent: notice\ndata: line one\ndata: line two\n\n")
+}
+
+test "the frames of the loop have the same shape as the frames of a replay" {
+    // `bye` and `ping` go out through this file so the loop cannot invent a second
+    // spelling of an event.
+    assert(frame(Event.of(9, "bye", "{\"reason\":\"shutdown\"}")).starts_with("id: 9\nevent: bye\n"))
+    assert(frames([Event.of(1, "a", "x"), Event.of(2, "b", "y")]) == "id: 1\nevent: a\ndata: x\n\nid: 2\nevent: b\ndata: y\n\n")
+    assert(frames([]) == "")
+}
+
+// ── Last-Event-ID ────────────────────────────────────────────────────────────
+
+test "a junk Last-Event-ID is treated as absent, not as zero" {
+    // Zero would mean "replay the whole ring", so a client sending garbage would
+    // get a hundred stale events instead of the current picture.
+    assert(last_seen("12") == Some(12))
+    assert(last_seen("  7 ") == Some(7))
+    assert(last_seen("") == None)
+    assert(last_seen("abc") == None)
+    assert(last_seen("-1") == None)
+    assert(last_seen("3x") == None)
+}
+
+// ── the acceptance ───────────────────────────────────────────────────────────
+
+test "a client with no Last-Event-ID gets a snapshot first" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro w = serve(with_events(5), [], req())
+        assert(status_of(w) == "HTTP/1.1 200 OK")
+        assert(hdr(w, "content-type") == "text/event-stream; charset=utf-8")
+        ro b = body_of(w)
+        assert(b.contains("event: snapshot"))
+        assert(b.contains(SNAP))
+        assert(count_of(b, "event: ") == 1)
+    }
+}
+
+test "three behind gets exactly those three, not a snapshot" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        // Ten events published; the client last saw number 7.
+        ro b = body_of(serve(with_events(10), [], req_last("7")))
+        assert(count_of(b, "event: ") == 3)
+        assert(b.contains("id: 8"))
+        assert(b.contains("id: 9"))
+        assert(b.contains("id: 10"))
+        assert(!b.contains("id: 7\n"))
+        assert(!b.contains(SNAP))
+    }
+}
+
+test "two hundred behind gets a fresh snapshot, not a partial history" {
+    // The ring holds a hundred. A client that fell off it cannot be caught up event
+    // by event, and sending what is left would be a partial history called
+    // caught up.
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro reg = with_events(250)
+        ro b = body_of(serve(reg, [], req_last("50")))
+        assert(b.contains("event: snapshot"))
+        assert(b.contains(SNAP))
+        assert(count_of(b, "event: ") == 1)
+    }
+}
+
+test "a client already caught up gets a snapshot rather than nothing" {
+    // Zero events to replay is not a reason to open a silent stream: the page has
+    // just connected and has nothing to draw.
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro b = body_of(serve(with_events(5), [], req_last("5")))
+        assert(b.contains(SNAP))
+        assert(count_of(b, "event: ") == 1)
+    }
+}
+
+test "the 33rd subscriber is refused with 503 and Retry-After 30" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        mut reg = Registry.new()
+        mut i = 0
+        while i < 32 {
+            ro _ = subscribe(reg)
+            i += 1
+        }
+        ro w = serve(reg, [], req())
+        assert(status_of(w) == "HTTP/1.1 503 Service Unavailable")
+        assert(hdr(w, "retry-after") == "30")
+        ro b = body_of(w)
+        assert(b.contains("\"code\":\"too_many_subscribers\""))
+        assert(b.contains("\"retry_after\":30"))
+    }
+}
+
+test "the 32nd subscriber is let in -- the limit is not off by one" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        mut reg = Registry.new()
+        mut i = 0
+        while i < 31 {
+            ro _ = subscribe(reg)
+            i += 1
+        }
+        assert(status_of(serve(reg, [], req())) == "HTTP/1.1 200 OK")
+    }
+}
+
+test "events published after the opening follow it, in order" {
+    // What the running loop will push; here a finite list, which is what makes the
+    // wire comparable at all.
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro tail = [Event.of(11, "snapshot", SNAP), Event.of(12, "ping", "{\"at\":\"x\"}")]
+        ro b = body_of(serve(with_events(10), tail, req_last("10")))
+        assert(count_of(b, "event: ") == 3)
+        assert(b.contains("id: 11\nevent: snapshot"))
+        assert(b.contains("id: 12\nevent: ping"))
+    }
+}
+
+test "the SSE response keeps its own content type and takes the frame's headers" {
+    // `ServerResponse.sse` sets `Cache-Control: no-cache`; the frame then stamps
+    // `no-store`, which is what section 0 requires of everything under `/api/`.
+    // Setting a header REPLACES it, so there is one of each -- worth pinning,
+    // because two `Cache-Control` lines is the kind of thing nobody notices.
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro w = serve(with_events(1), [], req())
+        assert(hdr(w, "content-type") == "text/event-stream; charset=utf-8")
+        assert(hdr(w, "cache-control") == "no-store")
+        assert(count_of(head_of(w).to_ascii_lower(), "cache-control:") == 1)
+        assert(hdr(w, "x-accel-buffering") == "no")
+        assert(hdr(w, "x-request-id") != "")
+        assert(hdr(w, "x-frame-options") == "DENY")
+    }
+}
+
+// ── the decision, on its own ─────────────────────────────────────────────────
+
+test "opening asks its three questions in the order they matter" {
+    // A refused subscriber is refused whatever it claims to have seen.
+    mut full = with_events(10)
+    mut i = 0
+    while i < 32 {
+        ro _ = subscribe(full)
+        i += 1
+    }
+    match opening(full, "7") {
+        Opening.Refused(e) => assert(e.code == "too_many_subscribers")
+        _ => assert(false)
+    }
+    match opening(with_events(10), "7") {
+        Opening.Replay(evs) => assert(evs.len() == 3)
+        _ => assert(false)
+    }
+    match opening(with_events(250), "50") {
+        Opening.Fresh => assert(true)
+        _ => assert(false)
+    }
+    match opening(with_events(10), "") {
+        Opening.Fresh => assert(true)
+        _ => assert(false)
+    }
+}
+
+test "a refused opening writes no bytes at all" {
+    // Not an empty stream that the page would sit on: the refusal is a problem+json
+    // response, and the opening contributes nothing to a body that does not exist.
+    ro op = Opening.Refused(claude_limits.server.errors.ApiError.too_many_subscribers())
+    assert(opening_bytes(op, 1, SNAP) == "")
+}
+
+test "a fresh opening numbers the snapshot with the next id, not zero" {
+    // The client stores this id and comes back with it; a zero would ask for the
+    // whole ring on the next reconnect.
+    ro reg = with_events(10)
+    assert(opening_bytes(Opening.Fresh, reg.next_id, SNAP).starts_with("id: 11\nevent: snapshot"))
+}

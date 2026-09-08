@@ -1,0 +1,176 @@
+// handlers/events.nv — `GET /api/events`, Server-Sent Events (task T2.13).
+//
+// Source: 01.3 §3.4 (the event table, `Last-Event-ID`, the ring of 100, the limit
+// of 32), §8 п. 4; `model/store.nv` (the registry those rules act on).
+//
+// Imports are PACKAGE-PREFIXED; see `handlers/snapshot.nv` for the measurement.
+// The factory is `events_handler`, not `handler` — see `handlers/health.nv`.
+//
+// ── What is here and what is not ─────────────────────────────────────────────
+//
+// The DECISIONS are here and they are pure: what a connecting client is sent
+// first, whether it can be caught up event by event or must be handed a whole
+// snapshot, whether it is the thirty-third and must be refused, and how an event
+// is framed on the wire. Every one of those is a rule of §3.4, and a rule tested
+// through a scheduler is a rule tested through a scheduler.
+//
+// The LOOP is not here: subscribing to the store's channel, waiting on it, sending
+// `ping` after thirty seconds of silence and `bye` at shutdown. That is a fiber
+// over a `Chan` and it arrives with the store fiber it reads from. What this file
+// gives it is `frame`, so the loop cannot invent a second spelling of an event.
+
+module handlers.events
+
+import claude_limits.server.routes.{Ctx, ApiHandler, problem}
+import claude_limits.server.errors.{ApiError}
+import claude_limits.model.store.{Event, Registry, since, missed}
+import polaris.{ServerResponse, StreamBody}
+
+/// At most this many at once (§3.4). The thirty-third is told no.
+const MAX_SUBSCRIBERS = 32
+
+// ── framing ──────────────────────────────────────────────────────────────────
+
+/// One event as SSE bytes: `id`, `event`, then one `data:` line per line of the
+/// payload, then a blank line.
+///
+/// WRITTEN HERE AND NOT TAKEN FROM POLARIS. Their `sse_event(event, data)` emits no
+/// `id:` line, and §3.4 puts a monotonic `id` on every event precisely so a client
+/// can come back with `Last-Event-ID`. An event without one is an event that cannot
+/// be resumed from.
+///
+/// A payload containing a newline becomes several `data:` lines, which is what the
+/// SSE grammar requires — a raw newline would end the event early and the client
+/// would parse the rest as a new one. No current payload has one; a `notice` text
+/// quoting a settings-file error is the first that will.
+export fn frame(e Event) -> str {
+    consume sb = StringBuilder.new()
+    sb.append("id: ")
+    sb.append(e.id)
+    sb.append("\n")
+    sb.append("event: ")
+    sb.append(e.name)
+    sb.append("\n")
+    for line in e.data.split("\n") {
+        sb.append("data: ")
+        sb.append(line)
+        sb.append("\n")
+    }
+    sb.append("\n")
+    sb.into_str()
+}
+
+/// Every event of a burst, in order.
+export fn frames(events []Event) -> str {
+    consume sb = StringBuilder.new()
+    for e in events { sb.append(frame(e)) }
+    sb.into_str()
+}
+
+// ── what a connecting client gets ────────────────────────────────────────────
+
+/// The opening of a stream.
+export type Opening enum
+    /// Send exactly these missed events; the client is caught up by replay.
+    | Replay([]Event)
+    /// Send a whole `snapshot`: either this client is new, or it fell off the ring.
+    | Fresh
+    /// Do not open a stream at all.
+    | Refused(ApiError)
+
+/// Parse `Last-Event-ID`. `None` when absent or not a number.
+///
+/// A junk value is treated as ABSENT rather than as zero. Zero would mean "replay
+/// everything in the ring", so a client sending garbage would be handed a hundred
+/// stale events instead of the current picture.
+export fn last_seen(v str) -> Option[int] {
+    ro s = v.trim_ascii()
+    if s == "" { return None }
+    mut n = 0
+    for c in s.chars() {
+        ro d = (c as int) - 48
+        if d < 0 || d > 9 { return None }
+        n = n * 10 + d
+    }
+    Some(n)
+}
+
+/// What to do with a client that has just connected (§3.4).
+///
+/// The order of the three questions is the order they matter in: a refused
+/// subscriber is refused whatever it claims to have seen, and a client that fell
+/// off the ring gets a snapshot rather than a partial history.
+export fn opening(reg Registry, last_event_id str) -> Opening {
+    if reg.count() >= MAX_SUBSCRIBERS { return Opening.Refused(ApiError.too_many_subscribers()) }
+    match last_seen(last_event_id) {
+        None => Opening.Fresh
+        Some(n) => {
+            // `missed` is a different question from `since`: `since` returns what
+            // CAN be replayed, `missed` says whether that replay is COMPLETE. A
+            // caller reading only the first would hand a client a partial history
+            // and call it caught up.
+            if missed(reg, n) { return Opening.Fresh }
+            ro pending = since(reg, n)
+            if pending.len() == 0 { return Opening.Fresh }
+            Opening.Replay(pending)
+        }
+    }
+}
+
+// ── the response ─────────────────────────────────────────────────────────────
+
+/// The bytes a stream opens with: the replayed events, or one `snapshot`.
+///
+/// Taking the snapshot body as an argument rather than rendering it here keeps this
+/// file free of the DTO: `GET /api/snapshot` and the first SSE frame must carry the
+/// SAME body (§3.4 says so outright), and the only way to guarantee that is for one
+/// renderer to produce both.
+export fn opening_bytes(op Opening, next_id int, snapshot_body str) -> str {
+    match op {
+        Opening.Replay(evs) => frames(evs)
+        Opening.Fresh => frame(Event.of(next_id, "snapshot", snapshot_body))
+        Opening.Refused(_) => ""
+    }
+}
+
+/// Everything the handler needs, read fresh on every request.
+export type EventsState value {
+    reg Registry
+    /// The body `GET /api/snapshot` would return right now, rendered by the same
+    /// code (§3.4: "тело §3.3 целиком").
+    snapshot_body str
+    /// Events to deliver after the opening. In the running server this is the
+    /// channel loop; in a test it is a finite list, which is what makes the wire
+    /// comparable at all.
+    rest []Event
+}
+
+export type EventsSource fn() -> EventsState
+
+// Hoisted and param-captured for the [M-16] reason named in `routes.nv`.
+fn run(src EventsSource, ctx Ctx) -> ServerResponse {
+    ro st = src()
+    ro op = opening(st.reg, header_of(ctx, "last-event-id"))
+    match op {
+        Opening.Refused(e) => problem(e, ctx.request_id, ctx.instance)
+        _ => {
+            consume sb = StringBuilder.new()
+            sb.append(opening_bytes(op, st.reg.next_id, st.snapshot_body))
+            sb.append(frames(st.rest))
+            ro payload = sb.into_str()
+            ServerResponse.sse(StreamBody.from_chunks([payload.bytes()]))
+        }
+    }
+}
+
+fn header_of(ctx Ctx, name str) -> str {
+    match ctx.req.header(name) {
+        Some(v) => v
+        None    => ""
+    }
+}
+
+export fn events_handler(src EventsSource) -> ApiHandler {
+    ro inner = src
+    fn(ctx Ctx) -> ServerResponse => run(inner, ctx)
+}
