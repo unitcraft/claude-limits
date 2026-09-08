@@ -40,8 +40,9 @@ root keys:
 
 ## Это не догадка по комментарию
 
-В `std/src/encoding/toml.nv:466` действительно стоит `TODO: nested path resolution`,
-а на строке 455 — «Упрощённо: для bootstrap-stdlib просто insert empty table».
+В `std/src/encoding/toml.nv:474` действительно стоит `TODO: nested path resolution`
+(в теле `insert_at_current_path`, объявленного на `:467`), а на строке 456 —
+«Упрощённо: для bootstrap-stdlib просто insert empty table».
 Комментарий говорит о намерении; замер выше говорит о поведении, и я привожу второе.
 Шапка модуля при этом обещает обратное: «Tables `[section]` и `[[array of tables]]`»
 (строка 10) — то есть документация модуля расходится с его кодом.
