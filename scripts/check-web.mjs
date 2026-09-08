@@ -50,8 +50,18 @@ for (const suite of suites) {
   const count = /^(\d+) passed/.exec(last);
   if (count) total += Number(count[1]);
 
-  if (r.status === 0) {
+  if (r.status === 0 && count && Number(count[1]) > 0) {
     line('ok', suite, last);
+  } else if (r.status === 0) {
+    // A suite that exits 0 having run NOTHING. The guard above protects the file
+    // count; this protects the test count, and until 2026-09-08 nothing did -- a
+    // suite drawing its cases from an emptied directory printed `0 passed` and the
+    // whole run said clean. An empty measurement in the clothes of success, in the
+    // one file every other check is run by.
+    failed += 1;
+    line('FAIL', suite, count
+      ? `${last} -- ran no tests at all`
+      : `${last || '(no output)'} -- no parsable summary, so emptiness cannot be ruled out`);
   } else {
     failed += 1;
     line('FAIL', suite, last || `exit ${r.status}`);
@@ -94,6 +104,13 @@ for (const [name, args, verdictPrefix] of CHECKERS) {
     for (const l of out.split('\n').slice(-10)) console.log(`         ${l}`);
     if (r.stderr && r.stderr.trim()) console.log(`         ${r.stderr.trim().split('\n')[0]}`);
   }
+}
+
+// Implied by the per-suite rule, and stated anyway: it is the one sentence that
+// cannot be argued with when somebody asks what the green meant.
+if (total === 0) {
+  failed += 1;
+  line('FAIL', '(the run)', 'zero tests executed in total -- nothing was measured');
 }
 
 console.log(`\n${suites.length} suites (${total} tests) + ${CHECKERS.length} checkers`);
