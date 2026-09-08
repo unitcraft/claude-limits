@@ -84,7 +84,7 @@ const CHECKERS = [
   ['check-fixtures.py', [], 'SECRET SCAN'],
   ['check-config-fixture.py', [], 'INVENTED'],
   ['check-dir-fixtures.py', [], 'RESULT'],
-  ['check-plan-trees.py', [], null],
+  ['check-plan-trees.py', [], 'PLAN TREES'],
   ['lint-openapi.py', ['fixtures/openapi/sample.json'], 'OPENAPI LINT'],
   ['check-artboard-labels.py', [], 'ARTBOARD LABELS'],
   ['check-citations.py', [], 'CITATIONS'],
