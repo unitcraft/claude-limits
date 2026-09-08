@@ -138,8 +138,14 @@ export function severityOf(limit) {
  * it just spends the endpoint's patience — which on this project is not an
  * abstraction: the machine has already been rate-limited for exactly that.
  */
-export function isRetryable(method, status) {
-  const safe = method === 'GET' || method === 'HEAD';
+export function isRetryable(method, status, path = '') {
+  // A search is a read: 01.3 section 5 names `POST /api/history/search` beside GET,
+  // and convention section 17 says the same in general terms ("reads: GET, search,
+  // count"). It is a POST only because its filter does not fit in a query string --
+  // nothing about it changes state, and the contract declares it safe to repeat.
+  // Every OTHER write stays out, with or without a 429.
+  const safe = method === 'GET' || method === 'HEAD'
+    || (method === 'POST' && path.split('?')[0] === '/api/history/search');
   if (!safe) return false;
   if (status === 429) return true;
   if (status >= 400 && status < 500) return false;
@@ -155,8 +161,8 @@ export function isRetryable(method, status) {
  */
 export function retryDelay(attempt, retryAfterSeconds = null, rand = Math.random) {
   if (retryAfterSeconds != null && retryAfterSeconds >= 0) return retryAfterSeconds * 1000;
-  const base = Math.min(1000 * 2 ** (attempt - 1), 8000);
-  return Math.round(base * (0.75 + rand() * 0.5));      // ±25 %
+  const base = Math.min(500 * 2 ** (attempt - 1), 8000);
+  return Math.round(base * (0.8 + rand() * 0.4));        // +-20 %
 }
 
 export const MAX_RETRIES = 3;

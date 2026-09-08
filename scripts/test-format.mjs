@@ -175,7 +175,23 @@ test('writes are never retried automatically, not even on 429 or 500', () => {
   for (const s of [429, 500, 503, 0]) {
     assert.equal(isRetryable('POST', s), false, `POST must not auto-retry on ${s}`);
     assert.equal(isRetryable('PUT', s), false, `PUT must not auto-retry on ${s}`);
+    assert.equal(isRetryable('PUT', s, '/api/config'), false, 'a path cannot make a PUT safe');
   }
+});
+
+test('the ONE exception is the history search, which is a read wearing POST', () => {
+  // 01.3 section 5 names it beside GET; convention section 17 calls it a read.
+  // It is a POST only because the filter does not fit in a query string.
+  assert.equal(isRetryable('POST', 503, '/api/history/search'), true);
+  assert.equal(isRetryable('POST', 429, '/api/history/search'), true);
+  assert.equal(isRetryable('POST', 0, '/api/history/search'), true);
+  assert.equal(isRetryable('POST', 422, '/api/history/search'), false, '4xx is still 4xx');
+
+  // and it is that path only -- not a prefix of it, not a sibling
+  assert.equal(isRetryable('POST', 503, '/api/history'), false);
+  assert.equal(isRetryable('POST', 503, '/api/history/search/all'), false);
+  assert.equal(isRetryable('POST', 503, '/api/history/search?page=2'), true,
+    'a query string does not change which endpoint it is');
 });
 
 test('Retry-After wins over the computed backoff', () => {
@@ -184,14 +200,29 @@ test('Retry-After wins over the computed backoff', () => {
   assert.equal(retryDelay(1, 0), 0, 'Retry-After: 0 means now, not "ignore me"');
 });
 
-test('backoff grows, is capped, and carries jitter of ±25%', () => {
+test('backoff is the 0.5 -> 1 -> 2 s of 01.3 section 5, with jitter of +-20%', () => {
+  // These three numbers are QUOTED from the spec, not read off the implementation.
+  // Until 2026-09-08 both the code and this test said 1 -> 2 -> 4 with +-25 %, and
+  // the suite was green the whole time: the test had transcribed the code.
   const mid = () => 0.5;                       // no jitter
-  assert.equal(retryDelay(1, null, mid), 1000);
-  assert.equal(retryDelay(2, null, mid), 2000);
-  assert.equal(retryDelay(3, null, mid), 4000);
+  assert.equal(retryDelay(1, null, mid), 500);
+  assert.equal(retryDelay(2, null, mid), 1000);
+  assert.equal(retryDelay(3, null, mid), 2000);
   assert.equal(retryDelay(9, null, mid), 8000, 'must cap, not grow forever');
-  assert.equal(retryDelay(1, null, () => 0), 750);
-  assert.equal(retryDelay(1, null, () => 0.999), 1250);
+
+  // +-20 %: the spread is what stops several tabs, refused at the same instant,
+  // from coming back at the same instant. Asserted as the RANGE the spec states --
+  // an exact number here would be arithmetic done by hand (the first version of
+  // this line said 2400 and the answer was 2399: rand() never reaches 1).
+  for (const [attempt, base] of [[1, 500], [2, 1000], [3, 2000]]) {
+    assert.equal(retryDelay(attempt, null, () => 0), Math.round(base * 0.8),
+      `attempt ${attempt} at the bottom of the spread`);
+    for (const r of [0, 0.001, 0.25, 0.5, 0.75, 0.999]) {
+      const d = retryDelay(attempt, null, () => r);
+      assert.ok(d >= base * 0.8 && d <= base * 1.2,
+        `attempt ${attempt} with rand=${r} gave ${d}, outside +-20 % of ${base}`);
+    }
+  }
 });
 
 test('three attempts is the limit', () => {

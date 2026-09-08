@@ -8,6 +8,7 @@
 //
 // Separate file rather than an inline <script>: the CSP refuses inline (01.1 §0).
 import { isRetryable, retryDelay, MAX_RETRIES } from './format.js';
+import { createLive, silentTooLong, SILENCE_LIMIT_MS } from './live.js';
 import { el, renderList, renderCards, layoutCells } from './render.js';
 import { createReorder } from './reorder.js';
 import { renderStats, RANGES } from './stats.js';
@@ -17,17 +18,15 @@ import {
 } from './settings.js';
 
 const VIEWS = ['list', 'cards', 'stats'];
-const POLL_WHEN_DEGRADED_MS = 10_000;   // no SSE: ask for a snapshot this often
-const SSE_RETRY_MS = 30_000;            // and try to reconnect this often
-const SILENCE_LIMIT_MS = 90_000;        // SSE open but silent: ask anyway (01.1 §1.1)
+// The transport's own numbers (10 s degraded poll, 30 s reconnect, 90 s silence)
+// live in live.js next to the machine that obeys them.
 
 const state = {
   snapshot: null,
   fetchedAt: null,      // Date, from snapshot.fetched_at
   intervalSec: null,
   lastEvent: 0,
-  es: null,
-  pollTimer: null,
+  live: null,           // the SSE transport (live.js); owns its timers and lastEvent
   tickTimer: null,
   apiVersion: null,
   order: null,          // optimistic account order, live only until the server agrees
@@ -172,10 +171,7 @@ function tick() {
   const stale = state.intervalSec ? age > state.intervalSec * 2000 : false;
   $('.fetched').dataset.stale = String(stale);
 
-  if (state.es && state.es.readyState === EventSource.OPEN
-      && Date.now() - state.lastEvent > SILENCE_LIMIT_MS) {
-    fetchSnapshot();
-  }
+  if (state.live && silentTooLong(state.live, Date.now())) fetchSnapshot();
 }
 
 // -------------------------------------------------------------- transport ---
@@ -292,7 +288,7 @@ async function saveOrder(emails) {
 
 function applySnapshot(snap) {
   state.snapshot = snap;
-  state.lastEvent = Date.now();
+  if (state.live) state.live.lastEvent = Date.now();
   state.fetchedAt = snap.fetched_at ? new Date(snap.fetched_at) : new Date();
   state.intervalSec = snap.interval_sec ?? state.intervalSec;
 
@@ -321,49 +317,51 @@ window.addEventListener('resize', layoutCells);
 
 
 function connect() {
-  try {
-    state.es = new EventSource('/api/events');
-  } catch {
-    setLive('polling');
+  state.live = createLive({
+    openStream: (url) => new EventSource(url),
+    now: () => Date.now(),
+    timers: {
+      set: (fn, ms) => setTimeout(fn, ms),
+      clear: (id) => clearTimeout(id),
+      setEvery: (fn, ms) => setInterval(fn, ms),
+      clearEvery: (id) => clearInterval(id),
+    },
+    setLive,
+    poll: fetchSnapshot,
+    onEvent: handleEvent,
+  });
+  state.live.start();
+}
+
+/**
+ * What each frame MEANS is the page's business; live.js only guarantees it arrived
+ * and hands the payload over unparsed.
+ */
+function handleEvent(name, data) {
+  if (name === 'snapshot') {
+    try { applySnapshot(JSON.parse(data)); } catch { /* malformed frame: keep the old one */ }
     return;
   }
-  state.es.addEventListener('open', () => {
-    setLive('live');
-    clearInterval(state.pollTimer);
-    state.pollTimer = null;
-  });
-  state.es.addEventListener('snapshot', (e) => {
-    state.lastEvent = Date.now();
-    try { applySnapshot(JSON.parse(e.data)); } catch { /* malformed frame: keep the old one */ }
-  });
-  state.es.addEventListener('ping', () => { state.lastEvent = Date.now(); });
   // A restarted backend announces itself; the version check decides whether this
-  // script can still read what the new one sends (01.3 §5).
-  state.es.addEventListener('notice', (e) => {
-    state.lastEvent = Date.now();
+  // script can still read what the new one sends (01.3 sec.5).
+  if (name === 'notice') {
     try {
-      if (JSON.parse(e.data).level === 'reload') { askReload(); return; }
+      if (JSON.parse(data).level === 'reload') { askReload(); return; }
     } catch { /* an unreadable notice is still a sign of life, nothing more */ }
     checkApiVersion();
-  });
+    return;
+  }
   // Settings changed in another tab: the config is the backend's, not this tab's.
-  // The optimistic order goes with it — keeping it would let this tab override an
+  // The optimistic order goes with it -- keeping it would let this tab override an
   // order somebody else has just saved, and keep overriding it on every poll.
-  state.es.addEventListener('config', () => {
-    state.lastEvent = Date.now();
+  if (name === 'config') {
     state.order = null;
     // An open panel is now showing a stale etag and stale folder rows; the removed
     // folder of sec.5.4 must disappear rather than sit there until the next open.
     if (state.panel) { closeSettings(); openSettings(); }
     fetchSnapshot();
-  });
-  state.es.addEventListener('error', () => {
-    setLive('polling');
-    if (!state.pollTimer) state.pollTimer = setInterval(fetchSnapshot, POLL_WHEN_DEGRADED_MS);
-    setTimeout(() => {
-      if (!state.es || state.es.readyState === EventSource.CLOSED) connect();
-    }, SSE_RETRY_MS);
-  });
+  }
+  // 'ping' says only that the connection is alive, which live.js has already recorded.
 }
 
 // --------------------------------------------------------------- settings ---
@@ -544,7 +542,7 @@ function initVisibility() {
     } else if (!state.tickTimer) {
       state.tickTimer = setInterval(tick, 1000);
       tick();                    // catch up at once rather than a second later
-      if (Date.now() - state.lastEvent > SILENCE_LIMIT_MS) fetchSnapshot();
+      if (!state.live || Date.now() - state.live.lastEvent > SILENCE_LIMIT_MS) fetchSnapshot();
     }
   });
 }
@@ -559,7 +557,6 @@ function main() {
     toast,
   });
   state.reorder.attach();
-  setLive('connecting');
   $('[data-action="refresh"]').addEventListener('click', (e) =>
     refresh(e.currentTarget));
   $('[data-action="settings"]').addEventListener('click', openSettings);

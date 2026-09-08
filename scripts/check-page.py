@@ -81,6 +81,22 @@ for js in sorted(web.glob("*.js")):
 for miss in sorted(used - defined - set_by_script):
     bad.append(f"app.css: var({miss}) used, not a :root token and set by no script")
 
+# --- the live dot: colour is the acceptance of T2.21, so a machine holds it -------
+#
+# "with the server stopped the dot is grey ... once it starts, green". test-live.mjs
+# holds the WORD the dot says; this holds the COLOUR, because a green dot over a dead
+# backend is the most misleading state this page has, and no js test can see a stylesheet.
+dot = re.search(r"\.live-dot\s*\{([^}]*)\}", css)
+if not dot:
+    bad.append("app.css: no .live-dot rule -- T2.21's dot has no colour at all")
+elif "var(--live)" not in dot.group(1):
+    bad.append("app.css: .live-dot does not paint itself with var(--live)")
+
+for mode in ("polling", "connecting"):
+    if not re.search(r'\.live\[data-state="%s"\][^{]*\.live-dot' % mode, css):
+        bad.append(f'app.css: nothing repaints the dot for data-state="{mode}" '
+                   f'-- it would stay green while the backend is unreachable')
+
 print(f"tokens defined: {len(defined)}, tokens used: {len(used)}")
 print(f"external references: {sum(1 for b in bad if 'external' in b)}")
 print("PAGE GUARD:", "clean" if not bad else "FAILED")
