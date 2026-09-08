@@ -7,7 +7,7 @@
 // numbers. The arithmetic it does own lives in format.js and is tested under node.
 //
 // Separate file rather than an inline <script>: the CSP refuses inline (01.1 §0).
-import { isRetryable, retryDelay, MAX_RETRIES, refuseFor } from './format.js';
+import { isRetryable, retryDelay, MAX_RETRIES, refuseFor, orderRequest } from './format.js';
 import { createLive, silentTooLong, SILENCE_LIMIT_MS } from './live.js';
 import { el, renderList, renderCards, layoutCells } from './render.js';
 import { createReorder } from './reorder.js';
@@ -268,15 +268,7 @@ function toast(text) {
 async function saveOrder(emails) {
   const current = await apiGet('/api/config');
   const etag = current.headers.get('ETag');
-  const res = await fetch('/api/config', {
-    method: 'PUT',
-    headers: {
-      'content-type': 'application/json',
-      accept: 'application/json',
-      ...(etag ? { 'if-match': etag } : {}),
-    },
-    body: JSON.stringify({ ui: { accounts_order: emails } }),
-  });
+  const res = await fetch('/api/config', orderRequest(etag, emails));
   if (!res.ok) {
     // The config moved under us: show what the server actually has rather than
     // leaving the page on an order nobody stored.

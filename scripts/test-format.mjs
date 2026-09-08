@@ -10,7 +10,7 @@ import {
   windowMs, elapsedShare, cellGeometry, formatDuration,
   formatResetMoment, formatReset, rowLabel, sortLimits, severityOf,
   isRetryable, retryDelay, MAX_RETRIES, refuseFor, REFUSAL_DEFAULT_SEC, REFUSAL_MAX_SEC,
-  moveTo, applyOrder, dropIndexFor, landingIndex,
+  moveTo, applyOrder, dropIndexFor, landingIndex, orderRequest,
 } from '../src/web/format.js';
 
 let passed = 0;
@@ -266,6 +266,30 @@ test('zero means now, and is not confused with a missing header', () => {
 });
 
 // -------------------------------------------------- account order (T2.22) --
+
+test('the order PUT carries If-Match and only the ui subtree (T2.22)', () => {
+  const r = orderRequest('W/"abc123"', ['b@x', 'a@x']);
+  assert.equal(r.method, 'PUT');
+  assert.equal(r.headers['if-match'], 'W/"abc123"');
+  assert.equal(r.headers['content-type'], 'application/json');
+  assert.deepEqual(JSON.parse(r.body), { ui: { accounts_order: ['b@x', 'a@x'] } });
+  assert.deepEqual(Object.keys(JSON.parse(r.body)), ['ui'],
+    'a full config would make every save a chance to overwrite another tab');
+});
+
+test('no ETag means no If-Match, and the 428 that follows is the right answer', () => {
+  // Not a hole: the server requires the precondition, so a page that cannot name the
+  // version it edited gets refused instead of overwriting somebody blind.
+  for (const missing of [null, undefined, '']) {
+    const r = orderRequest(missing, ['a@x']);
+    assert.ok(!('if-match' in r.headers), `etag ${JSON.stringify(missing)} must not send the header`);
+  }
+});
+
+test('an empty order is a real value, not an omission', () => {
+  // Dragging every account away is legal and means "no preferred order".
+  assert.deepEqual(JSON.parse(orderRequest('e', []).body), { ui: { accounts_order: [] } });
+});
 
 test('moveTo returns a new array and leaves the old one alone', () => {
   const src = ['a', 'b', 'c'];

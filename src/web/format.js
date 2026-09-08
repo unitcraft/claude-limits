@@ -201,6 +201,30 @@ export function refuseFor(status, header, nowMs = Date.now()) {
 // ------------------------------------------------------- account order (§4) --
 
 /**
+ * The `PUT /api/config` that saves an account order (01.3 sec.3.8).
+ *
+ * `If-Match` is not optional. The endpoint answers 428 without it, which is the safe
+ * failure: two tabs dragging cards at once must not silently overwrite each other,
+ * and a page that cannot name the version it edited has no business writing. When
+ * the GET carried no ETag the header is omitted deliberately -- the 428 that follows
+ * is the correct outcome, not a bug to paper over with a blind write.
+ *
+ * A PARTIAL tree: only `ui.accounts_order`. Sending the whole config back would make
+ * every save a chance to overwrite a setting somebody changed in another tab.
+ */
+export function orderRequest(etag, emails) {
+  return {
+    method: 'PUT',
+    headers: {
+      'content-type': 'application/json',
+      accept: 'application/json',
+      ...(etag ? { 'if-match': etag } : {}),
+    },
+    body: JSON.stringify({ ui: { accounts_order: emails } }),
+  };
+}
+
+/**
  * Move item `from` to index `to`, returning a NEW array (01.1 §4.1).
  *
  * A copy rather than a splice in place, because the caller keeps the old array to
