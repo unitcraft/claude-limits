@@ -10,6 +10,8 @@
 
 module model.snapshot
 
+import claude_limits.window.{Window}
+
 /// Severity of one limit window.
 ///
 /// COMPUTED FROM THE USER'S THRESHOLDS, not from the endpoint's own `severity`
@@ -44,18 +46,6 @@ export fn AccountState @to_str() -> str =>
         Error => "error"
         Hidden => "hidden"
     }
-
-/// One limit window as the snapshot carries it.
-export type Window value {
-    kind str            // session | weekly_all | weekly_scoped
-    model str           // "" unless weekly_scoped
-    percent int
-    resets_at_ms int    // 0 when unknown
-    locked_reason str   // "" when not locked
-}
-
-export fn Window.of(kind str, model str, percent int, resets_at_ms int, locked_reason str) -> Window =>
-    { kind, model, percent, resets_at_ms, locked_reason }
 
 /// The thresholds a person set (01.2 §2.1: warning 70, critical 90 by default).
 export type Thresholds value {

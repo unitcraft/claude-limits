@@ -12,7 +12,8 @@
 
 module model.snapshot_test
 
-import snapshot.{Window, Thresholds, Severity, AccountState, severity_of, at_100, locked, worst, stale_message, error_401_message, error_parse_message, rate_limited_badge, network_badge, red_panel_caption}
+import claude_limits.window.{Window}
+import snapshot.{Thresholds, Severity, AccountState, severity_of, at_100, locked, worst, stale_message, error_401_message, error_parse_message, rate_limited_badge, network_badge, red_panel_caption}
 import format.{duration_words, reset_moment, reset_caption, row_label}
 import std.time.civil.{TimeZone}
 

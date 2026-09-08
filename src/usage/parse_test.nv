@@ -1,0 +1,121 @@
+// Tests for usage/parse.nv — task T1.5, the pure half.
+//
+//   ./nova.sh test src/usage/ --filter parse
+//
+// The acceptance items this half owns: every fixture parses into windows; an empty
+// `limits` falls back to `five_hour`/`seven_day`; a 429 with `Retry-After: 120` gives
+// 120 s and without the header 60; extra fields are ignored; each call's outcome is
+// reported. The items about the network — the mock counting zero calls for an expired
+// token — belong to `usage/fetch.nv`, which is blocked by registry №1033.
+//
+// Fixtures arrive through `embed_str`, so the test touches no filesystem and carries
+// no `Fs` effect — the same reason as in `config_test.nv`.
+
+module usage.parse_test
+
+import parse.{Usage, PollOutcome, parse, moment_ms, next_poll_delay_sec}
+
+const NORMAL = embed_str("../../fixtures/usage/normal.json")
+const LOCKED = embed_str("../../fixtures/usage/locked.json")
+const FALLBACK = embed_str("../../fixtures/usage/empty-limits-fallback.json")
+const TWO_MODELS = embed_str("../../fixtures/usage/two-scoped-models.json")
+
+fn kinds_of(u Usage) -> str {
+    mut out = ""
+    for w in u.windows { out = "${out}${w.kind}," }
+    out
+}
+
+// ── every fixture parses ─────────────────────────────────────────────────────
+
+test "the ordinary reply gives three windows" {
+    ro u = parse(NORMAL)
+    assert(u.outcome.to_str() == "parsed")
+    assert(u.windows.len() == 3)
+    assert(!u.from_fallback)
+    assert(kinds_of(u) == "session,weekly_all,weekly_scoped,")
+}
+
+test "percent and the reset moment come through" {
+    ro u = parse(NORMAL)
+    assert(u.windows[0].percent == 61)
+    // 2026-09-07T22:00:00+00:00 in unix milliseconds.
+    assert(u.windows[0].resets_at_ms == 1788818400000)
+}
+
+test "a locked window carries its reason" {
+    ro u = parse(LOCKED)
+    assert(u.outcome.to_str() == "parsed")
+    assert(u.windows[0].percent == 100)
+    assert(u.windows[0].locked_reason == "usage_limit_reached")
+}
+
+test "two scoped models keep their names apart" {
+    ro u = parse(TWO_MODELS)
+    assert(u.windows.len() == 4)
+    mut models = ""
+    for w in u.windows {
+        if w.kind == "weekly_scoped" { models = "${models}${w.model}," }
+    }
+    // Without the name a scoped row is indistinguishable from another scoped row.
+    assert(models != "")
+    assert(models != ",")
+}
+
+// ── the fallback, which is the point of the parser ───────────────────────────
+
+test "an EMPTY limits falls back to the two named windows" {
+    ro u = parse(FALLBACK)
+    assert(u.outcome.to_str() == "parsed")
+    assert(u.from_fallback)
+    assert(u.windows.len() == 2)
+    assert(kinds_of(u) == "session,weekly_all,")
+    // A parser that only reads `limits[]` would tell a person with an active session
+    // that there is no data.
+    assert(u.windows[0].percent > 0)
+}
+
+test "the fallback reads utilization, which is a FLOAT there" {
+    // `limits[].percent` is an integer, `five_hour.utilization` is `4.0`. Reading the
+    // second with an integer reader gives zero and looks like an idle account.
+    ro u = parse(FALLBACK)
+    assert(u.windows[0].percent == 4)
+}
+
+// ── shapes that must not crash ───────────────────────────────────────────────
+
+test "a body that is not JSON is reported, not guessed at" {
+    ro u = parse("this is not json")
+    assert(u.outcome.to_str() == "bad_json")
+    assert(u.windows.len() == 0)
+}
+
+test "valid JSON with nothing usable says so" {
+    ro u = parse("{\"unrelated\":1}")
+    assert(u.outcome.to_str() == "no_windows")
+    assert(u.windows.len() == 0)
+}
+
+test "unknown fields are IGNORED, unlike in our own config file" {
+    // The endpoint is someone else's and grows without asking us; an unknown key in a
+    // reply is a newer service, while an unknown key in the settings file is a typo.
+    ro u = parse("{\"limits\":[{\"kind\":\"session\",\"percent\":5}],\"brand_new_field\":42}")
+    assert(u.outcome.to_str() == "parsed")
+    assert(u.windows.len() == 1)
+    assert(u.windows[0].percent == 5)
+}
+
+test "an unreadable moment is zero, not a crash" {
+    assert(moment_ms("not a date") == 0)
+    assert(moment_ms("") == 0)
+}
+
+// ── the 429 rule ─────────────────────────────────────────────────────────────
+
+test "Retry-After wins, and without it the floor is 60" {
+    assert(next_poll_delay_sec(120) == 120)
+    assert(next_poll_delay_sec(0) == 60)
+    // A negative or absent header must not produce an immediate retry: that is how
+    // this project earned a machine-wide 429 in the first place.
+    assert(next_poll_delay_sec(-5) == 60)
+}

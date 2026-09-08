@@ -1,0 +1,27 @@
+// window.nv — one limit window, the vocabulary two subtrees share.
+//
+// WHY IT LIVES AT THE SOURCE ROOT AND NOT IN `model/`. A file in one subdirectory
+// cannot import a module from another: from `src/usage/`, `import model.snapshot`
+// resolves against `src/usage/model/snapshot` and against the repository root, and
+// neither exists. Measured 2026-09-08 while writing T1.5, after trying both the
+// `model.snapshot` form the compiler names for a subdirectory and the
+// `claude_limits.model.snapshot` form it also lists — the first does not resolve
+// across directories, the second is rejected as a module path.
+//
+// What DOES work, measured the same way: a subdirectory file importing a module that
+// sits at the SOURCE ROOT. So the type both `model/` and `usage/` need lives here,
+// and neither subtree depends on the other.
+
+module claude_limits.window
+
+/// One limit window as it arrives from the endpoint and as the page draws it.
+export type Window value {
+    kind str            // session | weekly_all | weekly_scoped
+    model str           // "" unless weekly_scoped
+    percent int
+    resets_at_ms int    // 0 when unknown
+    locked_reason str   // "" when not locked
+}
+
+export fn Window.of(kind str, model str, percent int, resets_at_ms int, locked_reason str) -> Window =>
+    { kind, model, percent, resets_at_ms, locked_reason }

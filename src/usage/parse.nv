@@ -1,0 +1,227 @@
+// parse.nv — the endpoint's reply into windows (task T1.5, the pure half).
+//
+// Sources: README §Endpoint, plan 01 §0 (правила опроса), §7 (фикстуры), 01.2 §3.2
+// (`poll_outcome`).
+//
+// PURE. This half takes a body that has already arrived and returns what it means;
+// `usage/fetch.nv` — the half that talks to the network — is BLOCKED by registry
+// №1033 (no package calling the HTTP client links on this machine). Splitting them is
+// not a workaround: parsing is where the shape of someone else's JSON is decided, and
+// it is the half worth testing against fixtures anyway.
+//
+// THE FALLBACK IS THE POINT. The reply carries `limits[]` — and sometimes it does
+// not, or carries an empty one, while `five_hour` and `seven_day` are populated. A
+// parser that only reads `limits[]` shows a person with an active session "no data".
+// `fixtures/usage/empty-limits-fallback.json` exists for exactly that, and the
+// reference tool takes the same route.
+
+module usage.parse
+
+import std.encoding.json.{Json, JsonValue}
+import claude_limits.window.{Window}
+import std.time.civil
+
+/// What one call to the endpoint turned into (01.2 §3.2 `poll_outcome`).
+/// NAMED `PollOutcome`, NOT `Outcome`: a type called `Outcome` collides with one in
+/// std and the C comes out with two typedefs of the same name --
+/// "typedef redefinition with different types ('enum Nova_Outcome_Tag' vs ...)".
+/// Second carrier of the same class as the `handler` collision
+/// (`probes/handler-name-collision/`): a name the user is entitled to choose breaks
+/// somebody else's compilation unit, and the report is C, not a diagnostic.
+export type PollOutcome enum
+    | Parsed        // a body arrived and made sense
+    | BadJson       // it was not JSON, or not an object
+    | NoWindows     // valid JSON with neither `limits` nor the two named windows
+
+export fn PollOutcome @to_str() -> str =>
+    match @ {
+        Parsed => "parsed"
+        BadJson => "bad_json"
+        NoWindows => "no_windows"
+    }
+
+export type Usage value {
+    windows []Window
+    outcome PollOutcome
+    from_fallback bool      // true when `limits[]` was absent or empty
+}
+
+fn Usage.of(windows []Window, outcome PollOutcome, from_fallback bool) -> Usage =>
+    { windows, outcome, from_fallback }
+
+fn str_field(obj JsonValue, key str) -> str =>
+    match obj.object() {
+        None => ""
+        Some(fields) => match fields.get(key) {
+            None => ""
+            Some(v) => match v.str() {
+                Some(s) => s
+                None => ""
+            }
+        }
+    }
+
+fn num_field(obj JsonValue, key str) -> int =>
+    match obj.object() {
+        None => 0
+        Some(fields) => match fields.get(key) {
+            None => 0
+            Some(v) => match v.num() {
+                Some(n) => n as int
+                None => 0
+            }
+        }
+    }
+
+/// The model name of a scoped window: `scope.model.display_name`.
+fn scoped_model(item JsonValue) -> str {
+    ro fields = match item.object() {
+        Some(f) => f
+        None => return ""
+    }
+    ro scope = match fields.get("scope") {
+        Some(v) => v
+        None => return ""
+    }
+    ro sf = match scope.object() {
+        Some(f) => f
+        None => return ""
+    }
+    ro model = match sf.get("model") {
+        Some(v) => v
+        None => return ""
+    }
+    str_field(model, "display_name")
+}
+
+/// `2026-09-07T22:00:00.000000+00:00` -> unix milliseconds, 0 when unreadable.
+///
+/// The endpoint sends SIX fractional digits and an explicit offset. Parsing is left
+/// to std rather than cut by hand: T0.3 measured that `str @to_timestamp()` takes both
+/// `Z` and `+02:00`, and a hand-rolled cut would be one more thing to be wrong.
+export fn moment_ms(iso str) -> int =>
+    match iso.to_timestamp() {
+        Ok(t) => t.unix_millis() as int
+        Err(_) => 0
+    }
+
+/// The `locked_reason` of a named window, "" when there is none.
+fn named_lock(root JsonValue, key str) -> str {
+    ro fields = match root.object() {
+        Some(f) => f
+        None => return ""
+    }
+    ro node = match fields.get(key) {
+        Some(v) => v
+        None => return ""
+    }
+    if node.is_null() { return "" }
+    str_field(node, "locked_reason")
+}
+
+/// One entry of `limits[]`.
+///
+/// THE LOCK REASON IS NOT IN `limits[]`, AND MISSING THAT WAS A REAL BUG. Measured on
+/// `fixtures/usage/locked.json`: the session entry says `percent: 100, severity:
+/// "critical"` and carries NO `locked_reason` at all — the reason
+/// (`usage_limit_reached`) sits on the named `five_hour` object beside it. A parser
+/// reading the field only from the entry returns "" for every locked account, and the
+/// page then draws `at 100% until 21:10` where it should draw `locked until 21:10`.
+/// Those are different sentences on purpose (01.1 §3.2): one is the server refusing,
+/// the other is the person having spent the window.
+fn window_of(item JsonValue, root JsonValue) -> Window {
+    ro kind = str_field(item, "kind")
+    ro model = if kind == "weekly_scoped" { scoped_model(item) } else { "" }
+    mut reason = str_field(item, "locked_reason")
+    if reason == "" {
+        if kind == "session" {
+            reason = named_lock(root, "five_hour")
+        } else if kind == "weekly_all" {
+            reason = named_lock(root, "seven_day")
+        }
+    }
+    Window.of(kind, model, num_field(item, "percent"),
+              moment_ms(str_field(item, "resets_at")), reason)
+}
+
+/// The named windows, used when `limits[]` is absent or empty.
+///
+/// `utilization` there is a FLOAT (`61.0`), not the integer `percent` of `limits[]` —
+/// the same number in two spellings, and reading it with the integer reader would
+/// give zero.
+fn named_window(root JsonValue, key str, kind str) -> Option[Window] {
+    ro fields = match root.object() {
+        Some(f) => f
+        None => return None
+    }
+    ro node = match fields.get(key) {
+        Some(v) => v
+        None => return None
+    }
+    if node.is_null() { return None }
+    ro pct = match node.object() {
+        None => return None
+        Some(nf) => match nf.get("utilization") {
+            None => return None
+            Some(u) => match u.num() {
+                Some(n) => n as int
+                None => return None
+            }
+        }
+    }
+    Some(Window.of(kind, "", pct, moment_ms(str_field(node, "resets_at")),
+                   str_field(node, "locked_reason")))
+}
+
+/// Parse a reply body.
+///
+/// Unknown fields are IGNORED — the endpoint is someone else's and grows without
+/// asking us. That is the opposite of the choice `config.nv` makes about the settings
+/// file, and deliberately so: an unknown key in a file the person wrote is a typo, an
+/// unknown key in a reply from a service is a newer service.
+export fn parse(body str) -> Usage {
+    ro root = match Json.parse(body) {
+        Ok(v) => v
+        Err(_) => return Usage.of([], BadJson, false)
+    }
+    ro fields = match root.object() {
+        Some(f) => f
+        None => return Usage.of([], BadJson, false)
+    }
+
+    mut out []Window = []
+    match fields.get("limits") {
+        Some(v) => match v.array() {
+            Some(items) => {
+                for item in items { out.push(window_of(item, root)) }
+            }
+            None => {}
+        }
+        None => {}
+    }
+    if out.len() > 0 { return Usage.of(out, Parsed, false) }
+
+    // Fallback: the two named windows.
+    mut fb []Window = []
+    match named_window(root, "five_hour", "session") {
+        Some(w) => fb.push(w)
+        None => {}
+    }
+    match named_window(root, "seven_day", "weekly_all") {
+        Some(w) => fb.push(w)
+        None => {}
+    }
+    if fb.len() > 0 { return Usage.of(fb, Parsed, true) }
+
+    Usage.of([], NoWindows, false)
+}
+
+/// When to poll again after a 429 (plan 01 §0).
+///
+/// `Retry-After` WINS: the server knows when it will be ready and we do not. Without
+/// the header the floor of 60 s applies — the same floor the config enforces, and the
+/// reason it exists is not theoretical on this project.
+export fn next_poll_delay_sec(retry_after_sec int) -> int {
+    if retry_after_sec > 0 { return retry_after_sec }
+    60
+}
