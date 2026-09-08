@@ -7,7 +7,7 @@
 // numbers. The arithmetic it does own lives in format.js and is tested under node.
 //
 // Separate file rather than an inline <script>: the CSP refuses inline (01.1 §0).
-import { isRetryable, retryDelay, MAX_RETRIES } from './format.js';
+import { isRetryable, retryDelay, MAX_RETRIES, refuseFor } from './format.js';
 import { createLive, silentTooLong, SILENCE_LIMIT_MS } from './live.js';
 import { el, renderList, renderCards, layoutCells } from './render.js';
 import { createReorder } from './reorder.js';
@@ -512,10 +512,11 @@ async function refresh(btn) {
   btn.dataset.spinning = 'true';
   try {
     const r = await fetch('/api/snapshot/refresh', { method: 'POST' });
-    if (r.status === 429) {
-      // The floor is not advice: the endpoint answers 429 to eager polling, which
-      // is why the backend refuses too (plan 01 §0). Say until when, and mean it.
-      const wait = Number(r.headers.get('Retry-After') || 60);
+    // The floor is not advice: the endpoint answers 429 to eager polling, which is
+    // why the backend refuses too (plan 01 sec.0). Say until when, and mean it.
+    // How long is refuseFor's decision -- it is tested, and this is not.
+    const wait = refuseFor(r.status, r.headers.get('Retry-After'));
+    if (wait > 0) {
       const until = new Date(Date.now() + wait * 1000);
       btn.disabled = true;
       btn.title = `server asks to wait until ${until.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;

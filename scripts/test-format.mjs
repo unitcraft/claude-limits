@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import {
   windowMs, elapsedShare, cellGeometry, formatDuration,
   formatResetMoment, formatReset, rowLabel, sortLimits, severityOf,
-  isRetryable, retryDelay, MAX_RETRIES,
+  isRetryable, retryDelay, MAX_RETRIES, refuseFor, REFUSAL_DEFAULT_SEC, REFUSAL_MAX_SEC,
   moveTo, applyOrder, dropIndexFor, landingIndex,
 } from '../src/web/format.js';
 
@@ -227,6 +227,42 @@ test('backoff is the 0.5 -> 1 -> 2 s of 01.3 section 5, with jitter of +-20%', (
 
 test('three attempts is the limit', () => {
   assert.equal(MAX_RETRIES, 3);
+});
+
+// ------------------------------- the refresh button after a 429 (T2.21) -----
+
+test('only a 429 blocks the refresh button', () => {
+  assert.equal(refuseFor(202, null), 0, '202 is the normal answer: queued');
+  assert.equal(refuseFor(200, '30'), 0, 'a Retry-After on a success blocks nothing');
+  assert.equal(refuseFor(503, '30'), 0, 'the button is not the retry policy');
+  assert.equal(refuseFor(429, '30'), 30);
+});
+
+test('a 429 ALWAYS waits for something, whatever the header says', () => {
+  // The endpoint has just said it is being asked too often. Waiting too long is a
+  // nuisance; not waiting is the thing it complained about.
+  for (const h of [null, undefined, '', '   ', 'soon', '12abc', '-5', 'NaN']) {
+    assert.equal(refuseFor(429, h), REFUSAL_DEFAULT_SEC, `header ${JSON.stringify(h)}`);
+  }
+});
+
+test('Retry-After may be an HTTP-date (RFC 9110 10.2.3), not only seconds', () => {
+  // This is the case the inline version got wrong: Number(<date>) is NaN, and
+  // setTimeout(fn, NaN) runs on the next tick -- so an unparsed header meant no wait.
+  const now = Date.parse('2026-09-08T19:00:00Z');
+  assert.equal(refuseFor(429, 'Tue, 08 Sep 2026 19:00:45 GMT', now), 45);
+  assert.equal(refuseFor(429, 'Tue, 08 Sep 2026 18:59:00 GMT', now), REFUSAL_DEFAULT_SEC,
+    'a date already past still leaves the 429 standing');
+});
+
+test('one absurd header cannot disable the button for the session', () => {
+  assert.equal(refuseFor(429, '999999999'), REFUSAL_MAX_SEC);
+  const now = Date.parse('2026-09-08T19:00:00Z');
+  assert.equal(refuseFor(429, 'Fri, 08 Sep 2028 19:00:00 GMT', now), REFUSAL_MAX_SEC);
+});
+
+test('zero means now, and is not confused with a missing header', () => {
+  assert.equal(refuseFor(429, '0'), 0, 'the server says it is ready again');
 });
 
 // -------------------------------------------------- account order (T2.22) --

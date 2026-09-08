@@ -167,6 +167,37 @@ export function retryDelay(attempt, retryAfterSeconds = null, rand = Math.random
 
 export const MAX_RETRIES = 3;
 
+/** No `Retry-After` we can read means a full minute: the floor the backend enforces. */
+export const REFUSAL_DEFAULT_SEC = 60;
+/** And a ceiling, so one absurd header cannot disable the button for the session. */
+export const REFUSAL_MAX_SEC = 3600;
+
+/**
+ * Seconds the "refresh" button stays blocked after a reply, 0 for "not blocked".
+ *
+ * Only a 429 blocks it. `Retry-After` may be delay-seconds OR an HTTP-date (RFC 9110
+ * 10.2.3) -- both are read, and ANYTHING unreadable falls back to the default rather
+ * than to zero. Falling back to zero is what the inline version did, via NaN, and it
+ * turned the one case it could not parse into no wait at all.
+ */
+export function refuseFor(status, header, nowMs = Date.now()) {
+  if (status !== 429) return 0;
+  const raw = (header ?? '').toString().trim();
+  if (raw === '') return REFUSAL_DEFAULT_SEC;
+
+  // delay-seconds: the grammar is digits only, so "12abc" is not 12.
+  if (/^\d+$/.test(raw)) return Math.min(Number(raw), REFUSAL_MAX_SEC);
+
+  const at = Date.parse(raw);
+  if (!Number.isNaN(at)) {
+    // A date in the past means "now"; the 429 itself still stands, so wait the
+    // default rather than nothing.
+    const sec = Math.ceil((at - nowMs) / 1000);
+    return sec <= 0 ? REFUSAL_DEFAULT_SEC : Math.min(sec, REFUSAL_MAX_SEC);
+  }
+  return REFUSAL_DEFAULT_SEC;
+}
+
 // ------------------------------------------------------- account order (§4) --
 
 /**
