@@ -1,0 +1,279 @@
+// Tests for handlers/refresh.nv — task T2.12, `POST /api/snapshot/refresh`.
+//
+//   ./nova.sh test src/server/handlers/ --filter refresh
+//
+// The two acceptance items of the card that belong here: a second call within 60 s
+// answers `429` with `Retry-After` AND `retry_after` in the body, and a body
+// carrying `email` answers `422 extra_forbidden`.
+
+module handlers.refresh_test
+
+import claude_limits.server.routes.{HttpMethod, on, route, build}
+import polaris.{Router, serve_once}
+import std.testing.handlers as th
+import refresh.{RefreshTarget, RefreshState, Ask, Decision, parse_ask, decide, wait_sec, refresh_handler}
+
+// ── wire helpers ─────────────────────────────────────────────────────────────
+
+fn wire_str(wire []u8) -> str => unsafe { wire.to_str_unchecked() }
+
+fn post(body str) -> []u8 =>
+    "POST /api/snapshot/refresh HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: ${body.byte_len()}\r\n\r\n${body}".bytes()
+
+fn post_bare() -> []u8 => "POST /api/snapshot/refresh HTTP/1.1\r\nHost: x\r\n\r\n".bytes()
+
+fn status_of(wire []u8) -> str {
+    ro s = wire_str(wire)
+    match s.find("\r\n") { Some(i) => s[0..i], None => s }
+}
+
+fn head_of(wire []u8) -> str {
+    ro s = wire_str(wire)
+    match s.find("\r\n\r\n") { Some(i) => s[0..i], None => s }
+}
+
+fn body_of(wire []u8) -> str {
+    ro s = wire_str(wire)
+    match s.find("\r\n\r\n") { Some(i) => s[i + 4..s.byte_len()], None => "" }
+}
+
+fn hdr(wire []u8, name str) -> str {
+    ro padded = "\r\n${head_of(wire)}"
+    ro needle = "\r\n${name.to_ascii_lower()}: "
+    match padded.to_ascii_lower().find(needle) {
+        Some(i) => {
+            ro rest = padded[i + needle.byte_len()..padded.byte_len()]
+            match rest.find("\r\n") { Some(j) => rest[0..j], None => rest }
+        }
+        None => ""
+    }
+}
+
+// ── the fixture ──────────────────────────────────────────────────────────────
+
+const NOW = 1757000000000
+
+fn target(id str, email str, state str, last_poll_ms int) -> RefreshTarget =>
+    { id, email, state, last_poll_ms }
+
+/// Nobody has been polled yet: every account is ready.
+fn fresh() -> RefreshState => {
+    now_ms: NOW,
+    floor_sec: 60,
+    targets: [
+        target("a-1", "main@example.com", "ok", 0),
+        target("a-2", "ops@example.org", "stale", 0),
+        target("a-3", "qa@example.org", "ok", 0),
+    ],
+}
+
+/// Everybody was polled one second ago.
+fn just_polled() -> RefreshState => {
+    now_ms: NOW,
+    floor_sec: 60,
+    targets: [
+        target("a-1", "main@example.com", "ok", NOW - 1000),
+        target("a-2", "ops@example.org", "stale", NOW - 1000),
+        target("a-3", "qa@example.org", "ok", NOW - 1000),
+    ],
+}
+
+fn app_fresh() -> Router =>
+    build([route("/api/snapshot/refresh", [on(HttpMethod.Post, refresh_handler(fn() -> RefreshState => fresh()))])])!!
+
+fn app_busy() -> Router =>
+    build([route("/api/snapshot/refresh", [on(HttpMethod.Post, refresh_handler(fn() -> RefreshState => just_polled()))])])!!
+
+fn serve_fresh(raw []u8) Time Random -> []u8 => serve_once(app_fresh(), raw)
+fn serve_busy(raw []u8) Time Random -> []u8 => serve_once(app_busy(), raw)
+
+// ── the floor ────────────────────────────────────────────────────────────────
+
+test "the wait is rounded UP, so a client is never told to wait zero and refused" {
+    // Rounded down, 59.4 s left becomes "wait 59", the client retries at 59.4 and
+    // is refused again. A rate limit that lies about itself is a busy loop.
+    assert(wait_sec(NOW, NOW - 1000, 60) == 59)
+    assert(wait_sec(NOW, NOW - 600, 60) == 60)
+    assert(wait_sec(NOW, NOW - 59400, 60) == 1)
+    assert(wait_sec(NOW, NOW - 59999, 60) == 1)
+    assert(wait_sec(NOW, NOW - 60000, 60) == 0)
+    assert(wait_sec(NOW, NOW - 90000, 60) == 0)
+}
+
+test "an account never polled is ready, and a clock that went backwards waits" {
+    assert(wait_sec(NOW, 0, 60) == 0)
+    assert(wait_sec(NOW, 0 - 5, 60) == 0)
+    // `last_poll` in the future means the clock moved; wait the whole floor rather
+    // than compute a negative wait and let the poll straight through.
+    assert(wait_sec(NOW, NOW + 5000, 60) == 60)
+}
+
+// ── the acceptance ───────────────────────────────────────────────────────────
+
+test "an empty ask queues everything pollable and names the event to wait for" {
+    with Time = th.fixed_ms(NOW), Random = th.seeded(7) {
+        ro w = serve_fresh(post("{}"))
+        assert(status_of(w) == "HTTP/1.1 202 Accepted")
+        ro b = body_of(w)
+        assert(b.contains("\"expect_event\":\"snapshot\""))
+        assert(b.contains("main@example.com"))
+        assert(b.contains("qa@example.org"))
+        // There is nothing to poll a stale account WITH.
+        assert(!b.contains("ops@example.org"))
+    }
+}
+
+test "a body with nothing in it means the same as {}" {
+    with Time = th.fixed_ms(NOW), Random = th.seeded(7) {
+        assert(status_of(serve_fresh(post_bare())) == "HTTP/1.1 202 Accepted")
+        assert(status_of(serve_fresh(post(""))) == "HTTP/1.1 202 Accepted")
+    }
+}
+
+test "a second call within 60 s is 429, with the seconds in BOTH places" {
+    // The card's own line. The header is what a well-behaved client reads; the
+    // body field is what the page shows a person, and section 0 declares it a
+    // contract field rather than a copy nobody promised.
+    with Time = th.fixed_ms(NOW), Random = th.seeded(7) {
+        ro w = serve_busy(post("{}"))
+        assert(status_of(w) == "HTTP/1.1 429 Too Many Requests")
+        assert(hdr(w, "retry-after") == "59")
+        ro b = body_of(w)
+        assert(b.contains("\"code\":\"too_soon\""))
+        assert(b.contains("\"retry_after\":59"))
+    }
+}
+
+test "the two places cannot disagree, because they come from one value" {
+    with Time = th.fixed_ms(NOW), Random = th.seeded(7) {
+        ro w = serve_busy(post("{\"account_id\":\"a-1\"}"))
+        assert(status_of(w) == "HTTP/1.1 429 Too Many Requests")
+        assert(hdr(w, "retry-after") == "59")
+        assert(body_of(w).contains("\"retry_after\":59"))
+    }
+}
+
+test "an extra field is 422 extra_forbidden, with the field named" {
+    // The card names `email` specifically: it is the field a well-meaning client
+    // would reach for, and it is exactly the one section 0 keeps out of an API.
+    with Time = th.fixed_ms(NOW), Random = th.seeded(7) {
+        ro w = serve_fresh(post("{\"email\":\"main@example.com\"}"))
+        assert(status_of(w) == "HTTP/1.1 422 Unprocessable Content")
+        ro b = body_of(w)
+        assert(b.contains("\"code\":\"extra_forbidden\""))
+        assert(b.contains("\"field\":\"email\""))
+        assert(b.contains("\"errors\":["))
+    }
+}
+
+test "several extra fields travel in one response" {
+    with Time = th.fixed_ms(NOW), Random = th.seeded(7) {
+        ro b = body_of(serve_fresh(post("{\"email\":\"x\",\"force\":true}")))
+        assert(b.contains("\"field\":\"email\""))
+        assert(b.contains("\"field\":\"force\""))
+        assert(b.contains("},{"))
+    }
+}
+
+test "one named account is queued alone" {
+    with Time = th.fixed_ms(NOW), Random = th.seeded(7) {
+        ro b = body_of(serve_fresh(post("{\"account_id\":\"a-1\"}")))
+        assert(b.contains("main@example.com"))
+        assert(!b.contains("qa@example.org"))
+    }
+}
+
+test "an unknown account is 404, a stale one is 409" {
+    with Time = th.fixed_ms(NOW), Random = th.seeded(7) {
+        ro missing = serve_fresh(post("{\"account_id\":\"nope\"}"))
+        assert(status_of(missing) == "HTTP/1.1 404 Not Found")
+        assert(body_of(missing).contains("\"code\":\"account_not_found\""))
+        // A stale token is not "try later" -- there is nothing to try with.
+        ro stale = serve_fresh(post("{\"account_id\":\"a-2\"}"))
+        assert(status_of(stale) == "HTTP/1.1 409 Conflict")
+        assert(body_of(stale).contains("\"code\":\"account_stale\""))
+    }
+}
+
+test "a body that is not JSON is 400, not 422" {
+    // Section 0 draws the line: 400 is "we did not parse it", 422 is "we parsed it
+    // and it says something that is not allowed".
+    with Time = th.fixed_ms(NOW), Random = th.seeded(7) {
+        ro w = serve_fresh(post("{oops"))
+        assert(status_of(w) == "HTTP/1.1 400 Bad Request")
+        assert(body_of(w).contains("\"code\":\"invalid_body\""))
+    }
+}
+
+test "a JSON body that is not an object is 400" {
+    with Time = th.fixed_ms(NOW), Random = th.seeded(7) {
+        assert(status_of(serve_fresh(post("[1,2]"))) == "HTTP/1.1 400 Bad Request")
+        assert(status_of(serve_fresh(post("\"a-1\""))) == "HTTP/1.1 400 Bad Request")
+    }
+}
+
+test "account_id of the wrong type is 422, because the body parsed" {
+    with Time = th.fixed_ms(NOW), Random = th.seeded(7) {
+        ro w = serve_fresh(post("{\"account_id\":5}"))
+        assert(status_of(w) == "HTTP/1.1 422 Unprocessable Content")
+        ro b = body_of(w)
+        assert(b.contains("\"code\":\"invalid_request\""))
+        assert(b.contains("\"field\":\"account_id\""))
+    }
+}
+
+// ── the decision, on its own ─────────────────────────────────────────────────
+
+test "when nothing can be queued the answer says when, not how many" {
+    ro st = just_polled()
+    match decide(st, Ask.All) {
+        Decision.Refuse(e) => {
+            assert(e.code == "too_soon")
+            assert(e.retry_after == Some(59))
+        }
+        Decision.Queue(_) => assert(false)
+    }
+}
+
+test "a mixed state queues what is ready rather than refusing everything" {
+    // One account polled a second ago, one never. Refusing both would make a
+    // person wait a minute for an account that owes nothing.
+    ro st = RefreshState{
+        now_ms: NOW,
+        floor_sec: 60,
+        targets: [target("a-1", "main@example.com", "ok", NOW - 1000), target("a-3", "qa@example.org", "ok", 0)],
+    }
+    match decide(st, Ask.All) {
+        Decision.Queue(ts) => {
+            assert(ts.len() == 1)
+            assert(ts[0].id == "a-3")
+        }
+        Decision.Refuse(_) => assert(false)
+    }
+}
+
+test "a list of only stale accounts is too_soon with the whole floor, not a 404" {
+    // The resource exists and will be pollable again; 404 would say it does not.
+    ro st = RefreshState{ now_ms: NOW, floor_sec: 60, targets: [target("a-2", "ops@example.org", "stale", 0)] }
+    match decide(st, Ask.All) {
+        Decision.Refuse(e) => {
+            assert(e.code == "too_soon")
+            assert(e.retry_after == Some(60))
+        }
+        Decision.Queue(_) => assert(false)
+    }
+}
+
+test "parse_ask reads the three shapes and refuses the fourth" {
+    match parse_ask("{}") { Ask.All => assert(true), _ => assert(false) }
+    match parse_ask("") { Ask.All => assert(true), _ => assert(false) }
+    match parse_ask("  {}  ") { Ask.All => assert(true), _ => assert(false) }
+    match parse_ask("{\"account_id\":\"a-1\"}") {
+        Ask.One(id) => assert(id == "a-1")
+        _ => assert(false)
+    }
+    match parse_ask("{\"email\":\"x\"}") {
+        Ask.Bad(e) => assert(e.code == "extra_forbidden")
+        _ => assert(false)
+    }
+}

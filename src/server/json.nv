@@ -16,10 +16,13 @@
 // shapes they build are fixed by the plan, so the value of a generic writer here
 // would be the value of a thing nobody calls.
 //
-// NOT HERE, on purpose: fixed-precision numbers (`elapsed_share`,
-// `rate_per_hour` — 01.3 §0 wants 2–3 digits). No response carries one yet, and
-// a rounding primitive with no caller is a primitive whose corner cases nobody
-// has met. It arrives with the first DTO that needs it (T2.12).
+// FIXED-PRECISION NUMBERS ARRIVED WITH T2.12, as this banner said they would, and
+// they take INTEGERS. `elapsed_share` and `rate_per_hour` (01.3 §0, 2–3 digits) are
+// written from hundredths and thousandths held as `int`: the model layer already
+// counts that way (`model/forecast.nv` works in ten-thousandths of a percent per
+// minute, because hundredths lost 0.42 and moved a forecast six points), and a
+// decimal assembled from integer division has no rounding mode to get wrong and no
+// platform-dependent float formatting to compare against in a test.
 
 module server.json
 
@@ -126,6 +129,59 @@ export fn object(fields []str) -> str {
         first = false
     }
     sb.append("}")
+    sb.into_str()
+}
+
+/// `"name":0.79` from 79. Two digits after the point, always both.
+///
+/// Integers in, decimal out: `field_fixed2("elapsed_share", 79)` is `0.79` and
+/// `field_fixed2("elapsed_share", 7)` is `0.07`, not `0.7`. A negative value keeps
+/// its sign in front of the whole number, which is where JSON wants it.
+export fn field_fixed2(name str, hundredths int) -> str =>
+    "${quote(name)}:${decimal(hundredths, 2)}"
+
+/// `"name":2.300` from 2300. Three digits after the point.
+export fn field_fixed3(name str, thousandths int) -> str =>
+    "${quote(name)}:${decimal(thousandths, 3)}"
+
+/// The same, or `null`.
+export fn field_fixed2_or_null(name str, v Option[int]) -> str {
+    match v {
+        Some(n) => field_fixed2(name, n)
+        None    => "${quote(name)}:null"
+    }
+}
+
+export fn field_fixed3_or_null(name str, v Option[int]) -> str {
+    match v {
+        Some(n) => field_fixed3(name, n)
+        None    => "${quote(name)}:null"
+    }
+}
+
+/// `n` scaled by `10^digits`, written as a decimal.
+fn decimal(n int, digits int) -> str {
+    mut scale = 1
+    mut i = 0
+    while i < digits {
+        scale = scale * 10
+        i += 1
+    }
+    ro neg = n < 0
+    ro abs = if neg { 0 - n } else { n }
+    ro whole = abs / scale
+    ro frac = abs % scale
+    consume sb = StringBuilder.new()
+    if neg { sb.append("-") }
+    sb.append(whole)
+    sb.append(".")
+    // Leading zeros of the fraction: 7 hundredths is `.07`, not `.7`.
+    mut pad = scale / 10
+    while pad > 1 && frac < pad {
+        sb.append("0")
+        pad = pad / 10
+    }
+    sb.append(frac)
     sb.into_str()
 }
 

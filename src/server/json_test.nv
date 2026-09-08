@@ -6,7 +6,7 @@ module server.json_test
 
 // An import list cannot break across lines (the parser wants the closing brace on
 // the same line), so this one stays long.
-import json.{escape, quote, field_str, field_str_or_null, field_int, field_int_or_null, field_bool, field_raw, object, array, array_str}
+import json.{escape, quote, field_fixed2, field_fixed3, field_fixed2_or_null, field_fixed3_or_null, field_str, field_str_or_null, field_int, field_int_or_null, field_bool, field_raw, object, array, array_str}
 
 test "a quote inside a value does not close the string" {
     // This is the whole reason the file exists: `"${x}"` would have written the
@@ -86,4 +86,34 @@ test "a name is escaped too" {
     // No key in this API needs it, but a writer that escapes values and not keys
     // is a writer with one unguarded edge.
     assert(field_int("a\"b", 1) == "\"a\\\"b\":1")
+}
+
+test "a fixed-precision number keeps both digits, leading zeros included" {
+    // Integers in, decimal out: no float formatting to compare against, and no
+    // rounding mode to get wrong.
+    assert(field_fixed2("elapsed_share", 79) == "\"elapsed_share\":0.79")
+    assert(field_fixed2("elapsed_share", 7) == "\"elapsed_share\":0.07")
+    assert(field_fixed2("elapsed_share", 0) == "\"elapsed_share\":0.00")
+    assert(field_fixed2("elapsed_share", 100) == "\"elapsed_share\":1.00")
+    assert(field_fixed2("x", 12345) == "\"x\":123.45")
+}
+
+test "three digits behave the same way" {
+    assert(field_fixed3("rate_per_hour", 2300) == "\"rate_per_hour\":2.300")
+    assert(field_fixed3("rate_per_hour", 5) == "\"rate_per_hour\":0.005")
+    assert(field_fixed3("rate_per_hour", 50) == "\"rate_per_hour\":0.050")
+}
+
+test "a negative value keeps its sign in front of the whole number" {
+    assert(field_fixed2("delta", -79) == "\"delta\":-0.79")
+    assert(field_fixed2("delta", -7) == "\"delta\":-0.07")
+    assert(field_fixed3("delta", -2300) == "\"delta\":-2.300")
+}
+
+test "an unavailable fraction is null, not zero" {
+    // Zero and "we could not compute it" are different facts; the page draws them
+    // differently (01.1 section 2.7 -- `forecast: null` for stale and locked).
+    assert(field_fixed2_or_null("elapsed_share", None) == "\"elapsed_share\":null")
+    assert(field_fixed2_or_null("elapsed_share", Some(0)) == "\"elapsed_share\":0.00")
+    assert(field_fixed3_or_null("rate_per_hour", None) == "\"rate_per_hour\":null")
 }

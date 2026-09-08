@@ -1,0 +1,203 @@
+// handlers/refresh.nv — `POST /api/snapshot/refresh` (task T2.12).
+//
+// Source: 01.3 §3.5 (the body, `202`, `429`, `404`, `409`, `422`), §8 п. 5,
+// план 01 §0 ("Правила опроса" — the 60 s floor).
+//
+// Imports are PACKAGE-PREFIXED; see `handlers/snapshot.nv` for the measurement.
+
+module handlers.refresh
+
+import claude_limits.server.routes.{Ctx, ApiHandler, problem}
+import claude_limits.server.errors.{ApiError, FieldError}
+import claude_limits.server.json.{field_str, field_raw, object, array}
+import polaris.{ServerRequest, ServerResponse}
+import std.encoding.json.{Json}
+
+/// One account this endpoint could poll.
+export type RefreshTarget value {
+    id str
+    email str
+    /// `ok | stale | unknown | error` (01.1 §3.2).
+    state str
+    /// When it was last polled. `0` or less means never.
+    last_poll_ms int
+}
+
+/// Read fresh on every request — the floor is a setting and the poll times move.
+export type RefreshState value {
+    now_ms int
+    /// The floor between two polls of one account, in seconds (60 by план 01 §0;
+    /// a config value of 10 is raised to 60 before it reaches here — T2.10).
+    floor_sec int
+    targets []RefreshTarget
+}
+
+export type RefreshSource fn() -> RefreshState
+
+// ── the body ─────────────────────────────────────────────────────────────────
+
+/// What the caller asked for.
+export type Ask enum
+    | All
+    | One(str)
+    | Bad(ApiError)
+
+/// The one field this body may carry (§3.5).
+const ONLY_FIELD = "account_id"
+
+/// Parse the body of §3.5.
+///
+/// AN EMPTY BODY IS `{}`. My choice, and no document forbids it: `POST` with
+/// nothing in it can only mean "all", the same as `{}`, and refusing it would make
+/// the shortest correct `curl` in §7 fail on a technicality.
+///
+/// An unknown field is `422 extra_forbidden` with the field NAMED, not a `400`:
+/// §0 draws that line as "разобрали, но так нельзя", and the page shows the
+/// message beside the field it names.
+export fn parse_ask(raw str) -> Ask {
+    ro text = raw.trim_ascii()
+    if text == "" { return Ask.All }
+    match Json.parse(text) {
+        Err(_) => Ask.Bad(ApiError.invalid_body("body is not JSON"))
+        Ok(v) => match v.object() {
+            None => Ask.Bad(ApiError.invalid_body("body must be a JSON object"))
+            Some(obj) => read_object(obj)
+        }
+    }
+}
+
+fn read_object(obj JsonObject) -> Ask {
+    mut extra = []FieldError.new()
+    mut wanted = ""
+    mut wrong_type = false
+    mut it = obj.iter()
+    loop {
+        match it.next() {
+            None => break
+            Some((k, v)) => {
+                if k != ONLY_FIELD {
+                    // Every offending field in ONE response: a panel that shows one
+                    // fault at a time makes a person save four times to learn four
+                    // things.
+                    extra.push(FieldError.of(k, "unknown_field", "unknown field '${k}'"))
+                } else {
+                    match v.str() {
+                        Some(s) => { wanted = s }
+                        None    => { wrong_type = true }
+                    }
+                }
+            }
+        }
+    }
+    if extra.len() > 0 { return Ask.Bad(ApiError.extra_forbidden(extra)) }
+    if wrong_type {
+        return Ask.Bad(ApiError.invalid_request([FieldError.of(ONLY_FIELD, "not_a_string", "account_id must be a string")]))
+    }
+    if wanted == "" { return Ask.All }
+    Ask.One(wanted)
+}
+
+// ── the decision ─────────────────────────────────────────────────────────────
+
+export type Decision enum
+    | Queue([]RefreshTarget)
+    | Refuse(ApiError)
+
+/// Seconds still to wait before this account may be polled again, `0` when ready.
+///
+/// Rounded UP: a client told to wait zero seconds retries at once and is refused
+/// again, which turns a rate limit into a busy loop.
+export fn wait_sec(now_ms int, last_poll_ms int, floor_sec int) -> int {
+    if last_poll_ms <= 0 { return 0 }
+    ro elapsed_ms = now_ms - last_poll_ms
+    if elapsed_ms < 0 { return floor_sec }
+    ro floor_ms = floor_sec * 1000
+    if elapsed_ms >= floor_ms { return 0 }
+    ro left_ms = floor_ms - elapsed_ms
+    (left_ms + 999) / 1000
+}
+
+fn find(st RefreshState, id str) -> Option[RefreshTarget] {
+    for t in st.targets {
+        if t.id == id { return Some(t) }
+    }
+    None
+}
+
+/// What to answer, decided without touching a response.
+///
+/// Pure on purpose: every branch here is a rule from §3.5, and a rule tested
+/// through a router is a rule tested through a router.
+export fn decide(st RefreshState, ask Ask) -> Decision {
+    match ask {
+        Ask.Bad(e) => Decision.Refuse(e)
+        Ask.One(id) => match find(st, id) {
+            None => Decision.Refuse(ApiError.account_not_found())
+            Some(t) => {
+                // A stale token means there is nothing to poll WITH, so this is not
+                // a "try later" — it is a different fault, and §3.5 gives it 409.
+                // `error` is deliberately NOT folded in here: §3.5 names only the
+                // expired token, and an account that failed its last poll can
+                // legitimately be retried.
+                if t.state == "stale" { return Decision.Refuse(ApiError.account_stale()) }
+                ro w = wait_sec(st.now_ms, t.last_poll_ms, st.floor_sec)
+                if w > 0 { return Decision.Refuse(ApiError.too_soon(w)) }
+                Decision.Queue([t])
+            }
+        }
+        Ask.All => {
+            mut ready = []RefreshTarget.new()
+            mut soonest = 0
+            for t in st.targets {
+                if t.state == "stale" { continue }
+                ro w = wait_sec(st.now_ms, t.last_poll_ms, st.floor_sec)
+                if w == 0 {
+                    ready.push(t)
+                } else if soonest == 0 || w < soonest {
+                    soonest = w
+                }
+            }
+            if ready.len() > 0 { return Decision.Queue(ready) }
+            // Nothing could be queued. If something was merely too soon, say when;
+            // if there was nothing to poll at all, that is still "too soon" with
+            // the whole floor to wait, not a 404 -- the resource exists.
+            ro w = if soonest > 0 { soonest } else { st.floor_sec }
+            Decision.Refuse(ApiError.too_soon(w))
+        }
+    }
+}
+
+// ── the response ─────────────────────────────────────────────────────────────
+
+/// `202` with the list of what was queued (§3.5). There is no task resource to
+/// poll — the result arrives as an SSE `snapshot`, which is what `expect_event`
+/// names (deviation D5).
+export fn accepted(queued []RefreshTarget) -> ServerResponse {
+    mut items = []str.new()
+    for t in queued {
+        items.push(object([field_str("id", t.id), field_str("email", t.email)]))
+    }
+    ro body = object([field_raw("queued", array(items)), field_str("expect_event", "snapshot")])
+    ServerResponse.bytes(202, "application/json; charset=utf-8", body.bytes())
+}
+
+fn body_str(req ServerRequest) -> str => unsafe { req.body_bytes().to_str_unchecked() }
+
+// Hoisted and param-captured for the [M-16] reason named in `routes.nv`.
+fn run(src RefreshSource, ctx Ctx) -> ServerResponse {
+    ro st = src()
+    match decide(st, parse_ask(body_str(ctx.req))) {
+        Decision.Refuse(e) => problem(e, ctx.request_id, ctx.instance)
+        Decision.Queue(ts) => accepted(ts)
+    }
+}
+
+// NOT named `handler`: an exported fn with that name, imported and called from
+// another module, is mis-resolved by codegen into an indirect call through a
+// closure value that has no C symbol ("use of undeclared identifier 'handler'").
+// Measured on this very file's twin in `handlers/snapshot.nv`; renaming was the
+// whole fix. Isolated in `probes/exported-fn-named-handler/`.
+export fn refresh_handler(src RefreshSource) -> ApiHandler {
+    ro inner = src
+    fn(ctx Ctx) -> ServerResponse => run(inner, ctx)
+}

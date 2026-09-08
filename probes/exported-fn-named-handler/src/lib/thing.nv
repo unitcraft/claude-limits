@@ -1,0 +1,25 @@
+// Two exported factories that differ in NOTHING but their name. Each takes a fn
+// newtype and returns another fn newtype.
+module lib.thing
+
+import exported_fn_named_handler.lib.kinds.{Source, Handler}
+
+fn run(src Source, x int) -> int => src() + x
+
+/// FAILING NAME.
+export fn handler(src Source) -> Handler {
+    ro inner = src
+    fn(x int) -> int => run(inner, x)
+}
+
+/// CONTROL 1: the same factory under another name.
+export fn make_handler(src Source) -> Handler {
+    ro inner = src
+    fn(x int) -> int => run(inner, x)
+}
+
+/// CONTROL 2: the same NAME, taking a plain int instead of a fn newtype.
+export fn handler_plain(base int) -> Handler {
+    ro b = base
+    fn(x int) -> int => b + x
+}

@@ -1,0 +1,252 @@
+// handlers/snapshot.nv — `GET /api/snapshot` (task T2.12).
+//
+// Source: 01.3 §3.3 (the body, the order, hiding, `include_hidden`, the `ETag`),
+// §0 (the closed query list, `400 invalid_parameter`), §8 п. 3.
+//
+// Imports are PACKAGE-PREFIXED. A bare sibling import inside a module is resolved
+// from the importer's directory, so a module that uses one cannot be imported from
+// another directory at all — isolated in
+// `probes/module-reuse-breaks-sibling-import/`. This file lives one level deeper
+// than what it imports, which is exactly the case that breaks.
+
+module handlers.snapshot
+
+import claude_limits.server.routes.{Ctx, ApiHandler, problem}
+import claude_limits.server.errors.{ApiError}
+import claude_limits.server.dto.{Disclosure, SnapshotView, AccountView, LimitView, render_snapshot}
+import polaris.{ServerRequest, ServerResponse}
+import std.checksums.fnv.{Fnv64}
+
+/// Everything the handler needs, read fresh on EVERY request.
+///
+/// One provider rather than four captured values: the order, the hidden list and
+/// the config etag all change when the settings file changes, and a handler that
+/// captured them at build time would serve the settings the server started with.
+export type SnapshotState value {
+    view SnapshotView
+    /// `ui.accounts_order` — e-mails, in the order a person arranged them.
+    order []str
+    /// `ui.hidden_accounts` — e-mails.
+    hidden []str
+    /// Part of the `ETag`: a settings change must invalidate a cached snapshot,
+    /// because `severity` is computed from the thresholds in the settings.
+    config_etag str
+    /// How much this client may see (§3.2). Loopback until Ф.6 brings auth.
+    disclosure Disclosure
+}
+
+export type SnapshotSource fn() -> SnapshotState
+
+// ── the closed query list ────────────────────────────────────────────────────
+
+/// The only parameter this route takes (§3.3).
+const ONLY_PARAM = "include_hidden"
+
+/// Every `k=v` of the target's query, in order, undecoded.
+///
+/// Parsed here rather than through Polaris's `query_param` because the rule of §0
+/// is about the WHOLE list — an unknown key and a repeated key are both `400` —
+/// and a lookup that answers "what is the value of k" cannot see either.
+fn query_pairs(req ServerRequest) -> [](str, str) {
+    ro target = req.target()
+    ro q = match target.find("?") {
+        Some(i) => target[i + 1..target.byte_len()]
+        None    => ""
+    }
+    mut out = [](str, str).new()
+    if q == "" { return out }
+    for part in q.split("&") {
+        if part == "" { continue }
+        match part.find("=") {
+            Some(i) => out.push((part[0..i], part[i + 1..part.byte_len()]))
+            None    => out.push((part, ""))
+        }
+    }
+    out
+}
+
+/// `None` when the query is acceptable, the refusal otherwise.
+///
+/// Two rules of §0, both `400 invalid_parameter`: the list is CLOSED (an unknown
+/// key is an error, not something to ignore — a client that misspells
+/// `include_hidden` gets told, instead of quietly seeing the wrong answer), and a
+/// non-array parameter may not repeat.
+///
+/// `?email=x` is the case the acceptance names, and it is not special-cased: it is
+/// refused for being unknown, which is also what protects the rule that no
+/// personal data travels in a URL (§0).
+export fn check_query(req ServerRequest) -> Option[ApiError] {
+    mut seen = 0
+    for (k, v) in query_pairs(req) {
+        if k != ONLY_PARAM {
+            return Some(ApiError.invalid_parameter("unknown query parameter '${k}'"))
+        }
+        seen += 1
+        if seen > 1 {
+            return Some(ApiError.invalid_parameter("parameter '${k}' may not repeat"))
+        }
+        if v != "0" && v != "1" {
+            return Some(ApiError.invalid_parameter("parameter '${k}' takes 0 or 1"))
+        }
+    }
+    None
+}
+
+fn wants_hidden(req ServerRequest) -> bool {
+    for (k, v) in query_pairs(req) {
+        if k == ONLY_PARAM && v == "1" { return true }
+    }
+    false
+}
+
+// ── order and hiding ─────────────────────────────────────────────────────────
+
+fn contains(list []str, s str) -> bool {
+    for x in list {
+        if x == s { return true }
+    }
+    false
+}
+
+/// Rank of a limit kind for the within-account order of §3.3.
+fn kind_rank(kind str) -> int {
+    if kind == "session" { return 0 }
+    if kind == "weekly_all" { return 1 }
+    2
+}
+
+/// Accounts in the order of §3.3: `ui.accounts_order` first, then everything else
+/// by first appearance; hidden ones dropped unless asked for.
+///
+/// "By first appearance" and not "by e-mail" on purpose: a new account must not
+/// jump into the middle of a list a person arranged, and the only order that does
+/// not surprise is the one it arrived in.
+export fn arrange(v SnapshotView, order []str, hidden []str, include_hidden bool) -> SnapshotView {
+    mut kept = []AccountView.new()
+    for e in order {
+        for a in v.accounts {
+            if a.email == e && (include_hidden || !contains(hidden, a.email)) { kept.push(a) }
+        }
+    }
+    for a in v.accounts {
+        if contains(order, a.email) { continue }
+        if include_hidden || !contains(hidden, a.email) { kept.push(a) }
+    }
+
+    // Limits follow their accounts, and inside an account: session, weekly_all,
+    // then weekly_scoped by model name. A hidden account takes its limit rows with
+    // it -- leaving them behind would put a row on the page belonging to a block
+    // that is not there.
+    mut rows = []LimitView.new()
+    for a in kept {
+        mut mine = []LimitView.new()
+        for l in v.limits {
+            if l.account_id == a.id { mine.push(l) }
+        }
+        // Insertion sort: a handful of rows per account, and it is stable, so two
+        // rows with one rank keep the order the poller produced.
+        mut sorted = []LimitView.new()
+        for l in mine {
+            mut at = sorted.len()
+            mut i = 0
+            while i < sorted.len() {
+                if greater(sorted[i], l) {
+                    at = i
+                    i = sorted.len()
+                } else {
+                    i += 1
+                }
+            }
+            sorted.insert(at, l)
+        }
+        for l in sorted { rows.push(l) }
+    }
+
+    { fetched_at: v.fetched_at, next_poll_at: v.next_poll_at, tz: v.tz, restored: v.restored, worst: v.worst, accounts: kept, limits: rows }
+}
+
+/// Does `a` sort after `b`?
+fn greater(a LimitView, b LimitView) -> bool {
+    ro ra = kind_rank(a.kind)
+    ro rb = kind_rank(b.kind)
+    if ra != rb { return ra > rb }
+    a.model > b.model
+}
+
+// ── the ETag ─────────────────────────────────────────────────────────────────
+
+/// FNV-1a over the parts, as 16 hex digits in quotes.
+///
+/// A hash and not the parts themselves: an `ETag` carrying `fetched_at` tells a
+/// LAN client when the machine last ran, which is a fact about the machine.
+///
+/// `Fnv64` from std rather than the loop I wrote first. FNV IS modular arithmetic —
+/// the multiply is supposed to wrap — and Nova traps sized-int overflow by default,
+/// so the hand-rolled version died on `integer overflow: *` at the second byte of
+/// the first string. The opt-out is `.wrapping_mul`, which std's implementation
+/// already spells out, along with the test vectors mine did not have.
+///
+/// A `0x2f` byte between the parts: without a separator, `("ab","c")` and
+/// `("a","bc")` hash the same, and a settings change could then be invisible to a
+/// cached client. `/` is the byte because it cannot occur in a hex etag or a
+/// timestamp, which makes a collision need a deliberate attempt.
+export fn etag_of(parts []str) -> str {
+    mut st = Fnv64.new()
+    for p in parts {
+        st.update(p.bytes())
+        st.update("/".bytes())
+    }
+    ro h = st.finalize()
+    ro digits = "0123456789abcdef"
+    consume sb = StringBuilder.new()
+    sb.append("\"")
+    mut shift = 60
+    while shift >= 0 {
+        ro nib = ((h >> (shift as u64)) & 0xf) as int
+        sb.append(digits[nib..nib + 1])
+        shift -= 4
+    }
+    sb.append("\"")
+    sb.into_str()
+}
+
+fn if_none_match(req ServerRequest, tag str) -> bool {
+    match req.header("if-none-match") {
+        Some(v) => v == tag
+        None    => false
+    }
+}
+
+// ── the handler ──────────────────────────────────────────────────────────────
+
+// Hoisted and param-captured: calling a captured fn value by identifier is the
+// mis-codegen Polaris documents as [M-16].
+fn run(src SnapshotSource, ctx Ctx) -> ServerResponse {
+    match check_query(ctx.req) {
+        Some(e) => problem(e, ctx.request_id, ctx.instance)
+        None => {
+            ro st = src()
+            ro hidden_too = wants_hidden(ctx.req)
+            ro view = arrange(st.view, st.order, st.hidden, hidden_too)
+            // `include_hidden` is IN the tag: without it a client that asked once
+            // with and once without would be told 304 and shown the other answer.
+            ro flag = if hidden_too { "1" } else { "0" }
+            ro tag = etag_of([view.fetched_at, st.config_etag, flag])
+            if if_none_match(ctx.req, tag) {
+                mut nm = ServerResponse.empty(304)
+                nm.header("ETag", tag)
+                nm
+            } else {
+                ro body = render_snapshot(view, st.disclosure)
+                mut ok = ServerResponse.bytes(200, "application/json; charset=utf-8", body.bytes())
+                ok.header("ETag", tag)
+                ok
+            }
+        }
+    }
+}
+
+export fn snapshot_handler(src SnapshotSource) -> ApiHandler {
+    ro inner = src
+    fn(ctx Ctx) -> ServerResponse => run(inner, ctx)
+}

@@ -1,0 +1,8 @@
+[lib]
+src = "src"
+
+[package]
+name = "exported_fn_named_handler"
+version = "0.0.0"
+description = "Probe: an exported fn named `handler` is mis-resolved into an indirect call with no C symbol"
+license = "MIT OR Apache-2.0"

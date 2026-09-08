@@ -1,0 +1,143 @@
+// Tests for handlers/health.nv — task T2.12, `GET /api/health`.
+//
+//   ./nova.sh test src/server/handlers/ --filter health
+//
+// The three disclosure levels of 01.3 §3.2, and §8 п. 8's line: from LAN, no paths
+// and no build version.
+
+module handlers.health_test
+
+import claude_limits.server.routes.{HttpMethod, on, route, build, API_VERSION}
+import claude_limits.server.dto.{Disclosure}
+import polaris.{Router, serve_once}
+import std.testing.handlers as th
+import health.{HealthState, render_health, health_handler}
+
+fn wire_str(wire []u8) -> str => unsafe { wire.to_str_unchecked() }
+
+fn req() -> []u8 => "GET /api/health HTTP/1.1\r\nHost: x\r\n\r\n".bytes()
+
+fn status_of(wire []u8) -> str {
+    ro s = wire_str(wire)
+    match s.find("\r\n") { Some(i) => s[0..i], None => s }
+}
+
+fn body_of(wire []u8) -> str {
+    ro s = wire_str(wire)
+    match s.find("\r\n\r\n") { Some(i) => s[i + 4..s.byte_len()], None => "" }
+}
+
+const CONFIG_PATH = "C:\\Users\\evgeniy\\AppData\\Roaming\\claude-limits\\claude-limits.toml"
+const DB_PATH = "C:\\Users\\evgeniy\\AppData\\Roaming\\claude-limits\\claude-limits.duckdb"
+
+fn state(d Disclosure) -> HealthState => {
+    app_version: "0.3.0",
+    started_at: "2026-09-08T05:12:03Z",
+    uptime_sec: 41800,
+    bind: "127.0.0.1",
+    port: 7391,
+    allow_lan: false,
+    tls: false,
+    poll_interval_sec: 300,
+    poll_last_at: "2026-09-08T16:47:02Z",
+    poll_next_at: "2026-09-08T16:52:02Z",
+    sse_clients: 2,
+    accounts_total: 4,
+    accounts_ok: 2,
+    accounts_stale: 1,
+    accounts_unknown: 1,
+    accounts_error: 0,
+    accounts_hidden: 0,
+    login_dirs: 5,
+    config_path: CONFIG_PATH,
+    db_path: DB_PATH,
+    db_size_bytes: 6291456,
+    schema_version: 1,
+    history_days: 30,
+    encrypted: true,
+    key_store: "file",
+    widget_enabled: false,
+    widget_running: false,
+    config_error: "",
+    disclosure: d,
+}
+
+fn app(d Disclosure) -> Router {
+    ro level = d
+    build([route("/api/health", [on(HttpMethod.Get, health_handler(fn() -> HealthState => state(level)))])])!!
+}
+
+fn serve(d Disclosure) Time Random -> []u8 => serve_once(app(d), req())
+
+// ── the three levels ─────────────────────────────────────────────────────────
+
+test "an anonymous caller is told only that the server is up and which contract" {
+    // A shorter BODY, not the same body with more nulls: how many accounts exist
+    // and how big the database is describe the machine to someone who has proved
+    // nothing.
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro w = serve(Disclosure.Anonymous)
+        assert(status_of(w) == "HTTP/1.1 200 OK")
+        ro b = body_of(w)
+        assert(b == "{\"ok\":true,\"api_version\":${API_VERSION}}")
+    }
+}
+
+test "on loopback everything is there, paths and version included" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro b = body_of(serve(Disclosure.Loopback))
+        assert(b.contains("\"app_version\":\"0.3.0\""))
+        assert(b.contains("claude-limits.toml"))
+        assert(b.contains("claude-limits.duckdb"))
+        assert(b.contains("\"uptime_sec\":41800"))
+        assert(b.contains("\"sse_clients\":2"))
+        assert(b.contains("\"login_dirs\":5"))
+        assert(b.contains("\"key_store\":\"file\""))
+        assert(b.contains("\"config_error\":null"))
+    }
+}
+
+test "from LAN the paths and the build version are null, everything else stays" {
+    // Section 8 item 8 spells this out. The paths carry the operating system user's
+    // name; the build version tells a stranger which published defects this binary
+    // still has.
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro b = body_of(serve(Disclosure.Lan))
+        assert(b.contains("\"app_version\":null"))
+        assert(b.contains("\"config_path\":null"))
+        assert(b.contains("\"db_path\":null"))
+        assert(!b.contains("evgeniy"))
+        assert(!b.contains("0.3.0"))
+        // The rest is the same body, so a client can tell "hidden from you" from
+        // "not set".
+        assert(b.contains("\"uptime_sec\":41800"))
+        assert(b.contains("\"db_size_bytes\":6291456"))
+        assert(b.contains("\"total\":4"))
+    }
+}
+
+test "the nested groups of section 3.2 are objects, not flattened keys" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro b = body_of(serve(Disclosure.Loopback))
+        assert(b.contains("\"listen\":{\"bind\":\"127.0.0.1\",\"port\":7391"))
+        assert(b.contains("\"poll\":{\"interval_sec\":300"))
+        assert(b.contains("\"accounts\":{\"total\":4"))
+        assert(b.contains("\"storage\":{\"config_path\""))
+        assert(b.contains("\"widget\":{\"enabled\":false,\"running\":false}"))
+    }
+}
+
+test "a settings-file error is reported as text, and its absence as null" {
+    ro clean = render_health(state(Disclosure.Loopback))
+    assert(clean.contains("\"config_error\":null"))
+    mut broken = state(Disclosure.Loopback)
+    broken.config_error = "[poll] interval_sec must be a number"
+    assert(render_health(broken).contains("\"config_error\":\"[poll] interval_sec must be a number\""))
+}
+
+test "api_version is the one constant the whole server agrees on" {
+    // Section 5: the page reads it at load and asks for a reload when the binary
+    // moved on. A second spelling of it is how the two come to disagree.
+    ro b = render_health(state(Disclosure.Anonymous))
+    assert(b.contains("\"api_version\":${API_VERSION}"))
+}

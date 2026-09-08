@@ -1,0 +1,344 @@
+// Tests for handlers/snapshot.nv — task T2.12, `GET /api/snapshot`.
+//
+//   ./nova.sh test src/server/handlers/ --filter snapshot
+//
+// The acceptance of the card, in order: the body is FLAT (`accounts[]` beside
+// `limits[]`), accounts follow `accounts_order`, hidden accounts are absent without
+// `include_hidden`, `?email=x` is a 400, and `If-None-Match` on the current tag is
+// a 304.
+
+module handlers.snapshot_test
+
+import claude_limits.server.routes.{HttpMethod, on, route, build, API_VERSION}
+import claude_limits.server.dto.{Disclosure, SnapshotView, AccountView, DirView, LimitView, ForecastView, WorstView}
+import polaris.{Router, serve_once}
+import std.testing.handlers as th
+import snapshot.{SnapshotState, arrange, etag_of, snapshot_handler}
+
+// ── wire helpers (peers of routes_test.nv's, which this module cannot see) ───
+
+fn wire_str(wire []u8) -> str => unsafe { wire.to_str_unchecked() }
+
+fn req(method str, target str) -> []u8 => "${method} ${target} HTTP/1.1\r\nHost: x\r\n\r\n".bytes()
+
+fn req_h(method str, target str, hname str, hval str) -> []u8 =>
+    "${method} ${target} HTTP/1.1\r\nHost: x\r\n${hname}: ${hval}\r\n\r\n".bytes()
+
+fn status_of(wire []u8) -> str {
+    ro s = wire_str(wire)
+    match s.find("\r\n") { Some(i) => s[0..i], None => s }
+}
+
+fn head_of(wire []u8) -> str {
+    ro s = wire_str(wire)
+    match s.find("\r\n\r\n") { Some(i) => s[0..i], None => s }
+}
+
+fn body_of(wire []u8) -> str {
+    ro s = wire_str(wire)
+    match s.find("\r\n\r\n") { Some(i) => s[i + 4..s.byte_len()], None => "" }
+}
+
+fn hdr(wire []u8, name str) -> str {
+    ro padded = "\r\n${head_of(wire)}"
+    ro needle = "\r\n${name.to_ascii_lower()}: "
+    match padded.to_ascii_lower().find(needle) {
+        Some(i) => {
+            ro rest = padded[i + needle.byte_len()..padded.byte_len()]
+            match rest.find("\r\n") { Some(j) => rest[0..j], None => rest }
+        }
+        None => ""
+    }
+}
+
+// ── the fixture ──────────────────────────────────────────────────────────────
+//
+// Three accounts, deliberately NOT in the order the settings ask for, so the
+// ordering test cannot pass by accident.
+
+fn acc(id str, email str) -> AccountView => {
+    id,
+    email,
+    org: "Example Inc",
+    dirs: [DirView{ id: "d-${id}", path: "C:/accounts/${email}", name: email }],
+    state: "ok",
+    message: "",
+    polled_at: "2026-09-08T16:47:02Z",
+    next_poll_at: "2026-09-08T16:52:02Z",
+    locked: false,
+    at_100: false,
+}
+
+fn lim(account_id str, kind str, model str, percent int) -> LimitView => {
+    account_id,
+    kind,
+    model,
+    label: "${kind} ${model}",
+    percent,
+    severity: "normal",
+    server_severity: "normal",
+    locked: false,
+    locked_reason: "",
+    active: false,
+    resets_at: "2026-09-08T17:50:00Z",
+    seconds_left: 3780,
+    reset_label: "20:50 (1h 02m)",
+    window_sec: 18000,
+    elapsed_share_bp: 79,
+    forecast: None,
+}
+
+fn fixture() -> SnapshotView => {
+    fetched_at: "2026-09-08T16:47:02Z",
+    next_poll_at: "2026-09-08T16:52:02Z",
+    tz: "Europe/Moscow",
+    restored: false,
+    worst: None,
+    accounts: [acc("a-1", "main@example.com"), acc("a-2", "ops@example.org"), acc("a-3", "qa@example.org")],
+    limits: [
+        lim("a-1", "weekly_scoped", "Opus", 74),
+        lim("a-1", "session", "", 9),
+        lim("a-1", "weekly_all", "", 30),
+        lim("a-1", "weekly_scoped", "Fable", 51),
+        lim("a-2", "session", "", 12),
+        lim("a-3", "session", "", 5),
+    ],
+}
+
+fn state(order []str, hidden []str) -> SnapshotState => {
+    view: fixture(),
+    order,
+    hidden,
+    config_etag: "cfg-1",
+    disclosure: Disclosure.Loopback,
+}
+
+fn app(order []str, hidden []str) -> Router {
+    ro o = order
+    ro hid = hidden
+    ro src = fn() -> SnapshotState => state(o, hid)
+    ro ah = snapshot_handler(src)
+    build([route("/api/snapshot", [on(HttpMethod.Get, ah)])])!!
+}
+
+fn serve(order []str, hidden []str, raw []u8) Time Random -> []u8 => serve_once(app(order, hidden), raw)
+
+fn plain(raw []u8) Time Random -> []u8 => serve([], [], raw)
+
+/// How many times `needle` occurs in `hay`.
+fn count_of(hay str, needle str) -> int {
+    mut n = 0
+    mut rest = hay
+    loop {
+        match rest.find(needle) {
+            None => break
+            Some(i) => {
+                n += 1
+                rest = rest[i + needle.byte_len()..rest.byte_len()]
+            }
+        }
+    }
+    n
+}
+
+/// Position of a substring, or -1. Used to compare ORDER inside a body without
+/// re-parsing the JSON in the test.
+fn at(hay str, needle str) -> int {
+    match hay.find(needle) { Some(i) => i, None => 0 - 1 }
+}
+
+// ── the body is flat ─────────────────────────────────────────────────────────
+
+test "accounts and limits are neighbours, not nested" {
+    // 01.3 section 0 caps a body at three levels and section 3.3 spells the join
+    // out: the page groups `limits[]` by `account_id` itself. A renderer that
+    // nests for convenience breaks a client that never asked for it.
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro b = body_of(plain(req("GET", "/api/snapshot")))
+        assert(b.contains("\"accounts\":["))
+        assert(b.contains("\"limits\":["))
+        // The account object ends before `limits` begins: no account carries one.
+        assert(at(b, "\"accounts\":[") < at(b, "\"limits\":["))
+        assert(b.contains("\"account_id\":\"a-1\""))
+        // Exactly ONE `limits` key in the whole body: if an account carried its own
+        // rows there would be one per account. (The first spelling of this line
+        // asserted that `"limits":[` is not followed by `{"account_id"` -- which is
+        // what the CORRECT flat body looks like, so it failed on the right answer.)
+        assert(count_of(b, "\"limits\":") == 1)
+        assert(count_of(b, "\"accounts\":") == 1)
+    }
+}
+
+test "the top level carries the fields of section 3.3" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro b = body_of(plain(req("GET", "/api/snapshot")))
+        assert(b.contains("\"fetched_at\":\"2026-09-08T16:47:02Z\""))
+        assert(b.contains("\"tz\":\"Europe/Moscow\""))
+        assert(b.contains("\"restored\":false"))
+        assert(b.contains("\"worst\":null"))
+        // A fraction reaches the wire as a decimal, from an integer.
+        assert(b.contains("\"elapsed_share\":0.79"))
+        assert(b.contains("\"forecast\":null"))
+    }
+}
+
+// ── order ────────────────────────────────────────────────────────────────────
+
+test "accounts follow accounts_order, and the rest keep their arrival order" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro b = body_of(serve(["qa@example.org", "main@example.com"], [], req("GET", "/api/snapshot")))
+        assert(at(b, "qa@example.org") < at(b, "main@example.com"))
+        assert(at(b, "main@example.com") < at(b, "ops@example.org"))
+    }
+}
+
+test "an account nobody arranged does not jump into the middle" {
+    // "By first appearance", not by e-mail: a new account must not push itself
+    // between two a person put next to each other.
+    ro v = arrange(fixture(), ["qa@example.org"], [], false)
+    assert(v.accounts[0].email == "qa@example.org")
+    assert(v.accounts[1].email == "main@example.com")
+    assert(v.accounts[2].email == "ops@example.org")
+}
+
+test "limits follow their account, and inside it session, weekly_all, then models" {
+    ro v = arrange(fixture(), [], [], false)
+    assert(v.limits.len() == 6)
+    assert(v.limits[0].kind == "session")
+    assert(v.limits[1].kind == "weekly_all")
+    assert(v.limits[2].kind == "weekly_scoped")
+    assert(v.limits[2].model == "Fable")
+    assert(v.limits[3].model == "Opus")
+    assert(v.limits[4].account_id == "a-2")
+    assert(v.limits[5].account_id == "a-3")
+}
+
+// ── hiding ───────────────────────────────────────────────────────────────────
+
+test "a hidden account is absent, and so are its limit rows" {
+    // Leaving the rows behind would put a row on the page belonging to a block
+    // that is not there.
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro b = body_of(serve([], ["ops@example.org"], req("GET", "/api/snapshot")))
+        assert(!b.contains("ops@example.org"))
+        assert(!b.contains("\"account_id\":\"a-2\""))
+        assert(b.contains("main@example.com"))
+    }
+}
+
+test "include_hidden=1 brings it back" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro b = body_of(serve([], ["ops@example.org"], req("GET", "/api/snapshot?include_hidden=1")))
+        assert(b.contains("ops@example.org"))
+        assert(b.contains("\"account_id\":\"a-2\""))
+    }
+}
+
+test "include_hidden=0 is the default, spelled out" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro b = body_of(serve([], ["ops@example.org"], req("GET", "/api/snapshot?include_hidden=0")))
+        assert(!b.contains("ops@example.org"))
+    }
+}
+
+// ── the closed query list ────────────────────────────────────────────────────
+
+test "an e-mail in the query is a 400, because the list is closed" {
+    // The card names this case. It is not special-cased -- it is refused for being
+    // unknown, which is also what keeps personal data out of a URL (section 0).
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro w = plain(req("GET", "/api/snapshot?email=x"))
+        assert(status_of(w) == "HTTP/1.1 400 Bad Request")
+        assert(body_of(w).contains("\"code\":\"invalid_parameter\""))
+        assert(body_of(w).contains("email"))
+    }
+}
+
+test "any other unknown parameter is refused the same way" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        assert(status_of(plain(req("GET", "/api/snapshot?account_id=a-1"))) == "HTTP/1.1 400 Bad Request")
+        // A misspelling is told, not quietly ignored into the wrong answer.
+        assert(status_of(plain(req("GET", "/api/snapshot?include_hidde=1"))) == "HTTP/1.1 400 Bad Request")
+    }
+}
+
+test "a repeated non-array parameter is a 400" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro w = plain(req("GET", "/api/snapshot?include_hidden=1&include_hidden=0"))
+        assert(status_of(w) == "HTTP/1.1 400 Bad Request")
+        assert(body_of(w).contains("repeat"))
+    }
+}
+
+test "a value that is neither 0 nor 1 is a 400" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        assert(status_of(plain(req("GET", "/api/snapshot?include_hidden=yes"))) == "HTTP/1.1 400 Bad Request")
+    }
+}
+
+// ── the ETag ─────────────────────────────────────────────────────────────────
+
+test "If-None-Match on the current tag is a 304" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro first = plain(req("GET", "/api/snapshot"))
+        ro tag = hdr(first, "etag")
+        assert(tag != "")
+        ro second = plain(req_h("GET", "/api/snapshot", "If-None-Match", tag))
+        assert(status_of(second) == "HTTP/1.1 304 Not Modified")
+        assert(body_of(second) == "")
+        assert(hdr(second, "etag") == tag)
+    }
+}
+
+test "a 304 still carries the headers of section 0" {
+    // Section 8 item 11 names `204` and `304` explicitly.
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro tag = hdr(plain(req("GET", "/api/snapshot")), "etag")
+        ro w = plain(req_h("GET", "/api/snapshot", "If-None-Match", tag))
+        assert(hdr(w, "x-request-id") != "")
+        assert(hdr(w, "x-api-version") == "${API_VERSION}")
+        assert(hdr(w, "cache-control") == "no-store")
+    }
+}
+
+test "a stale tag gets the body, not a 304" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro w = plain(req_h("GET", "/api/snapshot", "If-None-Match", "\"0000000000000000\""))
+        assert(status_of(w) == "HTTP/1.1 200 OK")
+    }
+}
+
+test "the tag changes with include_hidden" {
+    // Without this, a client that asked once each way is told 304 and shown the
+    // other answer.
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro plain_tag = hdr(serve([], ["ops@example.org"], req("GET", "/api/snapshot")), "etag")
+        ro with_tag = hdr(serve([], ["ops@example.org"], req("GET", "/api/snapshot?include_hidden=1")), "etag")
+        assert(plain_tag != with_tag)
+    }
+}
+
+test "the tag changes when the settings change, because severity does" {
+    ro a = etag_of(["2026-09-08T16:47:02Z", "cfg-1", "0"])
+    ro b = etag_of(["2026-09-08T16:47:02Z", "cfg-2", "0"])
+    assert(a != b)
+    assert(a == etag_of(["2026-09-08T16:47:02Z", "cfg-1", "0"]))
+    // The parts are separated, so moving a character across the boundary does not
+    // give the same tag.
+    assert(etag_of(["ab", "c"]) != etag_of(["a", "bc"]))
+}
+
+test "the tag is a hash, not the parts" {
+    // An ETag carrying `fetched_at` tells a LAN client when the machine last ran.
+    ro t = etag_of(["2026-09-08T16:47:02Z", "cfg-1", "0"])
+    assert(!t.contains("2026"))
+    assert(t.byte_len() == 18)
+}
+
+// ── disclosure ───────────────────────────────────────────────────────────────
+
+test "on loopback the directory path is shown" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        assert(body_of(plain(req("GET", "/api/snapshot"))).contains("C:/accounts/"))
+    }
+}

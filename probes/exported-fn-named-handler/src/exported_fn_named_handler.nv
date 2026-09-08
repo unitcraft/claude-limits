@@ -1,0 +1,18 @@
+module exported_fn_named_handler
+
+import exported_fn_named_handler.lib.thing.{handler, make_handler, handler_plain}
+import exported_fn_named_handler.lib.kinds.{Endpoint, on}
+
+fn ten() -> int => 10
+
+fn main() Io -> () {
+    ro a = make_handler(ten)
+    print("control 1 (make_handler): ${a(5)}")
+    ro c = handler_plain(10)
+    print("control 2 (handler_plain): ${c(5)}")
+    // CONTROL 3: the record whose field is named `handler` is in scope and used.
+    ro e = on(1, a)
+    print("control 3 (Endpoint):     ${e.tag}")
+    ro b = handler(ten)
+    print("failing (handler):        ${b(5)}")
+}

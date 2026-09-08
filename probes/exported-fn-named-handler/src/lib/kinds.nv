@@ -1,0 +1,10 @@
+// Two fn newtypes and a record with a FIELD named `handler` of the second one --
+// the shape `server/routes.nv` has (`Endpoint { method, handler ApiHandler }`).
+module lib.kinds
+
+export type Source fn() -> int
+export type Handler fn(int) -> int
+
+export type Endpoint value { tag int, handler Handler }
+
+export fn on(tag int, handler Handler) -> Endpoint => { tag, handler }

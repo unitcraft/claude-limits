@@ -19,6 +19,10 @@
 // The third one exists because it is the deviation the plan argues for at length
 // (§0, D2: "страница и виджет показывают одно и то же"), and a rule that lives
 // only in prose is a rule the fourth handler forgets.
+//
+// T2.12 added the first of the response types below (`GET /api/snapshot`, §3.3), as
+// the paragraph above said would happen. `Health`, `Config` and the rest still are
+// not here, and for the same reason.
 
 module server.dto
 
@@ -29,14 +33,20 @@ module server.dto
 // `server/handlers/` imports this file -- the resolver then looks for
 // `src/server/handlers/json`. Isolated with controls in
 // `probes/module-reuse-breaks-sibling-import/`.
-import claude_limits.server.json.{quote, field_str, field_str_or_null, field_int, field_raw, object}
+import claude_limits.server.json.{quote, field_str, field_str_or_null, field_int, field_bool, field_raw, field_fixed2, field_fixed3, object, array}
 
 /// How much this response may say.
 ///
 /// The axis is the CLIENT, not the route: the same `/api/health` answers a
 /// loopback caller with paths and a LAN caller without them (§3.2, §8 п. 8's
 /// "`/api/health` из LAN — без путей и версии").
-export type Disclosure enum Loopback | Lan
+///
+/// THREE levels, because §3.2 names three. `Anonymous` — nobody has proved
+/// anything — is not "Lan but stricter": `/api/health` answers it with a shorter
+/// BODY, not the same body with more nulls. It lives on this one enum anyway, and
+/// every match on it stays exhaustive, so that a fourth level cannot silently take
+/// the permissive branch somewhere nobody looked.
+export type Disclosure enum Loopback | Lan | Anonymous
 
 /// A field of class `pii-path` (01.2 §10): a filesystem path, which on every
 /// platform this runs on contains the operating system user's name.
@@ -48,6 +58,7 @@ export fn pii_path(d Disclosure, name str, value str) -> str {
     match d {
         Disclosure.Loopback => field_str_or_null(name, value)
         Disclosure.Lan => "${quote(name)}:null"
+        Disclosure.Anonymous => "${quote(name)}:null"
     }
 }
 
@@ -62,6 +73,7 @@ export fn pii_path_list(d Disclosure, name str, values []str) -> str {
             field_raw(name, "[${join_commas(items)}]")
         }
         Disclosure.Lan => field_raw(name, "[]")
+        Disclosure.Anonymous => field_raw(name, "[]")
     }
 }
 
@@ -96,3 +108,192 @@ export fn labelled_str(name str, value str, label str) -> str =>
 /// A whole object from fields, re-exported so a handler needs one import to build
 /// a body rather than two.
 export fn body(fields []str) -> str => object(fields)
+
+
+// ═════════════════════════════════════════════════════════════════════════════
+// GET /api/snapshot (01.3 §3.3) — task T2.12
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// FLAT, and the flatness is the contract, not an implementation habit: §0 caps a
+// body at three levels, and §3.3 spells out that `accounts[]` and `limits[]` are
+// NEIGHBOURS joined by `account_id`, not nested. The page groups them itself. A
+// renderer that nests "for convenience" breaks a client that never asked for it.
+//
+// FRACTIONS ARE INTEGERS in these records — `elapsed_share_bp` is hundredths,
+// `rate_per_hour_milli` is thousandths. The wire still shows `0.79` and `2.300`
+// (`field_fixed2`/`field_fixed3`); what is avoided is a float travelling through
+// four layers and arriving as `0.7899999`.
+
+/// One login directory of an account. `path` is class `pii-path`; `name` is not.
+export type DirView value { id str, path str, name str }
+
+/// One account row. Empty strings mean `null` on the wire, which is what §0 asks
+/// for an absent value — see `field_str_or_null`.
+export type AccountView value {
+    id str
+    email str
+    org str
+    dirs []DirView
+    /// `ok | stale | unknown | error` (01.1 §3.2).
+    state str
+    /// Ready text for the block header, or "" for `null`.
+    message str
+    polled_at str
+    next_poll_at str
+    /// There is a window with a `locked_reason`.
+    locked bool
+    /// There is a window at 100 % WITHOUT a `locked_reason` — a different fact,
+    /// and the panel says different words for it (§3.3).
+    at_100 bool
+}
+
+/// The forecast of one limit row, or absent (`forecast: null` for stale, unknown
+/// and locked — 01.1 §2.7).
+export type ForecastView value {
+    percent_at_reset int
+    /// "" for `null`: the limit is not projected to run out before it resets.
+    runs_out_at str
+    /// Thousandths of a percent per hour.
+    rate_per_hour_milli int
+    /// `clock | working_hours`.
+    basis str
+    sample_minutes int
+    label str
+    /// True exactly when `runs_out_at` is earlier than `resets_at` (§3.3).
+    warning bool
+}
+
+/// One limit row, beside its account rather than inside it.
+export type LimitView value {
+    account_id str
+    /// `session | weekly_all | weekly_scoped`.
+    kind str
+    /// "" unless `weekly_scoped`.
+    model str
+    /// The row caption: "session 5h", "Fable 7d".
+    label str
+    percent int
+    /// From the thresholds in the config.
+    severity str
+    /// As the endpoint itself named it, for debugging (§3.3).
+    server_severity str
+    locked bool
+    locked_reason str
+    /// `limits[].is_active` of the endpoint: this window is the one biting now.
+    /// Named without `is_` by the database convention §9 — API fields repeat
+    /// column names.
+    active bool
+    resets_at str
+    seconds_left int
+    /// "20:50 (1h 02m)". Named `reset_label`, not `resets_at_label`, so it does
+    /// NOT go through `labelled_str` — the contract fixes the field name and the
+    /// helper is not worth bending it for.
+    reset_label str
+    window_sec int
+    /// Hundredths of the window elapsed at `fetched_at`.
+    elapsed_share_bp int
+    forecast Option[ForecastView]
+}
+
+/// The single worst row across all accounts, or absent when there is nothing to
+/// be worst.
+export type WorstView value { account_id str, kind str, percent int, severity str }
+
+/// The whole body of `GET /api/snapshot`.
+export type SnapshotView value {
+    fetched_at str
+    next_poll_at str
+    /// IANA zone of the BACKEND, for captions; the page draws axes in the
+    /// browser's zone (§0).
+    tz str
+    /// This snapshot came from the database at start, before the first poll.
+    restored bool
+    worst Option[WorstView]
+    accounts []AccountView
+    limits []LimitView
+}
+
+fn render_dir(d Disclosure, v DirView) -> str =>
+    object([field_str("id", v.id), pii_path(d, "path", v.path), field_str("name", v.name)])
+
+fn render_account(d Disclosure, a AccountView) -> str {
+    mut dirs = []str.new()
+    for x in a.dirs { dirs.push(render_dir(d, x)) }
+    object([
+        field_str("id", a.id),
+        field_str("email", a.email),
+        field_str("org", a.org),
+        field_raw("dirs", array(dirs)),
+        field_str("state", a.state),
+        field_str_or_null("message", a.message),
+        field_str_or_null("polled_at", a.polled_at),
+        field_str_or_null("next_poll_at", a.next_poll_at),
+        field_bool("locked", a.locked),
+        field_bool("at_100", a.at_100),
+    ])
+}
+
+fn render_forecast(f ForecastView) -> str =>
+    object([
+        field_int("percent_at_reset", f.percent_at_reset),
+        field_str_or_null("runs_out_at", f.runs_out_at),
+        field_fixed3("rate_per_hour", f.rate_per_hour_milli),
+        field_str("basis", f.basis),
+        field_int("sample_minutes", f.sample_minutes),
+        field_str("label", f.label),
+        field_bool("warning", f.warning),
+    ])
+
+fn render_limit(l LimitView) -> str {
+    ro fc = match l.forecast {
+        Some(f) => field_raw("forecast", render_forecast(f))
+        None    => field_raw("forecast", "null")
+    }
+    object([
+        field_str("account_id", l.account_id),
+        field_str("kind", l.kind),
+        field_str_or_null("model", l.model),
+        field_str("label", l.label),
+        field_int("percent", l.percent),
+        field_str("severity", l.severity),
+        field_str("server_severity", l.server_severity),
+        field_bool("locked", l.locked),
+        field_str_or_null("locked_reason", l.locked_reason),
+        field_bool("active", l.active),
+        field_str("resets_at", l.resets_at),
+        field_int("seconds_left", l.seconds_left),
+        field_str("reset_label", l.reset_label),
+        field_int("window_sec", l.window_sec),
+        field_fixed2("elapsed_share", l.elapsed_share_bp),
+        fc,
+    ])
+}
+
+fn render_worst(w WorstView) -> str =>
+    object([
+        field_str("account_id", w.account_id),
+        field_str("kind", w.kind),
+        field_int("percent", w.percent),
+        field_str("severity", w.severity),
+    ])
+
+/// The body of `GET /api/snapshot`, at the disclosure level of this client.
+export fn render_snapshot(v SnapshotView, d Disclosure) -> str {
+    mut accounts = []str.new()
+    for a in v.accounts { accounts.push(render_account(d, a)) }
+    mut limits = []str.new()
+    for l in v.limits { limits.push(render_limit(l)) }
+    ro worst = match v.worst {
+        Some(w) => field_raw("worst", render_worst(w))
+        None    => field_raw("worst", "null")
+    }
+    object([
+        field_str("fetched_at", v.fetched_at),
+        field_str_or_null("next_poll_at", v.next_poll_at),
+        field_str("tz", v.tz),
+        field_bool("restored", v.restored),
+        worst,
+        field_raw("accounts", array(accounts)),
+        field_raw("limits", array(limits)),
+    ])
+}

@@ -1,0 +1,135 @@
+// handlers/health.nv — `GET /api/health` (task T2.12).
+//
+// Source: 01.3 §3.2 (the body and the THREE disclosure levels), §5 (`api_version`
+// is what a script checks), §8 п. 8 ("`/api/health` из LAN — без путей и версии").
+//
+// Imports are PACKAGE-PREFIXED; see `handlers/snapshot.nv` for the measurement.
+//
+// The factory is `health_handler`, not `handler`: an exported fn whose name equals
+// a record FIELD name in scope (`Endpoint.handler`, `server/routes.nv`) is
+// mis-resolved into an indirect call with no C symbol. Isolated in
+// `probes/exported-fn-named-handler/`.
+
+module handlers.health
+
+import claude_limits.server.routes.{Ctx, ApiHandler, API_VERSION}
+import claude_limits.server.dto.{Disclosure, pii_path}
+import claude_limits.server.json.{field_str, field_str_or_null, field_int, field_bool, field_raw, object}
+import polaris.{ServerResponse}
+
+/// Everything `/api/health` reports, read fresh on every request.
+export type HealthState value {
+    app_version str
+    started_at str
+    uptime_sec int
+    bind str
+    port int
+    allow_lan bool
+    tls bool
+    poll_interval_sec int
+    poll_last_at str
+    poll_next_at str
+    sse_clients int
+    accounts_total int
+    accounts_ok int
+    accounts_stale int
+    accounts_unknown int
+    accounts_error int
+    accounts_hidden int
+    login_dirs int
+    config_path str
+    db_path str
+    db_size_bytes int
+    schema_version int
+    history_days int
+    encrypted bool
+    key_store str
+    widget_enabled bool
+    widget_running bool
+    /// Text of the last settings-file read error, or "" for `null` (01.2 §2.2).
+    config_error str
+    disclosure Disclosure
+}
+
+export type HealthSource fn() -> HealthState
+
+/// The body of §3.2 at this client's level.
+///
+/// THREE LEVELS, not two, and the shortest one is a different SHAPE rather than the
+/// same shape with nulls: an unauthenticated caller is told only that the server is
+/// up and which contract it speaks, because everything else — how many accounts
+/// exist, whether a widget runs, how big the database is — is a description of the
+/// machine to someone who has not proved they may have it.
+///
+/// The LAN level IS the same shape with nulls, and that is the difference that
+/// matters: a client who may see the body must be able to tell "hidden from you"
+/// from "not set", which is what §0 means by an absent value being `null`.
+export fn render_health(st HealthState) -> str {
+    match st.disclosure {
+        Disclosure.Anonymous => object([field_bool("ok", true), field_int("api_version", API_VERSION)])
+        _ => full_body(st)
+    }
+}
+
+fn full_body(st HealthState) -> str {
+    ro lan = match st.disclosure {
+        Disclosure.Lan => true
+        _ => false
+    }
+    // The build version is withheld from LAN by §3.2 in the same breath as the
+    // paths: it tells a stranger which published defects this binary still has.
+    ro app_version = if lan { "${"\"app_version\""}:null" } else { field_str("app_version", st.app_version) }
+    object([
+        field_bool("ok", true),
+        field_int("api_version", API_VERSION),
+        app_version,
+        field_str("started_at", st.started_at),
+        field_int("uptime_sec", st.uptime_sec),
+        field_raw("listen", object([
+            field_str("bind", st.bind),
+            field_int("port", st.port),
+            field_bool("allow_lan", st.allow_lan),
+            field_bool("tls", st.tls),
+        ])),
+        field_raw("poll", object([
+            field_int("interval_sec", st.poll_interval_sec),
+            field_str_or_null("last_at", st.poll_last_at),
+            field_str_or_null("next_at", st.poll_next_at),
+        ])),
+        field_int("sse_clients", st.sse_clients),
+        field_raw("accounts", object([
+            field_int("total", st.accounts_total),
+            field_int("ok", st.accounts_ok),
+            field_int("stale", st.accounts_stale),
+            field_int("unknown", st.accounts_unknown),
+            field_int("error", st.accounts_error),
+            field_int("hidden", st.accounts_hidden),
+        ])),
+        field_int("login_dirs", st.login_dirs),
+        field_raw("storage", object([
+            pii_path(st.disclosure, "config_path", st.config_path),
+            pii_path(st.disclosure, "db_path", st.db_path),
+            field_int("db_size_bytes", st.db_size_bytes),
+            field_int("schema_version", st.schema_version),
+            field_int("history_days", st.history_days),
+            field_bool("encrypted", st.encrypted),
+            field_str("key_store", st.key_store),
+        ])),
+        field_raw("widget", object([
+            field_bool("enabled", st.widget_enabled),
+            field_bool("running", st.widget_running),
+        ])),
+        field_str_or_null("config_error", st.config_error),
+    ])
+}
+
+// Hoisted and param-captured for the [M-16] reason named in `routes.nv`.
+fn run(src HealthSource, ctx Ctx) -> ServerResponse {
+    ro body = render_health(src())
+    ServerResponse.bytes(200, "application/json; charset=utf-8", body.bytes())
+}
+
+export fn health_handler(src HealthSource) -> ApiHandler {
+    ro inner = src
+    fn(ctx Ctx) -> ServerResponse => run(inner, ctx)
+}
