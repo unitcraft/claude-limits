@@ -1,0 +1,129 @@
+// Tests for model/snapshot.nv and model/format.nv — task T1.6.
+//
+//   ./nova.sh test src/model/ --filter snapshot
+//
+// The acceptance names three things: severity follows the CONFIG thresholds (with
+// warning = 50, 61 % is `warning`); the captions match 01.1 §2.4 character for
+// character; and the `stale`/`unknown` messages are the texts of §3.2.
+//
+// The caption assertions are deliberately the SAME STRINGS the page's own tests use
+// (`scripts/test-format.mjs`). Two implementations of one caption is a liability, and
+// the only thing that keeps them honest is that both are pinned to the same literals.
+
+module model.snapshot_test
+
+import snapshot.{Window, Thresholds, Severity, AccountState, severity_of, at_100, locked, worst, stale_message, error_401_message, error_parse_message, rate_limited_badge, network_badge, red_panel_caption}
+import format.{duration_words, reset_moment, reset_caption, row_label}
+import std.time.civil.{TimeZone}
+
+fn utc() -> TimeZone => TimeZone.Utc
+
+fn at(iso str) -> Timestamp =>
+    match iso.to_timestamp() {
+        Ok(t) => t
+        Err(_) => 0.to_unix_seconds()   // a parse failure in a FIXED literal is a test bug, not a case
+    }
+
+// Saturday 2026-09-05 19:47 UTC — the moment the artboards are drawn at.
+fn now() -> Timestamp => at("2026-09-05T19:47:00Z")
+
+fn win(kind str, percent int) -> Window => Window.of(kind, "", percent, 0, "")
+
+// ── severity follows OUR thresholds ──────────────────────────────────────────
+
+test "the acceptance case: with warning = 50, 61 percent is warning" {
+    ro th = Thresholds.of(50, 90)
+    assert(severity_of(win("session", 61), th).to_str() == "warning")
+    // ... and under the default thresholds the same 61 % is normal. The number did
+    // not change; the person's setting did.
+    assert(severity_of(win("session", 61), Thresholds.of(70, 90)).to_str() == "normal")
+}
+
+test "the boundary is inclusive at both ends" {
+    ro th = Thresholds.of(70, 90)
+    assert(severity_of(win("session", 69), th).to_str() == "normal")
+    assert(severity_of(win("session", 70), th).to_str() == "warning")
+    assert(severity_of(win("session", 89), th).to_str() == "warning")
+    assert(severity_of(win("session", 90), th).to_str() == "critical")
+}
+
+test "a locked window is critical at ANY percent" {
+    ro th = Thresholds.of(70, 90)
+    ro w = Window.of("session", "", 40, 0, "session_limit")
+    // Colouring it green because 40 is a small number hides the only thing that
+    // matters about this account.
+    assert(severity_of(w, th).to_str() == "critical")
+}
+
+test "at_100 and locked are different questions" {
+    ro full = win("session", 100)
+    ro lock = Window.of("weekly_all", "", 40, 0, "server")
+    assert(at_100([full]))
+    assert(!locked([full]))
+    assert(!at_100([lock]))
+    assert(locked([lock]))
+}
+
+test "worst takes the worst window, not the first or the last" {
+    ro th = Thresholds.of(70, 90)
+    assert(worst([win("session", 5), win("weekly_all", 95), win("weekly_scoped", 10)], th).to_str() == "critical")
+    assert(worst([win("session", 5), win("weekly_all", 75)], th).to_str() == "warning")
+    assert(worst([win("session", 5)], th).to_str() == "normal")
+    assert(worst([], th).to_str() == "normal")
+}
+
+// ── captions, character for character with 01.1 §2.4 ─────────────────────────
+
+test "two largest units, and minutes padded only after hours" {
+    assert(duration_words(2 * 86400_000 + 17 * 3600_000) == "2d 17h")
+    assert(duration_words(3600_000 + 2 * 60_000) == "1h 02m")
+    assert(duration_words(45 * 60_000) == "45m")
+    assert(duration_words(5 * 60_000) == "5m")          // NOT `05m`: that reads as a clock
+    assert(duration_words(0) == "0m")
+    assert(duration_words(-1) == "0m")
+}
+
+test "the three moments of the card, in UTC" {
+    // Same day: bare time.
+    assert(reset_moment(at("2026-09-05T20:50:00Z"), now(), utc()) == "20:50")
+    // Inside the week: weekday and time.
+    assert(reset_moment(at("2026-09-08T13:00:00Z"), now(), utc()) == "Tue 13:00")
+    // Beyond six days: day and month.
+    assert(reset_moment(at("2026-09-14T09:30:00Z"), now(), utc()) == "14 Sep 09:30")
+}
+
+test "the whole caption matches the card" {
+    // The exact string in 01.1 §2.4 and on the artboard.
+    assert(reset_caption(at("2026-09-08T13:00:00Z"), now(), utc()) == "Tue 13:00 (2d 17h)")
+}
+
+test "row labels, including the visible fallback" {
+    assert(row_label("session", "") == "session 5h")
+    assert(row_label("weekly_all", "") == "all 7d")
+    assert(row_label("weekly_scoped", "Opus") == "Opus 7d")
+    // A scoped row with no model name must not look like another row.
+    assert(row_label("weekly_scoped", "") == "scoped 7d")
+}
+
+// ── the state texts, verbatim ────────────────────────────────────────────────
+
+test "the stale text is the sentence of 01.1 section 3.2" {
+    ro said = stale_message("5 Sep 18:02")
+    assert(said == "token expired 5 Sep 18:02 · start Claude Code under this login")
+}
+
+test "401 and a bad body are different sentences" {
+    assert(error_401_message() == "token rejected (401) · start Claude Code under this login")
+    assert(error_parse_message() == "unexpected response · see log")
+}
+
+test "the unknown badge says what happened and when it retries" {
+    assert(rate_limited_badge("19:49", "19:41") == "429 · retry 19:49 · data 19:41")
+    assert(network_badge("19:52") == "network error · retry 19:52")
+}
+
+test "a lock and a spent window get DIFFERENT captions" {
+    // One is the server refusing, the other is the person having used the window.
+    assert(red_panel_caption(true, "21:10") == "locked until 21:10")
+    assert(red_panel_caption(false, "21:10") == "at 100% until 21:10")
+}

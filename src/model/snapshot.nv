@@ -1,0 +1,149 @@
+// snapshot.nv — the shape the page and the widget both read, and the pure rules that
+// derive it (task T1.6).
+//
+// Sources: 01.3 §3.3 (snapshot fields, `state`, `severity`, `at_100`, `locked`),
+// 01.1 §2.2 (severity comes from OUR thresholds), §3.2 (state texts, verbatim).
+//
+// PURE. Nothing here reads a clock, a file or a socket: `now_ms` and the thresholds
+// arrive as arguments. That is what lets the whole table of §3.2 be checked without a
+// backend — and the backend does not exist yet.
+
+module model.snapshot
+
+/// Severity of one limit window.
+///
+/// COMPUTED FROM THE USER'S THRESHOLDS, not from the endpoint's own `severity`
+/// (01.1 §2.2): the endpoint has its thresholds and the person has theirs. The
+/// endpoint's value is kept beside it as `server_severity` for debugging and is never
+/// what colours a bar.
+export type Severity enum
+    | Normal
+    | Warning
+    | Critical
+
+export fn Severity @to_str() -> str =>
+    match @ {
+        Normal => "normal"
+        Warning => "warning"
+        Critical => "critical"
+    }
+
+/// How an account is doing, and why (01.1 §3.2).
+export type AccountState enum
+    | Ok
+    | Stale         // the token expired by `expiresAt`; no request was made
+    | Unknown       // network or 429: the last good reading is shown, dimmed
+    | Error         // 401 on a live token, or a reply that would not parse
+    | Hidden        // the person hid it (§5.4)
+
+export fn AccountState @to_str() -> str =>
+    match @ {
+        Ok => "ok"
+        Stale => "stale"
+        Unknown => "unknown"
+        Error => "error"
+        Hidden => "hidden"
+    }
+
+/// One limit window as the snapshot carries it.
+export type Window value {
+    kind str            // session | weekly_all | weekly_scoped
+    model str           // "" unless weekly_scoped
+    percent int
+    resets_at_ms int    // 0 when unknown
+    locked_reason str   // "" when not locked
+}
+
+export fn Window.of(kind str, model str, percent int, resets_at_ms int, locked_reason str) -> Window =>
+    { kind, model, percent, resets_at_ms, locked_reason }
+
+/// The thresholds a person set (01.2 §2.1: warning 70, critical 90 by default).
+export type Thresholds value {
+    warning int
+    critical int
+}
+
+export fn Thresholds.of(warning int, critical int) -> Thresholds => { warning, critical }
+
+/// Severity of one window under those thresholds.
+///
+/// A LOCKED window is critical at any percent: an account locked at 40 % is still
+/// locked, and colouring it green because the number is small hides the only thing
+/// the person needs to see.
+///
+/// The boundary is INCLUSIVE — 70 with `warning = 70` is already `warning`. The
+/// acceptance names the case that pins it: with `warning = 50`, 61 % is `warning`.
+export fn severity_of(w Window, th Thresholds) -> Severity {
+    if w.locked_reason != "" { return Critical }
+    if w.percent >= th.critical { return Critical }
+    if w.percent >= th.warning { return Warning }
+    Normal
+}
+
+/// Is any window of this account at 100 %? (01.1 §3.2: the red panel appears at 100 %
+/// even with no `locked_reason`, and the caption differs.)
+export fn at_100(windows []Window) -> bool {
+    for w in windows {
+        if w.percent >= 100 { return true }
+    }
+    false
+}
+
+/// Is any window locked by the server?
+export fn locked(windows []Window) -> bool {
+    for w in windows {
+        if w.locked_reason != "" { return true }
+    }
+    false
+}
+
+/// The worst severity across the account's windows — what the tray icon and the
+/// footer summary read.
+export fn worst(windows []Window, th Thresholds) -> Severity {
+    mut acc = Normal
+    for w in windows {
+        ro s = severity_of(w, th)
+        if rank(s) > rank(acc) { acc = s }
+    }
+    acc
+}
+
+fn rank(s Severity) -> int =>
+    match s {
+        Normal => 0
+        Warning => 1
+        Critical => 2
+    }
+
+// ── the state texts, verbatim from 01.1 §3.2 ─────────────────────────────────
+//
+// These strings are the CONTRACT: the page shows `message` as it arrives (01.3 §3.3),
+// so a word changed here changes what a person reads. They are constants rather than
+// sentences built at the call site for the same reason the config error texts are.
+
+const MSG_STALE_TAIL = " · start Claude Code under this login"
+const MSG_401 = "token rejected (401)"
+const MSG_BAD_JSON = "unexpected response · see log"
+
+/// `token expired 5 Sep 18:02 · start Claude Code under this login`
+export fn stale_message(expired_at str) -> str =>
+    "token expired ${expired_at}${MSG_STALE_TAIL}"
+
+/// `token rejected (401) · start Claude Code under this login`
+export fn error_401_message() -> str => "${MSG_401}${MSG_STALE_TAIL}"
+
+/// `unexpected response · see log`
+export fn error_parse_message() -> str => MSG_BAD_JSON
+
+/// `429 · retry 19:49 · data 19:41` — the amber badge of an `unknown` account.
+export fn rate_limited_badge(retry_at str, data_at str) -> str =>
+    "429 · retry ${retry_at} · data ${data_at}"
+
+/// `network error · retry 19:52`
+export fn network_badge(retry_at str) -> str => "network error · retry ${retry_at}"
+
+/// The caption of a red panel (01.1 §3.2): a lock names the reason, plain 100 % does
+/// not — and the two must not be confused, because one is the server refusing and the
+/// other is the person having spent their window.
+export fn red_panel_caption(is_locked bool, until str) -> str =>
+    if is_locked { "locked until ${until}" } else { "at 100% until ${until}" }

@@ -1,0 +1,73 @@
+// format.nv — the words and numbers of a limit row (task T1.6). PURE: no clock, no
+// effects, every "now" is a parameter.
+//
+// Sources: 01.1 §2.4 (the reset caption), §0 (two largest units).
+//
+// THIS IS THE NOVA TWIN OF `src/web/format.js`, AND THE TWO MUST AGREE CHARACTER FOR
+// CHARACTER. The page, the backend and the SDL widget all show the same row; if the
+// backend says `2d 17h` and the page says `2 days 17 hours`, one snapshot has two
+// readings. The tests here assert the same strings the JS tests assert.
+//
+// `Duration @to_human()` was tried and does NOT fit: it yields four components
+// (`2d 17h 13min 0s`) where §2.4 wants the two largest. Measured in spike T0.3.
+
+module model.format
+
+import std.time.civil.{TimeZone, Offset}
+import std.time.duration.{Duration, Timestamp}
+
+/// Two largest units (01.1 §0): `2d 17h`, `1h 02m`, `45m`.
+///
+/// Minutes are zero-padded ONLY after hours — a bare `05m` reads as a clock.
+export fn duration_words(ms int) -> str {
+    ro total = if ms < 0 { 0 } else { ms / 1000 }
+    ro days = total / 86400
+    ro hours = (total % 86400) / 3600
+    ro mins = (total % 3600) / 60
+    if days > 0 { return "${days}d ${hours}h" }
+    if hours > 0 {
+        ro mm = if mins < 10 { "0${mins}" } else { "${mins}" }
+        return "${hours}h ${mm}m"
+    }
+    "${mins}m"
+}
+
+/// The reset moment as the row shows it (01.1 §2.4): bare time today, weekday and
+/// time within the week, day and month beyond six days.
+///
+/// `zone` is a PARAMETER: "what o'clock is this instant" has no answer without saying
+/// where, and std has no `Timestamp.to_datetime()` for exactly that reason (T0.3).
+export fn reset_moment(at Timestamp, now Timestamp, zone TimeZone) -> str {
+    ro dt = at.to_zoned(zone).datetime()
+    ro t = dt.time()
+    ro hh = if t.hour() < 10 { "0${t.hour()}" } else { "${t.hour()}" }
+    ro mm = if t.minute() < 10 { "0${t.minute()}" } else { "${t.minute()}" }
+    ro hhmm = "${hh}:${mm}"
+
+    ro now_dt = now.to_zoned(zone).datetime()
+    if dt.date().to_iso() == now_dt.date().to_iso() { return hhmm }
+
+    ro ahead = at.minus(now)
+    if ahead.seconds() > 6 * 86400 {
+        ro d = dt.date()
+        // `Month @to_str()` and `Weekday @to_str()` already give the three-letter
+        // names §2.4 asks for; a hand-rolled table was written in T0.3 and deleted.
+        return "${d.day()} ${d.month().to_str()} ${hhmm}"
+    }
+    "${dt.weekday().to_str()} ${hhmm}"
+}
+
+/// The whole caption: `Tue 13:00 (2d 17h)`.
+export fn reset_caption(at Timestamp, now Timestamp, zone TimeZone) -> str {
+    ro left = at.minus(now)
+    "${reset_moment(at, now, zone)} (${duration_words(left.seconds() * 1000)})"
+}
+
+/// The row's name (01.1 §2.1). A scoped row without a model name would be
+/// indistinguishable from another, so it falls back visibly rather than silently.
+export fn row_label(kind str, model str) -> str {
+    if kind == "session" { return "session 5h" }
+    if kind == "weekly_all" { return "all 7d" }
+    if model == "" { return "scoped 7d" }
+    "${model} 7d"
+}
