@@ -1,0 +1,8 @@
+[lib]
+src = "src"
+
+[package]
+name = "check_accepts_missing_module_member"
+version = "0.0.0"
+description = "Probe: nova check accepts a qualified reference to a constant the imported module does not declare"
+license = "MIT OR Apache-2.0"

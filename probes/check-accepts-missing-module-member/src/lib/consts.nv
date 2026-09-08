@@ -1,0 +1,4 @@
+// A module with exactly one exported constant.
+module lib.consts
+
+export const REAL = 1

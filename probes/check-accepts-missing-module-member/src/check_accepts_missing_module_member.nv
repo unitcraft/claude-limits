@@ -1,0 +1,25 @@
+module check_accepts_missing_module_member
+
+// TWO IMPORT FORMS, and they behave differently. The brace list binds names; the
+// bare module import binds nothing usable, yet `nova check` accepts a dotted access
+// through it either way.
+import check_accepts_missing_module_member.lib.consts
+import check_accepts_missing_module_member.lib.consts.{REAL}
+
+/// CONTROL: imported BY NAME, used bare. This is the form that works.
+export fn by_name() -> int => REAL
+
+/// FAILING 1: module-qualified access to a constant that DOES exist. `nova check`
+/// says ok; codegen emits `consts->REAL`, treating the module name as a variable.
+export fn qualified_real() -> int => consts.REAL
+
+/// FAILING 2: the same, for a constant the module does not declare at all. Also
+/// accepted by `nova check` -- which is the sharper half: there is no name here for
+/// anything to resolve to, and nothing complains until C does.
+export fn qualified_missing() -> int => consts.THIS_CONSTANT_DOES_NOT_EXIST
+
+fn main() Io -> () {
+    print("control (by name): ${by_name()}")
+    print("qualified real:    ${qualified_real()}")
+    print("qualified missing: ${qualified_missing()}")
+}
