@@ -1,0 +1,63 @@
+// Artboard labels that scripts/check-artboard-labels.py must not report, each with
+// the reason on the same line. A design detail the page does not reproduce is a
+// DECISION, and a decision belongs in writing beside the thing it is about rather
+// than in the memory of whoever skipped it.
+//
+// Format:  <label>  # <reason>
+// A line with no `#` is reported as an exception with no reason, on purpose: an
+// unexplained exception is just a hidden gap wearing a permission slip.
+//
+// The checker also reports an entry that matches no artboard label any more. A stale
+// exception hides the NEXT gap instead of naming one -- the same failure the phase-6
+// list in lint-openapi.py is guarded against.
+
+// ---- composed from sample data, not chrome -------------------------------------
+// The renderer builds these from fixture fields (org, dirs, e-mails), so no literal
+// like this exists in the sources and none should. The checker matches whole labels
+// and cannot see that `Tech Center` and `nv-lang` arrive separately.
+Tech Center · nv-lang  # org + dirs, composed by renderAccount from separate fields
+Personal · dev, dev-wsl  # same composition, two directories
+Example Inc · ops  # same composition
+Example Inc · qa  # same composition
+dev, dev-wsl  # a directory list, composed by join(', ')
+dev · dev-wsl  # same list under the stats card, different separator in the design
+work@example.org · twice  # tile explanation, composed from an e-mail and a count word
+dev: main → work → main → qa  # a login chain, composed per folder from occupancy
+all of it under work@example.org in dev  # tile explanation, composed
+now: main@example.com · whole month  # folder card "now" line, composed
+single login · main@example.com  # folderNote() output, composed from the found login
+single login · work@example.org (same login as dev)  # folderNote(), shared-login case
+ops · hidden  # an account row with its hidden flag, composed
+\\wsl.localhost\Ubuntu\home\me\.claude  # a sample path in the design, not chrome
+
+// ---- the page says it in different words ---------------------------------------
+// Checked by reading the sources, not assumed. The checker compares whole labels and
+// cannot tell a rewording from an omission; these are rewordings.
+Browse…  # settings.js has the Browse control and its "type the path" hint (6 matches)
+A parent folder picks up every child that holds  # settings.js explains parent folders (3 matches)
+. Folders sharing one e-mail are shown as one account.  # same explanation, second sentence
+per-model column  # stats.js renders the per-model column and its own caption
+
+// ---- a FEATURE, not a label: excepted with what has to be built ----------------
+// Each of these looks like a missing string and is not. Writing the string somewhere
+// the checker can grep it -- a constant, a data- attribute -- would satisfy this file
+// and put nothing on the screen, which is the exact abuse a presence check invites.
+solid Fable · dashed Opus  # StatsFolders legend; T2.24, blocked behind T2.23 and T2.15 (no history endpoint in the tree)
+found in the folders above · drag to reorder  # the caption of an Accounts SECTION the panel does not have yet (01.1 sec.5.4: derived list, order handles, show-checkbox)
+read-only · nothing is written there  # belongs on DEFAULT folder rows; the panel renders folders from the config without marking which are defaults (sec.5.4)
+
+// ---- known gaps, deliberately NOT excepted --------------------------------------
+// These stay red because they are real and small, and hiding them here would be the
+// exact abuse this file invites. Listed in 01.5 under T2.25 as found-not-built:
+//
+//   (none. The five that stood here as plain missing STRINGS were built the same
+//   hour the checker first named them: the Reset-time control and its countdown
+//   hint, the thin-line and hatched hints, the off-hours "of the working rate", and
+//   the add-field placeholder. The three above are features and say so.)
+//
+// And one the checker CANNOT see, because it contains digits and the filter drops
+// anything with a number in it:
+//
+//   samples every 5 min · kept 30 days             (StatsView footnote; 01.1 does
+//                                                   NOT specify it -- the artboard
+//                                                   shows it and the spec is silent)

@@ -166,19 +166,22 @@ export function renderSettings(reply) {
 
   // 5.1 View — browser-only, and labelled as such so nobody looks for it in the file.
   const view = section(panel, 'View', 'kept in this browser, not in the config file');
+  view.append(field('Reset time',
+    toggle('ui.countdown', cfg.ui && cfg.ui.countdown), '\u00b7 show countdown'));
   view.append(field('Hide logins with an expired token',
     toggle('ui.hide_stale', cfg.ui && cfg.ui.hide_stale)));
 
   // 5.2
   const bars = section(panel, 'Time elapsed bar');
   bars.append(field('Show the elapsed-time strip',
-    toggle('ui.time_bar', cfg.ui && cfg.ui.time_bar)));
+    toggle('ui.time_bar', cfg.ui && cfg.ui.time_bar), '\u00b7 thin line under each bar'));
 
   // 5.3
   const fc = cfg.forecast || {};
   const forecast = section(panel, 'Forecast',
     'a straight line from the current working-hours rate to the reset');
-  forecast.append(field('Show forecast at reset', toggle('forecast.enabled', fc.enabled)));
+  forecast.append(field('Show forecast at reset',
+    toggle('forecast.enabled', fc.enabled), '\u00b7 hatched part of the bar'));
   const days = el('div', 'days');
   days.dataset.path = 'forecast.work_days';
   for (const d of DAYS) {
@@ -191,8 +194,9 @@ export function renderSettings(reply) {
   forecast.append(field('Working days', days));
   forecast.append(field('Working hours from', text('forecast.work_from', fc.work_from, '09:00')));
   forecast.append(field('to', text('forecast.work_to', fc.work_to, '19:00')));
-  forecast.append(field('Usage outside working hours, % of the rate',
-    number('forecast.off_hours_rate', fc.off_hours_rate ?? 0, { min: 0, max: 100 })));
+  forecast.append(field('Usage outside working hours',
+    number('forecast.off_hours_rate', fc.off_hours_rate ?? 0, { min: 0, max: 100 }),
+    'of the working rate'));
 
   // 5.4
   const folders = section(panel, 'Login folders', 'where accounts are discovered');
@@ -201,7 +205,7 @@ export function renderSettings(reply) {
   for (const f of cfg.folders || []) list.append(folderRow(f, panel.__accounts));
   folders.append(list);
   const add = el('div', 'folder-add');
-  add.append(text('folders.new', '', 'add a folder, e.g. C:/accounts'));
+  add.append(text('folders.new', '', 'path to a login folder or a parent of several'));
   const probe = el('button', 'btn', 'Check');
   probe.setAttribute('type', 'button');
   probe.dataset.action = 'probe';
@@ -282,8 +286,13 @@ function folderRow(folder, accountsFound) {
 /** Read the panel back into a config tree of the same shape it was built from. */
 export function collect(panel) {
   const out = {};
+  // A setting that belongs to this browser never reaches the config tree (sec.5.1).
+  // Until 2026-09-08 BROWSER_ONLY was a list nothing consulted -- the header called
+  // it a protection and the panel simply had no such control yet, so the test that
+  // asserts the outcome passed with nothing to protect against.
   const put = (path, value) => {
     const parts = path.split('.');
+    if (BROWSER_ONLY.includes(parts[parts.length - 1])) return;
     let node = out;
     for (const key of parts.slice(0, -1)) node = (node[key] ||= {});
     node[parts[parts.length - 1]] = value;

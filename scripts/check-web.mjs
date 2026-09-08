@@ -96,6 +96,22 @@ if (lint.status === 0) {
   for (const l of lintOut.split('\n').slice(-8)) console.log(`         ${l}`);
 }
 
+// Every label the six page artboards show must be produced by the page or excepted
+// in docs/design/artboard-exceptions.txt with a reason on the line. Green as of
+// 2026-09-08, so it gates rather than reports.
+const art = spawnSync('python', [path.join(here, 'check-artboard-labels.py')], {
+  cwd: repo, encoding: 'utf8',
+});
+const artOut = (art.stdout || '').trim();
+const artLast = artOut ? artOut.split('\n').find((l) => l.startsWith('ARTBOARD LABELS')) : '';
+if (art.status === 0) {
+  line('ok', 'artboard-labels.py', artLast || 'clean');
+} else {
+  failed += 1;
+  line('FAIL', 'artboard-labels.py', artLast || `exit ${art.status}`);
+  for (const l of artOut.split('\n').slice(-10)) console.log(`         ${l}`);
+}
+
 console.log(`\n${suites.length} suites + the page guard, ${total} tests`);
 console.log(failed ? `WEB CHECK: FAILED (${failed})` : 'WEB CHECK: clean');
 process.exit(failed ? 1 : 0);
