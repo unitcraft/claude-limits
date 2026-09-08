@@ -212,6 +212,19 @@ main:has(.view-wide:not([hidden])) { max-width: var(--page-width-wide); }
 .account-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
 .account-email { font-weight: 600; }
 .account-org, .account-dirs { font-size: 11px; color: var(--fg-muted); }
+
+/* 01.1 sec.3.2, state `unknown`: a 429 or a network blip. The rows STAY -- they are
+   the last good reading, and they are what a person wants at that moment -- but the
+   whole group is dimmed so nobody takes them for fresh, and the badge says why. */
+.account-badge {
+  margin-left: auto; padding: 1px 7px; border-radius: 999px;
+  font-size: 11px; font-family: var(--font-mono);
+  border: 1px solid var(--warning); color: var(--warning);
+}
+.rows-dimmed[data-dimmed="true"] { opacity: .5; }
+/* Not a hover target either: a stale row that lights up under the pointer invites
+   the reading it is dimmed to prevent. */
+.rows-dimmed[data-dimmed="true"] .row:hover { background: none; }
 .account-note { margin: 4px 0 0; font-size: 12px; color: var(--fg-muted); }
 
 .row {

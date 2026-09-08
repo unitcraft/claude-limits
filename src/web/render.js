@@ -54,10 +54,11 @@ export function valueText(limit, elapsedPercent = null) {
  * wins while it can be had. The differential excludes these fields for exactly this
  * reason (01.3 §5).
  */
-export function renderRow(limit) {
+export function renderRow(limit, { dimmed = false } = {}) {
   const sev = severityOf(limit);
   const row = el('div', 'row');
   row.dataset.severity = sev;
+  if (dimmed) row.dataset.dimmed = 'true';
   row.dataset.kind = limit.kind;
   if (limit.resets_at) row.dataset.resetsAt = limit.resets_at;
 
@@ -76,7 +77,9 @@ export function renderRow(limit) {
   const fill = el('div', 'bar-fill');
   fill.style.width = `${Math.max(0, Math.min(100, limit.percent ?? 0))}%`;
   bar.append(fill);
-  const fc = limit.forecast;
+  // No ghost on a dimmed row: a forecast is a claim about where the pace lands, and
+  // we do not know the pace of an account we cannot reach (01.1 sec.3.2).
+  const fc = dimmed ? null : limit.forecast;
   if (fc && fc.percent_at_reset != null && fc.percent_at_reset > limit.percent) {
     const ghost = el('div', 'bar-ghost');
     ghost.style.left = `${limit.percent}%`;
@@ -89,7 +92,7 @@ export function renderRow(limit) {
   // The time strip is computed here, not sent: only resets_at and kind are needed
   // (01.1 §2.6). Reading: fill left of the strip's end means a pace below the window.
   let elapsed = null;
-  if (limit.resets_at) {
+  if (limit.resets_at && !dimmed) {
     const strip = el('div', 'timebar');
     const share = elapsedShare(limit.kind, limit.resets_at);
     elapsed = Math.round(share * 100);
@@ -100,7 +103,8 @@ export function renderRow(limit) {
     strip.setAttribute('aria-hidden', 'true');   // its meaning goes into valuetext
     bars.append(strip);
   }
-  bar.setAttribute('aria-valuetext', valueText(limit, elapsed));
+  bar.setAttribute('aria-valuetext',
+    dimmed ? `last known: ${valueText(limit, null)}` : valueText(limit, elapsed));
   row.append(bars);
 
   const pct = el('span', 'row-pct', limit.percent == null ? '—' : `${Math.round(limit.percent)}%`);
@@ -152,8 +156,29 @@ export function renderAccount(acc, limits) {
   }
   block.append(head);
 
-  // A state other than ok replaces the rows with its reason. Never an empty block:
-  // an account with nothing under it is indistinguishable from a broken renderer.
+  // 01.1 sec.3.2 splits the not-ok states, and the split is the point.
+  //
+  // `unknown` -- a 429 or a network blip -- KEEPS the rows: they are the last good
+  // snapshot, and they are what a person most wants to see at exactly that moment.
+  // They are dimmed as a group, and the badge in the header says why and until when.
+  // Until 2026-09-08 every not-ok state was treated alike and the numbers vanished
+  // on a single rate-limited poll.
+  if (acc.state === 'unknown') {
+    const badge = el('span', 'account-badge', acc.message || 'no answer');
+    badge.dataset.tone = 'warning';
+    head.append(badge);
+    const dim = el('div', 'rows-dimmed');
+    dim.dataset.dimmed = 'true';
+    // The strip and the ghost are statements about NOW, and this reading is not now:
+    // drawing them would date stale numbers with a live clock.
+    for (const limit of sortLimits(limits)) dim.append(renderRow(limit, { dimmed: true }));
+    block.append(dim);
+    return block;
+  }
+
+  // `stale` and `error` have nothing to show -- the token is dead, or the answer was
+  // rejected -- so the reason takes the place of the rows. Never an empty block: an
+  // account with nothing under it is indistinguishable from a broken renderer.
   if (acc.state && acc.state !== 'ok') {
     block.append(el('p', 'account-note', acc.message || acc.state));
     return block;

@@ -20,7 +20,7 @@ installDocument({ 'view-list': list, 'view-cards': cards });
 // shipped code drifted away from it. render.js exists precisely so this import is
 // possible: it takes a document and returns nodes, with no fetch, timers or
 // EventSource to drag in. Dynamic, because the stub must be installed first.
-const { renderList, renderCards, renderAccount } = await import('../src/web/render.js');
+const { renderList, renderCards, renderAccount, renderRow } = await import('../src/web/render.js');
 
 // -------------------------------------------------------------------- tests --
 
@@ -208,6 +208,70 @@ test('a hundred percent WITHOUT a reason colours the block, and locked still win
 
   const ordinary = renderAccount({ email: 'a@x', state: 'ok' }, []);
   assert.equal(ordinary.dataset.state, 'ok');
+});
+
+console.log('\nthe three not-ok states are not one state (01.1 sec.3.2)');
+
+const limitsOf = (id) => snap.limits.filter((l) => l.account_id === id);
+
+test('`unknown` KEEPS the last good rows instead of blanking them', () => {
+  // A 429 or a network blip wiped the numbers off the block until 2026-09-08 --
+  // the numbers a person most wants at exactly that moment, and the ones the
+  // artboard shows for this very account.
+  const qa = snap.accounts.find((a) => a.state === 'unknown');
+  assert.ok(qa, 'the fixture needs an unknown account for this to mean anything');
+  const block = renderAccount(qa, limitsOf(qa.id));
+  const rows = block.all((n) => n.className === 'row');
+  assert.ok(rows.length > 0, 'the last good snapshot stays on screen');
+  assert.equal(rows.length, limitsOf(qa.id).length);
+});
+
+test('and marks them as a dimmed group, with the reason in the header', () => {
+  const qa = snap.accounts.find((a) => a.state === 'unknown');
+  const block = renderAccount(qa, limitsOf(qa.id));
+
+  const group = block.find((n) => n.className === 'rows-dimmed');
+  assert.ok(group, 'the whole group is dimmed, not each row separately');
+  assert.equal(group.dataset.dimmed, 'true');
+
+  const badge = block.find((n) => n.className === 'account-badge');
+  assert.ok(badge, 'the badge says why and until when');
+  assert.equal(badge.dataset.tone, 'warning');
+  assert.match(badge.textContent, /429/);
+  // The text comes ready from the backend; the page decides WHERE it goes.
+  assert.equal(badge.textContent, qa.message);
+});
+
+test('a dimmed row draws no strip and no ghost: both are claims about NOW', () => {
+  const withForecast = snap.limits.find((l) => l.forecast && l.resets_at);
+  assert.ok(withForecast, 'the fixture needs a limit with both');
+
+  const live = renderRow(withForecast);
+  assert.equal(live.all((n) => n.className === 'timebar').length, 1);
+  assert.equal(live.all((n) => n.className === 'bar-ghost').length, 1);
+
+  const dim = renderRow(withForecast, { dimmed: true });
+  assert.equal(dim.dataset.dimmed, 'true');
+  assert.equal(dim.all((n) => n.className === 'timebar').length, 0,
+    'elapsed share against a live clock would date a stale reading');
+  assert.equal(dim.all((n) => n.className === 'bar-ghost').length, 0,
+    'a forecast needs a pace, and the pace of an unreachable account is unknown');
+});
+
+test('a dimmed row SAYS it is last-known, so dimming is not colour-only meaning', () => {
+  const l = snap.limits[0];
+  const dim = renderRow(l, { dimmed: true });
+  const bar = dim.find((n) => n.className === 'bar');
+  assert.match(bar.attrs['aria-valuetext'], /^last known: /, '01.1 sec.10');
+});
+
+test('`stale` and `error` still replace the rows, because there is nothing to show', () => {
+  const stale = snap.accounts.find((a) => a.state === 'stale');
+  const block = renderAccount(stale, limitsOf(stale.id));
+  assert.equal(block.all((n) => n.className === 'row').length, 0);
+  assert.ok(block.find((n) => n.className === 'account-note'));
+  assert.equal(block.all((n) => n.className === 'account-badge').length, 0,
+    'a dead token is not a transient failure and gets no retry badge');
 });
 
 console.log(`\n${passed} passed${process.exitCode ? ', SOME FAILED' : ''}`);
