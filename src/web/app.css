@@ -203,6 +203,7 @@ main:has(.view-wide:not([hidden])) { max-width: var(--page-width-wide); }
 .account[data-state="stale"], .account[data-state="unknown"], .account[data-state="error"] {
   background: var(--surface-alt);
 }
+.account[data-state="at-100"],
 .account[data-state="locked"] {
   background: var(--surface-critical);
   border-color: var(--border-critical);
@@ -277,6 +278,7 @@ main:has(.view-wide:not([hidden])) { max-width: var(--page-width-wide); }
 .card[data-state="stale"], .card[data-state="unknown"], .card[data-state="error"] {
   background: var(--surface-alt);
 }
+.card[data-state="at-100"],
 .card[data-state="locked"] {
   background: var(--surface-critical);
   border-color: var(--border-critical);
@@ -308,6 +310,7 @@ main:has(.view-wide:not([hidden])) { max-width: var(--page-width-wide); }
 }
 .card-handle:hover { color: var(--fg-muted); }
 .card-handle:focus-visible { outline: 2px solid var(--fg-soft); outline-offset: -2px; }
+.card[data-state="at-100"] .card-handle,
 .card[data-state="locked"] .card-handle { color: #c9a0a3; }
 
 /* Lifted: the exact shadow, rotation and offset of 01.1 §4.1. `data-grabbed` is set
@@ -379,6 +382,7 @@ main:has(.view-wide:not([hidden])) { max-width: var(--page-width-wide); }
 
 .stat-cards { display: flex; flex-direction: column; gap: 12px; }
 .stat-card { padding: 12px 14px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; }
+.stat-card[data-state="at-100"],
 .stat-card[data-state="locked"] { background: var(--surface-critical); border-color: var(--border-critical); }
 .stat-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
 .stat-summary { font-size: 11px; color: var(--fg-muted); font-family: var(--font-mono); }

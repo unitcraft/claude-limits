@@ -129,6 +129,15 @@ export function renderRow(limit) {
 export function renderAccount(acc, limits) {
   const block = el('section', 'account');
   block.dataset.state = acc.state || 'ok';
+  // Two different facts, both of which colour the block (01.3 §3.3): `locked` means
+  // a window carries a `locked_reason` -- the endpoint is refusing -- while `at_100`
+  // means a window sits at 100% with no reason given, i.e. the allowance is simply
+  // spent. `at_100` was missing here and the block stayed uncoloured for exactly the
+  // case a person most needs to see; the acceptance line of T2.20 names it.
+  //
+  // `locked` wins when both are true: "refused" is the more specific statement, and
+  // a person who sees it does not also need to be told the number reached 100.
+  if (acc.at_100) block.dataset.state = 'at-100';
   if (acc.locked) block.dataset.state = 'locked';
 
   const head = el('header', 'account-head');

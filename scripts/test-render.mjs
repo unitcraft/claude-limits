@@ -20,7 +20,7 @@ installDocument({ 'view-list': list, 'view-cards': cards });
 // shipped code drifted away from it. render.js exists precisely so this import is
 // possible: it takes a document and returns nodes, with no fetch, timers or
 // EventSource to drag in. Dynamic, because the stub must be installed first.
-const { renderList, renderCards } = await import('../src/web/render.js');
+const { renderList, renderCards, renderAccount } = await import('../src/web/render.js');
 
 // -------------------------------------------------------------------- tests --
 
@@ -193,3 +193,21 @@ test('a second render updates in place: same nodes, no duplicates', () => {
 });
 
 console.log(`\n${passed} passed${process.exitCode ? ', SOME FAILED' : ''}`);
+
+test('a hundred percent WITHOUT a reason colours the block, and locked still wins', () => {
+  // 01.3 section 3.3 keeps these apart: `locked` means a window carries a
+  // `locked_reason` -- the endpoint is refusing -- while `at_100` means a window
+  // sits at 100% with none, i.e. the allowance is simply spent. Both colour the
+  // block, and only `locked` did until 2026-09-08, so the block stayed plain for
+  // exactly the case a person most needs to notice.
+  const spent = renderAccount({ email: 'a@x', state: 'ok', at_100: true }, []);
+  assert.equal(spent.dataset.state, 'at-100');
+
+  // "Refused" is the more specific statement; someone seeing it does not also need
+  // to be told the number reached 100.
+  const refused = renderAccount({ email: 'a@x', state: 'ok', at_100: true, locked: true }, []);
+  assert.equal(refused.dataset.state, 'locked');
+
+  const ordinary = renderAccount({ email: 'a@x', state: 'ok' }, []);
+  assert.equal(ordinary.dataset.state, 'ok');
+});
