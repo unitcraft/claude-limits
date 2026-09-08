@@ -1,0 +1,203 @@
+// login.nv — reading one login directory into an identity and a token (task T1.4).
+//
+// Sources: README §Accounts and §Token lifetime, plan 01 §0 ("одна почта = одна
+// учётка"), 01.2 §3.2.
+//
+// THE TOKEN IS THE WHOLE POINT OF THIS FILE'S SHAPE.
+//
+//   `Token` is declared `consume`: it cannot be copied, so it cannot be quietly kept
+//   in a log line, a snapshot or a debug print. It is read here and handed to the one
+//   place that sends it.
+//
+//   `Token` has a `Debug` implementation that prints `Token(hidden)`. Without one,
+//   interpolation is refused outright (D186) -- but "refused" only helps until
+//   someone adds `#impl(Debug)` to make an error go away. A deliberate Debug that
+//   shows nothing is the version that survives that.
+//
+//   `Login` and `Account` therefore do NOT hold the token at all. They hold whether a
+//   token exists and when it expires; the secret travels separately.
+//
+// A secret that reaches a terminal stays in its scrollback, its log and the session
+// transcript, and no later care removes it.
+
+module accounts.login
+
+/// Reading a file, and only reading it -- the same reasoning as `Dirs` in
+/// discover.nv: with no write operation in the effect, a write cannot be written.
+export type Creds effect {
+    read(path str) -> str        // "" when the file is absent or unreadable
+}
+
+/// The bearer token. `consume`: used once, never copied, never printed.
+#impl(Debug)
+export type Token consume {
+    secret str
+}
+
+/// What Debug shows, on purpose: nothing.
+///
+/// The alternative people reach for is a prefix or a length. Both leak: a prefix
+/// identifies the account across logs, and a length narrows a brute force. There is
+/// no safe amount of a secret to show.
+export fn Token @debug(mut f Fmt) -> () {
+    f.write("Token(hidden)")
+}
+
+export fn Token.of(secret str) -> Token => { secret }
+
+/// The only way out. Named so it is greppable: a review can find every place a token
+/// is unwrapped by searching for `into_secret`.
+export fn Token consume @into_secret() -> str => @secret
+
+/// One login directory, read. NO TOKEN HERE -- see the header.
+export type Login value {
+    dir str             // the directory this came from, normalised
+    name str            // the directory's own name, what a person recognises
+    email str           // lower case, always
+    org str
+    expires_at_ms int   // 0 when unknown
+    has_token bool
+}
+
+/// State of a login's token at a given moment (README §Token lifetime).
+export type TokenState enum
+    | Ok
+    | Stale         // expired, or expiring within the guard window
+    | NoToken
+
+export fn TokenState @to_str() -> str =>
+    match @ {
+        Ok => "ok"
+        Stale => "stale"
+        NoToken => "no_token"
+    }
+
+/// One account: one e-mail, however many directories it lives in (plan 01 §0).
+export type Account value {
+    email str
+    org str
+    dirs []str          // directory NAMES, in discovery order
+    state TokenState
+    expires_at_ms int   // the EARLIEST expiry among its directories
+}
+
+/// A token within this many milliseconds of expiry is already `stale`.
+///
+/// Sixty seconds because the poll takes a moment and the endpoint answers 401 to a
+/// token that expired in flight -- and a 401 is followed by a 429 for the whole
+/// machine, which is not a hypothetical here: it happened on this project.
+const EXPIRY_GUARD_MS = 60_000
+
+// ── reading the two files ────────────────────────────────────────────────────
+//
+// Both are JSON, and both are read with a deliberately small scanner rather than a
+// JSON parser: these two files have one shape each, the fields are flat, and the
+// credentials file is the one place a full parser would hold the secret in a value
+// nobody can see. `field_str` never returns the token by accident because it is only
+// ever called with the field the caller names.
+
+/// The string value of `"key": "value"` at any depth. Returns "" when absent.
+///
+/// Depth does not matter here: `.claude.json` has `oauthAccount.emailAddress` nested
+/// one level and nothing else called `emailAddress`, so the first match is the right
+/// one. If that ever stops being true the scanner is wrong and a parser is needed --
+/// which is why this comment says the condition out loud.
+export fn field_str(text str, key str) -> str {
+    ro needle = "\"${key}\""
+    ro after = match text.split_once(needle) {
+        Some((_, tail)) => tail
+        None => return ""
+    }
+    ro from_colon = match after.split_once(":") {
+        Some((_, tail)) => tail
+        None => return ""
+    }
+    ro open = match from_colon.split_once("\"") {
+        Some((_, tail)) => tail
+        None => return ""
+    }
+    match open.split_once("\"") {
+        Some((value, _)) => value
+        None => ""
+    }
+}
+
+/// The integer value of `"key": 123`. Returns 0 when absent or not a number.
+export fn field_int(text str, key str) -> int {
+    ro needle = "\"${key}\""
+    ro after = match text.split_once(needle) {
+        Some((_, tail)) => tail
+        None => return 0
+    }
+    mut from_colon = match after.split_once(":") {
+        Some((_, tail)) => tail
+        None => return 0
+    }
+    mut digits = ""
+    for ch in from_colon.trim_ascii().chars() {
+        if ch >= '0' && ch <= '9' { digits = "${digits}${ch}" } else { break }
+    }
+    match digits.to_int() {
+        Ok(n) => n
+        Err(_) => 0
+    }
+}
+
+/// Lower case, trimmed. One e-mail is one account (plan 01 §0), and `Main@Example.com`
+/// and `main@example.com` are the same person -- without this they would be polled
+/// twice and shown twice.
+/// `to_ascii_lower`, not the unicode `to_lower`: an e-mail's domain is ASCII by the
+/// protocol, and a unicode fold would equate characters a mail server does not.
+/// Hand-rolling it with `(ch as int) + 32` was the first version, and the compiler
+/// refused that cast outright — `int as char` is range-checked, `char.from(n)?`.
+export fn normalise_email(raw str) -> str => raw.trim_ascii().to_ascii_lower()
+
+export fn Login.of(dir str, name str, email str, org str, expires_at_ms int, has_token bool) -> Login =>
+    { dir, name, email, org, expires_at_ms, has_token }
+
+/// Read a login directory's DESCRIPTION. No token, ever.
+///
+/// TWO CALLS, NOT A TUPLE, and the second reason is better than the first.
+///
+///   The first reason is a defect: `-> (Login, Option[Token])` does not survive
+///   codegen -- an `Option` of a `consume` type inside a tuple emits C that names a
+///   typedef before declaring it. Isolated in `probes/option-consume-in-tuple/`.
+///
+///   The second reason is the one to keep even after that is fixed: a caller that
+///   only wants to SHOW an account now cannot receive the token at all. With the
+///   tuple it received one and was obliged to consume it, which is exactly the
+///   handling a secret should not require of code that has no use for it.
+export fn read_login(dir str, name str, identity_path str, credentials_path str) Creds -> Login {
+    ro identity = if identity_path == "" { "" } else { Creds.read(identity_path) }
+    ro email = normalise_email(field_str(identity, "emailAddress"))
+    ro org = field_str(identity, "organizationName")
+
+    ro creds = if credentials_path == "" { "" } else { Creds.read(credentials_path) }
+    ro expires = field_int(creds, "expiresAt")
+    ro has_token = field_str(creds, "accessToken") != ""
+
+    Login.of(dir, name, email, org, expires, has_token)
+}
+
+/// The token itself, for the one caller that sends it.
+///
+/// Separate from `read_login` so the secret is asked for explicitly. Greppable: every
+/// place that can hold a token calls this function by name.
+export fn read_token(credentials_path str) Creds -> Option[Token] {
+    if credentials_path == "" { return None }
+    ro secret = field_str(Creds.read(credentials_path), "accessToken")
+    if secret == "" { return None }
+    Some(Token.of(secret))
+}
+
+/// `ok` / `stale` / `no_token` at a given moment.
+///
+/// `now_ms` is a PARAMETER, not `Time.now()`: the state of a token is a fact about a
+/// moment, and a function that reads the clock itself cannot be asked about any other
+/// moment -- including the one a test needs.
+export fn state_of(login Login, now_ms int) -> TokenState {
+    if !login.has_token { return NoToken }
+    if login.expires_at_ms == 0 { return Ok }      // unknown expiry: not a reason to refuse
+    if login.expires_at_ms <= now_ms + EXPIRY_GUARD_MS { return Stale }
+    Ok
+}

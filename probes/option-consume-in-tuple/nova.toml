@@ -1,0 +1,18 @@
+# Probe: Option of a `consume` type taken out of a TUPLE breaks codegen.
+#
+# Isolated by removal: the first hypothesis (a closure's declared return type) built
+# and ran, so it was wrong; taking the closure away while keeping the tuple still
+# fails. Two controls stay in the file so the failure cannot be misread as
+# "Option of a consume type is unsupported".
+
+[lib]
+src = "src"
+
+[package]
+name = "probe_option_consume_in_tuple"
+version = "0.0.0"
+description = "Probe: Option[consume T] destructured from a tuple emits a by-value cast against a by-pointer typedef"
+
+[[bin]]
+name = "probe-option-consume-in-tuple"
+path = "src/main.nv"

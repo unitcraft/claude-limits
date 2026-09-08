@@ -1,0 +1,75 @@
+// group.nv — logins to accounts (task T1.4). Pure: no effects, no clock, no I/O.
+//
+// One e-mail is one account, however many directories it lives in (plan 01 §0). The
+// endpoint counts per LOGIN, so two directories sharing an e-mail must be asked ONCE:
+// asking twice doubles the request rate for no new information, and this project has
+// already been rate-limited for exactly that.
+
+module accounts.group
+
+import login.{Login, Account, TokenState, state_of}
+
+fn Account.of(email str, org str, dirs []str, state TokenState, expires_at_ms int) -> Account =>
+    { email, org, dirs, state, expires_at_ms }
+
+fn index_of(accounts []Account, email str) -> int {
+    mut i = 0
+    while i < accounts.len() {
+        if accounts[i].email == email { return i }
+        i += 1
+    }
+    -1
+}
+
+/// The worse of two states. `no_token` beats `stale` beats `ok`.
+///
+/// An account whose token is good in one directory and expired in another is NOT
+/// healthy: the poller will use one of them, and the honest thing to show is the
+/// state that can fail. The alternative -- reporting `ok` because some directory is
+/// fine -- hides the directory a person has to fix.
+fn worse(a TokenState, b TokenState) -> TokenState {
+    if rank(a) >= rank(b) { a } else { b }
+}
+
+fn rank(s TokenState) -> int =>
+    match s {
+        Ok => 0
+        Stale => 1
+        NoToken => 2
+    }
+
+/// Group logins by e-mail, preserving discovery order for both accounts and their
+/// directories. Stable on purpose: a list that reorders itself between polls is
+/// unreadable, and the page's own order (01.1 §4.2) is applied on top of this one.
+export fn group(logins []Login, now_ms int) -> []Account {
+    mut out []Account = []
+    for l in logins {
+        // A login with no e-mail cannot be grouped: it would merge every nameless
+        // directory into one phantom account. They are dropped here and reported by
+        // the discovery layer, which knows the path.
+        if l.email == "" { continue }
+
+        ro st = state_of(l, now_ms)
+        ro at = index_of(out, l.email)
+        if at < 0 {
+            out.push(Account.of(l.email, l.org, [l.name], st, l.expires_at_ms))
+            continue
+        }
+
+        mut acc = out[at]
+        acc.dirs.push(l.name)
+        acc.state = worse(acc.state, st)
+        // The EARLIEST expiry, because that is the one that will bite first. A zero
+        // means "unknown" and must not win a minimum against a real timestamp.
+        if l.expires_at_ms != 0 {
+            if acc.expires_at_ms == 0 || l.expires_at_ms < acc.expires_at_ms {
+                acc.expires_at_ms = l.expires_at_ms
+            }
+        }
+        // An organisation name may be missing in one directory and present in
+        // another; keep the one that says something.
+        if acc.org == "" && l.org != "" { acc.org = l.org }
+        out[at] = acc
+    }
+    out
+}

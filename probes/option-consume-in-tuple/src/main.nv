@@ -1,0 +1,82 @@
+// Probe: `Option[T]` with a `consume` T, inside a TUPLE.
+//
+// Found 2026-09-08 in task T1.4: `accounts/login.nv` declares
+// `fn read_login(...) -> (Login, Option[Token])`, and the test that uses it does not
+// compile.
+//
+// TWO SYMPTOMS, and they appear at different moments:
+//
+//   (1) DECLARING such a function is already enough. The tuple's typedef is emitted
+//       BEFORE the Option typedef it refers to:
+//         main.c:430: error: unknown type name 'NovaOpt_Nova_Secret_p'
+//         430 | typedef struct _NovaTuple_2_8_nova_str_21_NovaOpt_Nova_Secret_p
+//               { nova_str f0; NovaOpt_Nova_Secret_p f1; } ...
+//       while that name is defined later, at :509.
+//
+//   (2) DESTRUCTURING it adds a second error, a by-value cast against the by-pointer
+//       typedef:
+//         main.c:5612: error: expected expression
+//         5612 | NovaOpt_Nova_Secret_p _nv_scr_499 = (*(NovaOpt_Nova_Secret*)(got.f1));
+//       The compiler's own hint in the real case named it: "did you mean
+//       'NovaOpt_Nova_Token_p'?" -- the pointer form exists, and two places disagree
+//       about which one an Option of a consume type is.
+//
+// THE TRIGGER WAS ISOLATED BY REMOVAL, NOT BY GUESSING:
+//
+//   half one    plain fn -> Option[Secret]                       BUILDS
+//   half two    closure  -> Option[Secret]                       BUILDS
+//   half three  plain fn -> (str, Option[Secret])                FAILS   <- minimal
+//
+// The first hypothesis was "a closure's declared return type"; that probe built and
+// ran, so it was wrong. Taking the closure away while keeping the tuple still fails.
+// Halves one and two stay in this file as controls: without them the failure reads as
+// "Option of a consume type is unsupported", which is false.
+//
+// CHECKED WITH THE BUILD CACHE OFF (`NOVA_CACHE=0`). The first control run reported
+// "build cache hit -- reusing generated C" and was therefore worthless: it judged the
+// C of the previous successful build, not of the edited source.
+
+module probe_option_consume_in_tuple.main
+
+type Secret consume {
+    s str
+}
+
+fn Secret.of(s str) -> Secret => { s }
+
+/// A linear value cannot be dropped with `_` (E_LINEAR_PAYLOAD_DISCARDED, D461):
+/// there is nobody to free it. So every half consumes what it takes.
+fn Secret consume @into_str() -> str => @s
+
+// ── control one: Option of a consume type, on its own ────────────────────────
+fn plain(make bool) -> Option[Secret] {
+    if make { Some(Secret.of("x")) } else { None }
+}
+
+// ── control two: the same, crossing a closure's declared return type ─────────
+fn via_closure(body fn() -> Option[Secret]) -> Option[Secret] => body()
+
+// ── under test: the same Option INSIDE A TUPLE ───────────────────────────────
+// Declaring this alone already breaks the build -- see symptom (1).
+fn pair(make bool) -> (str, Option[Secret]) {
+    if make { ("yes", Some(Secret.of("t"))) } else { ("no", None) }
+}
+
+fn main() Io -> () {
+    match plain(true) {
+        Some(consume v) => println("control 1, bare Option: ${v.into_str()}")
+        None => println("control 1: None")
+    }
+
+    match via_closure(fn() -> Option[Secret] => plain(true)) {
+        Some(consume v) => println("control 2, through a closure: ${v.into_str()}")
+        None => println("control 2: None")
+    }
+
+    // Symptom (2). Delete `pair` as well to see the two controls build and run.
+    ro got = pair(true)
+    match got.1 {
+        Some(consume v) => println("under test, from a tuple: ${got.0} ${v.into_str()}")
+        None => println("under test: None")
+    }
+}

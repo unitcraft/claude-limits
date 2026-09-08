@@ -1,0 +1,203 @@
+// Tests for login.nv and group.nv — task T1.4.
+//
+//   ./nova.sh test src/accounts/ --filter login
+//
+// The four acceptance items, in order: two directories with one e-mail become one
+// account with two dirs; an expired `expiresAt` is `stale`; the e-mail is lower case;
+// and the Debug output of an account carries NO token.
+
+module accounts.login_test
+
+import login.{Creds, Token, Login, read_token, field_str, field_int, normalise_email, read_login, state_of}
+import group.{group}
+
+// The two files as Claude Code writes them, trimmed to the fields that matter.
+// The token carries the deliberate `sk-ant-fixture-` prefix the fixtures use, so a
+// leak in the test output is recognisable at a glance.
+fn identity_json() -> str =>
+    "{\"oauthAccount\":{\"emailAddress\":\"Main@Example.COM\",\"organizationName\":\"Tech Center\"}}"
+
+fn creds_json(expires int) -> str =>
+    "{\"claudeAiOauth\":{\"accessToken\":\"sk-ant-fixture-SECRET\",\"expiresAt\":${expires}}}"
+
+const NOW_MS = 1_800_000_000_000        // a fixed moment; nothing here reads a clock
+const LATER = 1_900_000_000_000
+const PAST = 1_700_000_000_000
+
+fn with_files[T](identity str, creds str, body fn() Creds -> T) -> T =>
+    with Creds = effect Creds {
+        read(path) -> str {
+            if path.ends_with(".claude.json") { identity } else { creds }
+        }
+    } {
+        body()
+    }
+
+// ── the two files ────────────────────────────────────────────────────────────
+
+test "a nested field is found, and an absent one is empty" {
+    assert(field_str(identity_json(), "emailAddress") == "Main@Example.COM")
+    assert(field_str(identity_json(), "organizationName") == "Tech Center")
+    assert(field_str(identity_json(), "nothingLikeThis") == "")
+}
+
+test "an integer field is read, and a missing one is zero" {
+    assert(field_int(creds_json(1234), "expiresAt") == 1234)
+    assert(field_int(creds_json(1234), "notHere") == 0)
+}
+
+test "the e-mail is lower case, always" {
+    assert(normalise_email("Main@Example.COM") == "main@example.com")
+    assert(normalise_email("  MIXED@Case.Org  ") == "mixed@case.org")
+    assert(normalise_email("already@lower.com") == "already@lower.com")
+    assert(normalise_email("") == "")
+}
+
+test "reading a login gives the identity, and the token is a SEPARATE ask" {
+    ro info = with_files(identity_json(), creds_json(LATER),
+        fn() -> Login =>
+            read_login("/fx/a", "a", "/fx/a/.claude.json", "/fx/a/.claude/.credentials.json"))
+    assert(info.email == "main@example.com")
+    assert(info.org == "Tech Center")
+    assert(info.expires_at_ms == LATER)
+    // The description knows a token EXISTS and does not carry it: a caller that only
+    // wants to show the account cannot receive the secret at all.
+    assert(info.has_token)
+}
+
+test "the token comes only from the call that asks for it by name" {
+    ro got = with_files(identity_json(), creds_json(LATER),
+        fn() -> Option[Token] => read_token("/fx/a/.claude/.credentials.json"))
+    match got {
+        None => assert(false)
+        Some(consume t) => assert(t.into_secret() == "sk-ant-fixture-SECRET")
+    }
+}
+
+test "a directory with no credentials yields no token and says so" {
+    ro info = with_files(identity_json(), "",
+        fn() -> Login => read_login("/fx/b", "b", "/fx/b/.claude.json", ""))
+    assert(!info.has_token)
+    ro got = with_files(identity_json(), "", fn() -> Option[Token] => read_token(""))
+    assert(got.is_none())
+}
+
+// ── the token never appears ──────────────────────────────────────────────────
+
+test "Debug of a token shows nothing of the token" {
+    ro t = Token.of("sk-ant-fixture-SECRET")
+    ro shown = "${t:?}"
+    assert(shown == "Token(hidden)")
+    assert(!shown.contains("sk-ant"))
+    assert(!shown.contains("SECRET"))
+    // Not even a length: a length narrows a brute force, and a prefix identifies the
+    // account across logs. There is no safe amount of a secret to show.
+    //
+    // Checked as "no digit at all" rather than `!contains("21")`, which was the first
+    // version: that one passes for the wrong reason the moment the token's length
+    // changes, and it would also pass on a debug string containing some other number.
+    // An assertion that can be satisfied by accident is not an assertion.
+    mut has_digit = false
+    for ch in shown.chars() {
+        if ch.is_ascii_digit() { has_digit = true }
+    }
+    assert(!has_digit)
+}
+
+// THE ACCEPTANCE ITEM "the Debug output of an account carries no token" HAS NO TEST
+// HERE, AND THAT IS THE STRONGER ANSWER, not a gap.
+//
+// `Account` and `Login` have no `#impl(Debug)` at all, so `"${account:?}"` does not
+// compile -- checked: it reaches C and clang refuses it. And neither type has a field
+// that could hold a token: the fields are strings, a list of strings, an enum and an
+// int. A runtime assertion that the printed form lacks the secret would be re-checking
+// the type system, and it would go on passing if someone later added a `token` field
+// plus a Debug that happened to omit it.
+//
+// The runtime test that DOES earn its place is the one above, on `Token`: there a
+// custom Debug is what hides the secret, and a custom Debug can be got wrong.
+
+// ── token state ──────────────────────────────────────────────────────────────
+
+fn sample_login(email str, name str, expires int) -> Login =>
+    Login.of("/fx/${name}", name, email, "Tech Center", expires, true)
+
+test "an expired expiresAt is stale" {
+    assert(state_of(sample_login("a@x", "a", PAST), NOW_MS).to_str() == "stale")
+}
+
+test "a token expiring within the guard window is already stale" {
+    // The guard is 60 s: a token that dies in flight earns a 401, and a 401 is
+    // followed by a 429 for the whole machine.
+    assert(state_of(sample_login("a@x", "a", NOW_MS + 30_000), NOW_MS).to_str() == "stale")
+    assert(state_of(sample_login("a@x", "a", NOW_MS + 600_000), NOW_MS).to_str() == "ok")
+}
+
+test "no token is its own state, not stale" {
+    ro none = Login.of("/fx/c", "c", "a@x", "", 0, false)
+    assert(state_of(none, NOW_MS).to_str() == "no_token")
+}
+
+test "an unknown expiry is not a reason to refuse" {
+    ro unknown = Login.of("/fx/d", "d", "a@x", "", 0, true)
+    assert(state_of(unknown, NOW_MS).to_str() == "ok")
+}
+
+// ── grouping ─────────────────────────────────────────────────────────────────
+
+test "two directories with one e-mail become ONE account with two dirs" {
+    ro accounts = group([
+        sample_login("main@example.com", "same-email-a", LATER),
+        sample_login("main@example.com", "same-email-b", LATER),
+    ], NOW_MS)
+    assert(accounts.len() == 1)
+    assert(accounts[0].dirs.len() == 2)
+    assert(accounts[0].dirs[0] == "same-email-a")
+    assert(accounts[0].dirs[1] == "same-email-b")
+}
+
+test "different e-mails stay different accounts, in discovery order" {
+    ro accounts = group([
+        sample_login("b@x.com", "b", LATER),
+        sample_login("a@x.com", "a", LATER),
+    ], NOW_MS)
+    assert(accounts.len() == 2)
+    assert(accounts[0].email == "b@x.com")
+    assert(accounts[1].email == "a@x.com")
+}
+
+test "an account is only as healthy as its WORST directory" {
+    ro accounts = group([
+        sample_login("main@example.com", "good", LATER),
+        sample_login("main@example.com", "expired", PAST),
+    ], NOW_MS)
+    assert(accounts.len() == 1)
+    // Reporting `ok` because one directory is fine would hide the one to fix.
+    assert(accounts[0].state.to_str() == "stale")
+}
+
+test "the earliest expiry wins, and an unknown one does not win" {
+    ro accounts = group([
+        sample_login("main@example.com", "late", LATER),
+        Login.of("/fx/x", "unknown", "main@example.com", "", 0, true),
+        sample_login("main@example.com", "early", LATER - 5_000_000),
+    ], NOW_MS)
+    assert(accounts[0].expires_at_ms == LATER - 5_000_000)
+}
+
+test "a login with no e-mail is dropped, not merged into a phantom account" {
+    ro accounts = group([
+        Login.of("/fx/y", "nameless", "", "", 0, true),
+        sample_login("a@x.com", "a", LATER),
+    ], NOW_MS)
+    assert(accounts.len() == 1)
+    assert(accounts[0].email == "a@x.com")
+}
+
+test "an organisation name is taken from whichever directory has one" {
+    ro accounts = group([
+        Login.of("/fx/p", "p", "a@x.com", "", LATER, true),
+        Login.of("/fx/q", "q", "a@x.com", "Tech Center", LATER, true),
+    ], NOW_MS)
+    assert(accounts[0].org == "Tech Center")
+}
