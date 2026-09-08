@@ -1,0 +1,125 @@
+// static.nv — the page, its stylesheet, its script and its icon, served out of the
+// binary (task T2.19).
+//
+// Source: 01.3 §3.1 (what is served and from where), §0 (the headers: `ETag` and
+// `no-cache` for statics, NOT the `no-store` everything under `/api/` gets).
+//
+// Imports are PACKAGE-PREFIXED; the factory is not called `handler`.
+//
+// ── One binary, no data directory ───────────────────────────────────────────
+//
+// `embed_dir("web")` puts the files INSIDE the executable at compile time. A
+// desktop tool that reads its own page off disk is a tool that breaks when someone
+// moves it, and one that unpacks the page next to itself is a tool that leaves
+// litter and can be tampered with between runs. The page a person sees is the page
+// the binary was built with, and there is no third copy to go stale.
+//
+// ── Why statics are NOT wrapped in `api()` ──────────────────────────────────
+//
+// The frame in `routes.nv` stamps `Cache-Control: no-store`, which is right for
+// `/api/*` and wrong here: §0 gives the page `ETag` and `no-cache`, so a browser
+// revalidates instead of refetching, and a reload costs one 304 rather than the
+// whole page. Statics therefore get their OWN wrapper, which stamps the same
+// security headers and the different cache header.
+//
+// It also means a static response carries no `X-Request-Id`. That is deliberate:
+// the id exists so a person can quote it when an API call misbehaves, and a
+// stylesheet has nothing to quote.
+//
+// ── The fallback is a FORK ──────────────────────────────────────────────────
+//
+// A Polaris router has one fallback and `routes.build()` already gave it to the
+// API's 404. Statics cannot simply take it: an unknown `/api/x` is not registered in
+// the trie, so it reaches the fallback, and answering that with the page would send
+// HTML for an API path -- forbidden outright by §0. `with_page` therefore installs a
+// fallback that forks on the prefix and keeps the API's own 404 for `/api/*`.
+
+module server.static
+
+import claude_limits.server.routes.{API_VERSION}
+import polaris.{Router, ServerRequest, ServerResponse, Handler}
+import polaris.static.{Static, serve_path}
+import http.{HttpError}
+
+/// Everything under `web/`, at compile time.
+///
+/// The literal is what the resolver reads, so it cannot be built from a variable —
+/// which is the point: the set of files in the binary is fixed when the binary is.
+// `../web`, not `web`: the path resolves relative to THIS FILE's directory
+// (`src/server/`), and the page lives at `src/web/`. The resolver says so in the
+// error, which is how this was found rather than guessed.
+export fn site() -> EmbeddedDir => embed_dir("../web")
+
+/// `no-cache`, not `no-store` (§0).
+///
+/// The difference is not pedantry. `no-store` forbids keeping the bytes at all, so
+/// every reload refetches the page, the stylesheet and the script. `no-cache`
+/// allows keeping them and requires revalidating, so a reload is three conditional
+/// requests answered `304` — which on a machine that is also polling an endpoint
+/// every five minutes is the difference between a page that snaps and one that
+/// blinks.
+export fn config() -> Static {
+    mut cfg = Static.new()
+    cfg.cache_control("no-cache")
+    cfg
+}
+
+/// The security headers of §0, minus the cache one, which the static handler owns.
+///
+/// `Server` is absent here as everywhere: §0 forbids any header naming the
+/// framework, and §8 п. 11 checks for it.
+fn stamp(mut resp ServerResponse) -> ServerResponse {
+    resp.header("X-Api-Version", "${API_VERSION}")
+    resp.header("X-Content-Type-Options", "nosniff")
+    resp.header("Referrer-Policy", "no-referrer")
+    resp.header("X-Frame-Options", "DENY")
+    resp
+}
+
+/// Serve one path out of the embedded directory.
+///
+/// A path that is not a file becomes `index.html` — §3.1: "любой другой путь вне
+/// `/api/` — `index.html`". The page decides what to show from `localStorage`, and
+/// there are no deep links except the `#stats` and `#cards` anchors, which never
+/// reach the server at all.
+export fn serve(path str, req ServerRequest) -> ServerResponse {
+    mut r = serve_path(site(), config(), path, req)
+    // A miss inside the embedded set is the page, not a 404: a person who typed
+    // `/settings` wants the application, and the application knows what to do with
+    // the address. A miss under `/api/` never gets here -- that router answers
+    // first and answers `404 not_found` with a problem body.
+    if r.status_code() == 404 {
+        mut fallback = serve_path(site(), config(), "index.html", req)
+        return stamp(fallback)
+    }
+    stamp(r)
+}
+
+// Hoisted and param-captured for the [M-16] reason named in `routes.nv`.
+fn run(api_404 Handler, req ServerRequest) -> ServerResponse {
+    // THE PREFIX DECIDES, and getting this wrong was the first version of this file.
+    // A router has ONE fallback, `routes.build()` already gave it to the API's 404,
+    // and an unknown `/api/x` is NOT matched by the trie -- nothing is registered at
+    // that path -- so it lands here. Handing the fallback to statics unconditionally
+    // would have answered `/api/x` with the page: HTML for an API path, which is the
+    // one thing §0 forbids outright ("HTML-ошибок для `/api/*` нет").
+    //
+    // So this fallback is a fork, not a replacement: anything under `/api/` goes to
+    // the handler that produces a problem body with its `request_id`, everything
+    // else is the page.
+    ro path = req.path()
+    if path == "/api" || path.starts_with("/api/") { return api_404(req) }
+    serve(path, req)
+}
+
+/// The router's single fallback: the API's 404 for `/api/*`, the page for the rest.
+export fn page_or_api_404(api_404 Handler) -> Handler {
+    ro inner = api_404
+    fn(req ServerRequest) -> ServerResponse => run(inner, req)
+}
+
+/// Install it. Call AFTER `routes.build()`, which is where `api_404` comes from.
+export fn with_page(mut r Router, api_404 Handler) -> Result[Router, HttpError] {
+    r.fallback(page_or_api_404(api_404))
+    Ok(r)
+}

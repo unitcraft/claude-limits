@@ -1,0 +1,159 @@
+// Tests for server/static.nv — task T2.19, the page out of the binary.
+//
+//   ./nova.sh test src/server/ --filter static      (ONE path — see T2.12)
+//
+// The sharp one is the last: an unknown `/api/x` must STILL answer problem+json
+// after the page is installed. A router has one fallback, `routes.build()` gave it
+// to the API's 404, and the first version of `static.nv` simply took it — which
+// would have answered every unknown API path with HTML, forbidden outright by §0.
+
+module server.static_test
+
+import claude_limits.server.routes.{HttpMethod, on, route, build, not_found_handler, API_VERSION}
+import claude_limits.server.static.{with_page}
+import polaris.{Router, ServerResponse, serve_once}
+import std.testing.handlers as th
+import claude_limits.server.routes.{Ctx}
+
+fn wire_str(wire []u8) -> str => unsafe { wire.to_str_unchecked() }
+
+fn get(path str) -> []u8 => "GET ${path} HTTP/1.1\r\nHost: x\r\n\r\n".bytes()
+
+fn status_of(s str) -> str {
+    match s.find("\r\n") { Some(i) => s[0..i], None => s }
+}
+
+fn head_of(s str) -> str {
+    match s.find("\r\n\r\n") { Some(i) => s[0..i], None => s }
+}
+
+fn body_of(s str) -> str {
+    match s.find("\r\n\r\n") { Some(i) => s[i + 4..s.byte_len()], None => "" }
+}
+
+fn hdr(s str, name str) -> str {
+    ro padded = "\r\n${head_of(s)}"
+    ro needle = "\r\n${name.to_ascii_lower()}: "
+    match padded.to_ascii_lower().find(needle) {
+        Some(i) => {
+            ro rest = padded[i + needle.byte_len()..padded.byte_len()]
+            match rest.find("\r\n") { Some(j) => rest[0..j], None => rest }
+        }
+        None => ""
+    }
+}
+
+fn has_header(s str, name str) -> bool =>
+    "\r\n${head_of(s)}".to_ascii_lower().contains("\r\n${name.to_ascii_lower()}:")
+
+fn ok_json(ctx Ctx) -> ServerResponse =>
+    ServerResponse.bytes(200, "application/json; charset=utf-8", "{}".bytes())
+
+fn app() -> Router {
+    mut r = build([route("/api/snapshot", [on(HttpMethod.Get, ok_json)])])!!
+    with_page(r, not_found_handler())!!
+}
+
+fn serve(path str) Time Random -> str => wire_str(serve_once(app(), get(path)))
+
+// ── the page ────────────────────────────────────────────────────────────────
+
+test "the root is the page, out of the binary" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro w = serve("/")
+        assert(status_of(w) == "HTTP/1.1 200 OK")
+        ro b = body_of(w)
+        assert(b.contains("<header"))
+        assert(b.contains("data-view=\"list\""))
+    }
+}
+
+test "the page revalidates rather than refetching" {
+    // Section 0 gives statics `no-cache`, NOT the `no-store` everything under
+    // `/api/` gets. `no-store` would refetch the page, the stylesheet and the
+    // script on every reload; `no-cache` makes a reload three conditional requests.
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        assert(hdr(serve("/"), "cache-control") == "no-cache")
+        assert(hdr(serve("/"), "etag") != "")
+    }
+}
+
+test "the stylesheet and the script come out too, with their own types" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro css = serve("/app.css")
+        assert(status_of(css) == "HTTP/1.1 200 OK")
+        assert(hdr(css, "content-type").contains("text/css"))
+        ro js = serve("/app.js")
+        assert(status_of(js) == "HTTP/1.1 200 OK")
+        assert(hdr(js, "content-type").contains("javascript"))
+    }
+}
+
+test "a path that is not a file is the page, not a 404" {
+    // Section 3.1: anything outside `/api/` is `index.html`. A person who typed
+    // `/settings` wants the application, and the application knows the address.
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro w = serve("/settings")
+        assert(status_of(w) == "HTTP/1.1 200 OK")
+        assert(body_of(w).contains("<header"))
+    }
+}
+
+test "a static response carries the security headers and no Server" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro w = serve("/")
+        assert(hdr(w, "x-api-version") == "${API_VERSION}")
+        assert(hdr(w, "x-content-type-options") == "nosniff")
+        assert(hdr(w, "referrer-policy") == "no-referrer")
+        assert(hdr(w, "x-frame-options") == "DENY")
+        assert(!has_header(w, "server"))
+    }
+}
+
+// ── the fork ────────────────────────────────────────────────────────────────
+
+test "AN UNKNOWN /api PATH IS STILL problem+json, NOT the page" {
+    // The whole reason `with_page` installs a fork rather than replacing the
+    // fallback. `/api/x` is not registered, so it reaches the fallback; answering
+    // it with HTML is what section 0 forbids ("HTML-ошибок для `/api/*` нет").
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro w = serve("/api/x")
+        assert(status_of(w) == "HTTP/1.1 404 Not Found")
+        assert(hdr(w, "content-type") == "application/problem+json; charset=utf-8")
+        ro b = body_of(w)
+        assert(b.contains("\"code\":\"not_found\""))
+        assert(b.contains("\"request_id\":\""))
+        assert(!b.contains("<header"))
+        assert(!b.contains("<!doctype"))
+    }
+}
+
+test "the bare /api is treated as an API path too" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        assert(status_of(serve("/api")) == "HTTP/1.1 404 Not Found")
+        assert(body_of(serve("/api")).contains("\"code\":\"not_found\""))
+    }
+}
+
+test "a path merely STARTING with the letters api is the page" {
+    // `/apiary` is not an API path. Matching on the prefix `/api/` plus the exact
+    // `/api` is what keeps that true; a bare `starts_with("/api")` would have sent
+    // this to the problem body.
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro w = serve("/apiary")
+        assert(status_of(w) == "HTTP/1.1 200 OK")
+        assert(body_of(w).contains("<header"))
+    }
+}
+
+test "a registered API route still answers, and keeps the API cache header" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro w = serve("/api/snapshot")
+        assert(status_of(w) == "HTTP/1.1 200 OK")
+        assert(body_of(w) == "{}")
+        // `no-store` here, `no-cache` on the page: two different rules, both from
+        // section 0, and this is where they are visible side by side.
+        assert(hdr(w, "cache-control") == "no-store")
+    }
+}
+
