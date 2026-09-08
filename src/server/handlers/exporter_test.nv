@@ -1,0 +1,213 @@
+// Tests for handlers/exporter.nv — task T2.17, `GET /api/export`.
+//
+//   ./nova.sh test src/server/ --filter exporter      (ONE path — see T2.12)
+
+module handlers.exporter_test
+
+import claude_limits.server.routes.{HttpMethod, on, route, build}
+import claude_limits.server.dto.{Disclosure}
+import polaris.{Router, serve_once}
+import std.testing.handlers as th
+import exporter.{Row, ExportState, mask_email, csv_field, to_csv, filename, HEADER, export_handler}
+
+fn wire_str(wire []u8) -> str => unsafe { wire.to_str_unchecked() }
+
+fn get(target str) -> []u8 => "GET ${target} HTTP/1.1\r\nHost: x\r\n\r\n".bytes()
+
+fn status_of(s str) -> str {
+    match s.find("\r\n") { Some(i) => s[0..i], None => s }
+}
+
+fn head_of(s str) -> str {
+    match s.find("\r\n\r\n") { Some(i) => s[0..i], None => s }
+}
+
+fn body_of(s str) -> str {
+    match s.find("\r\n\r\n") { Some(i) => s[i + 4..s.byte_len()], None => "" }
+}
+
+fn hdr(s str, name str) -> str {
+    ro padded = "\r\n${head_of(s)}"
+    ro needle = "\r\n${name.to_ascii_lower()}: "
+    match padded.to_ascii_lower().find(needle) {
+        Some(i) => {
+            ro rest = padded[i + needle.byte_len()..padded.byte_len()]
+            match rest.find("\r\n") { Some(j) => rest[0..j], None => rest }
+        }
+        None => ""
+    }
+}
+
+fn rows() -> []Row => [
+    Row{ at: "2026-09-08T16:00:00Z", account_id: "a-1", email: "main@example.com", kind: "session", model: "", percent: 9, locked: false, resets_at: "2026-09-08T17:50:00Z" },
+    Row{ at: "2026-09-08T16:00:00Z", account_id: "a-1", email: "main@example.com", kind: "weekly_scoped", model: "Fable", percent: 74, locked: false, resets_at: "2026-09-09T10:00:00Z" },
+    Row{ at: "2026-09-08T16:00:00Z", account_id: "a-2", email: "ops@example.org", kind: "session", model: "", percent: 100, locked: true, resets_at: "2026-09-08T18:00:00Z" },
+]
+
+fn state(d Disclosure) -> ExportState =>
+    { from_day: "2026-08-07", to_day: "2026-09-06", rows: rows(), disclosure: d }
+
+fn app(d Disclosure) -> Router {
+    ro level = d
+    build([route("/api/export", [on(HttpMethod.Get, export_handler(fn() -> ExportState => state(level)))])])!!
+}
+
+fn serve(d Disclosure, target str) Time Random -> str => wire_str(serve_once(app(d), get(target)))
+
+fn count_of(hay str, needle str) -> int {
+    mut n = 0
+    mut rest = hay
+    loop {
+        match rest.find(needle) {
+            None => break
+            Some(i) => {
+                n += 1
+                rest = rest[i + needle.byte_len()..rest.byte_len()]
+            }
+        }
+    }
+    n
+}
+
+// ── masking ─────────────────────────────────────────────────────────────────
+
+test "an e-mail is masked to one letter and its domain" {
+    assert(mask_email("main@example.com") == "m***@example.com")
+    assert(mask_email("ops@example.org") == "o***@example.org")
+}
+
+test "the mask does not preserve length" {
+    // A mask that kept the length would leak how long the local part is, and a
+    // short one is a small guessing space.
+    assert(mask_email("a@x.io") == "a***@x.io")
+    assert(mask_email("averyverylongname@x.io") == "a***@x.io")
+    assert(mask_email("a@x.io").byte_len() == mask_email("averyverylongname@x.io").byte_len())
+}
+
+test "the odd shapes do not crash and do not leak" {
+    assert(mask_email("") == "")
+    assert(mask_email("nobody") == "***")
+    assert(mask_email("@example.com") == "***@example.com")
+}
+
+// ── the CSV ─────────────────────────────────────────────────────────────────
+
+test "the header is the one section 3.11 names, in that order" {
+    assert(HEADER == "at,account_id,email,kind,model,percent,locked,resets_at")
+    assert(to_csv([], false).starts_with(HEADER))
+}
+
+test "every row is one line, and lines end CRLF" {
+    ro csv = to_csv(rows(), false)
+    assert(count_of(csv, "\r\n") == 4)
+    assert(csv.ends_with("\r\n"))
+}
+
+test "e-mails are masked by default and whole with unmasked" {
+    ro masked = to_csv(rows(), false)
+    assert(masked.contains("m***@example.com"))
+    assert(!masked.contains("main@example.com"))
+    ro whole = to_csv(rows(), true)
+    assert(whole.contains("main@example.com"))
+}
+
+test "a field is quoted only when it has to be" {
+    // A person greps this file as often as they open it in a spreadsheet, and
+    // unnecessary quotes make the first harder for no gain in the second.
+    assert(csv_field("session") == "session")
+    assert(csv_field("a,b") == "\"a,b\"")
+    assert(csv_field("say \"hi\"") == "\"say \"\"hi\"\"\"")
+    assert(csv_field("two\nlines") == "\"two\nlines\"")
+    assert(csv_field("") == "")
+}
+
+test "the model column is empty for the windows that have no model" {
+    ro csv = to_csv(rows(), false)
+    assert(csv.contains(",session,,9,false,"))
+    assert(csv.contains(",weekly_scoped,Fable,74,false,"))
+}
+
+test "locked comes out as a word, not a number" {
+    assert(to_csv(rows(), false).contains(",100,true,"))
+}
+
+// ── the response ────────────────────────────────────────────────────────────
+
+test "the file is offered as an attachment with the window in its name" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro w = serve(Disclosure.Loopback, "/api/export")
+        assert(status_of(w) == "HTTP/1.1 200 OK")
+        assert(hdr(w, "content-type") == "text/csv; charset=utf-8")
+        assert(hdr(w, "content-disposition") == "attachment; filename=\"claude-limits-2026-08-07..2026-09-06.csv\"")
+        assert(body_of(w).starts_with(HEADER))
+    }
+}
+
+test "filename carries the window and the extension" {
+    assert(filename("2026-08-07", "2026-09-06", "csv") == "claude-limits-2026-08-07..2026-09-06.csv")
+    assert(filename("2026-08-07", "2026-09-06", "json") == "claude-limits-2026-08-07..2026-09-06.json")
+}
+
+test "format=json changes the body and the name" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro w = serve(Disclosure.Loopback, "/api/export?format=json")
+        assert(hdr(w, "content-type") == "application/json; charset=utf-8")
+        assert(hdr(w, "content-disposition").ends_with(".json\""))
+        ro b = body_of(w)
+        assert(b.starts_with("{\"rows\":["))
+        assert(b.contains("\"model\":null"))
+        assert(b.contains("\"model\":\"Fable\""))
+        assert(b.contains("m***@example.com"))
+    }
+}
+
+// ── the closed parameter list ───────────────────────────────────────────────
+
+test "unmasked=1 from LAN is 403 loopback_only" {
+    // The card's own line. Refused about the CALLER, before anything is rendered.
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro w = serve(Disclosure.Lan, "/api/export?unmasked=1")
+        assert(status_of(w) == "HTTP/1.1 403 Forbidden")
+        ro b = body_of(w)
+        assert(b.contains("\"code\":\"loopback_only\""))
+        assert(!b.contains("main@example.com"))
+    }
+}
+
+test "unmasked=1 on loopback gives whole addresses" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        assert(body_of(serve(Disclosure.Loopback, "/api/export?unmasked=1")).contains("main@example.com"))
+    }
+}
+
+test "a LAN export without unmasked is fine, and masked" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro b = body_of(serve(Disclosure.Lan, "/api/export"))
+        assert(b.contains("m***@example.com"))
+        assert(!b.contains("main@example.com"))
+    }
+}
+
+test "account_id and email in the query are refused as unknown" {
+    // Not a special case: they are refused for being unknown, and that refusal is
+    // the whole mechanism keeping a subject identifier out of a URL, a log and a
+    // shell history.
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        assert(status_of(serve(Disclosure.Loopback, "/api/export?account_id=a-1")) == "HTTP/1.1 400 Bad Request")
+        assert(status_of(serve(Disclosure.Loopback, "/api/export?email=x")) == "HTTP/1.1 400 Bad Request")
+    }
+}
+
+test "login_dir_id MAY repeat, because a directory is a property of the machine" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        assert(status_of(serve(Disclosure.Loopback, "/api/export?login_dir_id=a&login_dir_id=b")) == "HTTP/1.1 200 OK")
+    }
+}
+
+test "format and unmasked may not repeat, and take fixed values" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        assert(status_of(serve(Disclosure.Loopback, "/api/export?format=csv&format=json")) == "HTTP/1.1 400 Bad Request")
+        assert(status_of(serve(Disclosure.Loopback, "/api/export?format=xml")) == "HTTP/1.1 400 Bad Request")
+        assert(status_of(serve(Disclosure.Loopback, "/api/export?unmasked=yes")) == "HTTP/1.1 400 Bad Request")
+    }
+}

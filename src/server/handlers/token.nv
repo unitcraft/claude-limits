@@ -1,0 +1,203 @@
+// handlers/token.nv — `POST /api/config/token` (task T2.17).
+//
+// Source: 01.3 §3.10 (the whole endpoint), §8 п. 8 (the `403 loopback_only` line),
+// §3.8 (the `If-Match` rule this borrows).
+//
+// Imports are PACKAGE-PREFIXED and the factory is not called `handler`; both for
+// reasons measured in `probes/` and named in `handlers/snapshot.nv`.
+//
+// ── The one place a token is ever visible ───────────────────────────────────
+//
+// Every other response in this API is checked by §8 п. 2 for not containing a
+// token as a substring. This endpoint is the exception, and it is an exception
+// exactly once: `shown_once: true` is not decoration, it is the contract. The
+// server writes the token to the settings file and never reads it back out —
+// `GET /api/config` reports `access_token_set`, a boolean, and nothing else.
+//
+// A caller who loses it generates a new one. That is the design: a secret a server
+// can show twice is a secret the server is storing in a form it can show, and the
+// panel would then need somewhere to display it, and that somewhere would be a
+// screenshot.
+//
+// ── Loopback only, and the refusal says nothing ─────────────────────────────
+//
+// §3.10: from LAN this is `403 loopback_only`. The refusal is about the CALLER, not
+// about the object — it does not say whether a token already exists, because that
+// is a fact about the machine that an unauthenticated stranger has not earned.
+
+module handlers.token
+
+import claude_limits.server.routes.{Ctx, ApiHandler, problem}
+import claude_limits.server.errors.{ApiError, FieldError}
+import claude_limits.server.dto.{Disclosure}
+import claude_limits.server.json.{field_str, field_bool, object}
+import claude_limits.config.{Config, ConfigError, validate}
+import polaris.{ServerRequest, ServerResponse}
+import std.encoding.json.{Json}
+import std.encoding.base64.{Base64}
+
+/// How many bytes of randomness. Thirty-two, as §3.10 says, which is 256 bits — the
+/// same order as the key that encrypts the database, because both protect the same
+/// data and a chain is as strong as its weakest link.
+const TOKEN_BYTES = 32
+
+export type TokenState value {
+    cfg Config
+    /// The tag of the current settings text, for `If-Match`.
+    etag str
+    disclosure Disclosure
+}
+
+export type TokenSource fn() -> TokenState
+
+// ── the body ─────────────────────────────────────────────────────────────────
+
+/// The one field §3.10 allows.
+const ONLY_FIELD = "allow_lan"
+
+export type Ask enum
+    | Issue(bool)
+    | Bad(ApiError)
+
+/// Parse the body. Empty means `{}` means "just issue a token".
+export fn parse_ask(raw str) -> Ask {
+    ro text = raw.trim_ascii()
+    if text == "" { return Ask.Issue(false) }
+    match Json.parse(text) {
+        Err(_) => Ask.Bad(ApiError.invalid_body("body is not JSON"))
+        Ok(v) => match v.object() {
+            None => Ask.Bad(ApiError.invalid_body("body must be a JSON object"))
+            Some(obj) => {
+                mut extra = []FieldError.new()
+                mut lan = false
+                mut wrong = false
+                mut it = obj.iter()
+                loop {
+                    match it.next() {
+                        None => break
+                        Some((k, val)) => {
+                            if k != ONLY_FIELD {
+                                extra.push(FieldError.of(k, "unknown_field", "unknown field '${k}'"))
+                            } else {
+                                match val.bool() {
+                                    Some(b) => { lan = b }
+                                    None    => { wrong = true }
+                                }
+                            }
+                        }
+                    }
+                }
+                if extra.len() > 0 { return Ask.Bad(ApiError.extra_forbidden(extra)) }
+                if wrong {
+                    return Ask.Bad(ApiError.invalid_request([FieldError.of(ONLY_FIELD, "not_a_bool", "allow_lan must be true or false")]))
+                }
+                Ask.Issue(lan)
+            }
+        }
+    }
+}
+
+// ── the token ────────────────────────────────────────────────────────────────
+
+/// Thirty-two bytes from the CSPRNG, base64url (§3.10).
+///
+/// `encode_url` and not `encode`: the token travels in an `Authorization` header and
+/// a person may paste it into a shell. `+` and `/` from ordinary base64 need
+/// quoting in both places, and a secret that gets mangled by a copy is a secret that
+/// produces a support question instead of a login.
+export fn mint() Random -> str => Base64.encode_url(Random.bytes(TOKEN_BYTES))
+
+/// The settings with the new token in them, and `allow_lan` if it was asked for and
+/// is allowed.
+export fn applied(cfg Config, token str, want_lan bool) -> Config {
+    mut c = Config{
+        schema: cfg.schema,
+        folders: cfg.folders,
+        poll: cfg.poll,
+        thresholds: cfg.thresholds,
+        forecast: cfg.forecast,
+        server: cfg.server,
+        ui: cfg.ui,
+        widget: cfg.widget,
+        history: cfg.history,
+        storage: cfg.storage,
+    }
+    c.server.access_token = token
+    if want_lan { c.server.allow_lan = true }
+    c
+}
+
+// ── the handler ──────────────────────────────────────────────────────────────
+
+fn header_of(ctx Ctx, name str) -> str {
+    match ctx.req.header(name) {
+        Some(v) => v
+        None    => ""
+    }
+}
+
+fn body_str(req ServerRequest) -> str => unsafe { req.body_bytes().to_str_unchecked() }
+
+// `ConfigError` imported BY NAME, not spelled as a qualified path: a qualified
+// reference is not verified by `nova check` (probes/check-accepts-missing-module-member),
+// so the form that the compiler actually resolves is the only one worth writing.
+fn as_field_errors(errs []ConfigError) -> []FieldError {
+    mut out = []FieldError.new()
+    for e in errs { out.push(FieldError.of(e.field, e.code, e.message)) }
+    out
+}
+
+// Hoisted and param-captured for the [M-16] reason named in `routes.nv`.
+fn run(src TokenSource, ctx Ctx) Random -> ServerResponse {
+    ro st = src()
+
+    // FIRST, before anything else is looked at. A refusal that depends on the body
+    // or on the settings is a refusal that leaks whether the body was well formed
+    // and whether a token exists.
+    match st.disclosure {
+        Disclosure.Loopback => {}
+        _ => return problem(ApiError.loopback_only(), ctx.request_id, ctx.instance)
+    }
+
+    ro if_match = header_of(ctx, "if-match")
+    if if_match == "" { return problem(ApiError.precondition_required(), ctx.request_id, ctx.instance) }
+    // A REPEAT AFTER SUCCESS IS A 412 AND NO SECOND TOKEN IS ISSUED (§3.10). The
+    // settings moved when the first token was written, so the tag the client holds
+    // is stale — the same mechanism as `PUT /api/config`, and it is what makes this
+    // endpoint safe to retry blindly: a retry cannot quietly rotate the token and
+    // lock out the tab that is holding the first one.
+    if if_match != st.etag { return problem(ApiError.precondition_failed(), ctx.request_id, ctx.instance) }
+
+    match parse_ask(body_str(ctx.req)) {
+        Ask.Bad(e) => problem(e, ctx.request_id, ctx.instance)
+        Ask.Issue(want_lan) => {
+            ro token = mint()
+            ro next = applied(st.cfg, token, want_lan)
+            // Validated exactly as at start: `allow_lan` without a certificate is
+            // refused here as it is everywhere, and today it is refused outright
+            // because phase 6 does not exist. Issuing a token AND failing the
+            // validation would leave the settings half-changed.
+            ro bad = validate(next)
+            if bad.len() > 0 {
+                return problem(ApiError.invalid_config(as_field_errors(bad)), ctx.request_id, ctx.instance)
+            }
+            ro body = object([field_str("access_token", token), field_bool("shown_once", true)])
+            // NO `ETag` ON THIS RESPONSE, and the first version had one. I computed
+            // it as `etag_of([render(next)])` -- but `config.render` deliberately
+            // NEVER writes the token: it serves the settings file AND the history
+            // row of 01.2 §3.14, where the secret must appear as `***`, and a
+            // serialiser that emits a secret for one caller emits it for both. So
+            // the tag I returned was the tag of settings WITHOUT the change that had
+            // just happened -- byte-identical to the one the client already held,
+            // which the test caught. The tag of the FILE belongs to whoever writes
+            // the file (T2.8); a client re-reads `GET /api/config`, which is one
+            // request and an honest one.
+            ServerResponse.bytes(200, "application/json; charset=utf-8", body.bytes())
+        }
+    }
+}
+
+export fn token_handler(src TokenSource) -> ApiHandler {
+    ro inner = src
+    fn(ctx Ctx) -> ServerResponse => run(inner, ctx)
+}

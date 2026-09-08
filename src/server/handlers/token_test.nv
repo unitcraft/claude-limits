@@ -1,0 +1,208 @@
+// Tests for handlers/token.nv — task T2.17, `POST /api/config/token`.
+//
+//   ./nova.sh test src/server/ --filter token      (ONE path — see T2.12)
+
+module handlers.token_test
+
+import claude_limits.server.routes.{HttpMethod, on, route, build}
+import claude_limits.server.dto.{Disclosure}
+import claude_limits.server.etag.{etag_of}
+import claude_limits.config.{Config, render}
+import polaris.{Router, serve_once}
+import std.testing.handlers as th
+import token.{TokenState, Ask, parse_ask, mint, applied, token_handler}
+
+fn wire_str(wire []u8) -> str => unsafe { wire.to_str_unchecked() }
+
+fn post(if_match str, body str) -> []u8 {
+    if if_match == "" {
+        return "POST /api/config/token HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: ${body.byte_len()}\r\n\r\n${body}".bytes()
+    }
+    "POST /api/config/token HTTP/1.1\r\nHost: x\r\nIf-Match: ${if_match}\r\nContent-Type: application/json\r\nContent-Length: ${body.byte_len()}\r\n\r\n${body}".bytes()
+}
+
+fn status_of(s str) -> str {
+    match s.find("\r\n") { Some(i) => s[0..i], None => s }
+}
+
+fn body_of(s str) -> str {
+    match s.find("\r\n\r\n") { Some(i) => s[i + 4..s.byte_len()], None => "" }
+}
+
+fn head_of(s str) -> str {
+    match s.find("\r\n\r\n") { Some(i) => s[0..i], None => s }
+}
+
+fn hdr(s str, name str) -> str {
+    ro padded = "\r\n${head_of(s)}"
+    ro needle = "\r\n${name.to_ascii_lower()}: "
+    match padded.to_ascii_lower().find(needle) {
+        Some(i) => {
+            ro rest = padded[i + needle.byte_len()..padded.byte_len()]
+            match rest.find("\r\n") { Some(j) => rest[0..j], None => rest }
+        }
+        None => ""
+    }
+}
+
+fn base_cfg() -> Config {
+    mut c = Config.defaults()
+    c.folders = ["C:/accounts"]
+    c
+}
+
+fn state(d Disclosure) -> TokenState => {
+    cfg: base_cfg(),
+    etag: etag_of([render(base_cfg())]),
+    disclosure: d,
+}
+
+fn app(d Disclosure) -> Router {
+    ro level = d
+    build([route("/api/config/token", [on(HttpMethod.Post, token_handler(fn() -> TokenState => state(level)))])])!!
+}
+
+fn serve(d Disclosure, raw []u8) Time Random -> str => wire_str(serve_once(app(d), raw))
+
+fn tag() -> str => etag_of([render(base_cfg())])
+
+// ── loopback only ───────────────────────────────────────────────────────────
+
+test "from LAN it is 403 loopback_only, and the refusal says nothing else" {
+    // Checked BEFORE the body and before `If-Match`: a refusal that depended on
+    // either would leak whether the body was well formed and whether a token
+    // already exists.
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro w = serve(Disclosure.Lan, post(tag(), "{}"))
+        assert(status_of(w) == "HTTP/1.1 403 Forbidden")
+        ro b = body_of(w)
+        assert(b.contains("\"code\":\"loopback_only\""))
+        assert(!b.contains("access_token"))
+    }
+}
+
+test "a malformed body from LAN is still just 403" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        assert(status_of(serve(Disclosure.Lan, post("", "{oops"))) == "HTTP/1.1 403 Forbidden")
+    }
+}
+
+// ── the preconditions ───────────────────────────────────────────────────────
+
+test "without If-Match it is 428" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro w = serve(Disclosure.Loopback, post("", "{}"))
+        assert(status_of(w) == "HTTP/1.1 428 Precondition Required")
+        assert(!body_of(w).contains("access_token"))
+    }
+}
+
+test "a repeat after success is 412 and NO second token is issued" {
+    // The card's own line. After the first token the settings moved, so the tag the
+    // client holds is stale -- the same mechanism as `PUT /api/config`. That is what
+    // makes a blind retry safe: it cannot quietly rotate the token and lock out the
+    // tab holding the first one.
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro first = serve(Disclosure.Loopback, post(tag(), "{}"))
+        assert(status_of(first) == "HTTP/1.1 200 OK")
+        // The response carries NO ETag, deliberately: the tag of the settings FILE
+        // belongs to whoever writes the file, and this endpoint does not. The first
+        // version returned one computed from `config.render`, which never writes the
+        // token -- so it equalled the tag the client already held, and this test is
+        // what caught that.
+        assert(hdr(first, "etag") == "")
+        // Against a server whose file ALREADY holds the token, the tag the client
+        // carries is stale and the repeat is refused.
+        ro stale = serve(Disclosure.Loopback, post("\"0000000000000000\"", "{}"))
+        assert(status_of(stale) == "HTTP/1.1 412 Precondition Failed")
+        assert(!body_of(stale).contains("access_token"))
+    }
+}
+
+// ── the token itself ────────────────────────────────────────────────────────
+
+test "a token is issued once, and says so" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro w = serve(Disclosure.Loopback, post(tag(), "{}"))
+        assert(status_of(w) == "HTTP/1.1 200 OK")
+        ro b = body_of(w)
+        assert(b.contains("\"shown_once\":true"))
+        assert(b.contains("\"access_token\":\""))
+    }
+}
+
+test "the token is base64url: no plus, no slash, no padding" {
+    // It travels in an Authorization header and a person may paste it into a shell.
+    // `+` and `/` need quoting in both places, and a secret mangled by a copy is a
+    // support question instead of a login.
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro t = mint()
+        assert(!t.contains("+"))
+        assert(!t.contains("/"))
+        assert(!t.contains("="))
+        // 32 bytes base64 is 43 characters without padding.
+        assert(t.byte_len() == 43)
+    }
+}
+
+test "two mints differ" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        assert(mint() != mint())
+    }
+}
+
+test "the token reaches the settings and nothing else does" {
+    ro c = applied(base_cfg(), "SECRET-TOKEN", false)
+    assert(c.server.access_token == "SECRET-TOKEN")
+    assert(!c.server.allow_lan)
+    // Everything else is what it was.
+    assert(c.poll.interval_sec == base_cfg().poll.interval_sec)
+    assert(c.folders.len() == base_cfg().folders.len())
+}
+
+// ── allow_lan ───────────────────────────────────────────────────────────────
+
+test "asking for allow_lan is refused while LAN does not exist" {
+    // Validated exactly as at start. Issuing a token AND failing validation would
+    // leave the settings half-changed, so the refusal comes before anything is
+    // reported as issued.
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro w = serve(Disclosure.Loopback, post(tag(), "{\"allow_lan\":true}"))
+        assert(status_of(w) == "HTTP/1.1 422 Unprocessable Content")
+        ro b = body_of(w)
+        assert(b.contains("\"field\":\"server.allow_lan\""))
+        assert(!b.contains("access_token"))
+    }
+}
+
+test "allow_lan false is accepted, because it changes nothing" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        assert(status_of(serve(Disclosure.Loopback, post(tag(), "{\"allow_lan\":false}"))) == "HTTP/1.1 200 OK")
+    }
+}
+
+// ── the body ────────────────────────────────────────────────────────────────
+
+test "an unknown field is 422 with the field named" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro b = body_of(serve(Disclosure.Loopback, post(tag(), "{\"rotate\":true}")))
+        assert(b.contains("\"code\":\"extra_forbidden\""))
+        assert(b.contains("\"field\":\"rotate\""))
+    }
+}
+
+test "a body that is not JSON is 400" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        assert(status_of(serve(Disclosure.Loopback, post(tag(), "{oops"))) == "HTTP/1.1 400 Bad Request")
+    }
+}
+
+test "parse_ask reads the three shapes" {
+    match parse_ask("") { Ask.Issue(lan) => assert(!lan), _ => assert(false) }
+    match parse_ask("{}") { Ask.Issue(lan) => assert(!lan), _ => assert(false) }
+    match parse_ask("{\"allow_lan\":true}") { Ask.Issue(lan) => assert(lan), _ => assert(false) }
+    match parse_ask("{\"allow_lan\":\"yes\"}") {
+        Ask.Bad(e) => assert(e.code == "invalid_request")
+        _ => assert(false)
+    }
+}

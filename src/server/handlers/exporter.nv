@@ -1,0 +1,278 @@
+// handlers/export.nv — `GET /api/export` (task T2.17).
+//
+// Source: 01.3 §3.11 (parameters, the CSV columns, the filename, masking), §8 п. 10
+// (masks in the export); 01.2 §10 (the masking rule itself).
+//
+// Imports are PACKAGE-PREFIXED and the factory is not called `handler`.
+//
+// ── There is no account filter, and that is a decision ──────────────────────
+//
+// §3.11 says so outright: `account_id` is a SUBJECT identifier (01.2 §10) and does
+// not travel in a URL, so the export is always over every account and the
+// `account_id` column stays in the rows. A caller who wants one account filters the
+// file. Adding `?account_id=` would put a person's identifier in a server log, a
+// browser history and a shell history, which is three copies nobody asked for.
+//
+// ── Masked by default, and the exception is loopback only ───────────────────
+//
+// E-mails come out as `m***@example.com` unless `unmasked=1`, and that parameter is
+// refused from LAN with `403 loopback_only`. The default matters more than the
+// exception: an export is the file a person attaches to a message, and the common
+// case should not carry addresses.
+
+// The module is `exporter`, not `export`: `export` is a keyword and cannot name a
+// module. The endpoint is still `/api/export`.
+module handlers.exporter
+
+import claude_limits.server.routes.{Ctx, ApiHandler, problem}
+import claude_limits.server.errors.{ApiError}
+import claude_limits.server.dto.{Disclosure}
+import polaris.{ServerRequest, ServerResponse}
+
+/// One exported row, already resolved: the export does not join anything.
+export type Row value {
+    at str
+    account_id str
+    email str
+    kind str
+    /// "" for the windows that are not per-model.
+    model str
+    percent int
+    locked bool
+    resets_at str
+}
+
+export type ExportState value {
+    /// The window the file covers, for the filename (`from..to`, dates only).
+    from_day str
+    to_day str
+    rows []Row
+    disclosure Disclosure
+}
+
+export type ExportSource fn() -> ExportState
+
+// ── masking ──────────────────────────────────────────────────────────────────
+
+/// `main@example.com` -> `m***@example.com` (01.2 §10).
+///
+/// The first character and the domain survive. That is enough for a person to
+/// recognise their own row and not enough for a stranger to write to it; the length
+/// is NOT preserved, because a mask that preserves length leaks how long the address
+/// is, and a short local part is a small guessing space.
+export fn mask_email(e str) -> str {
+    match e.find("@") {
+        None => if e == "" { "" } else { "***" }
+        Some(i) => {
+            if i == 0 { return "***${e[i..e.byte_len()]}" }
+            "${e[0..1]}***${e[i..e.byte_len()]}"
+        }
+    }
+}
+
+// ── CSV ──────────────────────────────────────────────────────────────────────
+
+/// The header line of §3.11, verbatim and in that order.
+export const HEADER = "at,account_id,email,kind,model,percent,locked,resets_at"
+
+/// One field, quoted only when it has to be (RFC 4180).
+///
+/// Quoting only when needed rather than always: a person opens this in a spreadsheet
+/// AND greps it, and unnecessary quotes make the second harder for no gain in the
+/// first. A field containing a comma, a quote, a newline or a carriage return is
+/// quoted and its quotes doubled.
+export fn csv_field(v str) -> str {
+    mut needs = false
+    for c in v.chars() {
+        if c == ',' || c == '"' || c == '\n' || c == '\r' { needs = true }
+    }
+    if !needs { return v }
+    consume sb = StringBuilder.new()
+    sb.append("\"")
+    for c in v.chars() {
+        if c == '"' { sb.append("\"\"") } else { sb.append(c) }
+    }
+    sb.append("\"")
+    sb.into_str()
+}
+
+fn bool_str(b bool) -> str => if b { "true" } else { "false" }
+
+/// The whole file. CRLF line endings, as RFC 4180 asks and as Excel expects.
+export fn to_csv(rows []Row, unmasked bool) -> str {
+    consume sb = StringBuilder.new()
+    sb.append(HEADER)
+    sb.append("\r\n")
+    for r in rows {
+        ro email = if unmasked { r.email } else { mask_email(r.email) }
+        sb.append(csv_field(r.at))
+        sb.append(",")
+        sb.append(csv_field(r.account_id))
+        sb.append(",")
+        sb.append(csv_field(email))
+        sb.append(",")
+        sb.append(csv_field(r.kind))
+        sb.append(",")
+        sb.append(csv_field(r.model))
+        sb.append(",")
+        sb.append(r.percent)
+        sb.append(",")
+        sb.append(bool_str(r.locked))
+        sb.append(",")
+        sb.append(csv_field(r.resets_at))
+        sb.append("\r\n")
+    }
+    sb.into_str()
+}
+
+/// `claude-limits-2026-08-07..2026-09-06.csv` (§3.11).
+export fn filename(from_day str, to_day str, ext str) -> str =>
+    "claude-limits-${from_day}..${to_day}.${ext}"
+
+// ── the closed parameter list ────────────────────────────────────────────────
+
+fn query_pairs(req ServerRequest) -> [](str, str) {
+    ro target = req.target()
+    ro q = match target.find("?") {
+        Some(i) => target[i + 1..target.byte_len()]
+        None    => ""
+    }
+    mut out = [](str, str).new()
+    if q == "" { return out }
+    for part in q.split("&") {
+        if part == "" { continue }
+        match part.find("=") {
+            Some(i) => out.push((part[0..i], part[i + 1..part.byte_len()]))
+            None    => out.push((part, ""))
+        }
+    }
+    out
+}
+
+fn known(k str) -> bool {
+    if k == "range" { return true }
+    if k == "from" { return true }
+    if k == "to" { return true }
+    if k == "login_dir_id" { return true }
+    if k == "format" { return true }
+    k == "unmasked"
+}
+
+/// What the caller asked for, or the refusal.
+export type Ask enum
+    // `AsCsv`/`AsJson` and not `Csv`/`Json`: Polaris exports a GENERIC type called
+    // `Json[T]`, and a variant sharing that name drags its instantiations into this
+    // compilation unit -- including one built from `CreateItem`, a type declared in
+    // Polaris's own TEST file. The result is a CC-FAIL in generated code naming
+    // types this package never mentions. Registry 1040's family, sixth carrier.
+    | AsCsv(bool)
+    | AsJson(bool)
+    | Bad(ApiError)
+
+/// Read the query of §3.11.
+///
+/// `login_dir_id` MAY repeat (it addresses a directory, which is a property of the
+/// machine); nothing else may. `account_id` and `email` are refused as unknown, and
+/// that refusal is the mechanism keeping personal data out of the URL — not a
+/// separate rule someone has to remember.
+export fn parse_ask(req ServerRequest, d Disclosure) -> Ask {
+    mut fmt = "csv"
+    mut unmasked = false
+    mut seen_format = 0
+    mut seen_unmasked = 0
+    mut seen_range = 0
+    for (k, v) in query_pairs(req) {
+        if !known(k) {
+            return Ask.Bad(ApiError.invalid_parameter("unknown query parameter '${k}'"))
+        }
+        if k == "format" {
+            seen_format += 1
+            if seen_format > 1 { return Ask.Bad(ApiError.invalid_parameter("parameter 'format' may not repeat")) }
+            if v != "csv" && v != "json" { return Ask.Bad(ApiError.invalid_parameter("format must be csv or json")) }
+            fmt = v
+        } else if k == "unmasked" {
+            seen_unmasked += 1
+            if seen_unmasked > 1 { return Ask.Bad(ApiError.invalid_parameter("parameter 'unmasked' may not repeat")) }
+            if v != "1" && v != "0" { return Ask.Bad(ApiError.invalid_parameter("unmasked takes 0 or 1")) }
+            unmasked = v == "1"
+        } else if k == "range" {
+            seen_range += 1
+            if seen_range > 1 { return Ask.Bad(ApiError.invalid_parameter("parameter 'range' may not repeat")) }
+        }
+    }
+    // The one parameter whose ANSWER depends on who is asking. Refused for a LAN
+    // caller before anything is rendered, and refused about the CALLER rather than
+    // about the data.
+    if unmasked {
+        match d {
+            Disclosure.Loopback => {}
+            _ => return Ask.Bad(ApiError.loopback_only())
+        }
+    }
+    if fmt == "json" { return Ask.AsJson(unmasked) }
+    Ask.AsCsv(unmasked)
+}
+
+// ── JSON ─────────────────────────────────────────────────────────────────────
+
+// `rows_to_json`, not `to_json`: `server/errors.nv` exports a `to_json` and
+// `routes.nv` imports it BY NAME, which -- with two of that name in one CU --
+// emits an unmangled `nova_fn_to_json` that nothing defines. Isolated in
+// `probes/same-fn-name-two-modules/`; seventh carrier of registry 1040's family
+// in this project.
+fn rows_to_json(rows []Row, unmasked bool) -> str {
+    consume sb = StringBuilder.new()
+    sb.append("{\"rows\":[")
+    mut first = true
+    for r in rows {
+        if !first { sb.append(",") }
+        ro email = if unmasked { r.email } else { mask_email(r.email) }
+        sb.append("{\"at\":\"")
+        sb.append(r.at)
+        sb.append("\",\"account_id\":\"")
+        sb.append(r.account_id)
+        sb.append("\",\"email\":\"")
+        sb.append(email)
+        sb.append("\",\"kind\":\"")
+        sb.append(r.kind)
+        sb.append("\",\"model\":")
+        if r.model == "" { sb.append("null") } else { sb.append("\"${r.model}\"") }
+        sb.append(",\"percent\":")
+        sb.append(r.percent)
+        sb.append(",\"locked\":")
+        sb.append(bool_str(r.locked))
+        sb.append(",\"resets_at\":\"")
+        sb.append(r.resets_at)
+        sb.append("\"}")
+        first = false
+    }
+    sb.append("]}")
+    sb.into_str()
+}
+
+// ── the handler ──────────────────────────────────────────────────────────────
+
+fn attach(body str, name str, ctype str) -> ServerResponse {
+    mut r = ServerResponse.bytes(200, ctype, body.bytes())
+    // `attachment`, so a browser saves rather than renders: a CSV rendered inline is
+    // a wall of text, and a JSON one invites a click that leaves it in a tab.
+    r.header("Content-Disposition", "attachment; filename=\"${name}\"")
+    r
+}
+
+// Hoisted and param-captured for the [M-16] reason named in `routes.nv`.
+fn run(src ExportSource, ctx Ctx) -> ServerResponse {
+    ro st = src()
+    match parse_ask(ctx.req, st.disclosure) {
+        Ask.Bad(e) => problem(e, ctx.request_id, ctx.instance)
+        Ask.AsCsv(unmasked) =>
+            attach(to_csv(st.rows, unmasked), filename(st.from_day, st.to_day, "csv"), "text/csv; charset=utf-8")
+        Ask.AsJson(unmasked) =>
+            attach(rows_to_json(st.rows, unmasked), filename(st.from_day, st.to_day, "json"), "application/json; charset=utf-8")
+    }
+}
+
+export fn export_handler(src ExportSource) -> ApiHandler {
+    ro inner = src
+    fn(ctx Ctx) -> ServerResponse => run(inner, ctx)
+}
