@@ -38,20 +38,38 @@ the binaries is the part still to do, and it is deliberately not a blocker.
 ## What is here and what is not
 
 Does: view switching remembered per browser; the live indicator with its degraded
-state; the freshness clock; the refresh button with its 429 handling; the footer
-counts; and, since T2.20, the list view — account blocks with their states and one
-row per limit window (name, bar, percent, reset caption, elapsed-time strip).
+state and its own reconnect schedule; the freshness clock; the refresh button with
+its 429 handling; the footer counts; the list view — account blocks with their states
+and one row per limit window (name, bar, percent, reset caption, elapsed-time strip);
+the cards view with drag and keyboard reordering; the statistics views; and the
+settings panel, including what it does when the file changes underneath it.
 
-Does not yet: the cards and statistics views, the settings panel, the forecast ghost
-beyond drawing it when the backend supplies one.
+Does not yet: the forecast ghost beyond drawing it when the backend supplies one, and
+anything that needs the history endpoints — those are T2.15, and the statistics views
+read fixtures until it lands.
+
+## Running the checks
+
+One command, and it is the only one worth remembering:
+
+    node scripts/check-web.mjs
+
+It DISCOVERS the suites rather than listing them, runs the page guard after them, and
+judges every one by its exit code rather than by the summary it prints. All three
+properties were bought with real defects: a hand-written list quietly measures less
+each time a suite is added, and `test-render.mjs` spent a day printing a green
+summary line before its last test had run.
+
+Until 2026-09-08 there was no such command and no CI in this repository, so the page
+was judged by a person typing nine commands from memory. That is a habit, not an
+acceptance, and habits stop holding exactly when the work gets interesting.
 
 **`format.js` is separate for a reason.** The arithmetic of a row — the elapsed
 share, the whole-cell geometry, the duration wording — is exactly the kind that is
-wrong in a way nobody notices on screen. It takes no DOM and is tested under node:
+wrong in a way nobody notices on screen. It takes no DOM and is tested under node
+(`scripts/test-format.mjs`, run for you by the command above).
 
-    node scripts/test-format.mjs
-
-Seventeen checks, both directions where it matters. The suite has already earned its
+Both directions where it matters. The suite has already earned its
 keep twice: it caught its own wrong invariant (a zero-width fill is legal, not a
 clipped cell), and a reverse probe swapping `round` for `floor` in the cell geometry
 is caught immediately.
