@@ -31,23 +31,29 @@ python scripts/check-fixtures.py
 $ node scripts/check-web.mjs
 ok     test-chart.mjs           20 passed
   ok     test-folders.mjs         18 passed
-  ok     test-format.mjs          41 passed
+  ok     test-format.mjs          48 passed
   ok     test-live.mjs            15 passed
-  ok     test-render.mjs          22 passed
+  ok     test-render.mjs          27 passed
   ok     test-reorder.mjs         14 passed
   ok     test-settings.mjs        36 passed
   ok     test-stats.mjs           25 passed
   ok     check-page.py            PAGE GUARD: clean
-  ok     lint-openapi.py          OPENAPI LINT: clean (self-test on the fixture)
+  ok     check-fixtures.py        SECRET SCAN: clean
+  ok     check-config-fixture.py  INVENTED (in toml, absent from inventory): none
+  ok     check-dir-fixtures.py    RESULT: all directory fixtures behave as the plan says
+  ok     check-plan-trees.py      claude-limits/ tree shows a src/ level: True
+  ok     lint-openapi.py          OPENAPI LINT: clean
+  ok     check-artboard-labels.py ARTBOARD LABELS: clean
+  ok     check-citations.py       CITATIONS: clean
 
-8 suites + the page guard, 191 tests
+8 suites (203 tests) + 8 checkers
 WEB CHECK: clean
 $ python scripts/check-fixtures.py
 fixtures found: 24 in <repos>\claude-limits\fixtures
   api/config.json                                      valid JSON, limits=n/a n/a
   api/history-7d.json                                  valid JSON, limits=n/a n/a
   api/history-folders.json                             valid JSON, limits=n/a n/a
-  api/snapshot-mixed.json                              valid JSON, limits=5 ['weekly_scoped', 'session', 'weekly_all', 'session', 'weekly_all']
+  api/snapshot-mixed.json                              valid JSON, limits=8 ['weekly_scoped', 'session', 'weekly_all', 'session', 'weekly_all', 'session', 'weekly_all', 'weekly_scoped']
   dirs/config-dir-layout/work/.claude.json             valid JSON, limits=n/a n/a
   dirs/config-dir-layout/work/.credentials.json        valid JSON, limits=n/a n/a
   dirs/default-layout/.claude/.credentials.json        valid JSON, limits=n/a n/a
@@ -72,7 +78,15 @@ fixtures found: 24 in <repos>\claude-limits\fixtures
 SECRET SCAN: clean
 ```
 
-Итого 191 тест в восьми наборах, три стража чисты (страница, фикстуры, контракт-линтер на своей фикстуре).
+Итого 203 теста в восьми наборах и ВОСЕМЬ проверок чисты.
+
+**Что прибавилось к вечеру того же дня** (было 191 тест и три стража):
+сверка подписей шести макетов с кодом (`check-artboard-labels.py`), сверка цитат с
+разделами, которые у планов есть (`check-citations.py`), и четыре проверки, которые
+СУЩЕСТВОВАЛИ и единой командой не запускались вовсе — то есть шли, когда кто-то
+вспомнит. **Новые два за первый день нашли десять пропусков**: восемь подписей,
+которые макет показывает, а страница не производит, и две битые ссылки на разделы
+подпланов, написанные не мною.
 
 **Что изменилось с утра того же дня:** было 152 теста в семи наборах. Прибавились `test-live.mjs` (транспорт SSE, T2.21) и тесты политики повторов, кнопки после 429, конфликта при 412 и события `config`. Цифры выше взяты ПРОГОНОМ при правке этого файла, а не переписаны из памяти.
 
