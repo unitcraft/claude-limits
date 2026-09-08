@@ -1,0 +1,10 @@
+// CONTROL: the same shape under a name std does not use.
+module mine.renamed
+
+export type Secret consume { secret str }
+
+export fn Secret.of(s str) -> Secret => { secret: s }
+
+export fn Secret consume @into_secret() -> str => @secret
+
+export fn describe() -> str => "a login description, no secret"

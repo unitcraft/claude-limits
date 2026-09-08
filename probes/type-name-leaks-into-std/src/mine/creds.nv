@@ -1,0 +1,11 @@
+// A module exporting a CONSUME type called `Token` -- the same name that
+// `std/encoding/json.nv` uses for its own lexer token.
+module mine.creds
+
+export type Token consume { secret str }
+
+export fn Token.of(s str) -> Token => { secret: s }
+
+export fn Token consume @into_secret() -> str => @secret
+
+export fn describe() -> str => "a login description, no secret"

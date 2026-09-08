@@ -1,0 +1,14 @@
+module type_name_leaks_into_std
+
+// Neither import NAMES `Token`. The collision is between the module that exports it
+// and the module that declares its own.
+import type_name_leaks_into_std.mine.creds.{describe}
+import std.encoding.json.{Json}
+
+fn main() Io -> () {
+    print("describe: ${describe()}")
+    match Json.parse("{\"a\":1}") {
+        Ok(_) => print("json: parsed")
+        Err(_) => print("json: failed")
+    }
+}

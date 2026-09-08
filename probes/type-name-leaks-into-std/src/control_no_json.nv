@@ -1,0 +1,6 @@
+// CONTROL 2: `Token` is exported and imported, but std's json is not in the CU.
+module type_name_leaks_into_std.control_no_json
+
+import type_name_leaks_into_std.mine.creds.{describe}
+
+export fn touch() -> str => describe()

@@ -7,12 +7,12 @@
 
 module accounts.group
 
-import login.{Login, Account, TokenState, state_of}
+import login.{Login, GroupedAccount, TokenState, state_of}
 
-fn Account.of(email str, org str, dirs []str, state TokenState, expires_at_ms int) -> Account =>
+fn GroupedAccount.of(email str, org str, dirs []str, state TokenState, expires_at_ms int) -> GroupedAccount =>
     { email, org, dirs, state, expires_at_ms }
 
-fn index_of(accounts []Account, email str) -> int {
+fn index_of(accounts []GroupedAccount, email str) -> int {
     mut i = 0
     while i < accounts.len() {
         if accounts[i].email == email { return i }
@@ -41,8 +41,8 @@ fn rank(s TokenState) -> int =>
 /// Group logins by e-mail, preserving discovery order for both accounts and their
 /// directories. Stable on purpose: a list that reorders itself between polls is
 /// unreadable, and the page's own order (01.1 §4.2) is applied on top of this one.
-export fn group(logins []Login, now_ms int) -> []Account {
-    mut out []Account = []
+export fn group(logins []Login, now_ms int) -> []GroupedAccount {
+    mut out []GroupedAccount = []
     for l in logins {
         // A login with no e-mail cannot be grouped: it would merge every nameless
         // directory into one phantom account. They are dropped here and reported by
@@ -52,7 +52,7 @@ export fn group(logins []Login, now_ms int) -> []Account {
         ro st = state_of(l, now_ms)
         ro at = index_of(out, l.email)
         if at < 0 {
-            out.push(Account.of(l.email, l.org, [l.name], st, l.expires_at_ms))
+            out.push(GroupedAccount.of(l.email, l.org, [l.name], st, l.expires_at_ms))
             continue
         }
 

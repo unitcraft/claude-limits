@@ -1,0 +1,176 @@
+// handlers/folders.nv — `POST /api/folders/probe` (task T2.17).
+//
+// Source: 01.3 §3.9 (the body, `kind`, `login_dirs`, `problem`, `already_listed`,
+// "содержимое токена не читается"); 01.1 §5.4 (the "what was found" line in the
+// settings panel).
+//
+// Imports are PACKAGE-PREFIXED; the factory is not called `handler` — both for
+// reasons measured in `probes/` and named in `handlers/snapshot.nv`.
+//
+// ── Why this endpoint cannot read a token ────────────────────────────────────
+//
+// Not by care, by construction. `accounts/login.nv` splits the two readings:
+// `read_login` returns the DESCRIPTION (e-mail, organisation, expiry) and
+// `read_token` returns the secret, as a separate call returning a `consume Secret`.
+// This file calls the first and never the second, and there is no other way in —
+// `Creds` has no operation that hands over a secret except the one this file does
+// not name. A test can therefore check the property by reading the imports, and a
+// change that broke it would have to add an import.
+
+module handlers.folders
+
+import claude_limits.server.routes.{Ctx, ApiHandler, problem}
+import claude_limits.server.errors.{ApiError, FieldError}
+import claude_limits.server.dto.{Disclosure, pii_path}
+import claude_limits.server.json.{field_str, field_str_or_null, field_bool, field_raw, object, array}
+import claude_limits.accounts.discover.{Dirs, Folder, LoginDir, scan, normalise}
+import claude_limits.accounts.login.{Creds, read_login, state_of}
+import polaris.{ServerRequest, ServerResponse}
+import std.encoding.json.{Json}
+
+/// A login directory the server already knows about, for `same_login_as`.
+export type KnownLogin value { id str, name str, email str }
+
+/// Everything the probe needs besides the path it is given.
+export type ProbeState value {
+    now_ms int
+    /// Folder paths already in the settings, as `normalise` leaves them.
+    listed []str
+    /// Every login directory discovery has seen, so a probe can say "this is the
+    /// same account you already have under another name".
+    known []KnownLogin
+    disclosure Disclosure
+}
+
+export type ProbeSource fn() -> ProbeState
+
+/// The one field this body may carry (§3.9).
+const ONLY_FIELD = "path"
+
+export type Ask enum
+    | Path(str)
+    | Bad(ApiError)
+
+/// Parse the body of §3.9.
+///
+/// The path travels in the BODY and not the URL: §0 keeps directory paths out of
+/// URLs entirely, because on every platform this runs on a home directory contains
+/// the operating system user's name.
+export fn parse_ask(raw str) -> Ask {
+    ro text = raw.trim_ascii()
+    if text == "" {
+        return Ask.Bad(ApiError.invalid_request([FieldError.of(ONLY_FIELD, "required", "a path is required")]))
+    }
+    match Json.parse(text) {
+        Err(_) => Ask.Bad(ApiError.invalid_body("body is not JSON"))
+        Ok(v) => match v.object() {
+            None => Ask.Bad(ApiError.invalid_body("body must be a JSON object"))
+            Some(obj) => {
+                mut extra = []FieldError.new()
+                mut path = ""
+                mut wrong = false
+                mut it = obj.iter()
+                loop {
+                    match it.next() {
+                        None => break
+                        Some((k, val)) => {
+                            if k != ONLY_FIELD {
+                                extra.push(FieldError.of(k, "unknown_field", "unknown field '${k}'"))
+                            } else {
+                                match val.str() {
+                                    Some(s) => { path = s }
+                                    None    => { wrong = true }
+                                }
+                            }
+                        }
+                    }
+                }
+                if extra.len() > 0 { return Ask.Bad(ApiError.extra_forbidden(extra)) }
+                if wrong {
+                    return Ask.Bad(ApiError.invalid_request([FieldError.of(ONLY_FIELD, "not_a_string", "path must be a string")]))
+                }
+                if path.trim_ascii() == "" {
+                    return Ask.Bad(ApiError.invalid_request([FieldError.of(ONLY_FIELD, "required", "a path is required")]))
+                }
+                Ask.Path(path)
+            }
+        }
+    }
+}
+
+fn contains(list []str, s str) -> bool {
+    for x in list {
+        if x == s { return true }
+    }
+    false
+}
+
+/// Other directories holding the same login (§3.9's `same_login_as`).
+///
+/// By E-MAIL and not by path: the same account signed in under two directory names
+/// is exactly the case this line exists to warn about, and comparing paths would
+/// miss it.
+fn same_login_as(known []KnownLogin, email str, self_name str) -> []KnownLogin {
+    mut out = []KnownLogin.new()
+    if email == "" { return out }
+    for k in known {
+        if k.email == email && k.name != self_name { out.push(k) }
+    }
+    out
+}
+
+fn render_same(ks []KnownLogin) -> str {
+    mut out = []str.new()
+    for k in ks { out.push(object([field_str("id", k.id), field_str("name", k.name)])) }
+    array(out)
+}
+
+/// One login directory of the answer.
+///
+/// `read_login` and NOT `read_token`: the description is all a probe needs, and the
+/// secret is behind a different call this file never makes.
+fn render_login(st ProbeState, base str, d LoginDir) Creds -> str {
+    ro login = read_login(base, d.name, d.identity, d.credentials)
+    ro state = state_of(login, st.now_ms)
+    object([
+        field_str("name", d.name),
+        field_str_or_null("email", login.email),
+        field_str_or_null("org", login.org),
+        field_str("token_state", state.to_str()),
+        field_raw("same_login_as", render_same(same_login_as(st.known, login.email, d.name))),
+    ])
+}
+
+/// The body of §3.9.
+export fn render_probe(st ProbeState, resolved str, f Folder) Creds -> str {
+    mut logins = []str.new()
+    for d in f.logins { logins.push(render_login(st, f.path, d)) }
+    object([
+        pii_path(st.disclosure, "path_resolved", resolved),
+        field_str("kind", f.kind.to_str()),
+        field_raw("login_dirs", array(logins)),
+        field_str_or_null("problem", f.problem),
+        field_bool("already_listed", contains(st.listed, resolved)),
+    ])
+}
+
+fn body_str(req ServerRequest) -> str => unsafe { req.body_bytes().to_str_unchecked() }
+
+// Hoisted and param-captured for the [M-16] reason named in `routes.nv`.
+fn run(src ProbeSource, ctx Ctx) Dirs Creds -> ServerResponse {
+    ro st = src()
+    match parse_ask(body_str(ctx.req)) {
+        Ask.Bad(e) => problem(e, ctx.request_id, ctx.instance)
+        Ask.Path(p) => {
+            ro resolved = normalise(p)
+            ro found = scan(resolved)
+            ro body = render_probe(st, resolved, found)
+            ServerResponse.bytes(200, "application/json; charset=utf-8", body.bytes())
+        }
+    }
+}
+
+export fn probe_handler(src ProbeSource) -> ApiHandler {
+    ro inner = src
+    fn(ctx Ctx) -> ServerResponse => run(inner, ctx)
+}

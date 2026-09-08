@@ -1,0 +1,233 @@
+// Tests for handlers/folders.nv — task T2.17, `POST /api/folders/probe`.
+//
+//   ./nova.sh test src/server/ --filter folders      (ONE path — see T2.12)
+//
+// The acceptance of the card: a probe over the fixture directories reports `kind`,
+// `login_dirs`, `problem` and `already_listed`, and DOES NOT READ THE TOKEN.
+
+module handlers.folders_test
+
+import claude_limits.server.routes.{HttpMethod, on, route, build}
+import claude_limits.server.dto.{Disclosure}
+import claude_limits.accounts.discover.{Dirs}
+import claude_limits.accounts.login.{Creds}
+import polaris.{Router, serve_once}
+import std.testing.handlers as th
+import folders.{KnownLogin, ProbeState, Ask, parse_ask, probe_handler}
+
+fn wire_str(wire []u8) -> str => unsafe { wire.to_str_unchecked() }
+
+fn post(body str) -> []u8 =>
+    "POST /api/folders/probe HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: ${body.byte_len()}\r\n\r\n${body}".bytes()
+
+fn status_of(s str) -> str {
+    match s.find("\r\n") { Some(i) => s[0..i], None => s }
+}
+
+fn body_of(s str) -> str {
+    match s.find("\r\n\r\n") { Some(i) => s[i + 4..s.byte_len()], None => "" }
+}
+
+// ── the fixture tree ─────────────────────────────────────────────────────────
+//
+// Three directories: a parent holding two logins, a single login, and an empty one.
+// Deliberately NOT a real filesystem — the `Dirs` effect is what discovery reads
+// through, and a mock is what lets the same test run on any machine.
+
+// FIXTURE TEXTS LIVE IN FUNCTIONS, NOT IN `const`s, and the handler bodies below
+// call those functions and nothing else. Two measurements forced this shape:
+//
+//   * a module-level `const CREDS` here resolved to the module-PRIVATE `const CREDS`
+//     of `accounts/discover.nv` -- `use of undeclared identifier
+//     'Nova_const_accounts_discover_CREDS'`, because a private const of another
+//     module is not emitted into this CU. Names cross module boundaries here whether
+//     or not they are exported;
+//   * renaming them to `FX_CREDS`/`FX_IDENTITY` moved the failure rather than fixing
+//     it: referenced from INSIDE an effect-handler literal, a module-level const is
+//     emitted with no mangling at all (`use of undeclared identifier 'FX_CREDS'`).
+//
+// `accounts/discover_test.nv`'s `fake_dirs` already had the shape that works: the
+// handler body is a single call to a top-level function.
+
+fn fx_identity() -> str => "{\"oauthAccount\":{\"emailAddress\":\"main@example.com\",\"organizationName\":\"Tech Center\"}}"
+
+/// The token this endpoint must never read. It is in the fixture ON PURPOSE: a
+/// fixture without a secret cannot prove that the secret does not travel.
+fn fx_creds() -> str => "{\"claudeAiOauth\":{\"accessToken\":\"sk-ant-oat01-MUST-NEVER-BE-READ\",\"expiresAt\":9999999999999}}"
+
+fn fixture_text(path str) -> str {
+    if path.ends_with(".claude.json") { return fx_identity() }
+    fx_creds()
+}
+
+fn children_of(path str) -> []str {
+    if path == "/fx/parent" { return ["nv-lang", "dev"] }
+    []
+}
+
+fn known_path(path str) -> bool {
+    if known_dir(path) { return true }
+    if path == "/fx/parent/nv-lang/.claude.json" { return true }
+    if path == "/fx/parent/nv-lang/.credentials.json" { return true }
+    if path == "/fx/parent/dev/.claude.json" { return true }
+    if path == "/fx/parent/dev/.credentials.json" { return true }
+    if path == "/fx/single/.claude.json" { return true }
+    path == "/fx/single/.credentials.json"
+}
+
+fn known_dir(path str) -> bool {
+    if path == "/fx/parent" { return true }
+    if path == "/fx/single" { return true }
+    if path == "/fx/empty" { return true }
+    if path == "/fx/parent/nv-lang" { return true }
+    path == "/fx/parent/dev"
+}
+
+// THE BODY RETURNS `str`, and that is not a preference. A `with` expression types
+// its RESUMED value from one of the installed handler's OPERATIONS rather than from
+// the body: with a body returning `[]u8` and `Creds.read` returning `str`, codegen
+// emitted
+//
+//     _nv_tmp_7577 = (((Nova_Vec____nova_byte*(*)(void*))...)(...));   // happy path
+//     _nv_tmp_7577 = *((nova_str*)_nv_tmp_7576.value_ptr);             // resumed
+//
+// -- one slot, two types, `error: assigning to 'nova_str' from incompatible type
+// 'Nova_Vec____nova_byte *'`. Measured 2026-09-08; not isolated into its own probe
+// yet. Returning the wire as text sidesteps it, so the helpers below take `str`.
+fn with_fixture(body fn() Dirs Creds -> str) -> str =>
+    with Dirs = effect Dirs {
+        list(path) -> []str { children_of(path) }
+        exists(path) -> bool { known_path(path) }
+        is_dir(path) -> bool { known_dir(path) }
+    }, Creds = effect Creds {
+        read(path) -> str { fixture_text(path) }
+    } {
+        body()
+    }
+
+fn state() -> ProbeState => {
+    now_ms: 1757000000000,
+    listed: ["/fx/single"],
+    known: [KnownLogin{ id: "d-9", name: "already-here", email: "main@example.com" }],
+    disclosure: Disclosure.Loopback,
+}
+
+fn app() -> Router =>
+    build([route("/api/folders/probe", [on(HttpMethod.Post, probe_handler(fn() -> ProbeState => state()))])])!!
+
+fn serve(raw []u8) Time Random Dirs Creds -> str => wire_str(serve_once(app(), raw))
+
+fn run(raw []u8) Time Random -> str {
+    ro bytes = raw
+    with_fixture(fn() -> str => serve(bytes))
+}
+
+// ── the acceptance ───────────────────────────────────────────────────────────
+
+test "a parent directory reports its kind and every login under it" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro w = run(post("{\"path\":\"/fx/parent\"}"))
+        assert(status_of(w) == "HTTP/1.1 200 OK")
+        ro b = body_of(w)
+        assert(b.contains("\"kind\":\"parent\""))
+        assert(b.contains("\"name\":\"nv-lang\""))
+        assert(b.contains("\"name\":\"dev\""))
+        assert(b.contains("\"email\":\"main@example.com\""))
+        assert(b.contains("\"org\":\"Tech Center\""))
+        assert(b.contains("\"token_state\":\"ok\""))
+        assert(b.contains("\"problem\":null"))
+    }
+}
+
+test "THE TOKEN IS NEVER IN THE ANSWER" {
+    // The property this endpoint exists to keep. It holds by construction --
+    // `read_login` reads the description, `read_token` reads the secret, and this
+    // handler imports only the first -- and the test checks the wire anyway,
+    // because a construction argument is not a measurement.
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro b = body_of(run(post("{\"path\":\"/fx/parent\"}")))
+        assert(!b.contains("sk-ant-oat01-MUST-NEVER-BE-READ"))
+        assert(!b.contains("sk-ant"))
+        assert(!b.contains("accessToken"))
+    }
+}
+
+test "already_listed is true only for a path the settings already hold" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        assert(body_of(run(post("{\"path\":\"/fx/single\"}"))).contains("\"already_listed\":true"))
+        assert(body_of(run(post("{\"path\":\"/fx/parent\"}"))).contains("\"already_listed\":false"))
+    }
+}
+
+test "an empty directory is reported as empty, with an empty list" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro b = body_of(run(post("{\"path\":\"/fx/empty\"}")))
+        assert(b.contains("\"kind\":\"empty\""))
+        assert(b.contains("\"login_dirs\":[]"))
+    }
+}
+
+test "a path that is not there is reported as missing, not as an error" {
+    // A person typing a path into a settings box has not made a REQUEST error; the
+    // panel shows an amber line, which needs a 200 with `kind: missing`.
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro w = run(post("{\"path\":\"/fx/nowhere\"}"))
+        assert(status_of(w) == "HTTP/1.1 200 OK")
+        assert(body_of(w).contains("\"kind\":\"missing\""))
+    }
+}
+
+test "the same login under another name is named in same_login_as" {
+    // This is the line the panel shows to stop a person adding one account twice.
+    // Matched by E-MAIL: comparing paths would miss exactly the case it is for.
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro b = body_of(run(post("{\"path\":\"/fx/single\"}")))
+        assert(b.contains("\"same_login_as\":[{\"id\":\"d-9\",\"name\":\"already-here\"}]"))
+    }
+}
+
+test "the resolved path is reported, and it is the normalised one" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro b = body_of(run(post("{\"path\":\"/fx/parent\"}")))
+        assert(b.contains("\"path_resolved\":\"/fx/parent\""))
+    }
+}
+
+// ── the body ─────────────────────────────────────────────────────────────────
+
+test "the path travels in the body, and an unknown field is refused" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro w = run(post("{\"path\":\"/fx/parent\",\"recurse\":true}"))
+        assert(status_of(w) == "HTTP/1.1 422 Unprocessable Content")
+        assert(body_of(w).contains("\"field\":\"recurse\""))
+    }
+}
+
+test "a missing or empty path is 422, naming the field" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        assert(body_of(run(post("{}"))).contains("\"field\":\"path\""))
+        assert(body_of(run(post("{\"path\":\"  \"}"))).contains("\"field\":\"path\""))
+        assert(status_of(run(post("{}"))) == "HTTP/1.1 422 Unprocessable Content")
+    }
+}
+
+test "a body that is not JSON is 400" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        assert(status_of(run(post("{oops"))) == "HTTP/1.1 400 Bad Request")
+    }
+}
+
+test "parse_ask reads the shapes on its own" {
+    match parse_ask("{\"path\":\"/x\"}") {
+        Ask.Path(p) => assert(p == "/x")
+        _ => assert(false)
+    }
+    match parse_ask("{\"path\":5}") {
+        Ask.Bad(e) => assert(e.code == "invalid_request")
+        _ => assert(false)
+    }
+    match parse_ask("") {
+        Ask.Bad(e) => assert(e.code == "invalid_request")
+        _ => assert(false)
+    }
+}

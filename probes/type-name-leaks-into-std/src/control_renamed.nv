@@ -1,0 +1,9 @@
+// CONTROL 1: the same two imports, but the consume type is called `Secret`.
+module type_name_leaks_into_std.control_renamed
+
+import type_name_leaks_into_std.mine.renamed.{describe}
+import std.encoding.json.{Json}
+
+export fn touch() -> str {
+    match Json.parse("{}") { Ok(_) => describe(), Err(_) => "no" }
+}

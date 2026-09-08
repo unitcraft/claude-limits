@@ -99,7 +99,13 @@ fn read_object(obj JsonObject) -> Ask {
 
 // ── the decision ─────────────────────────────────────────────────────────────
 
-export type Decision enum
+/// `RefreshDecision` and NOT `Decision`: the std PRELUDE exports
+/// `type Decision enum Escalate | Stop` (`std/prelude/effects.nv`, the supervisor
+/// policy), so that name is in every compilation unit whether anyone imports it or
+/// not. Today's tests pass with the short name, and that is exactly how the `Token`
+/// collision looked the day before it stopped a build -- found by a sweep of the
+/// tree against std's type names rather than by a failure.
+export type RefreshDecision enum
     | Queue([]RefreshTarget)
     | Refuse(ApiError)
 
@@ -128,21 +134,21 @@ fn find(st RefreshState, id str) -> Option[RefreshTarget] {
 ///
 /// Pure on purpose: every branch here is a rule from §3.5, and a rule tested
 /// through a router is a rule tested through a router.
-export fn decide(st RefreshState, ask Ask) -> Decision {
+export fn decide(st RefreshState, ask Ask) -> RefreshDecision {
     match ask {
-        Ask.Bad(e) => Decision.Refuse(e)
+        Ask.Bad(e) => RefreshDecision.Refuse(e)
         Ask.One(id) => match find(st, id) {
-            None => Decision.Refuse(ApiError.account_not_found())
+            None => RefreshDecision.Refuse(ApiError.account_not_found())
             Some(t) => {
                 // A stale token means there is nothing to poll WITH, so this is not
                 // a "try later" — it is a different fault, and §3.5 gives it 409.
                 // `error` is deliberately NOT folded in here: §3.5 names only the
                 // expired token, and an account that failed its last poll can
                 // legitimately be retried.
-                if t.state == "stale" { return Decision.Refuse(ApiError.account_stale()) }
+                if t.state == "stale" { return RefreshDecision.Refuse(ApiError.account_stale()) }
                 ro w = wait_sec(st.now_ms, t.last_poll_ms, st.floor_sec)
-                if w > 0 { return Decision.Refuse(ApiError.too_soon(w)) }
-                Decision.Queue([t])
+                if w > 0 { return RefreshDecision.Refuse(ApiError.too_soon(w)) }
+                RefreshDecision.Queue([t])
             }
         }
         Ask.All => {
@@ -157,12 +163,12 @@ export fn decide(st RefreshState, ask Ask) -> Decision {
                     soonest = w
                 }
             }
-            if ready.len() > 0 { return Decision.Queue(ready) }
+            if ready.len() > 0 { return RefreshDecision.Queue(ready) }
             // Nothing could be queued. If something was merely too soon, say when;
             // if there was nothing to poll at all, that is still "too soon" with
             // the whole floor to wait, not a 404 -- the resource exists.
             ro w = if soonest > 0 { soonest } else { st.floor_sec }
-            Decision.Refuse(ApiError.too_soon(w))
+            RefreshDecision.Refuse(ApiError.too_soon(w))
         }
     }
 }
@@ -187,8 +193,8 @@ fn body_str(req ServerRequest) -> str => unsafe { req.body_bytes().to_str_unchec
 fn run(src RefreshSource, ctx Ctx) -> ServerResponse {
     ro st = src()
     match decide(st, parse_ask(body_str(ctx.req))) {
-        Decision.Refuse(e) => problem(e, ctx.request_id, ctx.instance)
-        Decision.Queue(ts) => accepted(ts)
+        RefreshDecision.Refuse(e) => problem(e, ctx.request_id, ctx.instance)
+        RefreshDecision.Queue(ts) => accepted(ts)
     }
 }
 

@@ -11,7 +11,7 @@ module handlers.refresh_test
 import claude_limits.server.routes.{HttpMethod, on, route, build}
 import polaris.{Router, serve_once}
 import std.testing.handlers as th
-import refresh.{RefreshTarget, RefreshState, Ask, Decision, parse_ask, decide, wait_sec, refresh_handler}
+import refresh.{RefreshTarget, RefreshState, Ask, RefreshDecision, parse_ask, decide, wait_sec, refresh_handler}
 
 // ── wire helpers ─────────────────────────────────────────────────────────────
 
@@ -227,11 +227,11 @@ test "account_id of the wrong type is 422, because the body parsed" {
 test "when nothing can be queued the answer says when, not how many" {
     ro st = just_polled()
     match decide(st, Ask.All) {
-        Decision.Refuse(e) => {
+        RefreshDecision.Refuse(e) => {
             assert(e.code == "too_soon")
             assert(e.retry_after == Some(59))
         }
-        Decision.Queue(_) => assert(false)
+        RefreshDecision.Queue(_) => assert(false)
     }
 }
 
@@ -244,11 +244,11 @@ test "a mixed state queues what is ready rather than refusing everything" {
         targets: [target("a-1", "main@example.com", "ok", NOW - 1000), target("a-3", "qa@example.org", "ok", 0)],
     }
     match decide(st, Ask.All) {
-        Decision.Queue(ts) => {
+        RefreshDecision.Queue(ts) => {
             assert(ts.len() == 1)
             assert(ts[0].id == "a-3")
         }
-        Decision.Refuse(_) => assert(false)
+        RefreshDecision.Refuse(_) => assert(false)
     }
 }
 
@@ -256,11 +256,11 @@ test "a list of only stale accounts is too_soon with the whole floor, not a 404"
     // The resource exists and will be pollable again; 404 would say it does not.
     ro st = RefreshState{ now_ms: NOW, floor_sec: 60, targets: [target("a-2", "ops@example.org", "stale", 0)] }
     match decide(st, Ask.All) {
-        Decision.Refuse(e) => {
+        RefreshDecision.Refuse(e) => {
             assert(e.code == "too_soon")
             assert(e.retry_after == Some(60))
         }
-        Decision.Queue(_) => assert(false)
+        RefreshDecision.Queue(_) => assert(false)
     }
 }
 
