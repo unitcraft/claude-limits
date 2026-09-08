@@ -1,0 +1,54 @@
+// Probe: `E_READONLY_COERCE` names `.clone()` (D230) as solution (b) without
+// checking whether THIS type has it. Auto-derive is opt-in, so a value record
+// without `#impl(Clone)` has no such method, and a reader following the message
+// gets a second, unrelated error instead of a fix.
+//
+//   ../../nova.sh check src/diagnostic_suggests_clone.nv
+//
+// Expected: `no_clone_impl` fails with E7320 ("no field or method `clone`"),
+// while `has_clone_impl` and `rebuilt_by_hand` are fine.
+
+module diagnostic_suggests_clone
+
+/// A plain value record. No `#impl(Clone)` -- the ordinary case.
+type Plain value { n int, label str }
+
+/// The same record WITH the opt-in derive.
+#impl(Clone)
+type Clonable value { n int, label str }
+
+// -- the form the diagnostic asks for, on a type that does not have it --------
+//
+// `mut c = src` alone is refused with E_READONLY_COERCE, whose solution (b) reads:
+// "skopируй явно -- `.clone()` (D230) -- если нужна НЕЗАВИСИМАЯ mutable-копия".
+// Following that advice on `Plain` produces E7320.
+
+fn no_clone_impl(src Plain) -> int {
+    mut c = src.clone()
+    c.n += 1
+    c.n
+}
+
+// -- CONTROL 1: the same line on a type that opted in -------------------------
+
+fn has_clone_impl(src Clonable) -> int {
+    mut c = src.clone()
+    c.n += 1
+    c.n
+}
+
+// -- CONTROL 2: what a caller must actually write for a plain record ----------
+//
+// Field by field. This is the working answer the diagnostic does not mention.
+
+fn rebuilt_by_hand(src Plain) -> int {
+    mut c = Plain{ n: src.n, label: src.label }
+    c.n += 1
+    c.n
+}
+
+fn main() Io -> () {
+    print("control 1 (#impl(Clone)): ${has_clone_impl(Clonable{ n: 1, label: "x" })}")
+    print("control 2 (by hand):      ${rebuilt_by_hand(Plain{ n: 1, label: "x" })}")
+    print("failing:                  ${no_clone_impl(Plain{ n: 1, label: "x" })}")
+}

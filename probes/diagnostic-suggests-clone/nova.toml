@@ -1,0 +1,8 @@
+[lib]
+src = "src"
+
+[package]
+name = "diagnostic_suggests_clone"
+version = "0.0.0"
+description = "Probe: E_READONLY_COERCE offers .clone() without checking whether the type has #impl(Clone)"
+license = "MIT OR Apache-2.0"
