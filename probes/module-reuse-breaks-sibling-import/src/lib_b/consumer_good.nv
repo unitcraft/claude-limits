@@ -1,0 +1,7 @@
+// CONTROL 2: the same consumer, but the imported module spells its own import with
+// the package prefix. Differs from `consumer_bad` in nothing else.
+module lib_b.consumer_good
+
+import module_reuse_breaks_sibling_import.lib_a.uses_prefixed.{doubled}
+
+export fn touch() -> int => doubled()

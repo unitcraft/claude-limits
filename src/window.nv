@@ -1,16 +1,26 @@
 // window.nv — one limit window, the vocabulary two subtrees share.
 //
-// WHY IT LIVES AT THE SOURCE ROOT AND NOT IN `model/`. A file in one subdirectory
-// cannot import a module from another: from `src/usage/`, `import model.snapshot`
-// resolves against `src/usage/model/snapshot` and against the repository root, and
-// neither exists. Measured 2026-09-08 while writing T1.5, after trying both the
-// `model.snapshot` form the compiler names for a subdirectory and the
-// `claude_limits.model.snapshot` form it also lists — the first does not resolve
-// across directories, the second is rejected as a module path.
+// WHY IT LIVES AT THE SOURCE ROOT AND NOT IN `model/`: because `usage/` and `model/`
+// both need it and neither owns it. A parser that must import the model to name its
+// own output, or a model that must import the parser, is a dependency in the wrong
+// direction either way; at the root it is a vocabulary both sides read.
 //
-// What DOES work, measured the same way: a subdirectory file importing a module that
-// sits at the SOURCE ROOT. So the type both `model/` and `usage/` need lives here,
-// and neither subtree depends on the other.
+// CORRECTION 2026-09-08, the same day this file was written. The reason recorded here
+// FIRST was different and was wrong: "a file in one subdirectory cannot import a
+// module from another". It can — the spelling is `claude_limits.model.window`, with
+// the package name in front. I had tried the bare `model.window` form, watched it
+// fail, and concluded something about the language instead of about the spelling.
+// Measured:
+//
+//     src/server/probe_x.nv, module server.probe_x
+//       import model.store.{Snapshot}                 -> cannot find module
+//       import claude_limits.model.store.{Snapshot}   -> ok
+//
+// The placement above survives the correction; the argument for it does not, so the
+// argument is replaced rather than patched. What IS broken nearby, isolated with
+// controls in `probes/module-reuse-breaks-sibling-import/`: a bare sibling import
+// inside a module is resolved from the importer's directory, so a module that uses
+// one cannot be imported from anywhere else.
 
 module claude_limits.window
 

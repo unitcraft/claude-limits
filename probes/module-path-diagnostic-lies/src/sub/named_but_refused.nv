@@ -1,0 +1,6 @@
+// FAILING: the form the diagnostic itself names as "expected (rev-1 legacy)".
+// Rejected all the same, with the rejection printing the declared string and the
+// identical expected string one line apart.
+module module_path_diagnostic_lies.sub.named_but_refused
+
+export fn touch() -> int => 2

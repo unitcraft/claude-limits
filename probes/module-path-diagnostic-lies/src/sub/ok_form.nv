@@ -1,0 +1,4 @@
+// CONTROL: the one form that is accepted at depth 1 -- <parent dir>.<file stem>.
+module sub.ok_form
+
+export fn touch() -> int => 1

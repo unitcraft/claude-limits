@@ -1,0 +1,3 @@
+module module_path_diagnostic_lies
+
+export fn root_ok() -> int => 0

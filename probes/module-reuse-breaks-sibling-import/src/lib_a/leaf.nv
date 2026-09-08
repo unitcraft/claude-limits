@@ -1,0 +1,4 @@
+// A leaf with no imports of its own.
+module lib_a.leaf
+
+export fn value() -> int => 7

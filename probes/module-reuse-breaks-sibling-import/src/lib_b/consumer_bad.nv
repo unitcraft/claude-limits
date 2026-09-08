@@ -1,0 +1,7 @@
+// FAILING: a consumer in ANOTHER directory, importing the module that uses a bare
+// sibling import. The resolver looks for `leaf` next to THIS file.
+module lib_b.consumer_bad
+
+import module_reuse_breaks_sibling_import.lib_a.uses_bare.{doubled}
+
+export fn touch() -> int => doubled()

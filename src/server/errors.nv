@@ -32,7 +32,14 @@
 
 module server.errors
 
-import json.{field_str, field_str_or_null, field_int, field_int_or_null, field_raw, object, array}
+// Imports here are PACKAGE-PREFIXED (`claude_limits.server.json`) rather than bare
+// sibling names (`json`). Not a style choice: a bare sibling import inside a module
+// is resolved relative to whoever imports THAT module, not relative to the module
+// itself, so `import json` in this file breaks the moment a handler in
+// `server/handlers/` imports this file -- the resolver then looks for
+// `src/server/handlers/json`. Isolated with controls in
+// `probes/module-reuse-breaks-sibling-import/`.
+import claude_limits.server.json.{field_str, field_str_or_null, field_int, field_int_or_null, field_raw, object, array}
 
 /// One refusal. The shape of RFC 9457 problem+json as 01.3 §0 uses it.
 export type ApiError value {

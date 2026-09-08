@@ -1,0 +1,8 @@
+[lib]
+src = "src"
+
+[package]
+name = "module_path_diagnostic_lies"
+version = "0.0.0"
+description = "Probe: E_D78_MODULE_PATH_MISMATCH names three expected forms and accepts one"
+license = "MIT OR Apache-2.0"

@@ -1,0 +1,7 @@
+// A module that imports its sibling by the BARE name -- the spelling every file in
+// this repository used before the probe.
+module lib_a.uses_bare
+
+import leaf.{value}
+
+export fn doubled() -> int => value() * 2

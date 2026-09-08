@@ -1,0 +1,6 @@
+// The same module, importing the same sibling with the PACKAGE PREFIX.
+module lib_a.uses_prefixed
+
+import module_reuse_breaks_sibling_import.lib_a.leaf.{value}
+
+export fn doubled() -> int => value() * 2

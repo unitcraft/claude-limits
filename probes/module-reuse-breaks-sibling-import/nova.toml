@@ -1,0 +1,8 @@
+[lib]
+src = "src"
+
+[package]
+name = "module_reuse_breaks_sibling_import"
+version = "0.0.0"
+description = "Probe: a bare sibling import inside a module is resolved from the importer's directory"
+license = "MIT OR Apache-2.0"

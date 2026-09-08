@@ -1,0 +1,7 @@
+// CONTROL 1: a consumer in the SAME directory. A bare sibling import is fine here,
+// which is why the fault stays invisible until the module is reused.
+module lib_a.peer_ok
+
+import module_reuse_breaks_sibling_import.lib_a.uses_bare.{doubled}
+
+export fn touch() -> int => doubled()

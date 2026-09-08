@@ -1,0 +1,3 @@
+module module_reuse_breaks_sibling_import
+
+export fn root() -> int => 0
