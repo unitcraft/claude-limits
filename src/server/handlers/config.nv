@@ -1,0 +1,682 @@
+// handlers/config.nv — `GET` and `PUT /api/config` (task T2.14).
+//
+// Source: 01.3 §3.7 (the body and its metadata), §3.8 (the partial tree, `If-Match`,
+// every response), §8 п. 7; 01.2 §2.2 (canonical file); 01.1 §5 (the texts).
+//
+// Imports are PACKAGE-PREFIXED; the factory is `config_handler`, not `handler` —
+// both for reasons measured in `probes/` and named in `handlers/snapshot.nv` and
+// `handlers/health.nv`.
+//
+// ── What the merge is, and what it refuses ───────────────────────────────────
+//
+// `PUT` takes a PARTIAL tree: only the branches being changed. The server merges it
+// key by key onto the current settings, lists replacing whole (§3.8). Anything the
+// tree does not know is `422 extra_forbidden` with the field in dotted notation —
+// not ignored. A settings panel that silently drops a key is a panel that lies
+// about having saved.
+//
+// ALL FAULTS TRAVEL IN ONE RESPONSE. §3.8: "все ошибки в одном ответе". A panel that
+// reports the first fault makes a person press Save four times to learn four things.
+//
+// ── Not here ─────────────────────────────────────────────────────────────────
+//
+//   * Writing the file. `config.render()` produces the canonical text (T1.2) and
+//     `apply` produces the config to render; the atomic write and the
+//     `config_history` row are T2.8, and that one needs the database.
+//   * Reopening the listener. The response says `listener_reopened` and
+//     `new_base_url` because a client needs to know where to reconnect; doing it is
+//     the listener's, and there is no listener yet.
+//   * `folders[]` by `id`. An id comes from the database (01.2 §3.1) and there is
+//     no database; a folder given by `path` works, which is the half §3.8 calls
+//     "новая".
+
+module handlers.config
+
+import claude_limits.server.routes.{Ctx, ApiHandler, problem}
+import claude_limits.server.errors.{ApiError, FieldError, to_json}
+import claude_limits.server.etag.{etag_of}
+import claude_limits.server.dto.{Disclosure, pii_path}
+import claude_limits.server.json.{field_str, field_str_or_null, field_int, field_bool, field_raw, object, array, array_str}
+import claude_limits.config.{Config, ConfigError, validate, render}
+import polaris.{ServerRequest, ServerResponse}
+import std.encoding.json.{Json, JsonValue}
+
+// ── the view ─────────────────────────────────────────────────────────────────
+
+/// One login directory inside a folder (§3.7). Computed, not stored.
+export type LoginDirView value { id str, name str }
+
+/// One folder as the panel sees it: the configured path plus what discovery found.
+export type FolderView value {
+    id str
+    path str
+    /// `parent | single | empty`.
+    kind str
+    /// `config | auto`.
+    source str
+    login_dirs []LoginDirView
+    /// "" for `null`.
+    problem str
+}
+
+/// One account discovery found (§3.7).
+export type AccountFound value {
+    id str
+    email str
+    org str
+    dirs []LoginDirView
+    hidden bool
+}
+
+/// Everything `GET /api/config` reports, read fresh on every request.
+export type ConfigState value {
+    cfg Config
+    /// Hash of the FILE TEXT (§3.7), which is what `If-Match` compares against.
+    etag str
+    path str
+    portable bool
+    folders []FolderView
+    accounts_found []AccountFound
+    disclosure Disclosure
+}
+
+export type ConfigSource fn() -> ConfigState
+
+/// The tag of a settings text. One function, so `GET`, `If-Match` and the tag of a
+/// freshly written file cannot be computed three different ways.
+export fn tag_of(text str) -> str => etag_of([text])
+
+// ── rendering ────────────────────────────────────────────────────────────────
+
+fn render_dirs(ds []LoginDirView) -> str {
+    mut out = []str.new()
+    for d in ds { out.push(object([field_str("id", d.id), field_str("name", d.name)])) }
+    array(out)
+}
+
+fn render_folder(d Disclosure, f FolderView) -> str =>
+    object([
+        field_str("id", f.id),
+        pii_path(d, "path", f.path),
+        field_str("kind", f.kind),
+        field_str("source", f.source),
+        field_raw("login_dirs", render_dirs(f.login_dirs)),
+        field_str_or_null("problem", f.problem),
+    ])
+
+fn render_account(d Disclosure, a AccountFound) -> str =>
+    object([
+        field_str("id", a.id),
+        field_str("email", a.email),
+        field_str("org", a.org),
+        field_raw("dirs", render_dirs(a.dirs)),
+        field_bool("hidden", a.hidden),
+    ])
+
+/// The settings tree itself (§3.7).
+///
+/// `access_token` NEVER appears — only `access_token_set`. `tls_key` is reported as
+/// presence, not content. Both rules are §3.7's, and they are the reason this
+/// renderer is hand-written rather than derived from the record: a serialiser over
+/// `Config` would put the token on the wire the day someone adds a field.
+fn render_config(d Disclosure, c Config) -> str =>
+    object([
+        field_raw("poll", object([
+            field_int("interval_sec", c.poll.interval_sec),
+            field_int("min_interval_sec", c.poll.min_interval_sec),
+            field_int("request_timeout_sec", c.poll.request_timeout_sec),
+        ])),
+        field_raw("thresholds", object([
+            field_int("warning", c.thresholds.warning),
+            field_int("critical", c.thresholds.critical),
+        ])),
+        field_raw("forecast", object([
+            field_bool("enabled", c.forecast.enabled),
+            field_raw("work_days", array_str(c.forecast.work_days)),
+            field_str("work_from", c.forecast.work_from),
+            field_str("work_to", c.forecast.work_to),
+            field_int("off_hours_rate", c.forecast.off_hours_rate),
+            field_int("rate_window_days", c.forecast.rate_window_days),
+        ])),
+        field_raw("server", object([
+            field_str("bind", c.server.bind),
+            field_int("port", c.server.port),
+            field_bool("allow_lan", c.server.allow_lan),
+            field_bool("access_token_set", c.server.access_token != ""),
+            field_str_or_null("tls_cert", c.server.tls_cert),
+            field_bool("tls_key_set", c.server.tls_key != ""),
+        ])),
+        field_raw("ui", object([
+            field_raw("accounts_order", array_str(c.ui.accounts_order)),
+            field_raw("hidden_accounts", array_str(c.ui.hidden_accounts)),
+            field_bool("hide_stale", c.ui.hide_stale),
+            field_bool("time_bar", c.ui.time_bar),
+        ])),
+        field_raw("widget", object([
+            field_bool("enabled", c.widget.enabled),
+            field_bool("always_on_top", c.widget.always_on_top),
+            field_int("x", c.widget.x),
+            field_int("y", c.widget.y),
+            field_bool("visible", c.widget.visible),
+        ])),
+        field_raw("history", object([
+            field_int("keep_days", c.history.keep_days),
+            field_int("rollup_keep_days", c.history.rollup_keep_days),
+            field_int("config_versions_keep", c.history.config_versions_keep),
+        ])),
+        field_raw("storage", object([
+            field_str_or_null("data_dir", c.storage.data_dir),
+            field_int("backups_keep", c.storage.backups_keep),
+            field_str("memory_limit", c.storage.memory_limit),
+            field_int("threads", c.storage.threads),
+        ])),
+    ])
+
+/// The whole body of `GET /api/config`.
+export fn render_state(st ConfigState) -> str {
+    mut folders = []str.new()
+    for f in st.folders { folders.push(render_folder(st.disclosure, f)) }
+    mut found = []str.new()
+    for a in st.accounts_found { found.push(render_account(st.disclosure, a)) }
+    object([
+        field_str("etag", st.etag),
+        pii_path(st.disclosure, "path", st.path),
+        field_bool("portable", st.portable),
+        field_raw("folders", array(folders)),
+        field_raw("config", render_config(st.disclosure, st.cfg)),
+        field_raw("accounts_found", array(found)),
+    ])
+}
+
+// ── the merge ────────────────────────────────────────────────────────────────
+
+const CODE_UNKNOWN = "unknown_field"
+
+fn unknown(path str) -> FieldError => FieldError.of(path, CODE_UNKNOWN, "unknown setting '${path}'")
+
+fn wrong_type(path str, want str) -> FieldError =>
+    FieldError.of(path, "wrong_type", "'${path}' must be ${want}")
+
+/// The result of merging a partial tree onto the current settings.
+export type Merge value {
+    cfg Config
+    errors []FieldError
+}
+
+fn as_int(v JsonValue, path str, mut errs []FieldError, current int) -> int {
+    match v.num() {
+        Some(n) => n as int
+        None => {
+            errs.push(wrong_type(path, "a number"))
+            current
+        }
+    }
+}
+
+fn as_bool(v JsonValue, path str, mut errs []FieldError, current bool) -> bool {
+    match v.bool() {
+        Some(b) => b
+        None => {
+            errs.push(wrong_type(path, "true or false"))
+            current
+        }
+    }
+}
+
+fn as_str(v JsonValue, path str, mut errs []FieldError, current str) -> str {
+    match v.str() {
+        Some(s) => s
+        None => {
+            errs.push(wrong_type(path, "a string"))
+            current
+        }
+    }
+}
+
+fn as_str_list(v JsonValue, path str, mut errs []FieldError, current []str) -> []str {
+    match v.array() {
+        None => {
+            errs.push(wrong_type(path, "a list"))
+            current
+        }
+        Some(items) => {
+            mut out = []str.new()
+            mut bad = false
+            mut i = 0
+            for it in items {
+                match it.str() {
+                    Some(s) => out.push(s)
+                    None => {
+                        errs.push(wrong_type("${path}[${i}]", "a string"))
+                        bad = true
+                    }
+                }
+                i += 1
+            }
+            if bad { current } else { out }
+        }
+    }
+}
+
+fn merge_poll(mut c Config, obj JsonObject, mut errs []FieldError) -> () {
+    mut it = obj.iter()
+    loop {
+        match it.next() {
+            None => break
+            Some((k, v)) => {
+                if k == "interval_sec" {
+                    c.poll.interval_sec = as_int(v, "poll.interval_sec", errs, c.poll.interval_sec)
+                } else if k == "min_interval_sec" {
+                    c.poll.min_interval_sec = as_int(v, "poll.min_interval_sec", errs, c.poll.min_interval_sec)
+                } else if k == "request_timeout_sec" {
+                    c.poll.request_timeout_sec = as_int(v, "poll.request_timeout_sec", errs, c.poll.request_timeout_sec)
+                } else {
+                    errs.push(unknown("poll.${k}"))
+                }
+            }
+        }
+    }
+}
+
+fn merge_thresholds(mut c Config, obj JsonObject, mut errs []FieldError) -> () {
+    mut it = obj.iter()
+    loop {
+        match it.next() {
+            None => break
+            Some((k, v)) => {
+                if k == "warning" {
+                    c.thresholds.warning = as_int(v, "thresholds.warning", errs, c.thresholds.warning)
+                } else if k == "critical" {
+                    c.thresholds.critical = as_int(v, "thresholds.critical", errs, c.thresholds.critical)
+                } else {
+                    errs.push(unknown("thresholds.${k}"))
+                }
+            }
+        }
+    }
+}
+
+fn merge_forecast(mut c Config, obj JsonObject, mut errs []FieldError) -> () {
+    mut it = obj.iter()
+    loop {
+        match it.next() {
+            None => break
+            Some((k, v)) => {
+                if k == "enabled" {
+                    c.forecast.enabled = as_bool(v, "forecast.enabled", errs, c.forecast.enabled)
+                } else if k == "work_days" {
+                    c.forecast.work_days = as_str_list(v, "forecast.work_days", errs, c.forecast.work_days)
+                } else if k == "work_from" {
+                    c.forecast.work_from = as_str(v, "forecast.work_from", errs, c.forecast.work_from)
+                } else if k == "work_to" {
+                    c.forecast.work_to = as_str(v, "forecast.work_to", errs, c.forecast.work_to)
+                } else if k == "off_hours_rate" {
+                    c.forecast.off_hours_rate = as_int(v, "forecast.off_hours_rate", errs, c.forecast.off_hours_rate)
+                } else if k == "rate_window_days" {
+                    c.forecast.rate_window_days = as_int(v, "forecast.rate_window_days", errs, c.forecast.rate_window_days)
+                } else {
+                    errs.push(unknown("forecast.${k}"))
+                }
+            }
+        }
+    }
+}
+
+fn merge_server(mut c Config, obj JsonObject, mut errs []FieldError) -> () {
+    mut it = obj.iter()
+    loop {
+        match it.next() {
+            None => break
+            Some((k, v)) => {
+                if k == "bind" {
+                    c.server.bind = as_str(v, "server.bind", errs, c.server.bind)
+                } else if k == "port" {
+                    c.server.port = as_int(v, "server.port", errs, c.server.port)
+                } else if k == "allow_lan" {
+                    c.server.allow_lan = as_bool(v, "server.allow_lan", errs, c.server.allow_lan)
+                } else if k == "access_token" {
+                    // Writable but never readable back (§3.7 gives only
+                    // `access_token_set`). Accepting it here is what lets a person
+                    // set one; nothing in this file ever renders it.
+                    c.server.access_token = as_str(v, "server.access_token", errs, c.server.access_token)
+                } else if k == "tls_cert" {
+                    c.server.tls_cert = as_str(v, "server.tls_cert", errs, c.server.tls_cert)
+                } else if k == "tls_key" {
+                    c.server.tls_key = as_str(v, "server.tls_key", errs, c.server.tls_key)
+                } else {
+                    errs.push(unknown("server.${k}"))
+                }
+            }
+        }
+    }
+}
+
+fn merge_ui(mut c Config, obj JsonObject, mut errs []FieldError) -> () {
+    mut it = obj.iter()
+    loop {
+        match it.next() {
+            None => break
+            Some((k, v)) => {
+                if k == "accounts_order" {
+                    c.ui.accounts_order = as_str_list(v, "ui.accounts_order", errs, c.ui.accounts_order)
+                } else if k == "hidden_accounts" {
+                    c.ui.hidden_accounts = as_str_list(v, "ui.hidden_accounts", errs, c.ui.hidden_accounts)
+                } else if k == "hide_stale" {
+                    c.ui.hide_stale = as_bool(v, "ui.hide_stale", errs, c.ui.hide_stale)
+                } else if k == "time_bar" {
+                    c.ui.time_bar = as_bool(v, "ui.time_bar", errs, c.ui.time_bar)
+                } else {
+                    errs.push(unknown("ui.${k}"))
+                }
+            }
+        }
+    }
+}
+
+fn merge_widget(mut c Config, obj JsonObject, mut errs []FieldError) -> () {
+    mut it = obj.iter()
+    loop {
+        match it.next() {
+            None => break
+            Some((k, v)) => {
+                if k == "enabled" {
+                    c.widget.enabled = as_bool(v, "widget.enabled", errs, c.widget.enabled)
+                } else if k == "always_on_top" {
+                    c.widget.always_on_top = as_bool(v, "widget.always_on_top", errs, c.widget.always_on_top)
+                } else if k == "x" {
+                    c.widget.x = as_int(v, "widget.x", errs, c.widget.x)
+                } else if k == "y" {
+                    c.widget.y = as_int(v, "widget.y", errs, c.widget.y)
+                } else if k == "visible" {
+                    c.widget.visible = as_bool(v, "widget.visible", errs, c.widget.visible)
+                } else {
+                    errs.push(unknown("widget.${k}"))
+                }
+            }
+        }
+    }
+}
+
+fn merge_history(mut c Config, obj JsonObject, mut errs []FieldError) -> () {
+    mut it = obj.iter()
+    loop {
+        match it.next() {
+            None => break
+            Some((k, v)) => {
+                if k == "keep_days" {
+                    c.history.keep_days = as_int(v, "history.keep_days", errs, c.history.keep_days)
+                } else if k == "rollup_keep_days" {
+                    c.history.rollup_keep_days = as_int(v, "history.rollup_keep_days", errs, c.history.rollup_keep_days)
+                } else if k == "config_versions_keep" {
+                    c.history.config_versions_keep = as_int(v, "history.config_versions_keep", errs, c.history.config_versions_keep)
+                } else {
+                    errs.push(unknown("history.${k}"))
+                }
+            }
+        }
+    }
+}
+
+fn merge_storage(mut c Config, obj JsonObject, mut errs []FieldError) -> () {
+    mut it = obj.iter()
+    loop {
+        match it.next() {
+            None => break
+            Some((k, v)) => {
+                if k == "data_dir" {
+                    c.storage.data_dir = as_str(v, "storage.data_dir", errs, c.storage.data_dir)
+                } else if k == "backups_keep" {
+                    c.storage.backups_keep = as_int(v, "storage.backups_keep", errs, c.storage.backups_keep)
+                } else if k == "memory_limit" {
+                    c.storage.memory_limit = as_str(v, "storage.memory_limit", errs, c.storage.memory_limit)
+                } else if k == "threads" {
+                    c.storage.threads = as_int(v, "storage.threads", errs, c.storage.threads)
+                } else {
+                    errs.push(unknown("storage.${k}"))
+                }
+            }
+        }
+    }
+}
+
+/// `folders[]` — a whole replacement, as §3.8 says lists are.
+///
+/// An element is `{ "path": "…" }` (a new folder) or `{ "id": "…" }` (one that
+/// already exists). Only the first works today: an id comes from the database and
+/// there is no database, so an element naming one is refused rather than silently
+/// dropped — which would delete the folder, since a folder absent from the list is
+/// deleted.
+fn merge_folders(mut c Config, v JsonValue, mut errs []FieldError) -> () {
+    match v.array() {
+        None => errs.push(wrong_type("folders", "a list"))
+        Some(items) => {
+            mut out = []str.new()
+            mut bad = false
+            mut i = 0
+            for it in items {
+                match it.object() {
+                    None => {
+                        errs.push(wrong_type("folders[${i}]", "an object with 'path' or 'id'"))
+                        bad = true
+                    }
+                    Some(o) => {
+                        match o.get("path") {
+                            Some(p) => match p.str() {
+                                Some(s) => out.push(s)
+                                None => {
+                                    errs.push(wrong_type("folders[${i}].path", "a string"))
+                                    bad = true
+                                }
+                            }
+                            None => {
+                                if o.contains("id") {
+                                    errs.push(FieldError.of("folders[${i}].id", "not_supported", "a folder by id needs the database, which is not built yet -- name it by path"))
+                                } else {
+                                    errs.push(wrong_type("folders[${i}]", "an object with 'path' or 'id'"))
+                                }
+                                bad = true
+                            }
+                        }
+                    }
+                }
+                i += 1
+            }
+            if !bad { c.folders = out }
+        }
+    }
+}
+
+/// Merge a partial settings tree onto `current` (§3.8).
+///
+/// Errors accumulate rather than short-circuit: §3.8 wants every fault in one
+/// response, and a person fixing settings should learn all of them at once.
+export fn apply(current Config, body JsonObject) -> Merge {
+    // Rebuilt field by field, NOT `mut c = current` and not `current.clone()`.
+    // The first is refused (`E_READONLY_COERCE`: writing through the new binding
+    // would be visible to the caller), and the second is what the diagnostic
+    // suggests but `Config` is a value record with no `clone` method -- measured
+    // 2026-09-08, `E7320 no field or method 'clone' on type 'Config'`.
+    // An independent copy is what is wanted here: a merge that fails validation
+    // must leave the running settings untouched.
+    mut c = Config{
+        schema: current.schema,
+        folders: current.folders,
+        poll: current.poll,
+        thresholds: current.thresholds,
+        forecast: current.forecast,
+        server: current.server,
+        ui: current.ui,
+        widget: current.widget,
+        history: current.history,
+        storage: current.storage,
+    }
+    mut errs = []FieldError.new()
+    mut it = body.iter()
+    loop {
+        match it.next() {
+            None => break
+            Some((k, v)) => {
+                if k == "folders" {
+                    merge_folders(c, v, errs)
+                } else {
+                    match v.object() {
+                        None => errs.push(wrong_type(k, "an object"))
+                        Some(o) => {
+                            if k == "poll" { merge_poll(c, o, errs) }
+                            else if k == "thresholds" { merge_thresholds(c, o, errs) }
+                            else if k == "forecast" { merge_forecast(c, o, errs) }
+                            else if k == "server" { merge_server(c, o, errs) }
+                            else if k == "ui" { merge_ui(c, o, errs) }
+                            else if k == "widget" { merge_widget(c, o, errs) }
+                            else if k == "history" { merge_history(c, o, errs) }
+                            else if k == "storage" { merge_storage(c, o, errs) }
+                            else { errs.push(unknown(k)) }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    { cfg: c, errors: errs }
+}
+
+/// Validation errors as `errors[]` entries.
+export fn as_field_errors(errs []ConfigError) -> []FieldError {
+    mut out = []FieldError.new()
+    for e in errs { out.push(FieldError.of(e.field, e.code, e.message)) }
+    out
+}
+
+// ── what changed ─────────────────────────────────────────────────────────────
+
+/// Does this change need the listener reopened (§3.8)?
+export fn listener_moved(before Config, after Config) -> bool {
+    if before.server.bind != after.server.bind { return true }
+    if before.server.port != after.server.port { return true }
+    if before.server.access_token != after.server.access_token { return true }
+    if before.server.tls_cert != after.server.tls_cert { return true }
+    before.server.tls_key != after.server.tls_key
+}
+
+export fn base_url(c Config) -> str {
+    ro scheme = if c.server.tls_cert != "" { "https" } else { "http" }
+    "${scheme}://${c.server.bind}:${c.server.port}"
+}
+
+// ── the handlers ─────────────────────────────────────────────────────────────
+
+fn header_of(ctx Ctx, name str) -> str {
+    match ctx.req.header(name) {
+        Some(v) => v
+        None    => ""
+    }
+}
+
+fn json_ok(status int, body str, tag str) -> ServerResponse {
+    mut r = ServerResponse.bytes(status, "application/json; charset=utf-8", body.bytes())
+    r.header("ETag", tag)
+    r
+}
+
+fn run_get(src ConfigSource, ctx Ctx) -> ServerResponse {
+    ro st = src()
+    if header_of(ctx, "if-none-match") == st.etag {
+        mut nm = ServerResponse.empty(304)
+        nm.header("ETag", st.etag)
+        nm
+    } else {
+        json_ok(200, render_state(st), st.etag)
+    }
+}
+
+export fn config_get_handler(src ConfigSource) -> ApiHandler {
+    ro inner = src
+    fn(ctx Ctx) -> ServerResponse => run_get(inner, ctx)
+}
+
+fn body_str(req ServerRequest) -> str => unsafe { req.body_bytes().to_str_unchecked() }
+
+/// A `412`, carrying the settings as they actually are (§3.8: "тело ошибки содержит
+/// поле `current`"). The panel offers to re-read rather than making a person guess
+/// what changed.
+fn stale(ctx Ctx, st ConfigState) -> ServerResponse {
+    ro e = ApiError.precondition_failed()
+    ro body = problem_with_current(e, ctx.request_id, ctx.instance, render_state(st))
+    mut r = ServerResponse.bytes(412, "application/problem+json; charset=utf-8", body.bytes())
+    r.header("ETag", st.etag)
+    r
+}
+
+/// A problem body with the contract's `current` extension spliced in (§0 declares
+/// it, §3.8 requires it on a 412).
+fn problem_with_current(e ApiError, request_id str, instance str, current str) -> str {
+    // A qualified call (`claude_limits.server.errors.to_json(...)`) is not a form
+    // the compiler accepts -- it reaches codegen as an unknown identifier. Imported
+    // by name instead.
+    ro base = to_json(e, request_id, instance)
+    // The base body always ends in `}`; the extension goes before it rather than
+    // through a second serialiser, so there is one spelling of a problem body.
+    "${base[0..base.byte_len() - 1]},${field_raw("current", current)}}"
+}
+
+fn run_put(src ConfigSource, ctx Ctx) -> ServerResponse {
+    ro st = src()
+    ro if_match = header_of(ctx, "if-match")
+    if if_match == "" { return problem(ApiError.precondition_required(), ctx.request_id, ctx.instance) }
+    if if_match != st.etag { return stale(ctx, st) }
+
+    match Json.parse(body_str(ctx.req).trim_ascii()) {
+        Err(_) => problem(ApiError.invalid_body("body is not JSON"), ctx.request_id, ctx.instance)
+        Ok(v) => match v.object() {
+            None => problem(ApiError.invalid_body("body must be a JSON object"), ctx.request_id, ctx.instance)
+            Some(obj) => {
+                ro merged = apply(st.cfg, obj)
+                if merged.errors.len() > 0 {
+                    return problem(ApiError.extra_forbidden(merged.errors), ctx.request_id, ctx.instance)
+                }
+                ro bad = validate(merged.cfg)
+                if bad.len() > 0 {
+                    return problem(ApiError.invalid_config(as_field_errors(bad)), ctx.request_id, ctx.instance)
+                }
+                accepted(st, merged.cfg)
+            }
+        }
+    }
+}
+
+/// `200` with the body of `GET` at the new tag, plus `applied` (§3.8).
+///
+/// The new tag is the tag of the CANONICAL TEXT (`config.render`), not of the
+/// request body: two different partial trees can mean the same settings, and a tag
+/// that depended on how a client spelled its request would make an unchanged
+/// resource look changed.
+fn accepted(before ConfigState, after Config) -> ServerResponse {
+    ro text = render(after)
+    ro tag = tag_of(text)
+    // Built rather than copied-and-patched, for the same reason as in `apply`:
+    // the caller's state describes what is on disk NOW, and this is the view of
+    // what it would become.
+    ro next = ConfigState{
+        cfg: after,
+        etag: tag,
+        path: before.path,
+        portable: before.portable,
+        folders: before.folders,
+        accounts_found: before.accounts_found,
+        disclosure: before.disclosure,
+    }
+    ro moved = listener_moved(before.cfg, after)
+    ro base = render_state(next)
+    ro applied = object([
+        field_bool("restart_required", false),
+        field_bool("listener_reopened", moved),
+        field_str_or_null("new_base_url", if moved { base_url(after) } else { "" }),
+    ])
+    ro body = "${base[0..base.byte_len() - 1]},${field_raw("applied", applied)}}"
+    json_ok(200, body, tag)
+}
+
+export fn config_put_handler(src ConfigSource) -> ApiHandler {
+    ro inner = src
+    fn(ctx Ctx) -> ServerResponse => run_put(inner, ctx)
+}

@@ -671,7 +671,12 @@ fn assign(section str, key str, value str, mut cfg Config, mut errs []ConfigErro
 // byte-identical file" — is what makes `If-Match` mean anything. If serialisation
 // wandered, every save would look like an outside edit to the next one.
 
-fn quote(s str) -> str => "\"${s}\""
+// `toml_quote`, not `quote`: `server/json.nv` exports a `quote` of its own, and a
+// third module importing THAT one by name makes the compiler emit an unmangled
+// `nova_fn_quote` that no CU defines -- isolated in
+// `probes/same-fn-name-two-modules/`. The longer name is also the truer one: this
+// puts quotes on for TOML, without the escaping JSON needs.
+fn toml_quote(s str) -> str => "\"${s}\""
 
 fn list_of(items []str) -> str {
     if items.len() == 0 { return "[]" }
@@ -679,7 +684,7 @@ fn list_of(items []str) -> str {
     mut first = true
     for x in items {
         if !first { out = "${out}, " }
-        out = "${out}${quote(x)}"
+        out = "${out}${toml_quote(x)}"
         first = false
     }
     "${out}]"
@@ -693,7 +698,7 @@ export fn render(cfg Config) -> str {
     out = "${out}schema = ${cfg.schema}\n"
 
     for path in cfg.folders {
-        out = "${out}\n[[folders]]\npath = ${quote(path)}\n"
+        out = "${out}\n[[folders]]\npath = ${toml_quote(path)}\n"
     }
 
     out = "${out}\n[poll]\n"
@@ -708,21 +713,21 @@ export fn render(cfg Config) -> str {
     out = "${out}\n[forecast]\n"
     out = "${out}enabled = ${bool_of(cfg.forecast.enabled)}\n"
     out = "${out}work_days = ${list_of(cfg.forecast.work_days)}\n"
-    out = "${out}work_from = ${quote(cfg.forecast.work_from)}\n"
-    out = "${out}work_to = ${quote(cfg.forecast.work_to)}\n"
+    out = "${out}work_from = ${toml_quote(cfg.forecast.work_from)}\n"
+    out = "${out}work_to = ${toml_quote(cfg.forecast.work_to)}\n"
     out = "${out}off_hours_rate = ${cfg.forecast.off_hours_rate}\n"
     out = "${out}rate_window_days = ${cfg.forecast.rate_window_days}\n"
 
     out = "${out}\n[server]\n"
-    out = "${out}bind = ${quote(cfg.server.bind)}\n"
+    out = "${out}bind = ${toml_quote(cfg.server.bind)}\n"
     out = "${out}port = ${cfg.server.port}\n"
     out = "${out}allow_lan = ${bool_of(cfg.server.allow_lan)}\n"
     // THE TOKEN IS NEVER WRITTEN BY THIS FUNCTION. `render` serves both the file and
     // the history row, and 01.2 §3.14 wants `***` in the latter — a serialiser that
     // emits a secret for one caller emits it for both. The key is simply absent here;
     // the token is written by the one place that owns it.
-    out = "${out}tls_cert = ${quote(cfg.server.tls_cert)}\n"
-    out = "${out}tls_key = ${quote(cfg.server.tls_key)}\n"
+    out = "${out}tls_cert = ${toml_quote(cfg.server.tls_cert)}\n"
+    out = "${out}tls_key = ${toml_quote(cfg.server.tls_key)}\n"
 
     out = "${out}\n[ui]\n"
     out = "${out}accounts_order = ${list_of(cfg.ui.accounts_order)}\n"
@@ -743,9 +748,9 @@ export fn render(cfg Config) -> str {
     out = "${out}config_versions_keep = ${cfg.history.config_versions_keep}\n"
 
     out = "${out}\n[storage]\n"
-    out = "${out}data_dir = ${quote(cfg.storage.data_dir)}\n"
+    out = "${out}data_dir = ${toml_quote(cfg.storage.data_dir)}\n"
     out = "${out}backups_keep = ${cfg.storage.backups_keep}\n"
-    out = "${out}memory_limit = ${quote(cfg.storage.memory_limit)}\n"
+    out = "${out}memory_limit = ${toml_quote(cfg.storage.memory_limit)}\n"
     out = "${out}threads = ${cfg.storage.threads}\n"
     out
 }

@@ -1,0 +1,8 @@
+[lib]
+src = "src"
+
+[package]
+name = "same_fn_name_two_modules"
+version = "0.0.0"
+description = "Probe: two modules declaring a function of the same name emit one unmangled C symbol that is never defined"
+license = "MIT OR Apache-2.0"

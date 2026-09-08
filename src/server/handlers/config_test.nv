@@ -1,0 +1,433 @@
+// Tests for handlers/config.nv — task T2.14, `GET`/`PUT /api/config`.
+//
+//   ./nova.sh test src/server/ --filter config      (ONE path — see T2.12)
+
+module handlers.config_test
+
+import claude_limits.server.routes.{HttpMethod, on, route, build}
+import claude_limits.server.dto.{Disclosure}
+import claude_limits.config.{Config, render}
+import std.encoding.json.{Json}
+import polaris.{Router, serve_once}
+import std.testing.handlers as th
+import config.{ConfigState, FolderView, LoginDirView, AccountFound, apply, tag_of, render_state, listener_moved, base_url, config_get_handler, config_put_handler}
+
+fn wire_str(wire []u8) -> str => unsafe { wire.to_str_unchecked() }
+
+fn get_req(hname str, hval str) -> []u8 {
+    if hname == "" { return "GET /api/config HTTP/1.1\r\nHost: x\r\n\r\n".bytes() }
+    "GET /api/config HTTP/1.1\r\nHost: x\r\n${hname}: ${hval}\r\n\r\n".bytes()
+}
+
+fn put_req(if_match str, body str) -> []u8 {
+    if if_match == "" {
+        return "PUT /api/config HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: ${body.byte_len()}\r\n\r\n${body}".bytes()
+    }
+    "PUT /api/config HTTP/1.1\r\nHost: x\r\nIf-Match: ${if_match}\r\nContent-Type: application/json\r\nContent-Length: ${body.byte_len()}\r\n\r\n${body}".bytes()
+}
+
+fn status_of(wire []u8) -> str {
+    ro s = wire_str(wire)
+    match s.find("\r\n") { Some(i) => s[0..i], None => s }
+}
+
+fn head_of(wire []u8) -> str {
+    ro s = wire_str(wire)
+    match s.find("\r\n\r\n") { Some(i) => s[0..i], None => s }
+}
+
+fn body_of(wire []u8) -> str {
+    ro s = wire_str(wire)
+    match s.find("\r\n\r\n") { Some(i) => s[i + 4..s.byte_len()], None => "" }
+}
+
+fn hdr(wire []u8, name str) -> str {
+    ro padded = "\r\n${head_of(wire)}"
+    ro needle = "\r\n${name.to_ascii_lower()}: "
+    match padded.to_ascii_lower().find(needle) {
+        Some(i) => {
+            ro rest = padded[i + needle.byte_len()..padded.byte_len()]
+            match rest.find("\r\n") { Some(j) => rest[0..j], None => rest }
+        }
+        None => ""
+    }
+}
+
+fn count_of(hay str, needle str) -> int {
+    mut n = 0
+    mut rest = hay
+    loop {
+        match rest.find(needle) {
+            None => break
+            Some(i) => {
+                n += 1
+                rest = rest[i + needle.byte_len()..rest.byte_len()]
+            }
+        }
+    }
+    n
+}
+
+// ── the fixture ──────────────────────────────────────────────────────────────
+
+const SECRET = "sk-ant-oat01-DO-NOT-LEAK"
+
+fn base_cfg() -> Config {
+    mut c = Config.defaults()
+    c.folders = ["C:/accounts"]
+    c.server.access_token = SECRET
+    c.ui.accounts_order = ["main@example.com"]
+    c
+}
+
+fn state_from(c Config) -> ConfigState => {
+    cfg: c,
+    etag: tag_of(render(c)),
+    path: "C:\\Users\\evgeniy\\AppData\\Roaming\\claude-limits\\claude-limits.toml",
+    portable: false,
+    folders: [FolderView{
+        id: "f-1",
+        path: "C:/accounts",
+        kind: "parent",
+        source: "config",
+        login_dirs: [LoginDirView{ id: "d-1", name: "nv-lang" }],
+        problem: "",
+    }],
+    accounts_found: [AccountFound{
+        id: "a-1",
+        email: "main@example.com",
+        org: "Tech Center",
+        dirs: [LoginDirView{ id: "d-1", name: "nv-lang" }],
+        hidden: false,
+    }],
+    disclosure: Disclosure.Loopback,
+}
+
+fn app(st ConfigState) -> Router {
+    ro s = st
+    build([route("/api/config", [
+        on(HttpMethod.Get, config_get_handler(fn() -> ConfigState => s)),
+        on(HttpMethod.Put, config_put_handler(fn() -> ConfigState => s)),
+    ])])!!
+}
+
+fn serve(st ConfigState, raw []u8) Time Random -> []u8 => serve_once(app(st), raw)
+
+fn current() -> ConfigState => state_from(base_cfg())
+
+// ── GET ──────────────────────────────────────────────────────────────────────
+
+test "GET returns the tree with its metadata and an ETag" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro w = serve(current(), get_req("", ""))
+        assert(status_of(w) == "HTTP/1.1 200 OK")
+        ro tag = hdr(w, "etag")
+        assert(tag != "")
+        ro b = body_of(w)
+        // The tag in the body and the tag in the header are one value.
+        assert(b.contains("\"etag\":\"${tag.replace("\"", "\\\"")}\"") || b.contains(tag[1..tag.byte_len() - 1]))
+        assert(b.contains("\"portable\":false"))
+        assert(b.contains("\"config\":{"))
+        assert(b.contains("\"accounts_found\":["))
+        assert(b.contains("\"interval_sec\":300"))
+    }
+}
+
+test "the access token never appears, only whether one is set" {
+    // Section 3.7. The test searches for the token as a SUBSTRING, which is the
+    // check section 8 item 2 asks for.
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro b = body_of(serve(current(), get_req("", "")))
+        assert(!b.contains(SECRET))
+        assert(!b.contains("access_token\":"))
+        assert(b.contains("\"access_token_set\":true"))
+    }
+}
+
+test "GET with a matching If-None-Match is a 304" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro st = current()
+        ro w = serve(st, get_req("If-None-Match", st.etag))
+        assert(status_of(w) == "HTTP/1.1 304 Not Modified")
+        assert(body_of(w) == "")
+        assert(hdr(w, "etag") == st.etag)
+    }
+}
+
+test "GET with a stale If-None-Match gets the body" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        assert(status_of(serve(current(), get_req("If-None-Match", "\"0000000000000000\""))) == "HTTP/1.1 200 OK")
+    }
+}
+
+// ── PUT: the preconditions ───────────────────────────────────────────────────
+
+test "PUT without If-Match is 428" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro w = serve(current(), put_req("", "{\"poll\":{\"interval_sec\":120}}"))
+        assert(status_of(w) == "HTTP/1.1 428 Precondition Required")
+        assert(body_of(w).contains("\"code\":\"precondition_required\""))
+    }
+}
+
+test "PUT with a stale If-Match is 412 and carries the settings as they are" {
+    // Section 3.8: the panel offers to re-read rather than making a person guess
+    // what changed under them.
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro w = serve(current(), put_req("\"0000000000000000\"", "{\"poll\":{\"interval_sec\":120}}"))
+        assert(status_of(w) == "HTTP/1.1 412 Precondition Failed")
+        ro b = body_of(w)
+        assert(b.contains("\"code\":\"precondition_failed\""))
+        assert(b.contains("\"current\":{"))
+        assert(b.contains("\"interval_sec\":300"))
+        // Even inside `current`, the token stays out.
+        assert(!b.contains(SECRET))
+    }
+}
+
+test "repeating a successful PUT gets 412, because the resource moved" {
+    // Idempotency through the version of the resource (convention 10.3): the first
+    // PUT changed the settings, so the tag the client is holding is no longer the
+    // one on disk. The client re-reads.
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro before = current()
+        ro patch = "{\"poll\":{\"interval_sec\":120}}"
+        ro first = serve(before, put_req(before.etag, patch))
+        assert(status_of(first) == "HTTP/1.1 200 OK")
+        ro new_tag = hdr(first, "etag")
+        assert(new_tag != before.etag)
+        // The world has moved on: the server now holds the new settings.
+        mut after_cfg = base_cfg()
+        after_cfg.poll.interval_sec = 120
+        ro after = state_from(after_cfg)
+        assert(after.etag == new_tag)
+        ro second = serve(after, put_req(before.etag, patch))
+        assert(status_of(second) == "HTTP/1.1 412 Precondition Failed")
+    }
+}
+
+// ── PUT: the body ────────────────────────────────────────────────────────────
+
+test "an unknown key is 422 extra_forbidden with the field in dotted notation" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro st = current()
+        ro w = serve(st, put_req(st.etag, "{\"poll\":{\"intervalSec\":120}}"))
+        assert(status_of(w) == "HTTP/1.1 422 Unprocessable Content")
+        ro b = body_of(w)
+        assert(b.contains("\"code\":\"extra_forbidden\""))
+        assert(b.contains("\"field\":\"poll.intervalSec\""))
+    }
+}
+
+test "an unknown top-level branch is named too" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro st = current()
+        ro b = body_of(serve(st, put_req(st.etag, "{\"polling\":{\"interval_sec\":120}}")))
+        assert(b.contains("\"field\":\"polling\""))
+    }
+}
+
+test "every unknown key travels in ONE response" {
+    // A panel that reports the first fault makes a person press Save four times to
+    // learn four things.
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro st = current()
+        ro b = body_of(serve(st, put_req(st.etag, "{\"poll\":{\"intervalSec\":1,\"timeout\":2},\"ui\":{\"theme\":\"dark\"}}")))
+        assert(b.contains("\"field\":\"poll.intervalSec\""))
+        assert(b.contains("\"field\":\"poll.timeout\""))
+        assert(b.contains("\"field\":\"ui.theme\""))
+        assert(count_of(b, "\"field\":") == 3)
+    }
+}
+
+test "two values out of range are one 422 with two errors[]" {
+    // Section 8 item 7 names this case. Two INDEPENDENT fields: the first spelling
+    // of this test used a bad threshold PAIR as the second fault and expected two
+    // entries, but a bad pair names BOTH `thresholds.warning` and
+    // `thresholds.critical` -- by design, since the panel highlights both boxes --
+    // so it produced three. The test was wrong, not the validator.
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro st = current()
+        ro w = serve(st, put_req(st.etag, "{\"poll\":{\"interval_sec\":5},\"history\":{\"keep_days\":0}}"))
+        assert(status_of(w) == "HTTP/1.1 422 Unprocessable Content")
+        ro b = body_of(w)
+        assert(b.contains("\"code\":\"invalid_config\""))
+        assert(count_of(b, "\"field\":") == 2)
+        assert(b.contains("\"field\":\"poll.interval_sec\""))
+        assert(b.contains("\"field\":\"history.keep_days\""))
+    }
+}
+
+test "a bad threshold pair names both boxes, because the panel highlights both" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro st = current()
+        ro b = body_of(serve(st, put_req(st.etag, "{\"thresholds\":{\"warning\":90,\"critical\":10}}")))
+        assert(b.contains("\"field\":\"thresholds.warning\""))
+        assert(b.contains("\"field\":\"thresholds.critical\""))
+        assert(count_of(b, "\"field\":") == 2)
+    }
+}
+
+test "a value of the wrong type is refused with the field named" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro st = current()
+        ro b = body_of(serve(st, put_req(st.etag, "{\"poll\":{\"interval_sec\":\"120\"}}")))
+        assert(b.contains("\"field\":\"poll.interval_sec\""))
+        assert(b.contains("\"code\":\"wrong_type\""))
+    }
+}
+
+test "allow_lan is refused while LAN does not exist, and the field says which" {
+    // The card (01.5) says `server.allow_lan`; 01.3 section 8 item 7 says
+    // `server.tls_cert`. They are two PHASES, not a contradiction: today the toggle
+    // is inert (01.1 section 5.7) and the whole setting is refused; after phase 6
+    // it becomes legal and then needs a certificate. `config.nv`'s own validate
+    // agrees with the card.
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro st = current()
+        ro w = serve(st, put_req(st.etag, "{\"server\":{\"allow_lan\":true}}"))
+        assert(status_of(w) == "HTTP/1.1 422 Unprocessable Content")
+        ro b = body_of(w)
+        assert(b.contains("\"field\":\"server.allow_lan\""))
+        assert(b.contains("later version"))
+    }
+}
+
+test "a body that is not JSON is 400, not 422" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro st = current()
+        assert(status_of(serve(st, put_req(st.etag, "{oops"))) == "HTTP/1.1 400 Bad Request")
+        assert(status_of(serve(st, put_req(st.etag, "[1]"))) == "HTTP/1.1 400 Bad Request")
+    }
+}
+
+// ── PUT: success ─────────────────────────────────────────────────────────────
+
+test "a successful PUT answers with the new tree, a new tag and applied" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro st = current()
+        ro w = serve(st, put_req(st.etag, "{\"poll\":{\"interval_sec\":120}}"))
+        assert(status_of(w) == "HTTP/1.1 200 OK")
+        ro b = body_of(w)
+        assert(b.contains("\"interval_sec\":120"))
+        assert(b.contains("\"applied\":{"))
+        assert(b.contains("\"restart_required\":false"))
+        assert(b.contains("\"listener_reopened\":false"))
+        assert(b.contains("\"new_base_url\":null"))
+        assert(hdr(w, "etag") != st.etag)
+        assert(!b.contains(SECRET))
+    }
+}
+
+test "the new tag is the tag of the CANONICAL text, not of the request" {
+    // Two different partial trees can mean the same settings. A tag that depended
+    // on how a client spelled its request would make an unchanged resource look
+    // changed.
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro st = current()
+        ro a = hdr(serve(st, put_req(st.etag, "{\"poll\":{\"interval_sec\":120}}")), "etag")
+        ro b = hdr(serve(st, put_req(st.etag, "{\"poll\":{\"interval_sec\":120,\"request_timeout_sec\":30}}")), "etag")
+        // The second names a field it does not change; the settings end up the same.
+        assert(a == b)
+        mut want = base_cfg()
+        want.poll.interval_sec = 120
+        assert(a == tag_of(render(want)))
+    }
+}
+
+test "a list is replaced whole, not merged element by element" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro st = current()
+        ro b = body_of(serve(st, put_req(st.etag, "{\"ui\":{\"accounts_order\":[\"work@example.org\"]}}")))
+        assert(b.contains("\"accounts_order\":[\"work@example.org\"]"))
+        assert(!b.contains("main@example.com\",\"work"))
+    }
+}
+
+test "changing the port reopens the listener and says where to reconnect" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro st = current()
+        ro b = body_of(serve(st, put_req(st.etag, "{\"server\":{\"port\":7400}}")))
+        assert(b.contains("\"listener_reopened\":true"))
+        assert(b.contains("\"new_base_url\":\"http://127.0.0.1:7400\""))
+    }
+}
+
+test "changing only ui does not move the listener" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro st = current()
+        ro b = body_of(serve(st, put_req(st.etag, "{\"ui\":{\"time_bar\":false}}")))
+        assert(b.contains("\"listener_reopened\":false"))
+    }
+}
+
+// ── the pure parts ───────────────────────────────────────────────────────────
+
+/// `apply` over a JSON text, for the tests that check the merge directly.
+fn merged_of(text str) -> (Config, int, str) {
+    match Json.parse(text) {
+        Err(_) => (base_cfg(), 0 - 1, "not json")
+        Ok(v) => match v.object() {
+            None => (base_cfg(), 0 - 1, "not an object")
+            Some(o) => {
+                ro m = apply(base_cfg(), o)
+                ro first = if m.errors.len() > 0 { m.errors[0].field } else { "" }
+                (m.cfg, m.errors.len(), first)
+            }
+        }
+    }
+}
+
+test "a folder by path replaces the list; a folder by id is refused, not dropped" {
+    // Refused rather than dropped: a folder absent from the list is DELETED
+    // (section 3.8), so silently ignoring an element would delete the folder a
+    // client believed it was keeping.
+    ro (ok_cfg, ok_errs, _ok_field) = merged_of("{\"folders\":[{\"path\":\"~/.claude\"}]}")
+    assert(ok_errs == 0)
+    assert(ok_cfg.folders.len() == 1)
+    assert(ok_cfg.folders[0] == "~/.claude")
+
+    ro (kept, n, field) = merged_of("{\"folders\":[{\"id\":\"f-1\"}]}")
+    assert(n == 1)
+    assert(field == "folders[0].id")
+    // The current list survives the refusal untouched.
+    assert(kept.folders.len() == 1)
+    assert(kept.folders[0] == "C:/accounts")
+}
+
+test "an empty folders list is a deletion, and it is allowed" {
+    ro (c, n, _f) = merged_of("{\"folders\":[]}")
+    assert(n == 0)
+    assert(c.folders.len() == 0)
+}
+
+test "a merge touches only the branches the body names" {
+    ro (c, n, _f) = merged_of("{\"poll\":{\"interval_sec\":120}}")
+    assert(n == 0)
+    assert(c.poll.interval_sec == 120)
+    // Everything else is what it was.
+    assert(c.poll.request_timeout_sec == base_cfg().poll.request_timeout_sec)
+    assert(c.thresholds.warning == base_cfg().thresholds.warning)
+    assert(c.server.access_token == base_cfg().server.access_token)
+}
+
+test "listener_moved watches exactly the five settings that move it" {
+    ro a = base_cfg()
+    mut b = base_cfg()
+    assert(!listener_moved(a, b))
+    b.server.port = 7400
+    assert(listener_moved(a, b))
+    mut c = base_cfg()
+    c.ui.time_bar = false
+    assert(!listener_moved(a, c))
+    mut d = base_cfg()
+    d.server.tls_cert = "cert.pem"
+    assert(listener_moved(a, d))
+}
+
+test "base_url reflects whether a certificate is configured" {
+    mut a = base_cfg()
+    assert(base_url(a) == "http://127.0.0.1:7391")
+    a.server.tls_cert = "cert.pem"
+    assert(base_url(a) == "https://127.0.0.1:7391")
+}

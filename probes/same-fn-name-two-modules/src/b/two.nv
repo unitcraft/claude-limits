@@ -1,0 +1,11 @@
+// An EXPORTED helper of the same name in another module.
+module b.two
+
+export fn quote(s str) -> str => "<${s}>"
+
+export fn use_b(s str) -> str => quote(s)
+
+/// CONTROL: the same body under a name nothing else uses.
+export fn quote_b(s str) -> str => "<${s}>"
+
+export fn use_b_control(s str) -> str => quote_b(s)

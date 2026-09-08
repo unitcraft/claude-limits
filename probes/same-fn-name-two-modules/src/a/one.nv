@@ -1,0 +1,6 @@
+// A module-PRIVATE helper called `quote`, used only inside this module.
+module a.one
+
+fn quote(s str) -> str => "[${s}]"
+
+export fn use_a(s str) -> str => quote(s)

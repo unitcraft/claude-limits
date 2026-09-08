@@ -1,0 +1,12 @@
+module same_fn_name_two_modules
+
+import same_fn_name_two_modules.a.one.{use_a}
+import same_fn_name_two_modules.b.two.{use_b, use_b_control}
+import same_fn_name_two_modules.c.three.{use_c}
+
+fn main() Io -> () {
+    print("control (unique name): ${use_b_control("x")}")
+    print("a: ${use_a("x")}")
+    print("b: ${use_b("x")}")
+    print("c (imported by name): ${use_c("x")}")
+}

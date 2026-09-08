@@ -13,7 +13,8 @@ import claude_limits.server.routes.{HttpMethod, on, route, build, API_VERSION}
 import claude_limits.server.dto.{Disclosure, SnapshotView, AccountView, DirView, LimitView, ForecastView, WorstView}
 import polaris.{Router, serve_once}
 import std.testing.handlers as th
-import snapshot.{SnapshotState, arrange, etag_of, snapshot_handler}
+import snapshot.{SnapshotState, arrange, snapshot_handler}
+import claude_limits.server.etag.{etag_of}
 
 // ── wire helpers (peers of routes_test.nv's, which this module cannot see) ───
 

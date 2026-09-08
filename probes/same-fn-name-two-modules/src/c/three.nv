@@ -1,0 +1,8 @@
+// A third module that IMPORTS the exported `quote` by name -- the shape the real
+// case had (`server/dto.nv` imports `quote` from `server/json.nv` while
+// `claude_limits/config.nv` has a private `quote` of its own).
+module c.three
+
+import same_fn_name_two_modules.b.two.{quote}
+
+export fn use_c(s str) -> str => quote(s)

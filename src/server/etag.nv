@@ -1,0 +1,47 @@
+// etag.nv — one way to compute an `ETag`, for every endpoint that has one.
+//
+// Source: 01.3 §3.3 (the snapshot tag), §3.7 (the config tag), §8 п. 3 and п. 7.
+//
+// It lived in `handlers/snapshot.nv` while one route needed it. `GET /api/config`
+// is the second, and two copies of a hash is how two endpoints come to disagree
+// about what "unchanged" means — which a client only discovers as a 304 hiding a
+// change it needed.
+
+module server.etag
+
+import std.checksums.fnv.{Fnv64}
+
+/// FNV-1a over the parts, as sixteen hex digits in quotes.
+///
+/// A HASH AND NOT THE PARTS. An `ETag` carrying `fetched_at` verbatim tells a LAN
+/// client when the machine last ran, and one carrying the config text tells it what
+/// is in the settings.
+///
+/// `Fnv64` from std rather than a loop of my own: FNV IS modular arithmetic — the
+/// multiply is meant to wrap — and Nova traps sized-int overflow by default, so the
+/// hand-written version died on `integer overflow: *` at the second byte. std's
+/// spells the opt-out (`.wrapping_mul`) and carries the published test vectors.
+///
+/// A `/` byte goes between the parts. Without a separator `("ab","c")` and
+/// `("a","bc")` hash the same, and a settings change could then be invisible to a
+/// cached client. `/` because it cannot occur in a hex tag or an ISO timestamp,
+/// so a collision needs a deliberate attempt rather than an accident.
+export fn etag_of(parts []str) -> str {
+    mut st = Fnv64.new()
+    for p in parts {
+        st.update(p.bytes())
+        st.update("/".bytes())
+    }
+    ro h = st.finalize()
+    ro digits = "0123456789abcdef"
+    consume sb = StringBuilder.new()
+    sb.append("\"")
+    mut shift = 60
+    while shift >= 0 {
+        ro nib = ((h >> (shift as u64)) & 0xf) as int
+        sb.append(digits[nib..nib + 1])
+        shift -= 4
+    }
+    sb.append("\"")
+    sb.into_str()
+}

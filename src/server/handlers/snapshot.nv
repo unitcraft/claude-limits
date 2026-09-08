@@ -15,7 +15,7 @@ import claude_limits.server.routes.{Ctx, ApiHandler, problem}
 import claude_limits.server.errors.{ApiError}
 import claude_limits.server.dto.{Disclosure, SnapshotView, AccountView, LimitView, render_snapshot}
 import polaris.{ServerRequest, ServerResponse}
-import std.checksums.fnv.{Fnv64}
+import claude_limits.server.etag.{etag_of}
 
 /// Everything the handler needs, read fresh on EVERY request.
 ///
@@ -174,41 +174,6 @@ fn greater(a LimitView, b LimitView) -> bool {
 }
 
 // ── the ETag ─────────────────────────────────────────────────────────────────
-
-/// FNV-1a over the parts, as 16 hex digits in quotes.
-///
-/// A hash and not the parts themselves: an `ETag` carrying `fetched_at` tells a
-/// LAN client when the machine last ran, which is a fact about the machine.
-///
-/// `Fnv64` from std rather than the loop I wrote first. FNV IS modular arithmetic —
-/// the multiply is supposed to wrap — and Nova traps sized-int overflow by default,
-/// so the hand-rolled version died on `integer overflow: *` at the second byte of
-/// the first string. The opt-out is `.wrapping_mul`, which std's implementation
-/// already spells out, along with the test vectors mine did not have.
-///
-/// A `0x2f` byte between the parts: without a separator, `("ab","c")` and
-/// `("a","bc")` hash the same, and a settings change could then be invisible to a
-/// cached client. `/` is the byte because it cannot occur in a hex etag or a
-/// timestamp, which makes a collision need a deliberate attempt.
-export fn etag_of(parts []str) -> str {
-    mut st = Fnv64.new()
-    for p in parts {
-        st.update(p.bytes())
-        st.update("/".bytes())
-    }
-    ro h = st.finalize()
-    ro digits = "0123456789abcdef"
-    consume sb = StringBuilder.new()
-    sb.append("\"")
-    mut shift = 60
-    while shift >= 0 {
-        ro nib = ((h >> (shift as u64)) & 0xf) as int
-        sb.append(digits[nib..nib + 1])
-        shift -= 4
-    }
-    sb.append("\"")
-    sb.into_str()
-}
 
 fn if_none_match(req ServerRequest, tag str) -> bool {
     match req.header("if-none-match") {
