@@ -43,6 +43,18 @@ test('the selected period is the one marked selected', () => {
 });
 
 test('the folders control exists but says it does nothing yet', () => {
+  // ALSO PINS A DIVERGENCE, and a stranger one than it looks.
+  //
+  // 01.1 §6.1 says the Accounts/Folders control "switches §6 and §7". The chip is
+  // disabled with the title "folders view: not built yet" (stats.js:387) -- while
+  // folders.js is 291 lines, fully written, and app.js:75 already calls
+  // renderFolders when the group is 'folder'. So the control refuses to reach a view
+  // that exists.
+  //
+  // Not flipped here: whether that view is READY is T2.24's judgement, it depends on
+  // history data this tree cannot serve yet, and enabling a chip is not how that
+  // decision should be recorded. Named so the next reader does not take the title at
+  // face value.
   const folder = all(draw(), 'chip').find((c) => c.dataset.group === 'folder');
   assert.equal(folder.disabled, true);
   assert.match(folder.title, /not built yet/);
@@ -171,6 +183,19 @@ test('every chart is labelled for a screen reader', () => {
 });
 
 test('resets are drawn, and the session window has many of them in a week', () => {
+  // THIS TEST PINS A DIVERGENCE FROM THE SPEC, deliberately and temporarily.
+  //
+  // 01.1 §6.3 says the session column is "always the last 24 h regardless of the
+  // period". It is not: renderStatCard passes the FULL range to renderChart and
+  // changes only the tick-label kind (stats.js:311-315), so the column plots the
+  // whole week with 24h-style labels -- which is why a five-hour window shows about
+  // 33 resets here instead of four or five.
+  //
+  // Left standing because it holds a true property of the code as it is, and the
+  // card that would change it (T2.23) cannot start: it needs the history endpoints
+  // of T2.15 and no such handler exists in the tree. When the column really becomes
+  // the last 24 h, this assertion SHOULD fail -- and that will be the fix landing,
+  // not a regression.
   const main = all(draw(), 'stat-card').find((c) => c.dataset.email === 'main@example.com');
   const col = all(main, 'stat-col')[0];
   assert.ok(all(col, 'reset').length > 20, 'a five-hour window resets about 33 times a week');
