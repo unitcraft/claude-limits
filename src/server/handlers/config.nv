@@ -197,6 +197,35 @@ fn unknown(path str) -> FieldError => FieldError.of(path, CODE_UNKNOWN, "unknown
 fn wrong_type(path str, want str) -> FieldError =>
     FieldError.of(path, "wrong_type", "'${path}' must be ${want}")
 
+/// The envelope for a list of field errors, chosen by their CAUSES.
+///
+/// THE CONTRACT SPLITS THESE, 01.3 section 3.8: `422 extra_forbidden` is "a key that
+/// is not in the settings tree", `422 invalid_config` is "a value outside the rules".
+/// Two codes for two different mistakes, and the client is expected to act
+/// differently on each.
+///
+/// Until 2026-09-09 everything `apply` collected went out as `extra_forbidden`,
+/// because that is the STAGE it was collected at -- and `apply` collects both kinds.
+/// So `{"poll": {"interval_sec": "abc"}}` was answered "unknown field": a client
+/// following that answer DELETES a key that exists, instead of fixing a value that
+/// does not parse. The envelope named the stage, not the reason.
+///
+/// MIXED LISTS choose `invalid_config`, and that is a decision rather than a reading:
+/// the contract says both codes and also "all errors in one response", so with both
+/// kinds present one of them has to describe the whole. `extra_forbidden` is the more
+/// specific claim -- "this key does not exist" -- and making it about a body that
+/// also contains legitimate keys with bad values would be false about part of it.
+/// `invalid_config` is true of the whole list in every case. Each `errors[]` entry
+/// still carries its own precise code, so nothing is lost.
+fn envelope_for(fields []FieldError) -> ApiError {
+    mut all_unknown = true
+    for f in fields {
+        if f.code != CODE_UNKNOWN { all_unknown = false }
+    }
+    if all_unknown { return ApiError.extra_forbidden(fields) }
+    ApiError.invalid_config(fields)
+}
+
 /// The result of merging a partial tree onto the current settings.
 export type Merge value {
     cfg Config
@@ -632,7 +661,7 @@ fn run_put(src ConfigSource, ctx Ctx) -> ServerResponse {
             Some(obj) => {
                 ro merged = apply(st.cfg, obj)
                 if merged.errors.len() > 0 {
-                    return problem(ApiError.extra_forbidden(merged.errors), ctx.request_id, ctx.instance)
+                    return problem(envelope_for(merged.errors), ctx.request_id, ctx.instance)
                 }
                 ro bad = validate(merged.cfg)
                 if bad.len() > 0 {

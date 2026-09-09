@@ -219,6 +219,49 @@ test "an unknown key is 422 extra_forbidden with the field in dotted notation" {
     }
 }
 
+test "a wrong TYPE is invalid_config, not extra_forbidden -- the key exists" {
+    // THE ENVELOPE NAMES THE REASON, NOT THE STAGE. `apply` collects two different
+    // mistakes into one list -- a key that is not in the tree, and a value of the
+    // wrong type -- and everything in that list used to go out as `extra_forbidden`,
+    // because that was the stage it was gathered at.
+    //
+    // The client acts on the code. Told "unknown field" about `poll.interval_sec`, it
+    // DELETES a setting that exists, instead of fixing a value that does not parse.
+    // 01.3 section 3.8 splits them for exactly that reason: extra_forbidden is "a key
+    // not in the settings tree", invalid_config is "a value outside the rules".
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro st = current()
+        ro w = serve(st, put_req(st.etag, "{\"poll\":{\"interval_sec\":\"abc\"}}"))
+        assert(status_of(w) == "HTTP/1.1 422 Unprocessable Content")
+        ro b = body_of(w)
+        assert(b.contains("\"code\":\"invalid_config\""))
+        assert(!b.contains("\"code\":\"extra_forbidden\""))
+        // The field still says precisely what is wrong with it.
+        assert(b.contains("\"field\":\"poll.interval_sec\""))
+        assert(b.contains("wrong_type"))
+    }
+}
+
+test "a body with BOTH mistakes reports invalid_config, and lists both" {
+    // The contract gives two codes and also says "all errors in one response", so
+    // with both kinds present one code has to describe the whole list. This is a
+    // DECISION, written in `envelope_for`: `extra_forbidden` is the more specific
+    // claim -- "this key does not exist" -- and it would be false about the half of
+    // the body whose keys do exist. `invalid_config` is true of the whole list.
+    //
+    // Nothing is lost: each errors[] entry keeps its own code.
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro st = current()
+        ro body = "{\"poll\":{\"interval_sec\":\"abc\",\"intervalSec\":120}}"
+        ro b = body_of(serve(st, put_req(st.etag, body)))
+        assert(b.contains("\"code\":\"invalid_config\""))
+        assert(b.contains("wrong_type"))
+        assert(b.contains("unknown_field"))
+        assert(b.contains("poll.interval_sec"))
+        assert(b.contains("poll.intervalSec"))
+    }
+}
+
 test "an unknown top-level branch is named too" {
     with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
         ro st = current()
