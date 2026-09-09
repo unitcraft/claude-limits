@@ -1,0 +1,29 @@
+# nova.lock.toml — generated automatically (Plan 03.1 / D78).
+# Pins exact dependency versions for reproducible builds.
+# Do not edit by hand; commit this file to the repository.
+
+version = 1
+
+[[package]]
+name = "compress"
+source = "git"
+git = "https://github.com/nv-lang/nova-compress"
+pin = "version:>=0.1.0, <0.2.0"
+version = "0.1.3"
+commit = "c4c387fdf145280b7253ede7bf992fe6fbb35359"
+
+[[package]]
+name = "http"
+source = "git"
+git = "https://github.com/nv-lang/nova-http"
+pin = "version:>=0.1.0, <0.2.0"
+version = "0.1.3"
+commit = "53638fba444a1addfe8ab4af0a515d4cdb3e1acd"
+
+[[package]]
+name = "tls"
+source = "git"
+git = "https://github.com/nv-lang/nova-tls"
+pin = "version:>=0.1.0, <0.2.0"
+version = "0.1.8"
+commit = "7fad86615a8cfa84c3e874fde5cc7e0532252d36"

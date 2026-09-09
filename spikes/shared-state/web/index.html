@@ -1,0 +1,27 @@
+<!doctype html>
+<title>claude-limits spike</title>
+<style>
+  body { font: 14px system-ui, sans-serif; background: #14161a; color: #e6e8ea; margin: 2rem; }
+  code { background: #1e2127; padding: .1rem .3rem; border-radius: 3px; }
+  #events { margin-top: 1rem; }
+  .ev { font-family: ui-monospace, monospace; }
+</style>
+<h1>Spike T0.1</h1>
+<p>This page is served from <code>embed_dir("web")</code> through
+<code>static_handler</code>, so it lives inside the binary, not on disk.</p>
+<p>The list below fills from <code>/api/events</code>, which reads a channel that a
+different fiber writes to. Three ticks are expected, then <code>done</code>.</p>
+<div id="events"></div>
+<script>
+  const box = document.getElementById('events');
+  const es = new EventSource('/api/events');
+  const add = (label, data) => {
+    const line = document.createElement('div');
+    line.className = 'ev';
+    line.textContent = label + ': ' + data;
+    box.appendChild(line);
+  };
+  es.addEventListener('tick', e => add('tick', e.data));
+  es.addEventListener('done', e => { add('done', e.data); es.close(); });
+  es.onerror = () => add('error', 'stream closed');
+</script>

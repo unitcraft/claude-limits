@@ -1,0 +1,21 @@
+:root {
+  --live: #3fb950;
+  --grey: #8b949e;
+}
+
+.live-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--live);
+}
+
+.live[data-state="polling"] .live-dot { background: var(--grey); }
+.live[data-state="connecting"] .live-dot { background: var(--grey); }
+
+/* Second carrier, in CSS: a font pulled from an IP host. Same blind spot, and
+   `url(...)` in a stylesheet is not looked at by the local-reference rule either. */
+@font-face {
+  font-family: probe;
+  src: url(http://203.0.113.9/inter.woff2);
+}

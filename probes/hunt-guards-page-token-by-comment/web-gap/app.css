@@ -1,0 +1,21 @@
+:root {
+  --live: #3fb950;
+  --grey: #8b949e;
+  --accent: #d29922;
+}
+
+/* The typo this check exists for: `--acent` is not a token and no script sets it,
+   so the rule silently paints nothing. It passes, because a COMMENT in app.js
+   contains the text `--acent:` and the guard's "set by a script" regex is a bare
+   `--name:` search over the whole file. */
+.brand { color: var(--acent); }
+
+.live-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--live);
+}
+
+.live[data-state="polling"] .live-dot { background: var(--grey); }
+.live[data-state="connecting"] .live-dot { background: var(--grey); }

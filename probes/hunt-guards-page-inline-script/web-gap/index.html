@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>probe</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div class="live" data-state="live"><span class="live-dot"></span></div>
+
+<!-- Carrier 1: an inline script the CSP refuses. It carries an attribute whose name
+     ENDS with src, and the guard's negative lookahead `(?![^>]*\bsrc=)` reads
+     `data-src=` as "this script has a src", because `-` is a word boundary.
+     The value points at a file that exists, so the local-reference rule is happy. -->
+<script data-src="app.js">document.title = 'inline code ran';</script>
+
+<!-- Carrier 2: the same inline script in upper case. HTML tag names are
+     case-insensitive, the guard's regex is not. -->
+<SCRIPT>document.title = 'inline code ran too';</SCRIPT>
+
+<!-- Carrier 3: an inline stylesheet in upper case, same reason. -->
+<STYLE>body { color: red }</STYLE>
+
+<!-- Carrier 4: inline code in an event handler attribute. The CSP
+     (script-src 'self') refuses this exactly as it refuses <script>. -->
+<button onclick="document.title = 'handler ran'">press</button>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>

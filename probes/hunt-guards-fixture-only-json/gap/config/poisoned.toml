@@ -1,0 +1,6 @@
+# A config fixture of the kind that already lives in fixtures/config/ (five of them).
+# The guard collects `*.json` plus two dotfile names, so this file is never opened.
+schema = 1
+access_token = "sk-ant-api03-ZmFrZWJ1dGxpdmVzaGFwZWQtMDAwMQ"
+owner_mail = "someone@gmail.com"
+data_dir = 'C:\Users\Evgeniy\AppData\Roaming\claude-limits'

@@ -1,0 +1,6 @@
+{
+  "note": "a real user path, spelled the only way a Windows path can be spelled inside valid JSON",
+  "claude_dir": "C:\\Users\\Evgeniy\\.claude",
+  "credentials": "D:\\Users\\Evgeniy\\AppData\\Roaming\\Claude\\.credentials.json",
+  "limits": []
+}

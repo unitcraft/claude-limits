@@ -1,0 +1,2 @@
+// Same file, same shape, one label without digits.
+samples often · kept for a while  # 01.1 does NOT specify it; the artboard shows it and the spec is silent

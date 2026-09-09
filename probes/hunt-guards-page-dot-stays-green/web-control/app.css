@@ -1,0 +1,15 @@
+/* Control: the same stylesheet with the polling rule deleted. The guard reddens,
+   which proves the rule under test is alive. */
+:root {
+  --live: #3fb950;
+  --grey: #8b949e;
+}
+
+.live-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--live);
+}
+
+.live[data-state="connecting"] .live-dot { background: var(--grey); }

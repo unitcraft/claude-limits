@@ -1,0 +1,14 @@
+:root {
+  --live: #3fb950;
+  --grey: #8b949e;
+}
+
+.live-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--live);
+}
+
+.live[data-state="polling"] .live-dot { background: var(--grey); }
+.live[data-state="connecting"] .live-dot { background: var(--grey); }

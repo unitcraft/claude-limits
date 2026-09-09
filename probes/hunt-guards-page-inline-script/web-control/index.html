@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>probe control</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div class="live" data-state="live"><span class="live-dot"></span></div>
+
+<!-- The SAME inline code, written in the one form the guard's regex knows.
+     This copy exists to prove the guard is alive and its rule is not disabled. -->
+<script>document.title = 'inline code ran';</script>
+<style>body { color: red }</style>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>

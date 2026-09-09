@@ -1,0 +1,9 @@
+{
+ "_comment": "the exact accounts_order literal of scripts/test-reorder.mjs:23",
+ "accounts_order": [
+  "a@x.com",
+  "b@x.com",
+  "c@x.com",
+  "d@x.com"
+ ]
+}

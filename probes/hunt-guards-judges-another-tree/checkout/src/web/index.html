@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>a second checkout of this repository, with three obvious violations</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div class="live" data-state="live"><span class="live-dot"></span></div>
+<img src="missing-icon.svg" alt="a local reference to a file that does not exist">
+<script>document.title = 'inline code the CSP refuses';</script>
+<script type="module" src="app.js"></script>
+</body>
+</html>

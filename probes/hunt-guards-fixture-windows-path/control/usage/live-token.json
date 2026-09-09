@@ -1,0 +1,5 @@
+{
+  "note": "control: a secret of a kind whose regex CAN fire, to prove the scan is alive",
+  "oauth": { "accessToken": "sk-ant-api03-ZmFrZWJ1dGxpdmVzaGFwZWQtMDAwMQ" },
+  "limits": []
+}

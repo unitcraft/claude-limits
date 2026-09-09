@@ -1,0 +1,3 @@
+// The deliberate gap, written down the way the guard's own header says it is:
+// "it was found by hand and is in the exceptions file with that note."
+samples every 5 min · kept 30 days  # 01.1 does NOT specify it; the artboard shows it and the spec is silent

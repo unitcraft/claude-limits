@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>probe</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div class="live" data-state="live"><span class="live-dot"></span></div>
+
+<!-- Carrier: an external resource addressed by IP. The guard's EXTERNAL regex
+     requires a host that ENDS in an alphabetic TLD (`[A-Za-z]{2,}`), and a dotted
+     quad has none; the local-reference rule skips anything starting `http:`.
+     So the page pulls a third-party script and both halves stay silent. -->
+<script src="http://93.184.216.34/tracker.js"></script>
+
+<!-- Same class, https and a port. -->
+<link rel="preconnect" href="https://198.51.100.7:8443/">
+
+<script type="module" src="app.js"></script>
+</body>
+</html>

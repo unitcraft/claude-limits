@@ -1,0 +1,22 @@
+/* The stylesheet a careless edit produces: the dot is repainted in every state,
+   and repainted GREEN. The guard's rule is "something repaints the dot for
+   data-state=polling / connecting" -- these rules exist, so it passes, and the page
+   shows a green dot over a dead backend. */
+:root {
+  --live: #3fb950;   /* green */
+  --grey: #8b949e;
+}
+
+.live-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--live);
+}
+
+.live[data-state="polling"] .live-dot { background: var(--live); }
+.live[data-state="connecting"] .live-dot { background: var(--live); }
+
+/* A second way to the same place: the rules exist and are then overridden by a
+   later, more specific one. The guard reads text, not the cascade. */
+body .live .live-dot { background: var(--live) !important; }

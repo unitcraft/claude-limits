@@ -1,0 +1,7 @@
+:root {
+  --live: #3fb950;
+}
+
+.live-dot { background: var(--live); }
+.live[data-state="polling"] .live-dot { background: var(--typo-not-defined); }
+.live[data-state="connecting"] .live-dot { background: var(--typo-not-defined); }

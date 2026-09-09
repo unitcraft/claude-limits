@@ -1,0 +1,4 @@
+{
+  "note": "one ordinary fixture, so the zero-files rule does not fire and the run is a real measurement",
+  "limits": []
+}

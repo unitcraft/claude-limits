@@ -1,0 +1,5 @@
+{
+  "note": "the ONLY spelling the real-user-path regex can match is not valid JSON, so it is reported as a parse error, never as a secret",
+  "claude_dir": "C:\Users\Evgeniy\.claude",
+  "limits": []
+}

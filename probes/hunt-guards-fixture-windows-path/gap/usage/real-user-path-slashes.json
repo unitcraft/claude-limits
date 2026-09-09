@@ -1,0 +1,5 @@
+{
+  "note": "the same real user path with forward slashes, which is what a JSON writer usually emits",
+  "claude_dir": "C:/Users/Evgeniy/.claude",
+  "limits": []
+}
