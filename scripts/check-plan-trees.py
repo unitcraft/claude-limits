@@ -62,6 +62,53 @@ for needle in ("nova-sdl/", "claude-limits/"):
     if not shown:
         bad.append(f"{needle} tree shows no src/ level")
 
+# ---------------------------------------------------------------------------
+# The entry point the plans name must be the one the MANIFEST declares.
+#
+# Added 2026-09-09 after the plans spent two days saying `bin/claude_limits.nv` in
+# six places -- among them a quote `path="src/bin/claude_limits.nv"` that no manifest
+# has ever contained -- while nova.toml says plainly `src/claude_limits.nv` and plan
+# 01 line 17 records the decision ("каталога `bin/` нет"). A document that contradicts
+# itself does not read as broken: the next window follows the tree diagram, creates
+# `src/bin/`, and is right by the document.
+#
+# The expected path is READ FROM THE MANIFEST rather than written here. Writing it out
+# would make this guard a second copy of the decision, and the two would part company
+# on the first change -- which is the very failure being fixed.
+manifest = pathlib.Path(__file__).resolve().parent.parent / "nova.toml"
+if not manifest.exists():
+    print(f"FAILED: {manifest} does not exist -- the entry point cannot be checked")
+    sys.exit(1)
+
+mtext = manifest.read_text(encoding="utf-8")
+mm = re.search(r'^\s*path\s*=\s*"([^"]+)"', mtext, re.M)
+if mm is None:
+    print("FAILED: nova.toml declares no [[bin]] path -- nothing to compare the plans with")
+    sys.exit(1)
+entry = mm.group(1)                      # e.g. src/claude_limits.nv
+stem = entry.rsplit("/", 1)[-1]          # claude_limits.nv
+print(f"entry point per nova.toml: {entry}")
+
+# Every plan, not just plan 01: the stale copies were spread across two files.
+plans = sorted((pathlib.Path(__file__).resolve().parent.parent / "docs" / "plans").glob("*.md"))
+if not plans:
+    print("FAILED: no plans found -- the entry-point check measured nothing")
+    sys.exit(1)
+
+wrong = []
+for pl in plans:
+    for n, l in enumerate(pl.read_text(encoding="utf-8").splitlines(), 1):
+        # Any path ending in the entry file that is NOT the declared one.
+        for m in re.finditer(r"([A-Za-z0-9_./-]*" + re.escape(stem) + r")", l):
+            got = m.group(1)
+            if got in (entry, stem):
+                continue
+            wrong.append(f"{pl.name} line {n}: `{got}` -- the manifest says `{entry}`")
+
+print(f"plans checked for the entry point: {len(plans)}")
+if wrong:
+    bad.extend(wrong)
+
 print("PLAN TREES:", "clean" if not bad else "FAILED")
 for b in bad:
     print("  ", b)

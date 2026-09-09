@@ -392,10 +392,10 @@ nova-sdl/                     сиблинг-репо, раскладка как
 ```
 claude-limits/
 ├── nova.toml                 [package] + [lib] src = "src" + [[bin]] name="claude-limits"
-│                             path="src/bin/claude_limits.nv"
+│                             path="src/claude_limits.nv"
 │                             + [dependencies] http, tls, polaris, duckdb, sdl (git, по тегам)
 ├── src/                      ВЕСЬ .nv ниже лежит здесь (см. абзац про раскладку выше)
-│   ├── bin/claude_limits.nv  main: аргументы → конфиг → supervised { store; поллеры; сервер; [виджет] }
+│   ├── claude_limits.nv      main: аргументы → конфиг → supervised { store; поллеры; сервер; [виджет] }
 │                             ЕДИНСТВЕННОЕ место печати: `print`/`println` вне entry-модуля
 │                             CU проходят чекер и падают в кодогене (реестр №1017, К1,
 │                             блокер тега). Остальная прелюдия работает: `panic`, `assert`,
@@ -602,7 +602,7 @@ libdbus (грузится динамически самим SDL; без него
   `core_functions`+`icu` (спайк мерил амальгамацию, см. решение 12), проба
   `ENCRYPTION_KEY` и отсутствие `~/.duckdb`. То есть п. 5 закрыт наполовину, и вторая
   половина — самая дорогая по времени машины (§11).
-- Остальные каталоги пакета (`nova.toml`, `bin/`, `accounts/`, `usage/`, `model/`,
+- Остальные каталоги пакета (`nova.toml`, `accounts/`, `usage/`, `model/`,
   `server/`, `web/`, `widget/`, `storage/`, `migrations/`, `fixtures/`, `docs/reports/`)
   на 2026-09-07 **не существуют** — сверено `ls`. Всё, кроме спайка выше, впереди.
 
