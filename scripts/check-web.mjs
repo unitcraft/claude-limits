@@ -90,6 +90,7 @@ const CHECKERS = [
   ['check-fixture-ids.py', [], 'FIXTURE IDS'],
   ['check-scale-suffixes.py', [], 'SCALE SUFFIXES'],
   ['check-duplicate-limits.py', [], 'DUPLICATE LIMITS'],
+  ['check-config-shape.py', [], 'CONFIG SHAPE'],
   ['check-artboard-labels.py', [], 'ARTBOARD LABELS'],
   ['check-citations.py', [], 'CITATIONS'],
 ];
