@@ -265,6 +265,28 @@ test('the time strip obeys its setting, which nothing on the page used to read',
     'with no config the default is ON, per the settings panel default');
 });
 
+test('a row and an account name both say which account they are (01.1 par.2.5)', () => {
+  // "A click on a row in the list or the cards opens the statistics with that account
+  // scrolled to the top." There was no click handler on a row or on an account name
+  // at all -- all six listeners were the view switcher, the brand, the panel and the
+  // refresh button. The row is the most obvious thing on the page to click and it did
+  // nothing.
+  //
+  // The handler is delegated and finds the nearest [data-account], so what this test
+  // pins is the structure the handler depends on. A row that stops carrying its id is
+  // a click that silently does nothing again.
+  const withAccount = snap.limits.find((l) => l.account_id);
+  assert.ok(withAccount, 'the fixture needs a limit with an account_id');
+  assert.equal(renderRow(withAccount).dataset.account, withAccount.account_id);
+
+  const acc = snap.accounts[0];
+  const block = renderAccount(acc, snap.limits.filter((l) => l.account_id === acc.id));
+  const name = block.all((n) => n.className === 'account-email')[0];
+  assert.ok(name, 'the account block must show a name');
+  assert.equal(name.dataset.account, acc.id,
+    'the name is the second place 01.1 par.2.5 names, and the handler needs its id');
+});
+
 test('a dimmed row draws no strip and no ghost: both are claims about NOW', () => {
   const withForecast = snap.limits.find((l) => l.forecast && l.resets_at);
   assert.ok(withForecast, 'the fixture needs a limit with both');

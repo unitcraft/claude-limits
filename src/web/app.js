@@ -85,6 +85,37 @@ async function loadHistory(rangeKind, group = state.statsGroup) {
   }
 }
 
+/**
+ * Open the statistics for one account (01.1 §2.5).
+ *
+ * "A click on a row in the list or the cards opens the statistics (§6) with that
+ * account scrolled to the top, and the period `7 d` (or `24 h` for a session). A
+ * click on the account's name does the same."
+ *
+ * None of it existed: there was no click handler on a row or on an account name at
+ * all -- all six listeners were the view switcher, the brand, the panel and the
+ * refresh button. The row is the most obvious thing on the page to click, and it did
+ * nothing.
+ *
+ * The period follows the row that was clicked, not the last one chosen: a session
+ * limit spans five hours, and answering a click on it with a seven-day chart shows
+ * one spike in a field of nothing.
+ */
+function openStatsFor(accountId, kind) {
+  const want = kind === 'session' ? '24h' : '7d';
+  if (state.statsRange !== want) {
+    state.statsRange = want;
+    try { localStorage.setItem('stats_range', want); } catch { /* private mode */ }
+    loadHistory(want);
+  }
+  showView('stats');
+  // After the view is shown, so the element exists and has a box to scroll into.
+  const target = document.querySelector(`[data-account="${accountId}"]`);
+  if (target && typeof target.scrollIntoView === 'function') {
+    target.scrollIntoView({ block: 'start' });
+  }
+}
+
 function setStatsRange(rangeKind) {
   if (!RANGES.includes(rangeKind) || rangeKind === state.statsRange) return;
   state.statsRange = rangeKind;
@@ -119,6 +150,26 @@ function initStats() {
     if (chip.dataset.range) setStatsRange(chip.dataset.range);
     else if (chip.dataset.group) setStatsGroup(chip.dataset.group);
   });
+
+  // 01.1 §2.5: a click on a row, or on an account's name, opens the statistics.
+  //
+  // Delegated for the same reason as the chips above -- rows are rebuilt on every
+  // snapshot, and a listener bound to a row would be lost on the next poll. Bound to
+  // BOTH the list and the cards, because the rule names both and a card is a row in a
+  // different shape.
+  for (const id of ['view-list', 'view-cards']) {
+    const host = document.getElementById(id);
+    if (!host) continue;
+    host.addEventListener('click', (e) => {
+      if (!e.target.closest) return;
+      // A control inside a row keeps its own click: a drag handle or a future button
+      // must not also open the statistics.
+      if (e.target.closest('button, a, input, select, .toggle')) return;
+      const el = e.target.closest('[data-account]');
+      if (!el) return;
+      openStatsFor(el.dataset.account, el.dataset.kind || '');
+    });
+  }
 }
 
 function initViews() {

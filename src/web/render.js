@@ -59,6 +59,10 @@ export function renderRow(limit, { dimmed = false } = {}) {
   row.dataset.severity = sev;
   if (dimmed) row.dataset.dimmed = 'true';
   row.dataset.kind = limit.kind;
+  // The row must say WHOSE it is: 01.1 §2.5 opens the statistics for this account on
+  // a click, and a handler on the list has nothing else to go on. `account_id` is
+  // already in every limit; it simply was not reaching the DOM.
+  if (limit.account_id) row.dataset.account = limit.account_id;
   if (limit.resets_at) row.dataset.resetsAt = limit.resets_at;
 
   row.append(el('span', 'row-name', limit.label || rowLabel(limit)));
@@ -152,7 +156,13 @@ export function renderAccount(acc, limits) {
   if (acc.locked) block.dataset.state = 'locked';
 
   const head = el('header', 'account-head');
-  head.append(el('span', 'account-email', acc.email || 'unknown account'));
+  // 01.1 §2.5 names the account's NAME as a second place to click, so it carries the
+  // id too. The delegated handler in app.js looks for the nearest [data-account],
+  // which means the name and the rows below it behave identically without a second
+  // listener.
+  const email = el('span', 'account-email', acc.email || 'unknown account');
+  if (acc.id) email.dataset.account = acc.id;
+  head.append(email);
   if (acc.org) head.append(el('span', 'account-org', acc.org));
   // `dirs` are objects {id, path, name}; the name is what a person recognises, and
   // the full path belongs in the tooltip rather than the line.
