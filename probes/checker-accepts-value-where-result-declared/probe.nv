@@ -1,0 +1,15 @@
+module duckdb.probe_chk
+
+type ProbeError | Bad(str)
+
+// Both should be refused. First: throw with no Fail in the signature. Second: a
+// bare int where Result is declared.
+fn f() -> Result[int, ProbeError] {
+    throw ProbeError.Bad("no Fail in the signature")
+}
+
+fn g() -> Result[int, ProbeError] => 42
+
+fn main() Io -> () {
+    print("it built, which is itself the finding")
+}
