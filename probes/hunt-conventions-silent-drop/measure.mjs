@@ -75,5 +75,47 @@ check(cfg.widget && cfg.widget.view === true,
 check(BROWSER_ONLY.includes('countdown'),
       'BROWSER_ONLY no longer lists countdown, though the control declares it');
 
+// ---- the two controls the design showed and the page did not build -------
+//
+// `Layout` and `Bar style` are 01.1 lines 298-299, both localStorage. They were
+// missing from the panel for as long as the mock existed, and the artboard guard
+// could not see it: it searched the whole SOURCE for the label's letters and found
+// "Bar style" inside the identifier `bar.style.width`. Built 2026-09-09, once the
+// guard was tightened to search string literals instead.
+{
+  const st = await import('../../src/web/settings.js');
+
+  const group = (path, value, store) => ({
+    className: 'choice',
+    dataset: { path, ...(store ? { store } : {}) },
+    querySelectorAll: () => [
+      { className: 'choice-option', dataset: { value: 'list' },
+        getAttribute: (k) => (k === 'aria-checked' ? String(value === 'list') : null) },
+      { className: 'choice-option', dataset: { value: 'cards' },
+        getAttribute: (k) => (k === 'aria-checked' ? String(value === 'cards') : null) },
+    ],
+  });
+
+  const nodes = [group('ui.view', 'cards', 'browser')];
+  const panel2 = {
+    querySelectorAll: (sel) => nodes.filter((n) => n.className === sel.replace('.', '')),
+    querySelector: () => null,
+  };
+
+  const cfg2 = st.collect(panel2);
+  const br2 = st.collectBrowser(panel2);
+  console.log('');
+  console.log('choice -> config :', JSON.stringify(cfg2));
+  console.log('choice -> browser:', JSON.stringify(br2));
+
+  if (br2.view !== 'cards') {
+    check(false, 'the chosen option did not reach the browser half');
+  }
+  if (cfg2.ui && 'view' in cfg2.ui) {
+    check(false, 'a browser-stored choice leaked into the config body');
+  }
+  console.log('OK: a choice goes where it declares, and carries the selected option');
+}
+
 console.log(bad ? '\nFAILED' : '\nOK: each control goes where it declares, not where its name suggests');
 process.exit(bad);

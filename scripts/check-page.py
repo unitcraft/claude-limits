@@ -33,10 +33,38 @@ for name, text in (("index.html", html), ("app.css", css), ("app.js", js)):
 # the very thing it forbids. A check that cannot tell code from prose about code
 # cries wolf, and a guard that cries wolf gets switched off.
 markup = re.sub(r"<!--.*?-->", "", html, flags=re.S)
-if re.search(r"<style[\s>]", markup):
+
+# CASE-INSENSITIVE, and `src` matched as a WHOLE ATTRIBUTE. Measured 2026-09-09:
+# three of four embedded-code forms walked past this check.
+#
+#   <SCRIPT>…</SCRIPT>          HTML tag names are case-insensitive; the pattern was not
+#   <STYLE>…</STYLE>            same
+#   <div onclick="…">           an event handler is inline script by another spelling,
+#                               and nothing looked for one at all
+#
+# The fourth, `<script data-src="x">`, was caught -- but by the LOCAL-REFERENCE check
+# below complaining that `x` does not exist, not by this rule. `\bsrc=` matches inside
+# `data-src=` because a hyphen is a word boundary, so the negative lookahead read a
+# script with a bogus attribute as an external one. Rename the attribute to something
+# without a hyphen and it would have passed silently.
+#
+# A page whose whole security argument is "the CSP refuses inline code" needs this
+# check to see the code the CSP would refuse -- all of it, not the lower-case quarter.
+if re.search(r"<style[\s>]", markup, re.I):
     bad.append("index.html: inline <style> — the CSP refuses it")
-if re.search(r"<script(?![^>]*\bsrc=)[^>]*>", markup):
+if re.search(r"<script(?![^>]*(?<![-\w])src\s*=)[^>]*>", markup, re.I):
     bad.append("index.html: inline <script> — the CSP refuses it")
+
+# Event-handler attributes are inline script with a different syntax, and the CSP
+# refuses them for the same reason. Listed rather than matched by `on\w+=`, which
+# would also hit legitimate attributes on custom elements.
+for handler in ("onclick", "onload", "onerror", "onsubmit", "onchange", "oninput",
+                "onmouseover", "onmouseout", "onfocus", "onblur", "onkeydown",
+                "onkeyup", "onkeypress", "ondblclick", "oncontextmenu", "onwheel",
+                "onscroll", "ontoggle", "onanimationend", "ontransitionend"):
+    if re.search(r"[\s\"']" + handler + r"\s*=", markup, re.I):
+        bad.append(f"index.html: inline event handler `{handler}=` — "
+                   f"the CSP refuses it, and it is script by another spelling")
 
 # 2b. every LOCAL reference must resolve to a file that exists.
 #

@@ -169,6 +169,45 @@ function text(path, value, placeholder) {
   return n;
 }
 
+/**
+ * A choice of two, as a pair of buttons -- 01.1 §5.1 draws `List / Cards` and
+ * `Rounded / Blocks` this way.
+ *
+ * WHY IT EXISTS ONLY NOW. The design has shown both since the mock was drawn and the
+ * page built neither; `BROWSER_ONLY` already named `view` and `bar_style`, so half
+ * the plumbing was waiting for them. The artboard guard could not see the gap because
+ * it searched the whole source for the label's letters, and found `Bar style` inside
+ * the identifier `bar.style.width`. Tightened 2026-09-09, it named all four missing
+ * labels at once.
+ *
+ * `role="radiogroup"` rather than a `<select>`: two options are quicker to hit than a
+ * dropdown, and 01.1 §10 wants arrow keys to move between them.
+ */
+function choice(path, value, options, store = 'config') {
+  const group = el('div', 'choice');
+  group.setAttribute('role', 'radiogroup');
+  group.dataset.path = path;
+  if (store !== 'config') group.dataset.store = store;
+  for (const [val, label] of options) {
+    const b = el('button', 'choice-option', label);
+    b.setAttribute('type', 'button');
+    b.setAttribute('role', 'radio');
+    b.setAttribute('aria-checked', String(val === value));
+    b.dataset.value = val;
+    group.append(b);
+  }
+  return group;
+}
+
+/** The stored value of a browser-side preference, or its default. */
+function browserPref(key, fallback) {
+  try {
+    return localStorage.getItem(key) ?? fallback;
+  } catch {
+    return fallback;                                    // private mode: not fatal
+  }
+}
+
 const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
 
 // ------------------------------------------------------------------- panel --
@@ -192,6 +231,13 @@ export function renderSettings(reply) {
 
   // 5.1 View — browser-only, and labelled as such so nobody looks for it in the file.
   const view = section(panel, 'View', 'kept in this browser, not in the config file');
+  // 01.1 §5.1 lines 298-299: both live in localStorage, neither in the config file.
+  view.append(field('Layout',
+    choice('ui.view', browserPref('view', 'list'),
+           [['list', 'List'], ['cards', 'Cards']], 'browser')));
+  view.append(field('Bar style',
+    choice('ui.bar_style', browserPref('bar_style', 'rounded'),
+           [['rounded', 'Rounded'], ['blocks', 'Blocks']], 'browser')));
   view.append(field('Reset time',
     toggle('ui.countdown', browserCountdown(), 'browser'), '\u00b7 show countdown'));
   view.append(field('Hide logins with an expired token',
@@ -339,6 +385,14 @@ export function collectBrowser(panel) {
     if (input.dataset.store !== 'browser' || !input.dataset.path) continue;
     out[input.dataset.path.split('.').pop()] = input.value;
   }
+  for (const g of panel.querySelectorAll('.choice')) {
+    if (g.dataset.store !== 'browser' || !g.dataset.path) continue;
+    for (const b of g.querySelectorAll('.choice-option')) {
+      if (b.getAttribute('aria-checked') === 'true') {
+        out[g.dataset.path.split('.').pop()] = b.dataset.value;
+      }
+    }
+  }
   return out;
 }
 
@@ -373,6 +427,12 @@ export function collect(panel) {
     if (input.dataset.store === 'browser') continue;    // collected by collectBrowser
     const raw = input.value;
     put(path, input.getAttribute('type') === 'number' ? Number(raw) : raw);
+  }
+  for (const g of panel.querySelectorAll('.choice')) {
+    if (g.dataset.store === 'browser' || !g.dataset.path) continue;
+    for (const b of g.querySelectorAll('.choice-option')) {
+      if (b.getAttribute('aria-checked') === 'true') put(g.dataset.path, b.dataset.value);
+    }
   }
   for (const t of panel.querySelectorAll('.toggle')) {
     if (t.dataset.store === 'browser') continue;        // collected by collectBrowser

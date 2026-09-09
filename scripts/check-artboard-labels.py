@@ -76,10 +76,42 @@ def labels_of(path):
 
 
 def haystack():
-    parts = []
+    """The strings the page can put ON SCREEN -- not every byte of its source.
+
+    THIS USED TO BE THE WHOLE SOURCE, CONCATENATED, and a label counted as "produced
+    by the page" if its letters appeared anywhere in it. Measured 2026-09-09: four
+    labels of the settings panel were accepted by rubbish, and every one of them is a
+    control a person clicks:
+
+        Bar style   from the identifier   bar.style.width
+        Rounded     from a comment        "in a rounded panel"
+        Blocks      from a comment        "Only a 429 blocks it."
+        Layout      from the identifier   layoutCells
+
+    The normaliser strips punctuation, so `bar.style.width` becomes `bar style width`
+    and contains `bar style`. A guard whose whole job is "the mock shows a control the
+    page does not have" was answering yes on a variable name.
+
+    So: string literals and HTML text, with comments removed first. A label the page
+    genuinely renders lives in one of those. An identifier does not, and neither does
+    prose about the code.
+    """
+    out = []
     for f in sorted(WEB.glob("*.js")) + sorted(WEB.glob("*.html")) + sorted(WEB.glob("*.css")):
-        parts.append(f.read_text(encoding="utf-8", errors="replace"))
-    return "\n".join(parts)
+        t = f.read_text(encoding="utf-8", errors="replace")
+        if f.suffix == ".html":
+            t = re.sub(r"<!--.*?-->", " ", t, flags=re.S)
+            out.append(re.sub(r"<[^>]+>", " ", t))          # the text between tags
+            out.extend(re.findall(r'"([^"]*)"', t))          # attribute values
+        else:
+            t = re.sub(r"//[^\n]*", " ", t)
+            t = re.sub(r"/\*.*?\*/", " ", t, flags=re.S)
+            out.extend(re.findall(r"'([^'\n]*)'", t))
+            out.extend(re.findall(r'"([^"\n]*)"', t))
+            out.extend(re.findall(r"`([^`]*)`", t))
+    # Joined with a separator that cannot occur inside a literal, so a label can never
+    # be matched across the seam between two unrelated strings.
+    return "\n\x00\n".join(x for x in out if x.strip())
 
 
 def fixture_text():
