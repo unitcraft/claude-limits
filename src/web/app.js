@@ -18,8 +18,7 @@ import { renderStats, RANGES } from './stats.js';
 import { renderFolders } from './folders.js';
 import {
   renderSettings, bodyOf, isEmptyDiff, showErrors, unmatchedErrors, probeSummary,
-  showConflict, clearConflict, conflictCurrent, syncFolders,
-} from './settings.js';
+  showConflict, clearConflict, conflictCurrent, syncFolders, collectBrowser, saveBrowser } from './settings.js';
 
 const VIEWS = ['list', 'cards', 'stats'];
 // The transport's own numbers (10 s degraded poll, 30 s reconnect, 90 s silence)
@@ -506,6 +505,14 @@ async function probeFolder() {
 async function saveSettings() {
   const panel = state.panel;
   if (!panel) return;
+
+  // THE BROWSER HALF FIRST, and unconditionally. These settings never travel to the
+  // backend, so they must not depend on whether the config diff turns out to be
+  // empty -- which is exactly how they were being lost: toggling only `countdown`
+  // produced an empty body, the early return below closed the panel, and nothing
+  // ever wrote localStorage. The switch moved and nothing happened.
+  saveBrowser(collectBrowser(panel));
+
   const body = bodyOf(panel);
   if (isEmptyDiff(body)) { closeSettings(); return; }
   clearConflict(panel);        // a bar from the previous attempt is a stale statement

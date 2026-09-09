@@ -13,7 +13,19 @@
 //                 `422 extra_forbidden`, and the panel would blame the wrong field.
 import { el } from './render.js';
 
-/** Settings that belong to this browser, never to the config file (01.1 §5.1). */
+/**
+ * Settings that belong to this browser, never to the config file (01.1 §5.1).
+ *
+ * DOCUMENTATION NOW, NOT A FILTER. `collect` used to drop a value whose path ENDED in
+ * one of these names, which decided a control's destination by guessing. Two things
+ * were wrong with that at once: `ui.countdown` and `ui.hide_stale` are neighbours in
+ * one section and belong to different places, and the name `view` here would have
+ * swallowed the first config key ever spelled `widget.view`.
+ *
+ * A control now declares its store (`data-store="browser"`), and this list stays as
+ * the written record of which settings those are -- checked against the panel by
+ * scripts/test-settings.mjs, so the two cannot drift apart in silence.
+ */
 export const BROWSER_ONLY = ['view', 'bar_style', 'countdown', 'stats_range', 'stats_group'];
 
 const isObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -125,12 +137,26 @@ function number(path, value, attrs = {}) {
   return n;
 }
 
-function toggle(path, on) {
+/**
+ * A switch. `store` says WHERE its value belongs -- 'config' (the default) or
+ * 'browser'.
+ *
+ * THE CONTROL DECLARES IT; NOTHING GUESSES. `collect` used to decide by matching the
+ * LAST SEGMENT of the path against a list of names, which is wrong in both
+ * directions: `ui.countdown` and `ui.hide_stale` sit side by side in one section and
+ * belong to different places (01.1 lines 300-301 -- one is localStorage.countdown,
+ * the other is `[ui] hide_stale` in the config file), while the name `view` in that
+ * list would have swallowed the first config key ever called `widget.view`.
+ *
+ * A leaf name is not an address. This attribute is.
+ */
+function toggle(path, on, store = 'config') {
   const t = el('button', 'toggle');
   t.setAttribute('type', 'button');
   t.setAttribute('role', 'switch');
   t.setAttribute('aria-checked', String(!!on));
   t.dataset.path = path;
+  if (store !== 'config') t.dataset.store = store;
   return t;
 }
 
@@ -167,7 +193,7 @@ export function renderSettings(reply) {
   // 5.1 View — browser-only, and labelled as such so nobody looks for it in the file.
   const view = section(panel, 'View', 'kept in this browser, not in the config file');
   view.append(field('Reset time',
-    toggle('ui.countdown', cfg.ui && cfg.ui.countdown), '\u00b7 show countdown'));
+    toggle('ui.countdown', browserCountdown(), 'browser'), '\u00b7 show countdown'));
   view.append(field('Hide logins with an expired token',
     toggle('ui.hide_stale', cfg.ui && cfg.ui.hide_stale)));
 
@@ -284,6 +310,50 @@ function folderRow(folder, accountsFound) {
 // ---------------------------------------------------------------- collect ---
 
 /** Read the panel back into a config tree of the same shape it was built from. */
+/** The current value of the countdown preference, or its default. */
+export function browserCountdown() {
+  try {
+    const v = localStorage.getItem('countdown');
+    return v === null ? true : v === 'true';
+  } catch {
+    return true;                                        // private mode: not fatal
+  }
+}
+
+/**
+ * The settings that belong to THIS BROWSER, keyed by their localStorage name.
+ *
+ * This function is the half that did not exist. `BROWSER_ONLY` named five settings
+ * and `collect` dropped anything matching, which meant the countdown toggle produced
+ * an empty PUT body, Save closed the panel, and nobody wrote localStorage.countdown.
+ * The switch moved and nothing happened -- a silent outcome, which api.md:26 forbids.
+ */
+export function collectBrowser(panel) {
+  const out = {};
+  for (const t of panel.querySelectorAll('.toggle')) {
+    if (t.dataset.store !== 'browser' || !t.dataset.path) continue;
+    const leaf = t.dataset.path.split('.').pop();
+    out[leaf] = t.getAttribute('aria-checked') === 'true';
+  }
+  for (const input of panel.querySelectorAll('.input')) {
+    if (input.dataset.store !== 'browser' || !input.dataset.path) continue;
+    out[input.dataset.path.split('.').pop()] = input.value;
+  }
+  return out;
+}
+
+/** Write them where they live. Returns the names actually stored. */
+export function saveBrowser(settings) {
+  const done = [];
+  for (const [k, v] of Object.entries(settings)) {
+    try {
+      localStorage.setItem(k, String(v));
+      done.push(k);
+    } catch { /* private mode: the setting is lost, the save is not */ }
+  }
+  return done;
+}
+
 export function collect(panel) {
   const out = {};
   // A setting that belongs to this browser never reaches the config tree (sec.5.1).
@@ -292,7 +362,6 @@ export function collect(panel) {
   // asserts the outcome passed with nothing to protect against.
   const put = (path, value) => {
     const parts = path.split('.');
-    if (BROWSER_ONLY.includes(parts[parts.length - 1])) return;
     let node = out;
     for (const key of parts.slice(0, -1)) node = (node[key] ||= {});
     node[parts[parts.length - 1]] = value;
@@ -301,10 +370,12 @@ export function collect(panel) {
   for (const input of panel.querySelectorAll('.input')) {
     const path = input.dataset.path;
     if (!path || path === 'folders.new') continue;      // the add box is not a setting
+    if (input.dataset.store === 'browser') continue;    // collected by collectBrowser
     const raw = input.value;
     put(path, input.getAttribute('type') === 'number' ? Number(raw) : raw);
   }
   for (const t of panel.querySelectorAll('.toggle')) {
+    if (t.dataset.store === 'browser') continue;        // collected by collectBrowser
     if (t.dataset.path) put(t.dataset.path, t.getAttribute('aria-checked') === 'true');
   }
   const days = panel.querySelector('.days');
