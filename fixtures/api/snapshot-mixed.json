@@ -6,24 +6,24 @@
   "interval_sec": 300,
   "restored": false,
   "worst": {
-    "account_id": "acc-0002",
+    "account_id": "0192a7f0-0000-7000-8000-000000000002",
     "kind": "session",
     "percent": 100,
     "severity": "critical"
   },
   "accounts": [
     {
-      "id": "acc-0001",
+      "id": "0192a7f0-0000-7000-8000-000000000001",
       "email": "main@example.com",
       "org": "Example Org",
       "dirs": [
         {
-          "id": "d-1001",
+          "id": "0192a7f0-0000-7000-8000-000000001001",
           "path": "C:/accounts/nv-lang",
           "name": "nv-lang"
         },
         {
-          "id": "d-1002",
+          "id": "0192a7f0-0000-7000-8000-000000001002",
           "path": "C:/accounts/MGTS",
           "name": "MGTS"
         }
@@ -36,12 +36,12 @@
       "at_100": false
     },
     {
-      "id": "acc-0002",
+      "id": "0192a7f0-0000-7000-8000-000000000002",
       "email": "heavy@example.com",
       "org": "Example Org",
       "dirs": [
         {
-          "id": "d-1003",
+          "id": "0192a7f0-0000-7000-8000-000000001003",
           "path": "C:/accounts/heavy",
           "name": "heavy"
         }
@@ -54,12 +54,12 @@
       "at_100": true
     },
     {
-      "id": "acc-0003",
+      "id": "0192a7f0-0000-7000-8000-000000000003",
       "email": "ops@example.org",
       "org": "Example Inc",
       "dirs": [
         {
-          "id": "d-1004",
+          "id": "0192a7f0-0000-7000-8000-000000001004",
           "path": "C:/accounts/ops",
           "name": "ops"
         }
@@ -72,12 +72,12 @@
       "at_100": false
     },
     {
-      "id": "acc-0004",
+      "id": "0192a7f0-0000-7000-8000-000000000004",
       "email": "qa@example.org",
       "org": "Example Inc",
       "dirs": [
         {
-          "id": "d-1005",
+          "id": "0192a7f0-0000-7000-8000-000000001005",
           "path": "C:/accounts/qa",
           "name": "qa"
         }
@@ -92,7 +92,7 @@
   ],
   "limits": [
     {
-      "account_id": "acc-0001",
+      "account_id": "0192a7f0-0000-7000-8000-000000000001",
       "kind": "weekly_scoped",
       "model": "Opus",
       "label": "Opus 7d",
@@ -110,7 +110,7 @@
       "forecast": null
     },
     {
-      "account_id": "acc-0001",
+      "account_id": "0192a7f0-0000-7000-8000-000000000001",
       "kind": "session",
       "model": null,
       "label": "session 5h",
@@ -136,7 +136,7 @@
       }
     },
     {
-      "account_id": "acc-0001",
+      "account_id": "0192a7f0-0000-7000-8000-000000000001",
       "kind": "weekly_all",
       "model": null,
       "label": "all 7d",
@@ -162,7 +162,7 @@
       }
     },
     {
-      "account_id": "acc-0002",
+      "account_id": "0192a7f0-0000-7000-8000-000000000002",
       "kind": "session",
       "model": null,
       "label": "session 5h",
@@ -180,7 +180,7 @@
       "forecast": null
     },
     {
-      "account_id": "acc-0002",
+      "account_id": "0192a7f0-0000-7000-8000-000000000002",
       "kind": "weekly_all",
       "model": null,
       "label": "all 7d",
@@ -198,7 +198,7 @@
       "forecast": null
     },
     {
-      "account_id": "acc-0004",
+      "account_id": "0192a7f0-0000-7000-8000-000000000004",
       "kind": "session",
       "model": null,
       "label": "session 5h",
@@ -216,7 +216,7 @@
       "forecast": null
     },
     {
-      "account_id": "acc-0004",
+      "account_id": "0192a7f0-0000-7000-8000-000000000004",
       "kind": "weekly_all",
       "model": null,
       "label": "all 7d",
@@ -234,7 +234,7 @@
       "forecast": null
     },
     {
-      "account_id": "acc-0004",
+      "account_id": "0192a7f0-0000-7000-8000-000000000004",
       "kind": "weekly_scoped",
       "model": "Opus",
       "label": "Opus 7d",

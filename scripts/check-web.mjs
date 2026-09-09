@@ -87,6 +87,7 @@ const CHECKERS = [
   ['check-plan-trees.py', [], 'PLAN TREES'],
   ['lint-openapi.py', ['fixtures/openapi/sample.json'], 'OPENAPI LINT'],
   ['check-test-domains.py', [], 'TEST DOMAINS'],
+  ['check-fixture-ids.py', [], 'FIXTURE IDS'],
   ['check-artboard-labels.py', [], 'ARTBOARD LABELS'],
   ['check-citations.py', [], 'CITATIONS'],
 ];
