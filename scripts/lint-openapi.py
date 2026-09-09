@@ -271,11 +271,34 @@ def main(argv):
             for code, body in responses.items():
                 if not re.match(r"^[45]\d\d$", str(code)):
                     continue
-                # Read through the reference: see resolve().
-                blob = json.dumps(resolve(body, spec)) + json.dumps(body)
-                if "Problem" not in blob:
-                    bad.append(f"{method.upper()} {path} {code}: does not reference Problem "
-                               f"(RFC 9457 is the only error shape this API has)")
+
+                # STRUCTURE, NOT A WORD. This used to be `"Problem" not in
+                # json.dumps(body)` -- the word anywhere in the node, description
+                # included. Measured 2026-09-09: a 503 answering `text/plain` with the
+                # description "Problem: the poller is down" passed. The check was
+                # satisfied by prose ABOUT the shape instead of the shape.
+                #
+                # Two things are required, and they are different questions:
+                #   the media type must be application/problem+json;
+                #   the schema must be the Problem one, by $ref or by title.
+                # A response with the right type and an inline anonymous schema would
+                # satisfy the first and drift from the contract on the second.
+                node = resolve(body, spec)
+                content = (node or {}).get("content") or {}
+
+                ptypes = [t for t in content if "problem+json" in t]
+                if not ptypes:
+                    have = ", ".join(sorted(content)) or "no content at all"
+                    bad.append(f"{method.upper()} {path} {code}: answers {have}, not "
+                               f"application/problem+json (RFC 9457 is the only error "
+                               f"shape this API has)")
+                    continue
+
+                schema = json.dumps(content[ptypes[0]].get("schema") or {})
+                if "Problem" not in schema:
+                    bad.append(f"{method.upper()} {path} {code}: is problem+json but its "
+                               f"schema is not the Problem one -- reference it by $ref "
+                               f"so the fields cannot drift from the contract")
 
             # --- 4. no PII or secrets in the URL ----------------------------
             for param in (op.get("parameters") or []) + (item.get("parameters") or []):

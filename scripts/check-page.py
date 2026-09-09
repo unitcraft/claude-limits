@@ -47,7 +47,18 @@ js = must_read("app.js")
 bad = []
 
 # 1. external resources anywhere
-EXTERNAL = re.compile(r"""(?:https?:)?//(?!\s)[A-Za-z0-9.-]+\.[A-Za-z]{2,}""")
+# A HOST, not a domain name. The pattern required the last label to be LETTERS, so
+# `http://93.184.216.34/tracker.gif` produced `external references: 0` -- measured
+# 2026-09-09. An address is the obvious way to fetch something without a name that
+# anybody would recognise in a review, which makes it the case worth catching most.
+#
+# Three alternatives, in the order they occur in a URL: a dotted-quad address, a
+# bracketed IPv6 address, and a name ending in a letter-only label.
+EXTERNAL = re.compile(r"""(?:https?:)?//(?!\s)(?:
+      \d{1,3}(?:\.\d{1,3}){3}                     # 93.184.216.34
+    | \[[0-9A-Fa-f:]+\]                            # [2606:2800:220:1::]
+    | [A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}
+)""", re.X)
 for name, text in (("index.html", html), ("app.css", css), ("app.js", js)):
     for m in EXTERNAL.finditer(text):
         line = text[:m.start()].count("\n") + 1

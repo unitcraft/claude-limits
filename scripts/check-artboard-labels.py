@@ -161,7 +161,14 @@ def main():
     for art in ARTBOARDS:
         for label in labels_of(art):
             if re.search(r"\d", label):
-                continue                       # rendered data, not chrome -- see the header
+                # Rendered data, not chrome -- see the header. But an EXCEPTION naming
+                # such a label must still count as used, or it is reported stale with
+                # a reason that is false: the label is there, the filter simply never
+                # looked at it. Measured 2026-09-09 with `429 too many`, which the
+                # guard called "matches no artboard label any more".
+                if label in exceptions:
+                    used_exceptions.add(label)
+                continue
             n = normalise(label)
             if not n:
                 continue
