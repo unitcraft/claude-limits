@@ -53,6 +53,15 @@ export type Forecast value {
     available bool
     percent_at_reset int
     runs_out_in_min int     // working minutes from `now`; -1 when it does not run out
+    // HUNDREDTHS. The wire wants THOUSANDTHS: `server/dto.nv` declares
+    // `rate_per_hour_milli` and writes it with `field_fixed3`. Nothing converts
+    // between the two yet -- the layer that joins model to DTO is not written, and
+    // the snapshot handler fills the field from a stub. Multiply by 10 when it is:
+    // both are `int` and both are called `rate_per_hour`, so a plain assignment
+    // compiles, passes review and makes every rate ten times too small, which reads
+    // as a slow week rather than as a bug. `scripts/check-scale-suffixes.py` reddens
+    // on the plain assignment; this comment is here for the reader who gets there
+    // first.
     rate_per_hour_x100 int  // rate in hundredths of a percent per hour, to stay integral
     basis Basis
     warning bool            // runs out BEFORE the reset

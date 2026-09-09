@@ -154,6 +154,10 @@ export type ForecastView value {
     /// "" for `null`: the limit is not projected to run out before it resets.
     runs_out_at str
     /// Thousandths of a percent per hour.
+    ///
+    /// The producer, `model/forecast.nv`, keeps HUNDREDTHS (`rate_per_hour_x100`).
+    /// Whoever wires the two multiplies by 10 -- see the note there. Guarded by
+    /// `scripts/check-scale-suffixes.py`, which refuses a copy across scales.
     rate_per_hour_milli int
     /// `clock | working_hours`.
     basis str
