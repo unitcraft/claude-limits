@@ -20,7 +20,7 @@ const { createReorder } = await import('../src/web/reorder.js');
 
 // ------------------------------------------------------------------ harness --
 
-const EMAILS = ['a@x.com', 'b@x.com', 'c@x.com', 'd@x.com'];
+const EMAILS = ['a@example.com', 'b@example.com', 'c@example.com', 'd@example.com'];
 
 /** A fresh view of four cards, plus a controller whose commit is recordable. */
 function fresh({ fail = false } = {}) {
@@ -73,10 +73,10 @@ await test('arrows move the card and Space puts it down', async () => {
   const { r, seen, handles } = fresh();
   r.onKeyDown(key(handles[0], ' '));
   r.onKeyDown(key(handles[0], 'ArrowDown'));
-  assert.deepEqual(order(), ['b@x.com', 'a@x.com', 'c@x.com', 'd@x.com']);
+  assert.deepEqual(order(), ['b@example.com', 'a@example.com', 'c@example.com', 'd@example.com']);
   r.onKeyDown(key(handles[0], ' '));
   await new Promise((res) => setTimeout(res, 0));
-  assert.deepEqual(seen.commits, [['b@x.com', 'a@x.com', 'c@x.com', 'd@x.com']]);
+  assert.deepEqual(seen.commits, [['b@example.com', 'a@example.com', 'c@example.com', 'd@example.com']]);
   assert.equal(view.children[1].dataset.grabbed, undefined, 'the card is put down');
 });
 
@@ -93,7 +93,7 @@ await test('Esc returns to where the drag STARTED, not one step back', async () 
   r.onKeyDown(key(handles[0], 'ArrowDown'));
   r.onKeyDown(key(handles[0], 'ArrowDown'));
   r.onKeyDown(key(handles[0], 'ArrowDown'));
-  assert.deepEqual(order(), ['b@x.com', 'c@x.com', 'd@x.com', 'a@x.com']);
+  assert.deepEqual(order(), ['b@example.com', 'c@example.com', 'd@example.com', 'a@example.com']);
   r.onKeyDown(key(handles[0], 'Escape'));
   assert.deepEqual(order(), EMAILS, 'three moves, one Esc, all the way back');
   assert.deepEqual(seen.commits, [], 'a cancelled move is not saved');
@@ -142,10 +142,10 @@ await test('a rollback survives an account vanishing in the meantime', async () 
   const { r, seen, handles } = fresh({ fail: true });
   r.onKeyDown(key(handles[0], ' '));
   r.onKeyDown(key(handles[0], 'ArrowDown'));
-  view.children.find((n) => n.dataset.email === 'd@x.com').remove();
+  view.children.find((n) => n.dataset.email === 'd@example.com').remove();
   r.onKeyDown(key(handles[0], ' '));
   await new Promise((res) => setTimeout(res, 0));
-  assert.deepEqual(order(), ['a@x.com', 'b@x.com', 'c@x.com'], 'no ghost card resurrected');
+  assert.deepEqual(order(), ['a@example.com', 'b@example.com', 'c@example.com'], 'no ghost card resurrected');
   assert.deepEqual(seen.toasts, ['could not save order']);
 });
 
@@ -167,9 +167,9 @@ await test('dropping downwards lands where the line was, not one short', async (
   r.onDragOver(drag(card, 160));
   r.onDrop(drag(card, 160));
   await new Promise((res) => setTimeout(res, 0));
-  assert.deepEqual(order(), ['b@x.com', 'a@x.com', 'c@x.com', 'd@x.com'],
+  assert.deepEqual(order(), ['b@example.com', 'a@example.com', 'c@example.com', 'd@example.com'],
     'the classic off-by-one: the list closes up behind the card as it leaves');
-  assert.deepEqual(seen.commits, [['b@x.com', 'a@x.com', 'c@x.com', 'd@x.com']]);
+  assert.deepEqual(seen.commits, [['b@example.com', 'a@example.com', 'c@example.com', 'd@example.com']]);
   assert.equal(view.children.length, 4, 'the drop line is gone');
 });
 
@@ -179,7 +179,7 @@ await test('dropping upwards needs no correction', async () => {
   r.onDragStart(drag(card, 310));
   r.onDrop(drag(card, 60));            // above the second card, below the first
   await new Promise((res) => setTimeout(res, 0));
-  assert.deepEqual(order(), ['a@x.com', 'd@x.com', 'b@x.com', 'c@x.com']);
+  assert.deepEqual(order(), ['a@example.com', 'd@example.com', 'b@example.com', 'c@example.com']);
 });
 
 await test('a drag abandoned outside the list puts the order back', async () => {

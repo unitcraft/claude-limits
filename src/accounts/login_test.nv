@@ -48,8 +48,8 @@ test "an integer field is read, and a missing one is zero" {
 
 test "the e-mail is lower case, always" {
     assert(normalise_email("Main@Example.COM") == "main@example.com")
-    assert(normalise_email("  MIXED@Case.Org  ") == "mixed@case.org")
-    assert(normalise_email("already@lower.com") == "already@lower.com")
+    assert(normalise_email("  MIXED@Example.Org  ") == "mixed@example.org")
+    assert(normalise_email("already@example.com") == "already@example.com")
     assert(normalise_email("") == "")
 }
 
@@ -158,12 +158,12 @@ test "two directories with one e-mail become ONE account with two dirs" {
 
 test "different e-mails stay different accounts, in discovery order" {
     ro accounts = group([
-        sample_login("b@x.com", "b", LATER),
-        sample_login("a@x.com", "a", LATER),
+        sample_login("b@example.com", "b", LATER),
+        sample_login("a@example.com", "a", LATER),
     ], NOW_MS)
     assert(accounts.len() == 2)
-    assert(accounts[0].email == "b@x.com")
-    assert(accounts[1].email == "a@x.com")
+    assert(accounts[0].email == "b@example.com")
+    assert(accounts[1].email == "a@example.com")
 }
 
 test "an account is only as healthy as its WORST directory" {
@@ -188,16 +188,16 @@ test "the earliest expiry wins, and an unknown one does not win" {
 test "a login with no e-mail is dropped, not merged into a phantom account" {
     ro accounts = group([
         Login.of("/fx/y", "nameless", "", "", 0, true),
-        sample_login("a@x.com", "a", LATER),
+        sample_login("a@example.com", "a", LATER),
     ], NOW_MS)
     assert(accounts.len() == 1)
-    assert(accounts[0].email == "a@x.com")
+    assert(accounts[0].email == "a@example.com")
 }
 
 test "an organisation name is taken from whichever directory has one" {
     ro accounts = group([
-        Login.of("/fx/p", "p", "a@x.com", "", LATER, true),
-        Login.of("/fx/q", "q", "a@x.com", "Tech Center", LATER, true),
+        Login.of("/fx/p", "p", "a@example.com", "", LATER, true),
+        Login.of("/fx/q", "q", "a@example.com", "Tech Center", LATER, true),
     ], NOW_MS)
     assert(accounts[0].org == "Tech Center")
 }

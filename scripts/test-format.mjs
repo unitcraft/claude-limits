@@ -325,9 +325,9 @@ test('applyOrder: named first in order, the rest in discovery order', () => {
 });
 
 test('applyOrder matches e-mails case-insensitively', () => {
-  const accs = [{ email: 'A@X.com' }, { email: 'b@x.com' }];
-  assert.deepEqual(applyOrder(accs, ['b@x.com', 'a@x.COM']).map((a) => a.email),
-    ['b@x.com', 'A@X.com']);
+  const accs = [{ email: 'A@EXAMPLE.com' }, { email: 'b@example.com' }];
+  assert.deepEqual(applyOrder(accs, ['b@example.com', 'a@EXAMPLE.COM']).map((a) => a.email),
+    ['b@example.com', 'A@EXAMPLE.com']);
 });
 
 test('applyOrder with no order at all changes nothing', () => {

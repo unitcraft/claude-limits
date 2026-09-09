@@ -146,17 +146,17 @@ test "a second reading REPLACES the account, never appends it" {
 
 test "different accounts keep their own rows, in arrival order" {
     mut snap = Snapshot.empty()
-    merge(snap, slot("b@x.com", "ok", 1000))
-    merge(snap, slot("a@x.com", "ok", 1100))
+    merge(snap, slot("b@example.com", "ok", 1000))
+    merge(snap, slot("a@example.com", "ok", 1100))
     assert(snap.accounts.len() == 2)
-    assert(snap.accounts[0].email == "b@x.com")
-    assert(snap.accounts[1].email == "a@x.com")
+    assert(snap.accounts[0].email == "b@example.com")
+    assert(snap.accounts[1].email == "a@example.com")
 }
 
 test "fetched_at follows the LATEST reading, not the earliest" {
     mut snap = Snapshot.empty()
-    merge(snap, slot("a@x.com", "ok", 5000))
-    merge(snap, slot("b@x.com", "ok", 3000))
+    merge(snap, slot("a@example.com", "ok", 5000))
+    merge(snap, slot("b@example.com", "ok", 3000))
     // Taking the minimum would let one stuck account age the whole page.
     assert(snap.fetched_at_ms == 5000)
 }

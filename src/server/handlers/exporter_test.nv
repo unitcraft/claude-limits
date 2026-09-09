@@ -79,9 +79,9 @@ test "an e-mail is masked to one letter and its domain" {
 test "the mask does not preserve length" {
     // A mask that kept the length would leak how long the local part is, and a
     // short one is a small guessing space.
-    assert(mask_email("a@x.io") == "a***@x.io")
-    assert(mask_email("averyverylongname@x.io") == "a***@x.io")
-    assert(mask_email("a@x.io").byte_len() == mask_email("averyverylongname@x.io").byte_len())
+    assert(mask_email("a@example.org") == "a***@example.org")
+    assert(mask_email("averyverylongname@example.org") == "a***@example.org")
+    assert(mask_email("a@example.org").byte_len() == mask_email("averyverylongname@example.org").byte_len())
 }
 
 test "the odd shapes do not crash and do not leak" {

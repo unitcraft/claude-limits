@@ -74,7 +74,7 @@ shutil.rmtree(named, ignore_errors=True)
 (named / "usage").mkdir(parents=True)
 # scripts/claude_limits.py:328 looks a recorded reply up as `<offline_dir>/<email>.json`,
 # so this is the file name the reference tool asks a person to create.
-(named / "usage" / "firstname.lastname@customer-corp.ru.json").write_text(
+(named / "usage" / "firstname.lastname@customer-corp.example.json").write_text(
     json.dumps({"limits": [], "_comment": "content is spotless"}, indent=1), encoding="utf-8")
 code, out = show("3. spotless content, the e-mail is the FILE NAME", named)
 printed = [l for l in out.splitlines() if "@" in l]
