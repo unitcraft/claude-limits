@@ -13,7 +13,7 @@ import { Node, installDocument } from './dom-stub.mjs';
 
 const view = new Node('section');
 installDocument({ 'view-stats': view });
-const { renderStats, renderTiles, summaryLine, modelColors, valuesTable, renderChart } =
+const { renderStats, renderTiles, summaryLine, modelColors, valuesTable, renderChart, lastDayOf } =
   await import('../src/web/stats.js');
 
 let passed = 0;
@@ -156,8 +156,15 @@ console.log('\ncharts (§6.4)');
 test('a lock is drawn as a band, an open one reaching the right edge', () => {
   const work = all(draw(), 'stat-card').find((c) => c.dataset.email === 'work@example.org');
   const bands = all(work, 'band-lock');
-  assert.equal(bands.length, 2);
-  const open = bands[1];
+
+  // ONE, not two, since 2026-09-09. The session column shows the last 24 h (01.1
+  // par.6.3), so a lock from earlier in the week is outside it -- correctly. It is
+  // not lost: the "Locked this week" tile sums the whole period independently, which
+  // is what that tile is for.
+  assert.equal(bands.length, 1,
+    'the older lock is outside the 24 h window; the week is the tile\'s job');
+
+  const open = bands[bands.length - 1];
   assert.equal(Number(open.attrs.x) + Number(open.attrs.width), 280,
     'the lock that has not ended must reach the edge, not vanish for lacking a `to`');
 });
@@ -205,7 +212,19 @@ test('resets are drawn, and the session window has many of them in a week', () =
   // not a regression.
   const main = all(draw(), 'stat-card').find((c) => c.dataset.email === 'main@example.com');
   const col = all(main, 'stat-col')[0];
-  assert.ok(all(col, 'reset').length > 20, 'a five-hour window resets about 33 times a week');
+
+  // FIXED 2026-09-09, and the paragraph above predicted this line would change:
+  // "when the column really becomes the last 24 h, this assertion SHOULD fail -- and
+  // that will be the fix landing, not a regression". It landed. renderStatCard now
+  // narrows the range for the session column instead of only relabelling its ticks.
+  //
+  // A five-hour window resets four or five times in a day, so the count is small and
+  // BOUNDED -- the upper bound is the assertion that matters, because the old
+  // behaviour produced about 33 and would sail past a lower bound alone.
+  const resets = all(col, 'reset').length;
+  assert.ok(resets <= 8,
+    `the session column shows 24 h, so at most a handful of resets -- got ${resets}`);
+  assert.ok(resets >= 1, 'a five-hour window resets several times in a day');
 });
 
 console.log('\nthe numbers behind the chart (§10, acceptance §11 item 11)');
@@ -324,6 +343,45 @@ test('Pace is amber when something runs out, not whenever it has a caption', () 
     'a pace that runs out is the case the amber is for');
   assert.notEqual(tone({ ...base, runs_out_at: null }), 'warning',
     'a pace with a caption and no run-out must NOT be amber');
+});
+
+
+// ------------------------------- the session column's own axis (par.6.3) --
+
+test('lastDayOf narrows a week to its final 24 hours, anchored on the end', () => {
+  // 01.1 par.6.3: the session column is "always the last 24 h regardless of the
+  // period". renderStatCard used to pass the FULL range and change only the tick
+  // labels, so at 7 d the column drew a week on an axis captioned as hours.
+  const week = { from: '2026-08-29T19:47:00Z', to: '2026-09-05T19:47:00Z' };
+  const day = lastDayOf(week);
+  assert.equal(day.to, week.to, 'the end is shared with the rest of the card');
+  assert.equal((Date.parse(day.to) - Date.parse(day.from)) / 3600_000, 24);
+
+  // Anchored on the range's END, not on the wall clock: the other two columns are
+  // drawn against the same window, and a column quietly using `now` would drift away
+  // from its neighbours on any data that is not live.
+  assert.notEqual(day.from, new Date(Date.now() - 86400_000).toISOString());
+
+  // Never widened. A range already shorter than a day is left alone.
+  const short = { from: '2026-09-05T15:47:00Z', to: '2026-09-05T19:47:00Z' };
+  assert.deepEqual(lastDayOf(short), short);
+
+  // Nonsense in, the range back out -- a chart with no axis is worse than a wide one.
+  assert.deepEqual(lastDayOf({ from: 'x', to: 'y' }), { from: 'x', to: 'y' });
+  assert.equal(lastDayOf(null), null);
+});
+
+test('a reset the backend declared and the same one inferred is drawn ONCE', () => {
+  // Found while fixing the column above: the fixture has five resets inside the last
+  // 24 h, and the column drew ten -- the declared set and the inferred set are the
+  // same events, and both were rendered, each line exactly over another.
+  //
+  // Invisible on screen, which is how it survived, and wrong in every count.
+  const main = all(draw(), 'stat-card').find((c) => c.dataset.email === 'main@example.com');
+  const col = all(main, 'stat-col')[0];
+  const xs = all(col, 'reset').map((n) => String(n.attrs.x1));
+  assert.equal(xs.length, new Set(xs).size,
+    `two lines at one position: ${xs.join(', ')}`);
 });
 
 console.log(`\n${passed} passed${process.exitCode ? ', SOME FAILED' : ''}`);

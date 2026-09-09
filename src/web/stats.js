@@ -169,7 +169,16 @@ export function renderChart(seriesList, range, opts = {}) {
     }
     // The backend's resets, plus the ones only the samples know about: a window
     // observed across a restart has no `resets_at` anyone recorded (§6.4).
-    const marks = resetLines([...(s.resets || []), ...inferredResets(s.points)], range);
+    // DEDUPED BY POSITION. A reset the backend declared and the same reset
+    // inferred from the samples are ONE event, and both were drawn: five became
+    // ten, each line exactly on top of another. Invisible on screen -- which is
+    // how it survived -- and wrong in every count, the acceptance's included.
+    //
+    // The inferred set exists for resets nobody recorded (par.6.4), a window seen
+    // across a restart. Where the backend already said so, its timestamp is the
+    // better one and the duplicate adds nothing.
+    const marks = [...new Set(
+      resetLines([...(s.resets || []), ...inferredResets(s.points)], range))];
     for (const x of marks) {
       node.append(svg('line', { class: 'reset', x1: x, x2: x, y1: BOX.top, y2: BOX.bottom }));
     }
@@ -306,6 +315,25 @@ function shortMoment(iso) {
 
 // ----------------------------------------------------------------- card -----
 
+/**
+ * The last 24 hours of a range, for the session column (01.1 par.6.3).
+ *
+ * Anchored on the range's END rather than on `now`: the rest of the card is drawn
+ * against the same window, and a column that quietly used the wall clock would
+ * drift away from its neighbours the moment the data is not live -- a restored
+ * snapshot, a fixture, a screenshot in a report.
+ */
+export function lastDayOf(range) {
+  if (!range || !range.to) return range;
+  const to = Date.parse(range.to);
+  if (Number.isNaN(to)) return range;
+  const from = Date.parse(range.from);
+  const dayBefore = to - 24 * 3600_000;
+  // Never widen: a range already shorter than a day stays as it is.
+  if (!Number.isNaN(from) && from > dayBefore) return range;
+  return { ...range, from: new Date(dayBefore).toISOString() };
+}
+
 export function renderStatCard(account, seriesOfAccount, range, rangeKind) {
   const card = el('section', 'stat-card');
   card.dataset.email = (account.email || '').toLowerCase();
@@ -326,7 +354,14 @@ export function renderStatCard(account, seriesOfAccount, range, rangeKind) {
     const c = el('div', 'stat-col');
     c.dataset.column = column.key;
     c.append(el('div', 'col-title', column.title));
-    const chart = renderChart(column.series, range, {
+    // THE SESSION COLUMN HAS ITS OWN AXIS. 01.1 par.6.3, verbatim: "always the
+    // last 24 h regardless of the period". Only `rangeKind` was switched -- which
+    // changes the TICK LABELS and nothing else -- while the full `range` still
+    // went in, so at `7 d` the column drew a week of samples on an axis captioned
+    // as hours. Every point sat in the wrong place and the caption said so
+    // confidently: a wrong picture rather than a missing one.
+    const colRange = column.key === 'session' ? lastDayOf(range) : range;
+    const chart = renderChart(column.series, colRange, {
       colorOf: (s) => colors.get(s.model),
       rangeKind: column.key === 'session' ? '24h' : rangeKind,
       label: `${column.title}, ${account.email}`,
