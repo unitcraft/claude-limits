@@ -15,6 +15,11 @@ WHERE THE ROUTE LIST COMES FROM. Not from a copy kept here: the table in
 without being added to the spec -- or the reverse -- is what the check is FOR, and a
 second list in this file would just drift away from the first.
 
+BOTH DIRECTIONS, since 2026-09-09. That paragraph said "or the reverse" while the
+code checked one way only: planned routes absent from the contract. A route living in
+the contract and in no table went through in silence. The sentence was true about the
+intent and false about the code, which is the kind of gap a reader has no way to see.
+
 The phase-6 routes are excluded by name, because the table does not mark them. The
 exclusion is checked against the table too: if one of these ever disappears or is
 renamed, the exclusion goes stale silently, and a stale exclusion hides a missing
@@ -302,6 +307,18 @@ def main(argv):
         method, path = route.split(" ", 1)
         if f"{method} {norm(path)}" not in described:
             bad.append(f"{route}: in 01.3 section 2, absent from the contract")
+
+    # AND THE OTHER DIRECTION. Until 2026-09-09 only the loop above existed, so a
+    # route present in the CONTRACT and in no plan table passed in silence -- API
+    # surface nobody wrote down, which is the half that actually grows by accident.
+    # One direction catches a forgotten implementation; the other catches an
+    # undocumented one, and they are not the same failure.
+    planned_norm = {f"{r.split(' ', 1)[0]} {norm(r.split(' ', 1)[1])}"
+                    for r in planned | PHASE_6}
+    for route in sorted(described):
+        if route not in planned_norm:
+            bad.append(f"{route}: in the contract, in no table of 01.3 section 2 -- "
+                       f"either describe it there or remove it")
 
     # --- 6. personal data is labelled ------------------------------------------
     for name, schema in ((spec.get("components") or {}).get("schemas") or {}).items():
