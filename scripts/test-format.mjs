@@ -11,8 +11,7 @@ import {
   formatResetMoment, formatReset, rowLabel, sortLimits, severityOf,
   isRetryable, retryDelay, MAX_RETRIES, refuseFor, REFUSAL_DEFAULT_SEC, REFUSAL_MAX_SEC,
   moveTo, applyOrder, dropIndexFor, landingIndex, orderRequest, configPut,
-  footerRight, legendText, footerCounts,
-} from '../src/web/format.js';
+  footerRight, legendText, footerCounts, stripTooltip, percentTooltip, forecastTooltip} from '../src/web/format.js';
 
 let passed = 0;
 const test = (name, fn) => {
@@ -416,6 +415,57 @@ test('the footer counts read as English at one', () => {
 test('a directory identified by path rather than id still counts once', () => {
   const byPath = [{ dirs: [{ path: 'D:/a' }] }, { dirs: [{ path: 'D:/a' }] }];
   assert.equal(footerCounts(byPath), '2 logins in 1 directory');
+});
+
+// -------------------------------------------------- tooltips (01.1 par.2.2/2.4/2.7) --
+
+test('the strip tooltip names the window, in the spec\'s own words', () => {
+  // 01.1 line 128: `time elapsed 61% . 4d 07h of 7d`. The page showed
+  // `time elapsed 61%` and stopped -- a share with no window is half a sentence.
+  //
+  // THE SPEC'S OWN NUMBERS. 103 hours of 168 is 61%, and 103 hours is 4d 07h. My
+  // first check fed it a rounded 61% instead and got `4d 06h`, which is CORRECT for
+  // that input -- 61% of seven days really is 4d 06h 29m. An invented input produces
+  // a real answer that reads like a mismatch, which is why the elapsed time is
+  // computed from seconds_left rather than back out of the percentage.
+  const win = 7 * 86400, spent = 103 * 3600;
+  const lim = { window_sec: win, seconds_left: win - spent,
+                resets_at: '2026-09-12T09:00:00Z', percent: 74, forecast: null };
+  assert.equal(stripTooltip(lim, 61), 'time elapsed 61% \u00b7 4d 07h of 7d');
+});
+
+test('the strip tooltip adds the run-out clause only when there is one', () => {
+  const win = 7 * 86400;
+  const base = { window_sec: win, seconds_left: win - 103 * 3600,
+                 resets_at: '2026-09-12T09:00:00Z' };
+  assert.doesNotMatch(stripTooltip({ ...base, forecast: null }, 61), /runs out/);
+  assert.doesNotMatch(
+    stripTooltip({ ...base, forecast: { runs_out_at: null } }, 61), /runs out/);
+  assert.match(
+    stripTooltip({ ...base, forecast: { runs_out_at: '2026-09-11T09:00:00Z' } }, 61),
+    /at the current rate the limit runs out at \d+% of the window/);
+});
+
+test('a limit with no forecast says one is coming, rather than nothing', () => {
+  // 01.1 line 218. The percentage had no tooltip at all, so a reader saw a bare
+  // number and no hint that a forecast needs history first.
+  assert.equal(percentTooltip({ percent: 9 }), 'forecast after 30 min of history');
+  assert.match(percentTooltip({ percent: 74, forecast: { percent_at_reset: 80 } }),
+               /74% used/);
+});
+
+test('the forecast tooltip spells out the rate the estimate rests on', () => {
+  // 01.1 line 153. The caption is short by design; the tooltip is where the basis
+  // goes, and there was none.
+  const t = forecastTooltip({ percent_at_reset: 103, rate_per_hour: 2.06,
+                              basis: 'working_hours', sample_minutes: 2160 });
+  assert.match(t, /working-hours rate of 2\.06%\/h/);
+  assert.match(t, /reaches 103% by the reset/);
+  assert.match(t, /from 1d 12h of history/);
+  // `clock` is the other basis, and must not be printed as "clock-hours".
+  assert.match(forecastTooltip({ rate_per_hour: 2.3, basis: 'clock' }),
+               /current clock rate/);
+  assert.equal(forecastTooltip(null), '');
 });
 
 console.log(`\n${passed} passed${process.exitCode ? ', SOME FAILED' : ''}`);

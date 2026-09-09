@@ -71,8 +71,15 @@ export function formatDuration(ms) {
   const d = Math.floor(total / 86400);
   const h = Math.floor((total % 86400) / 3600);
   const m = Math.floor((total % 3600) / 60);
-  if (d > 0) return `${d}d ${h}h`;
-  if (h > 0) return `${h}h ${String(m).padStart(2, '0')}m`;
+  // THE SECOND UNIT IS PADDED, THE FIRST IS NOT, and a second unit of zero is
+  // dropped. The rule was already half here -- `1h 02m` pads, `5m` deliberately does
+  // not ("that reads as a clock") -- and the days branch did neither, giving `4d 6h`
+  // where 01.1 line 128 writes `4d 07h`, and `7d 0h` for a whole week.
+  //
+  // `7d 0h` is the one that reads as a mistake rather than a style: nobody writes the
+  // hours of a duration that has none.
+  if (d > 0) return h === 0 ? `${d}d` : `${d}d ${String(h).padStart(2, '0')}h`;
+  if (h > 0) return m === 0 ? `${h}h` : `${h}h ${String(m).padStart(2, '0')}m`;
   return `${m}m`;
 }
 
@@ -302,6 +309,72 @@ export function retryDelay(attempt, retryAfterSeconds = null, rand = Math.random
   if (retryAfterSeconds != null && retryAfterSeconds >= 0) return retryAfterSeconds * 1000;
   const base = Math.min(500 * 2 ** (attempt - 1), 8000);
   return Math.round(base * (0.8 + rand() * 0.4));        // +-20 %
+}
+
+/**
+ * The time strip's tooltip: `time elapsed 61% · 4d 07h of 7d` (01.1 §2.2 line 128).
+ *
+ * The page showed `time elapsed 61%` and stopped there. The percentage alone does not
+ * say what it is a percentage OF, and the whole point of the strip is the comparison
+ * between two rates -- a share without its window is half a sentence.
+ *
+ * When the forecast says the limit will not last, the spec appends the second half:
+ * `· at the current rate the limit runs out at 99% of the window`.
+ */
+export function stripTooltip(limit, elapsedPct) {
+  const head = `time elapsed ${elapsedPct}%`;
+  const win = Number(limit && limit.window_sec);
+  if (!Number.isFinite(win) || win <= 0) return head;
+
+  // FROM THE DATA, NOT FROM THE ROUNDED PERCENTAGE. `seconds_left` is exact;
+  // recomputing the elapsed time out of a percentage that has already been rounded to
+  // a whole number loses up to half a per cent, which at a seven-day window is an
+  // hour. The spec's own example is `4d 07h of 7d` at 61%, and going back through the
+  // percentage gives `4d 06h` -- a number nobody can reconcile with the clock.
+  const left = wireNumber(limit.seconds_left);
+  const spent = left != null && left >= 0 && left <= win
+    ? win - left
+    : Math.round(win * (elapsedPct / 100));
+  const body = `${head} · ${formatDuration(spent * 1000)} of ${formatDuration(win * 1000)}`;
+
+  const fc = limit && limit.forecast;
+  if (!fc || !fc.runs_out_at) return body;
+  const at = Date.parse(fc.runs_out_at);
+  const reset = Date.parse(limit.resets_at);
+  if (Number.isNaN(at) || Number.isNaN(reset) || win <= 0) return body;
+  // Where in the window the limit runs out, as a share of the window itself.
+  const startOfWindow = reset - win * 1000;
+  const share = Math.round(((at - startOfWindow) / (win * 1000)) * 100);
+  return `${body} · at the current rate the limit runs out at ${share}% of the window`;
+}
+
+/**
+ * The percentage's tooltip. `forecast after 30 min of history` when there is no
+ * forecast yet (01.1 §2.7 line 218) -- the page had no tooltip on the number at all,
+ * so a reader saw a bare percentage and no hint that a forecast was coming.
+ */
+export function percentTooltip(limit) {
+  const fc = limit && limit.forecast;
+  if (fc) return `${Math.round(wireNumber(limit.percent) ?? 0)}% used`;
+  return 'forecast after 30 min of history';
+}
+
+/**
+ * The forecast caption's tooltip (01.1 §2.4 line 153): the rate the estimate rests on,
+ * spelled out, because the caption itself is short by design.
+ */
+export function forecastTooltip(fc) {
+  if (!fc) return '';
+  const rate = wireNumber(fc.rate_per_hour);
+  const basis = fc.basis === 'working_hours' ? 'working-hours' : 'clock';
+  const mins = wireNumber(fc.sample_minutes);
+  const parts = [];
+  if (rate != null) parts.push(`at the current ${basis} rate of ${rate}%/h`);
+  if (fc.percent_at_reset != null) {
+    parts.push(`the limit reaches ${Math.round(wireNumber(fc.percent_at_reset) ?? 0)}% by the reset`);
+  }
+  if (mins != null) parts.push(`from ${formatDuration(mins * 60000)} of history`);
+  return parts.join(' · ');
 }
 
 export const MAX_RETRIES = 3;

@@ -6,7 +6,7 @@
 // code nobody ships. Everything here takes a document and returns nodes; no fetch,
 // no timers, no EventSource.
 import {
-  elapsedShare, cellGeometry, formatReset, rowLabel, sortLimits, severityOf, applyOrder, wireNumber, getViewOptions } from './format.js';
+  elapsedShare, cellGeometry, formatReset, rowLabel, sortLimits, severityOf, applyOrder, wireNumber, getViewOptions, stripTooltip, percentTooltip, forecastTooltip } from './format.js';
 
 // ------------------------------------------------------------- rendering ----
 
@@ -102,7 +102,7 @@ export function renderRow(limit, { dimmed = false } = {}) {
     const done = el('div', 'timebar-fill');
     done.style.width = `${(share * 100).toFixed(1)}%`;
     strip.append(done);
-    strip.title = `time elapsed ${elapsed}%`;
+    strip.title = stripTooltip(limit, elapsed);
     strip.setAttribute('aria-hidden', 'true');   // its meaning goes into valuetext
     bars.append(strip);
   }
@@ -112,6 +112,7 @@ export function renderRow(limit, { dimmed = false } = {}) {
 
   const pct = el('span', 'row-pct',
     limit.percent == null ? '—' : `${Math.round(wireNumber(limit.percent) ?? 0)}%`);
+  pct.title = percentTooltip(limit);
   row.append(pct);
 
   const reset = el('div', 'row-reset');
@@ -120,6 +121,7 @@ export function renderRow(limit, { dimmed = false } = {}) {
                     : (limit.reset_label || '—')));
   if (fc && fc.label) {
     const f = el('span', 'reset-forecast', fc.label);
+    f.title = forecastTooltip(fc);
     if (fc.warning) f.dataset.warning = 'true';
     reset.append(f);
   }
