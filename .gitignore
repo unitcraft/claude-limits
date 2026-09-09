@@ -33,3 +33,9 @@ claude-limits.toml
 
 # design canvas build output (~3 MB, rebuilt from docs/design/**/*.dc.html)
 docs/design/**/claude-limits-browser-page.html
+
+# Session handoffs written by /stop. Personal to a window, never shared: they name
+# hashes, dirty files and half-finished edits, which are true for minutes. The /stop
+# command assumes this directory is already ignored -- it was not, so the first handoff
+# ever written showed up as untracked dirt in the tree it was meant to leave clean.
+docs/.sessions/
