@@ -119,7 +119,7 @@ export fn body(fields []str) -> str => object(fields)
 // NEIGHBOURS joined by `account_id`, not nested. The page groups them itself. A
 // renderer that nests "for convenience" breaks a client that never asked for it.
 //
-// FRACTIONS ARE INTEGERS in these records — `elapsed_share_bp` is hundredths,
+// FRACTIONS ARE INTEGERS in these records — `elapsed_share_hundredths` is hundredths,
 // `rate_per_hour_milli` is thousandths. The wire still shows `0.79` and `2.300`
 // (`field_fixed2`/`field_fixed3`); what is avoided is a float travelling through
 // four layers and arriving as `0.7899999`.
@@ -191,7 +191,20 @@ export type LimitView value {
     reset_label str
     window_sec int
     /// Hundredths of the window elapsed at `fetched_at`.
-    elapsed_share_bp int
+    ///
+    /// RENAMED 2026-09-09, from `elapsed_share_bp`. `bp` means basis points, one
+    /// ten-thousandth; this value is hundredths, written through `field_fixed2`. The
+    /// name was wrong by a factor of a hundred, and it was the only place carrying
+    /// the scale -- the docstring said hundredths, the file header said hundredths,
+    /// the writer said hundredths, and the name said otherwise to anyone who read the
+    /// name alone.
+    ///
+    /// A suffix is not a type. Nothing checks it, nothing fails when it stops
+    /// matching, and a reader who trusts it writes `/ 10000` where `/ 100` belongs --
+    /// a number a hundred times too small, which looks like a plausible reading
+    /// rather than an error. The wire name is unaffected: it has always been
+    /// `elapsed_share`.
+    elapsed_share_hundredths int
     forecast Option[ForecastView]
 }
 
@@ -264,7 +277,7 @@ fn render_limit(l LimitView) -> str {
         field_int("seconds_left", l.seconds_left),
         field_str("reset_label", l.reset_label),
         field_int("window_sec", l.window_sec),
-        field_fixed2("elapsed_share", l.elapsed_share_bp),
+        field_fixed2("elapsed_share", l.elapsed_share_hundredths),
         fc,
     ])
 }

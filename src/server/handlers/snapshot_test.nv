@@ -85,7 +85,7 @@ fn lim(account_id str, kind str, model str, percent int) -> LimitView => {
     seconds_left: 3780,
     reset_label: "20:50 (1h 02m)",
     window_sec: 18000,
-    elapsed_share_bp: 79,
+    elapsed_share_hundredths: 79,
     forecast: None,
 }
 

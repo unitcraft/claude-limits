@@ -88,6 +88,7 @@ const CHECKERS = [
   ['lint-openapi.py', ['fixtures/openapi/sample.json'], 'OPENAPI LINT'],
   ['check-test-domains.py', [], 'TEST DOMAINS'],
   ['check-fixture-ids.py', [], 'FIXTURE IDS'],
+  ['check-scale-suffixes.py', [], 'SCALE SUFFIXES'],
   ['check-artboard-labels.py', [], 'ARTBOARD LABELS'],
   ['check-citations.py', [], 'CITATIONS'],
 ];
