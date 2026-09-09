@@ -26,6 +26,7 @@ module handlers.exporter
 
 import claude_limits.server.routes.{Ctx, ApiHandler, problem}
 import claude_limits.server.errors.{ApiError}
+import claude_limits.server.json.{quote}
 import claude_limits.server.dto.{Disclosure}
 import polaris.{ServerRequest, ServerResponse}
 
@@ -220,6 +221,20 @@ export fn parse_ask(req ServerRequest, d Disclosure) -> Ask {
 // emits an unmangled `nova_fn_to_json` that nothing defines. Isolated in
 // `probes/same-fn-name-two-modules/`; seventh carrier of registry 1040's family
 // in this project.
+// EVERY STRING GOES THROUGH `quote`, and this function used to send six of them
+// straight into the document: `at`, `account_id`, `email`, `kind`, `model` and
+// `resets_at`. The file did not import `json` at all.
+//
+// An e-mail is the one an export exists to carry, and an address may legally contain
+// a quote in its local part (RFC 5321 allows a quoted string there). One such address
+// and the export is not JSON any more -- the consumer sees a parse error at a byte
+// offset, not "your data has an odd character in it". A backslash does the same
+// quietly: it escapes whatever follows it, so a path like `C:\dir\"x` changes the
+// SHAPE of the document rather than breaking it, which is worse.
+//
+// `json.nv`'s own header records that this class was found and fixed once before.
+// It came back here, in the one handler that writes JSON by hand instead of through
+// the field helpers.
 fn rows_to_json(rows []Row, unmasked bool) -> str {
     consume sb = StringBuilder.new()
     sb.append("{\"rows\":[")
@@ -227,23 +242,23 @@ fn rows_to_json(rows []Row, unmasked bool) -> str {
     for r in rows {
         if !first { sb.append(",") }
         ro email = if unmasked { r.email } else { mask_email(r.email) }
-        sb.append("{\"at\":\"")
-        sb.append(r.at)
-        sb.append("\",\"account_id\":\"")
-        sb.append(r.account_id)
-        sb.append("\",\"email\":\"")
-        sb.append(email)
-        sb.append("\",\"kind\":\"")
-        sb.append(r.kind)
-        sb.append("\",\"model\":")
-        if r.model == "" { sb.append("null") } else { sb.append("\"${r.model}\"") }
+        sb.append("{\"at\":")
+        sb.append(quote(r.at))
+        sb.append(",\"account_id\":")
+        sb.append(quote(r.account_id))
+        sb.append(",\"email\":")
+        sb.append(quote(email))
+        sb.append(",\"kind\":")
+        sb.append(quote(r.kind))
+        sb.append(",\"model\":")
+        if r.model == "" { sb.append("null") } else { sb.append(quote(r.model)) }
         sb.append(",\"percent\":")
         sb.append(r.percent)
         sb.append(",\"locked\":")
         sb.append(bool_str(r.locked))
-        sb.append(",\"resets_at\":\"")
-        sb.append(r.resets_at)
-        sb.append("\"}")
+        sb.append(",\"resets_at\":")
+        sb.append(quote(r.resets_at))
+        sb.append("}")
         first = false
     }
     sb.append("]}")
