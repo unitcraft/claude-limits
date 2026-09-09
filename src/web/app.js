@@ -8,7 +8,7 @@
 //
 // Separate file rather than an inline <script>: the CSP refuses inline (01.1 §0).
 import {
-  isRetryable, retryDelay, retryAfterSeconds, MAX_RETRIES, refuseFor, orderRequest, configPut,
+  isRetryable, retryDelay, retryAfterSeconds, setCaptionZone, MAX_RETRIES, refuseFor, orderRequest, configPut,
   footerRight, legendText, footerCounts,
 } from './format.js';
 import { createLive, silentTooLong, SILENCE_LIMIT_MS } from './live.js';
@@ -293,6 +293,10 @@ function applySnapshot(snap) {
 
   const accounts = snap.accounts || [];
   state.tz = snap.tz || state.tz;
+  // The one place the backend's zone reaches the captions. Assigning state.tz and
+  // stopping there is what the page did until 2026-09-09, and every reset time was
+  // drawn in the viewer's zone instead of the backend's.
+  setCaptionZone(state.tz);
   $('[data-field="counts"]').textContent = footerCounts(accounts);
 
   // The legend describes what this snapshot actually draws (01.1 sec.1.2).

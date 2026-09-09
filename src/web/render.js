@@ -112,7 +112,8 @@ export function renderRow(limit, { dimmed = false } = {}) {
 
   const reset = el('div', 'row-reset');
   reset.append(el('span', 'reset-when',
-    limit.resets_at ? formatReset(limit.resets_at) : (limit.reset_label || '—')));
+    limit.resets_at ? formatReset(limit.resets_at)
+                    : (limit.reset_label || '—')));
   if (fc && fc.label) {
     const f = el('span', 'reset-forecast', fc.label);
     if (fc.warning) f.dataset.warning = 'true';

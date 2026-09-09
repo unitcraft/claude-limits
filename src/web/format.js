@@ -76,27 +76,84 @@ export function formatDuration(ms) {
  * The reset moment as the row shows it (01.1 §2.4): bare time today, weekday and
  * time within the week, day and month beyond six days.
  */
-export function formatResetMoment(resetsAtIso, now = Date.now()) {
+/**
+ * The zone captions are drawn in: the BACKEND's, which arrives as `SnapshotView.tz`.
+ *
+ * ONE SETTER RATHER THAN AN ARGUMENT THREADED THROUGH FOUR SIGNATURES. The zone is a
+ * property of the whole page, not of a row, and the chain to a caption is
+ * renderList -> renderAccount -> renderRow -> formatReset. Passing it down means four
+ * places to forget it in, and forgetting it is exactly the defect this replaces --
+ * `tz` was carried in every snapshot and read by nothing.
+ *
+ * A caller may still pass a zone explicitly, which is what the tests and probes do;
+ * null means "whatever the page is set to", and an unset page means the viewer's own
+ * zone, as before.
+ */
+let captionZone = null;
+
+export function setCaptionZone(tz) {
+  captionZone = tz || null;
+}
+
+export function getCaptionZone() {
+  return captionZone;
+}
+
+export function formatResetMoment(resetsAtIso, now = Date.now(), tz = captionZone) {
   if (!resetsAtIso) return '';
   const at = new Date(resetsAtIso);
   if (Number.isNaN(at.getTime())) return '';
-  const hhmm = at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
-  const sameDay = new Date(now).toDateString() === at.toDateString();
-  if (sameDay) return hhmm;
+
+  // THE ZONE IS THE BACKEND'S, NOT THE BROWSER'S, and `tz` is how it arrives:
+  // SnapshotView.tz says so in as many words -- "IANA zone of the BACKEND, for
+  // captions; the page draws axes in the browser's zone". 01.1 line 11 says every
+  // time example is in the backend machine's zone, and line 44 puts reset captions
+  // among the values that come from the backend.
+  //
+  // Until 2026-09-09 this function called toLocaleTimeString with no zone, so it
+  // rendered wherever the viewer happened to be. `tz` was carried in every snapshot,
+  // assigned to state.tz, and read by nothing. A viewer three hours away read a
+  // reset time three hours wrong, with no way to tell.
+  //
+  // An unknown zone falls back to the browser's rather than throwing: a wrong-looking
+  // caption beats a blank row, and it is what happened before anyway.
+  const zoned = (opts) => {
+    if (!tz) return opts;
+    try {
+      // Reject a bad zone here rather than at every call site below.
+      new Intl.DateTimeFormat('en', { timeZone: tz });
+      return { ...opts, timeZone: tz };
+    } catch {
+      return opts;
+    }
+  };
+
+  const hhmm = at.toLocaleTimeString('en', zoned({ hour: '2-digit', minute: '2-digit', hour12: false }));
+
+  // "Same day" must also be asked in that zone -- 23:30 UTC and 02:30 in Moscow are
+  // the same instant on different days, and the caption says which.
+  const dayOf = (d) => d.toLocaleDateString('en-CA', zoned({
+    year: 'numeric', month: '2-digit', day: '2-digit' }));
+  if (dayOf(at) === dayOf(new Date(now))) return hhmm;
+
   if (at.getTime() - now > 6 * 86400_000) {
-    const day = at.getDate();
-    const mon = at.toLocaleDateString('en', { month: 'short' });
+    const day = at.toLocaleDateString('en', zoned({ day: 'numeric' }));
+    const mon = at.toLocaleDateString('en', zoned({ month: 'short' }));
     return `${day} ${mon} ${hhmm}`;
   }
-  return `${at.toLocaleDateString('en', { weekday: 'short' })} ${hhmm}`;
+  return `${at.toLocaleDateString('en', zoned({ weekday: 'short' }))} ${hhmm}`;
 }
 
 /** `Tue 13:00 (2d 17h)` — the whole caption of the reset column. */
-export function formatReset(resetsAtIso, now = Date.now()) {
+export function formatReset(resetsAtIso, now = Date.now(), tz = captionZone) {
   if (!resetsAtIso) return '—';
   const at = Date.parse(resetsAtIso);
   if (Number.isNaN(at)) return '—';
-  return `${formatResetMoment(resetsAtIso, now)} (${formatDuration(at - now)})`;
+  // The moment comes from the backend's zone; the countdown is recomputed here every
+  // minute (01.1 lines 124 and 148 -- "locally, without asking the backend"). That is
+  // why the page does not simply print the backend's `reset_label`, which bundles the
+  // two: its countdown would be as old as the last poll.
+  return `${formatResetMoment(resetsAtIso, now, tz)} (${formatDuration(at - now)})`;
 }
 
 /**
