@@ -1,0 +1,28 @@
+# PINS: a `bind` that is not loopback is refused before phase 6 — ON ITS OWN, with the
+# flag OFF. That is the whole point of this file: `lan-before-phase6.toml` sets both,
+# so its refusal proves nothing about the address.
+#
+# THE HOLE THIS PINS. 01.3 §1 refuses two things until phase 6 — `allow_lan = true`
+# and a `bind` that is not loopback. Only the flag was built (`config.nv`, the
+# `allow_lan` branch), so this exact file validated CLEAN: the listener would come up
+# on every interface over plain HTTP, which the same paragraph rules out in every
+# version, while `Disclosure` stayed `Loopback` and `pii_path` handed out real
+# filesystem paths with the OS user name in them.
+#
+# The flag is the door a person opens deliberately, and it was guarded. This is the
+# one they reach by editing a file, and it was not.
+#
+# Expected: 422 with field `server.bind` and the text
+# "LAN access arrives in a later version" — the same sentence the flag gets, because
+# it is the same decision arrived at another way. And NOT an error on
+# `server.allow_lan`: the flag is false here, and a refusal blamed on it would mean
+# the address is still unjudged.
+
+schema = 1
+
+[[folders]]
+path = "~/.claude"
+
+[server]
+bind = "0.0.0.0"
+allow_lan = false

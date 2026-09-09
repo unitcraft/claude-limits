@@ -147,6 +147,10 @@ const MSG_THRESHOLDS = "0 < warning < critical <= 100"
 const MSG_WORK_DAYS = "pick at least one working day"
 const MSG_OFF_HOURS = "0..100 percent of the working-hours rate"
 const MSG_LAN = "LAN access arrives in a later version"
+/// Same sentence as MSG_LAN, and deliberately so: reaching the network by editing
+/// `bind` is the same decision as reaching it by the flag, so it gets the same
+/// answer. A second wording would read as a second, lesser rule.
+const MSG_BIND = "LAN access arrives in a later version"
 const MSG_SCHEMA = "unknown schema version"
 // The two below are OURS, not quotes from 01.1 §5 — see the note at their check.
 const MSG_PORT = "port must be between 1 and 65535"
@@ -202,8 +206,34 @@ export fn validate(cfg Config) -> []ConfigError {
     if cfg.server.allow_lan {
         out.push({ field: "server.allow_lan", code: CODE_INVALID, message: MSG_LAN })
     }
+    // AND THE ADDRESS. 01.3 §1 refuses two things before phase 6 -- the flag and a
+    // `bind` that is not loopback -- and only the flag was built. `bind = "0.0.0.0"`
+    // with `allow_lan = false` was therefore ACCEPTED: the listener would come up on
+    // every interface over plain HTTP, which that paragraph rules out in every
+    // version, while `Disclosure` stayed `Loopback` and `pii_path` handed real paths
+    // -- OS user name and all -- to whoever asked.
+    //
+    // The flag is the door a person opens on purpose. This is the one they reach by
+    // editing a file, which is why it was the half nobody noticed was missing.
+    if !is_loopback(cfg.server.bind) {
+        out.push({ field: "server.bind", code: CODE_INVALID, message: MSG_BIND })
+    }
     out
 }
+
+/// Is this address a loopback one?
+///
+/// Deliberately NARROW: a literal allow-list, not a parse. The addresses a person
+/// writes here are `127.0.0.1`, `::1` and `localhost`, and anything else is refused
+/// until phase 6 anyway -- so a full parser would be machinery whose only job is to
+/// say `no` more elaborately.
+///
+/// The whole 127.0.0.0/8 block IS loopback, and `127.0.0.2` is legitimately so. It is
+/// refused here regardless. Refusing a loopback address costs a person one puzzled
+/// minute and a clear message; ACCEPTING a routable one costs them their filesystem
+/// paths. The two mistakes are not the same size, so the check leans the safe way.
+fn is_loopback(bind str) -> bool =>
+    bind == "127.0.0.1" || bind == "::1" || bind == "localhost"
 
 /// What the app does at START with a file it can read but not entirely accept.
 ///

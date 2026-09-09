@@ -23,6 +23,7 @@ import claude_limits.config.{Config, ConfigError, parse, validate, repair_for_st
 const FULL_VALID = embed_str("../fixtures/config/full-valid.toml")
 const INTERVAL_LOW = embed_str("../fixtures/config/interval-too-low.toml")
 const LAN_EARLY = embed_str("../fixtures/config/lan-before-phase6.toml")
+const BIND_NOT_LOOPBACK = embed_str("../fixtures/config/bind-not-loopback.toml")
 const UNKNOWN_KEY = embed_str("../fixtures/config/unknown-key.toml")
 const TWO_ERRORS = embed_str("../fixtures/config/two-errors.toml")
 
@@ -109,6 +110,38 @@ test "allow_lan is refused until phase 6, with the panel's own sentence" {
             ro bad = validate(cfg)
             assert(field_of(bad, "server.allow_lan"))
             assert(message_of(bad, "server.allow_lan") == "LAN access arrives in a later version")
+        }
+    }
+}
+
+test "a bind that is not loopback is refused, flag or no flag" {
+    // The hole this closes: `allow_lan` was checked and `bind` was not, so this exact
+    // file -- network address, flag off -- validated clean. The listener would have
+    // come up on every interface with `Disclosure.Loopback`, handing out paths.
+    ro text = BIND_NOT_LOOPBACK
+    match parse(text) {
+        Err(_) => assert(false)
+        Ok((cfg, _)) => {
+            ro bad = validate(cfg)
+            assert(field_of(bad, "server.bind"))
+            assert(message_of(bad, "server.bind") == "LAN access arrives in a later version")
+            // And NOT because of the flag: it is off in this fixture. Were the check
+            // to be satisfied by the flag's own refusal, this test would pass while
+            // measuring nothing.
+            assert(!field_of(bad, "server.allow_lan"))
+        }
+    }
+}
+
+test "the three spellings of loopback are accepted" {
+    // The refusal must not be so eager that the ordinary config stops working. Each
+    // spelling is one a person actually writes.
+    ro spellings = ["127.0.0.1", "::1", "localhost"]
+    for spelling in spellings {
+        ro text = "schema = 1\n[[folders]]\npath = \"~/.claude\"\n[server]\nbind = \"${spelling}\"\n"
+        match parse(text) {
+            Err(_) => assert(false)
+            Ok((cfg, _)) => assert(!field_of(validate(cfg), "server.bind"))
         }
     }
 }
