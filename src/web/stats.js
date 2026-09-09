@@ -80,7 +80,15 @@ export function renderTiles(tiles) {
   box.append(tile('Pace · working hours',
     pace ? `${pace.rate_per_hour}/h` : '—',
     pace ? (pace.label || `${pace.email} · ${pace.model || 'all models'}`) : 'no history yet',
-    pace && pace.label ? 'warning' : null));
+    // AMBER WHEN THERE IS A RUN-OUT, not when there is a caption. 01.1 par.6.2:
+    // "янтарный, если есть «не хватит»". The tone was `pace.label ? 'warning'`, and
+    // the SAME label is the tile's ordinary explanation -- who and when, present
+    // whenever there is any pace at all. So the tile was amber on every history that
+    // had data, and a colour that is always on says nothing.
+    //
+    // `runs_out_at` is the contract's word for "will not last" (01.3 par.3.6), and
+    // it is null when the pace is merely a pace.
+    pace && pace.runs_out_at ? 'warning' : null));
 
   return box;
 }

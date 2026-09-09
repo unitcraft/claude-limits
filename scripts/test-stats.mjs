@@ -299,4 +299,31 @@ test('the cursor dot is 4 px across, as par.6.4 asks', () => {
   assert.equal(r, 2, 'r=2 is a 4px dot; r=3.5 was 7px');
 });
 
+
+// ----------------------------------------------- the Pace tile (par.6.2) --
+
+test('Pace is amber when something runs out, not whenever it has a caption', () => {
+  // 01.1 par.6.2 colours this tile "амбер, если есть «не хватит»". The code used
+  // `pace.label ? 'warning'`, and that label is the tile's ORDINARY explanation --
+  // who and when -- present whenever there is any pace at all. So the tile was amber
+  // on every history with data, and a colour that is always on says nothing.
+  const base = { rate_per_hour: 2.06, email: 'main@example.com', model: 'Fable',
+                 label: 'Fable ends Tue ~12:30, 30 m before reset' };
+
+  const tone = (pace) => {
+    const box = renderTiles({ pace });
+    const tile = box.all((n) => (n.className || '').includes('tile'))
+                    .find((n) => (n.textContent || '').includes('Pace'));
+    assert.ok(tile, 'the Pace tile must be there');
+    return tile.dataset.tone || (tile.find
+      ? (tile.find((n) => n.dataset && n.dataset.tone) || {}).dataset?.tone
+      : undefined);
+  };
+
+  assert.equal(tone({ ...base, runs_out_at: '2026-09-08T11:47:00Z' }), 'warning',
+    'a pace that runs out is the case the amber is for');
+  assert.notEqual(tone({ ...base, runs_out_at: null }), 'warning',
+    'a pace with a caption and no run-out must NOT be amber');
+});
+
 console.log(`\n${passed} passed${process.exitCode ? ', SOME FAILED' : ''}`);
