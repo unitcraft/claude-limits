@@ -8,7 +8,7 @@
 //
 // Separate file rather than an inline <script>: the CSP refuses inline (01.1 §0).
 import {
-  isRetryable, retryDelay, MAX_RETRIES, refuseFor, orderRequest, configPut,
+  isRetryable, retryDelay, retryAfterSeconds, MAX_RETRIES, refuseFor, orderRequest, configPut,
   footerRight, legendText, footerCounts,
 } from './format.js';
 import { createLive, silentTooLong, SILENCE_LIMIT_MS } from './live.js';
@@ -200,7 +200,7 @@ async function apiGet(path) {
     }
     if (attempt === MAX_RETRIES || !isRetryable('GET', status)) break;
     const after = res && res.headers.get('Retry-After');
-    await sleep(retryDelay(attempt, after ? Number(after) : null));
+    await sleep(retryDelay(attempt, retryAfterSeconds(after)));
   }
   throw lastErr || new Error('request failed');
 }

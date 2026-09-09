@@ -158,6 +158,11 @@ export function isRetryable(method, status, path = '') {
  * exponential with jitter, so several tabs do not return in lockstep.
  *
  * `rand` is injectable purely so the jitter can be tested.
+ *
+ * `retryAfterSeconds` must come from the parser of the same name, never from
+ * `Number(header)`: the header may be an HTTP-date, and `Number` turns that into
+ * NaN, which lands here as "no header" and backs off in half a second while the
+ * server asked for five minutes.
  */
 export function retryDelay(attempt, retryAfterSeconds = null, rand = Math.random) {
   if (retryAfterSeconds != null && retryAfterSeconds >= 0) return retryAfterSeconds * 1000;
@@ -173,29 +178,67 @@ export const REFUSAL_DEFAULT_SEC = 60;
 export const REFUSAL_MAX_SEC = 3600;
 
 /**
+ * `Retry-After` in seconds, or null when there is nothing readable to obey.
+ *
+ * THE ONE PLACE THE HEADER IS READ. It has two legal forms (RFC 9110 10.2.3):
+ * delay-seconds, or an HTTP-date. Anywhere that reads only one of them silently
+ * ignores the server half the time.
+ *
+ * Measured 2026-09-08, before this function existed as a shared door: the GET path
+ * did `Number(header)`, which is NaN for a date, and fell through to exponential
+ * backoff -- 500 ms. The button path parsed the date properly -- 300 000 ms. The same
+ * header, a 600-fold difference, and the short one is the server being ignored
+ * rather than obeyed. probes/hunt-conventions-retry-after/measure.mjs is that
+ * measurement, and it stays runnable.
+ *
+ * Returns null rather than a default, so each caller states its own fallback: the
+ * button waits a minute, a GET backs off exponentially. Those are different
+ * policies and they should be visible as such, but they must read the SAME header.
+ */
+export function retryAfterSeconds(header, nowMs = Date.now()) {
+  const raw = (header ?? '').toString().trim();
+  if (raw === '') return null;
+
+  // delay-seconds: the grammar is digits only, so "12abc" is not 12 and "-5" is not
+  // a delay. Zero is legal and means "ready now" -- an answer, not an absence.
+  if (/^\d+$/.test(raw)) return Math.min(Number(raw), REFUSAL_MAX_SEC);
+
+  // An HTTP-date is a DEADLINE, so report the honest distance to it and let each
+  // caller decide. A deadline already past comes back NEGATIVE rather than zero,
+  // because the two are not the same answer: an explicit `Retry-After: 0` is the
+  // server saying it is ready, while a stale date is a header that arrived late and
+  // says nothing reliable about now. Collapsing them made the button obey a
+  // half-hour-old date as though the server had just cleared it.
+  const at = Date.parse(raw);
+  if (!Number.isNaN(at)) {
+    const sec = Math.ceil((at - nowMs) / 1000);
+    return sec <= 0 ? sec : Math.min(sec, REFUSAL_MAX_SEC);
+  }
+  return null;
+}
+
+/**
  * Seconds the "refresh" button stays blocked after a reply, 0 for "not blocked".
  *
- * Only a 429 blocks it. `Retry-After` may be delay-seconds OR an HTTP-date (RFC 9110
- * 10.2.3) -- both are read, and ANYTHING unreadable falls back to the default rather
- * than to zero. Falling back to zero is what the inline version did, via NaN, and it
- * turned the one case it could not parse into no wait at all.
+ * Only a 429 blocks it. The header is read by `retryAfterSeconds` -- this function
+ * only decides the POLICY: anything unreadable, and anything that says "now", still
+ * waits the default, because the 429 itself stands. Falling back to zero is what the
+ * inline version did, via NaN, and it turned the one case it could not parse into no
+ * wait at all.
  */
 export function refuseFor(status, header, nowMs = Date.now()) {
   if (status !== 429) return 0;
-  const raw = (header ?? '').toString().trim();
-  if (raw === '') return REFUSAL_DEFAULT_SEC;
-
-  // delay-seconds: the grammar is digits only, so "12abc" is not 12.
-  if (/^\d+$/.test(raw)) return Math.min(Number(raw), REFUSAL_MAX_SEC);
-
-  const at = Date.parse(raw);
-  if (!Number.isNaN(at)) {
-    // A date in the past means "now"; the 429 itself still stands, so wait the
-    // default rather than nothing.
-    const sec = Math.ceil((at - nowMs) / 1000);
-    return sec <= 0 ? REFUSAL_DEFAULT_SEC : Math.min(sec, REFUSAL_MAX_SEC);
-  }
-  return REFUSAL_DEFAULT_SEC;
+  const sec = retryAfterSeconds(header, nowMs);
+  // UNREADABLE and ZERO are different answers and must stay different. Null means
+  // the server said nothing we can act on, so the default minute applies. Zero means
+  // the server said "ready now" -- an explicit `Retry-After: 0`, or a date already
+  // past -- and obeying it is obeying the server. Folding the two together is what
+  // this refactor did for about four minutes, and test-format.mjs said so.
+  if (sec === null) return REFUSAL_DEFAULT_SEC;
+  // A deadline already past: the 429 itself still stands, so wait the default
+  // rather than nothing. An explicit zero is different and passes straight through.
+  if (sec < 0) return REFUSAL_DEFAULT_SEC;
+  return Math.min(sec, REFUSAL_MAX_SEC);
 }
 
 /**
