@@ -14,7 +14,7 @@ import { Node, installDocument } from './dom-stub.mjs';
 const view = new Node('section');
 installDocument({ 'view-stats': view });
 const { occupancySegments, accountColors } = await import('../src/web/chart.js');
-const { renderFolders, occupancyOf, columnsOfFolder, nowLine, renderFolderTiles } =
+const { renderFolders, occupancyOf, columnsOfFolder, nowLine, renderFolderTiles, dailyPeaks, secondModelOf} =
   await import('../src/web/folders.js');
 
 let passed = 0;
@@ -151,10 +151,28 @@ test('the limitation is printed on the page, not only in the plan', () => {
   assert.match(note.textContent, /counts per login/);
 });
 
-test('the legend names ACCOUNTS and includes the grey', () => {
-  const items = all(draw(), 'legend-item').map((i) => i.textContent);
-  assert.deepEqual(items,
+test('the legend names ACCOUNTS, the grey, and the dash it draws', () => {
+  // 01.1 par.7.1 lists account swatches, the grey `no login`, AND a dashed entry for
+  // the second model. The dash was drawn on the chart -- columnsOfFolder marks the
+  // second model of an account `dashed` -- and explained nowhere, so a broken line
+  // appeared with no key. The obvious reading of a dash is "estimated" or "no data",
+  // and it is neither.
+  const items = all(draw(), 'legend-item');
+  const labels = items.map((i) => i.textContent);
+  assert.deepEqual(labels.slice(0, 4),
     ['main@example.com', 'work@example.org', 'qa@example.org', 'no login']);
+
+  // The dashed one is named from the DATA, not hard-coded to the spec's example
+  // ("Opus"): the second model differs per account and plan, and a legend naming a
+  // model nobody uses is worse than one naming none.
+  const dashed = items.filter((i) => i.dataset.dashed === 'true');
+  const second = secondModelOf(hist);
+  if (second) {
+    assert.equal(dashed.length, 1, 'one dashed entry when a second model is drawn');
+    assert.equal(dashed[0].textContent, second, 'it names the model actually dashed');
+  } else {
+    assert.equal(dashed.length, 0, 'no second model, no dash to explain');
+  }
 });
 
 test('the grouping row marks Folders as the selected one', () => {
@@ -176,6 +194,60 @@ test('an empty history says so instead of an empty frame', () => {
   renderFolders({ folders: [], range: null });
   assert.equal(view.children.length, 1);
   assert.match(view.children[0].textContent, /no folder history yet/);
+});
+
+
+// ------------------------------------------- daily peaks at 30 d (par.7.3) --
+
+test('at 30 d the session column is one point per day, the day maximum, at noon', () => {
+  // The column has been captioned "session · daily peaks" from the start and the raw
+  // points went straight through. 01.1 par.7.3 asks for the maximum per calendar day
+  // at noon, "otherwise 24 h x 30 blur into noise" -- at 30 d that is thirty readable
+  // points against about eight thousand overlapping ones.
+  //
+  // A caption describing work nobody did is worse than none: it tells the reader the
+  // noise IS the peaks.
+  const pts = [
+    { at: '2026-09-01T03:00:00Z', percent: 10 },
+    { at: '2026-09-01T18:00:00Z', percent: 62 },   // the day's max
+    { at: '2026-09-01T21:00:00Z', percent: 40 },
+    { at: '2026-09-02T09:00:00Z', percent: 33 },
+    { at: '2026-09-02T23:50:00Z', percent: 71 },   // late peak, still 2 September
+  ];
+  const out = dailyPeaks({ kind: 'session', points: pts });
+
+  assert.equal(out.points.length, 2, 'two calendar days, two points');
+  assert.deepEqual(out.points.map((p) => p.percent), [62, 71], 'the maximum of each');
+  assert.deepEqual(out.points.map((p) => p.at),
+    ['2026-09-01T12:00:00Z', '2026-09-02T12:00:00Z'],
+    'at noon: the point stands for the whole day, so a 23:50 peak must not drift into the next one');
+
+  // Everything else about the series survives.
+  assert.equal(out.kind, 'session');
+
+  // Empty in, empty out -- not a crash and not a phantom point.
+  assert.deepEqual(dailyPeaks({ points: [] }).points, []);
+  assert.deepEqual(dailyPeaks({}).points, []);
+
+  // An unparsable stamp is skipped rather than placed at the epoch.
+  assert.equal(dailyPeaks({ points: [{ at: 'nonsense', percent: 9 }] }).points.length, 0);
+});
+
+test('below 30 d the session column keeps its raw samples, and says so', () => {
+  // Only the long period aggregates. At shorter ones the samples ARE the point, and
+  // the title must not promise peaks it is not showing -- the defect this replaces,
+  // in the other direction.
+  const series = [{ kind: 'session', points: [{ at: '2026-09-01T03:00:00Z', percent: 10 },
+                                              { at: '2026-09-01T18:00:00Z', percent: 62 }] }];
+  const long = columnsOfFolder(series, '30d')[0];
+  const short = columnsOfFolder(series, '7d')[0];
+
+  assert.match(long.title, /daily peaks/);
+  assert.equal(long.series[0].points.length, 1, 'one day, one peak');
+
+  assert.doesNotMatch(short.title, /daily peaks/,
+    'at 7 d the column shows raw samples and must not claim peaks');
+  assert.equal(short.series[0].points.length, 2, 'both samples survive');
 });
 
 console.log(`\n${passed} passed${process.exitCode ? ', SOME FAILED' : ''}`);

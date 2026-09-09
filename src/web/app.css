@@ -395,6 +395,14 @@ main:has(.view-wide:not([hidden])) { max-width: var(--page-width-wide); }
 .legend-item { display: inline-flex; align-items: center; gap: 5px; }
 .legend-item::before { content: ""; width: 9px; height: 9px; border-radius: 2px; background: var(--swatch, var(--series-1)); }
 
+/* The dashed entry (01.1 par.7.1): a short broken RULE rather than a square, because
+   it explains a LINE style and not a colour. Squaring it would say the second model
+   has its own colour, which is exactly what the dash exists to avoid saying. */
+.legend-item[data-dashed]::before {
+  width: 14px; height: 0; border-radius: 0; background: none;
+  border-top: 2px dashed var(--fg-muted);
+}
+
 .tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
 .tile { padding: 10px 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; }
 .tile-label { font-size: 11px; color: var(--fg-muted); }

@@ -26,7 +26,7 @@ export function occupancyOf(history, folderId) {
  * one. That is the whole reason the flat shape was chosen over the nested sketch —
  * see the amendment in 01.1 §7.4.
  */
-export function columnsOfFolder(series) {
+export function columnsOfFolder(series, rangeKind = '30d') {
   const of = (kind) => series.filter((s) => s.kind === kind)
     .slice()
     .sort((a, b) => Date.parse(a.from) - Date.parse(b.from));
@@ -42,11 +42,54 @@ export function columnsOfFolder(series) {
     return { ...s, dashed: seen.indexOf(s.model) > 0 };
   });
 
+  // THE TITLE PROMISED AN AGGREGATION THAT DID NOT EXIST. The column has always been
+  // captioned "session · daily peaks", and the raw points went straight through --
+  // 01.1 par.7.3 asks for the maximum of `session.percent` per calendar day, plotted
+  // at noon, "otherwise 24 h x 30 blur into noise".
+  //
+  // At `30 d` that is the difference between thirty readable points and about eight
+  // thousand overlapping ones. A caption that describes work nobody did is worse than
+  // no caption: it tells the reader the noise IS the peaks.
+  //
+  // Only at `30 d`. At shorter periods the raw samples are the point, and the title
+  // says which is being shown rather than claiming peaks either way.
+  const sessionDaily = rangeKind === '30d';
   return [
-    { key: 'session', title: 'session · daily peaks', series: of('session') },
+    {
+      key: 'session',
+      title: sessionDaily ? 'session · daily peaks' : 'session · 24 h',
+      series: sessionDaily ? of('session').map(dailyPeaks) : of('session'),
+    },
     { key: 'weekly_all', title: 'all models · 7 d', series: of('weekly_all') },
     { key: 'per_model', title: 'per model · 7 d', series: perModel },
   ];
+}
+
+/**
+ * One point per calendar day, the day's maximum, placed at noon (01.1 par.7.3).
+ *
+ * NOON, not the moment the peak happened: the point stands for the whole day, and
+ * putting it where the maximum fell would make a day whose peak came at 23:50 look
+ * like it belonged to the next one. A regular spacing is also what makes thirty of
+ * them read as a series rather than as scatter.
+ *
+ * The day is taken in UTC. Local days would need the backend's zone here, and the
+ * boundary would shift under a reader in another one -- the same instant landing in
+ * two different days depending on who is looking. [M-folder-peaks-day-boundary]
+ */
+export function dailyPeaks(series) {
+  const byDay = new Map();
+  for (const pt of (series.points || [])) {
+    const t = Date.parse(pt.at);
+    if (Number.isNaN(t)) continue;
+    const day = new Date(t).toISOString().slice(0, 10);
+    const prev = byDay.get(day);
+    if (!prev || pt.percent > prev.percent) byDay.set(day, pt);
+  }
+  const points = [...byDay.entries()]
+    .sort((a, b) => (a[0] < b[0] ? -1 : 1))
+    .map(([day, pt]) => ({ ...pt, at: `${day}T12:00:00Z` }));
+  return { ...series, points };
 }
 
 /** The `now:` line of a folder card (§7.3). */
@@ -62,6 +105,22 @@ export function nowLine(folder, segments) {
 
 const reason = (state) => (state === 'stale' ? 'token expired' : state);
 
+/**
+ * The model drawn dashed in the per-model column, if there is one (01.1 par.7.1).
+ *
+ * The same rule columnsOfFolder uses -- the second distinct model in arrival order --
+ * because the legend has to name the line the chart actually dashes, and deriving it
+ * twice by two rules is how they come to disagree.
+ */
+export function secondModelOf(history) {
+  const seen = [];
+  for (const s of (history && history.series) || []) {
+    if (s.kind !== 'weekly_scoped' || !s.model) continue;
+    if (!seen.includes(s.model)) seen.push(s.model);
+  }
+  return seen.length > 1 ? seen[1] : null;
+}
+
 function shortDay(iso) {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return String(iso);
@@ -74,6 +133,18 @@ function shortDay(iso) {
  * inside it; a narrower one would truncate to nothing legible, so it carries only the
  * tooltip — which every block has regardless.
  */
+/** 01.1 par.7.3: a segment narrower than this holds no label. */
+const LABEL_MIN_PX = 46;
+
+/**
+ * The strip's assumed rendered width, in CSS pixels.
+ *
+ * NOT MEASURED. It is app.css's 900 px breakpoint, borrowed. See the note at the use
+ * site: measuring is the right answer and needs a relayout pass this view does not
+ * have. [M-folder-label-threshold-measured]
+ */
+const ASSUMED_STRIP_PX = 900;
+
 export function renderOccupancy(segments, colors) {
   const strip = el('div', 'occupancy');
   strip.setAttribute('role', 'img');
@@ -84,9 +155,30 @@ export function renderOccupancy(segments, colors) {
     block.style.width = `${(seg.width / BOX.w) * 100}%`;
     if (seg.email) {
       block.style.setProperty('--occ', colors.get(seg.email) || 'var(--series-1)');
-      // 46 px of the strip, as a share of its width: the block is positioned in
-      // percent because the strip stretches, and the threshold has to stretch too.
-      if (seg.width / BOX.w > 46 / 900) block.textContent = seg.email.split('@')[0] + '@';
+      // 46 px of the strip, as a share of its width: the block is positioned in per
+      // cent because the strip stretches, and the threshold has to stretch too.
+      //
+      // WHERE 900 COMES FROM, and why it is a guess. 01.1 par.7.3 says the label
+      // appears "if the segment is wider than 46 px" -- 46 REAL pixels, which needs
+      // the strip's rendered width, and this code runs before the strip is in the
+      // document. So it assumes 900, and 900 is not measured: it is the media-query
+      // breakpoint from app.css:492, borrowed because it was a number to hand.
+      //
+      // What that costs: above 900 px the strip is wider than assumed and the
+      // threshold triggers too early -- labels appear in segments narrower than 46 px
+      // and get clipped. Below it, they are withheld from segments wide enough to
+      // hold them. Neither is visible as a fault; it just looks like the labels were
+      // chosen oddly.
+      //
+      // The real answer is to decide after mounting, the way layoutCells does for the
+      // bars -- measure `.occupancy`'s clientWidth and set the labels then. That is a
+      // relayout pass this view does not have, and the view itself is blocked on
+      // `GET /api/history?by=folder`, so building the pass now would be work nobody
+      // can see. Named rather than left as a bare constant.
+      // [M-folder-label-threshold-measured]
+      if (seg.width / BOX.w > LABEL_MIN_PX / ASSUMED_STRIP_PX) {
+        block.textContent = seg.email.split('@')[0] + '@';
+      }
     } else {
       block.dataset.empty = 'true';
     }
@@ -183,7 +275,7 @@ export function renderFolderCard(folder, history, colors, rangeKind) {
 
   const series = (history.series || []).filter((s) => s.login_dir_id === folder.id);
   const cols = el('div', 'stat-cols');
-  for (const column of columnsOfFolder(series)) {
+  for (const column of columnsOfFolder(series, rangeKind)) {
     const c = el('div', 'stat-col');
     c.dataset.column = column.key;
     c.append(el('div', 'col-title', column.title));
@@ -286,6 +378,22 @@ function renderFolderFilters(rangeKind, history) {
   const none = el('span', 'legend-item', 'no login');
   none.style.setProperty('--swatch', 'var(--fg-subtle)');
   legend.append(none);
+
+  // THE DASH, 01.1 par.7.1. The legend listed the account colours and the grey, and
+  // stopped -- while columnsOfFolder marks the second model of an account `dashed`
+  // (line 42) and the chart draws it that way. So a dashed line appeared on screen
+  // with nothing anywhere saying what it meant, and the obvious reading of a dash is
+  // "estimated" or "no data", neither of which it is.
+  //
+  // Named from the data rather than hard-coded as `Opus`, which is what the spec's
+  // example happens to say: the second model differs per account and per plan, and a
+  // legend naming a model nobody uses is worse than one naming none.
+  const second = secondModelOf(history);
+  if (second) {
+    const dash = el('span', 'legend-item', second);
+    dash.dataset.dashed = 'true';
+    legend.append(dash);
+  }
   bar.append(legend);
   return bar;
 }
