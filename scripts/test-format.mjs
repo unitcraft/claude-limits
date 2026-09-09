@@ -468,4 +468,35 @@ test('the forecast tooltip spells out the rate the estimate rests on', () => {
   assert.equal(forecastTooltip(null), '');
 });
 
+
+// ------------------------------------------ the ghost in the cells style (par.2.2) --
+
+test('cellGeometry gives the ghost its own geometry when told the forecast', () => {
+  // 01.1 par.2.2: in the cells style the forecast ghost gets cell geometry of its
+  // own. cellGeometry has computed ghostFrom and ghostWidth since it was written, and
+  // layoutCells called it WITHOUT a forecast and read neither -- so the ghost kept
+  // smooth-bar geometry and ran across the gaps between cells, which is the single
+  // thing this style exists to avoid.
+  const noForecast = cellGeometry(120, 40);
+  assert.equal(noForecast.ghostWidth, 0, 'no forecast, nothing to draw');
+
+  const withForecast = cellGeometry(120, 40, 75);
+  assert.ok(withForecast.ghostWidth > 0, 'a forecast ahead of usage must be drawn');
+  assert.ok(withForecast.ghostFrom >= withForecast.fillWidth,
+    'the ghost starts at or after the filled edge, never inside it');
+
+  // Snapped to cells, not to pixels: both edges land on the cell grid, which is what
+  // makes it look like the rest of the style.
+  assert.equal(withForecast.ghostFrom % 10, 0, 'the ghost starts on a cell boundary');
+  assert.equal((withForecast.ghostWidth + 2) % 10, 0,
+    'its width is whole cells less the 2px gap, like fillWidth');
+});
+
+test('a forecast that does not clear the next cell draws nothing', () => {
+  // Half a cell of hatching is noise, not information -- and a ghost narrower than a
+  // cell would be indistinguishable from a rendering artefact.
+  const g = cellGeometry(120, 40, 41);
+  assert.equal(g.ghostWidth, 0);
+});
+
 console.log(`\n${passed} passed${process.exitCode ? ', SOME FAILED' : ''}`);

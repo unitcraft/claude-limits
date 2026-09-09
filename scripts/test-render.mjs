@@ -20,7 +20,7 @@ installDocument({ 'view-list': list, 'view-cards': cards });
 // shipped code drifted away from it. render.js exists precisely so this import is
 // possible: it takes a document and returns nodes, with no fetch, timers or
 // EventSource to drag in. Dynamic, because the stub must be installed first.
-const { renderList, renderCards, renderAccount, renderRow } = await import('../src/web/render.js');
+const { renderList, renderCards, renderAccount, renderRow, layoutCells } = await import('../src/web/render.js');
 const { setViewOptions } = await import('../src/web/format.js');
 
 // -------------------------------------------------------------------- tests --
@@ -319,6 +319,35 @@ test('the strip hatches to where the forecast runs out (01.1 par.2.2)', () => {
   const past = { ...lim, forecast: { ...lim.forecast,
                  runs_out_at: new Date(now - 600_000).toISOString() } };
   assert.equal(renderRow(past).all((n) => n.className === 'timebar-hatch').length, 0);
+});
+
+test('layoutCells re-lays the GHOST too, not only the fill (01.1 par.2.2)', () => {
+  // THE CALL SITE, not the function. cellGeometry's own tests pass whether or not
+  // layoutCells hands it a forecast -- I removed the argument and every one of them
+  // stayed green, which is how the defect survived in the first place. This test
+  // drives layoutCells and looks at what happened to the ghost element.
+  const withForecast = snap.limits.find((l) => l.forecast && l.forecast.percent_at_reset);
+  assert.ok(withForecast, 'the fixture needs a limit with a forecast');
+
+  const row = renderRow(withForecast);
+  const before = row.all((n) => n.className === 'bar-ghost')[0];
+  assert.ok(before, 'the row must draw a ghost before we relayout it');
+  const smooth = before.style.width;
+  assert.match(smooth, /%$/, 'the smooth style sizes the ghost in per cent');
+
+  // Mount it where layoutCells will find it, and switch to the cells style.
+  document.body.append(row);
+  document.body.dataset.barStyle = 'cells';
+  try {
+    layoutCells();
+    const after = row.all((n) => n.className === 'bar-ghost')[0];
+    assert.match(after.style.width, /px$/,
+      'in the cells style the ghost must be sized in pixels, snapped to the grid');
+    assert.notEqual(after.style.width, smooth,
+      'the ghost kept its smooth-bar geometry and would run across the cell gaps');
+  } finally {
+    document.body.dataset.barStyle = '';
+  }
 });
 
 test('a dimmed row draws no strip and no ghost: both are claims about NOW', () => {

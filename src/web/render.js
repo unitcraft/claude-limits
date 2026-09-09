@@ -91,6 +91,9 @@ export function renderRow(limit, { dimmed = false } = {}) {
     const ghost = el('div', 'bar-ghost');
     ghost.style.left = `${limit.percent}%`;
     ghost.style.width = `${Math.min(100, fcPct) - limPct}%`;
+    // Remembered on the element so `layoutCells` can re-lay it in the cells style
+    // without recomputing a forecast it does not have.
+    ghost.dataset.at = String(Math.min(100, fcPct));
     ghost.setAttribute('aria-hidden', 'true');
     bar.append(ghost);
   }
@@ -333,9 +336,33 @@ export function layoutCells() {
   for (const bar of Array.from(document.querySelectorAll('.bar'))) {
     const fill = bar.querySelector('.bar-fill');
     const pct = parseFloat(fill.style.width) || 0;
-    const g = cellGeometry(bar.parentElement.clientWidth, pct);
+
+    // THE GHOST GETS THE CELL GEOMETRY TOO, 01.1 §2.2. `cellGeometry` has computed
+    // `ghostFrom` and `ghostWidth` since it was written, and this call passed no
+    // forecast and read neither -- so in the cells style the forecast ghost kept the
+    // smooth-bar geometry and ran through the gaps between cells, which is the one
+    // thing the cells style exists to avoid.
+    //
+    // The forecast comes off the ghost element that renderRow already placed: it
+    // carries the percentage it was drawn at, so nothing has to be recomputed or
+    // passed down.
+    const ghost = bar.querySelector('.bar-ghost');
+    const ghostPct = ghost ? parseFloat(ghost.dataset.at || '') : NaN;
+    const g = cellGeometry(bar.parentElement.clientWidth, pct,
+                           Number.isFinite(ghostPct) ? ghostPct : null);
     bar.style.width = `${g.barWidth}px`;
     fill.style.width = `${g.fillWidth}px`;
+    if (ghost) {
+      if (g.ghostWidth > 0) {
+        ghost.style.left = `${g.ghostFrom}px`;
+        ghost.style.width = `${g.ghostWidth}px`;
+        ghost.hidden = false;
+      } else {
+        // A forecast that does not clear the next cell boundary has nothing to draw
+        // in this style: half a cell of hatching is noise, not information.
+        ghost.hidden = true;
+      }
+    }
     bar.title = `${Math.round(pct)}% · ${g.filledCells} of ${g.cells} cells`;
   }
 }
