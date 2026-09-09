@@ -13,7 +13,7 @@ import { Node, installDocument } from './dom-stub.mjs';
 
 const view = new Node('section');
 installDocument({ 'view-stats': view });
-const { renderStats, renderTiles, summaryLine, modelColors, valuesTable } =
+const { renderStats, renderTiles, summaryLine, modelColors, valuesTable, renderChart } =
   await import('../src/web/stats.js');
 
 let passed = 0;
@@ -262,6 +262,41 @@ test('model colours are fixed by name, not by position', () => {
   const reversed = modelColors([...hist.series].reverse());
   assert.deepEqual([...a.entries()], [...reversed.entries()],
     'a model must not change colour because the backend reordered its series');
+});
+
+
+// ------------------------------------------------ the chart cursor (par.6.4) --
+
+test('a chart keeps every series for the hover, not only the first', () => {
+  // 01.1 par.6.4: "in the per-model column the tooltip lists every series". The node
+  // kept `first.points` alone, so a card showing three models snapped the cursor to
+  // one of them and reported that one's value -- the other two were drawn on screen
+  // and unreadable.
+  const mk = (label, at, pct) => ({ label, points: [{ at, percent: pct }] });
+  const t = '2026-09-08T12:00:00Z';
+  const chart = renderChart([mk('Opus', t, 40), mk('Sonnet', t, 70), mk('Haiku', t, 12)],
+                            { from: t, to: '2026-09-08T13:00:00Z' });
+
+  assert.ok(chart.__series, 'the chart must keep the series for the hover');
+  assert.equal(chart.__series.length, 3, 'all three, not just the one drawn first');
+  assert.deepEqual(chart.__series.map((x) => x.label), ['Opus', 'Sonnet', 'Haiku']);
+  for (const sr of chart.__series) {
+    assert.ok(Array.isArray(sr.points) && sr.points.length,
+      `${sr.label} must keep its own samples, or the tooltip has nothing to read`);
+  }
+});
+
+test('the cursor dot is 4 px across, as par.6.4 asks', () => {
+  // The spec writes "4 px" next to "1 px" for the cursor line, and 1 px there is the
+  // whole width -- so 4 px is the whole dot, r = 2. It was r: 3.5, a 7 px dot.
+  const t = '2026-09-08T12:00:00Z';
+  const chart = renderChart([{ label: 'a', points: [{ at: t, percent: 5 }] }],
+                            { from: t, to: '2026-09-08T13:00:00Z' });
+  const dot = chart.find((n) => n.className === 'cursor-dot')
+           || chart.all((n) => (n.attrs && n.attrs.class) === 'cursor-dot')[0];
+  assert.ok(dot, 'the chart must carry a cursor dot');
+  const r = Number((dot.attrs && dot.attrs.r) ?? dot.getAttribute('r'));
+  assert.equal(r, 2, 'r=2 is a 4px dot; r=3.5 was 7px');
 });
 
 console.log(`\n${passed} passed${process.exitCode ? ', SOME FAILED' : ''}`);

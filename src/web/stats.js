@@ -11,7 +11,7 @@ import {
   BOX, yOf, linePath, areaPath, bandRect, resetLines, inferredResets,
   xTicks, nearestPoint, seriesByAccount, columnsOf,
 } from './chart.js';
-import { formatDuration, captionDateTime } from './format.js';
+import { formatDuration, captionDateTime, captionTime } from './format.js';
 import { el } from './render.js';
 
 const NS = 'http://www.w3.org/2000/svg';
@@ -178,10 +178,20 @@ export function renderChart(seriesList, range, opts = {}) {
 
   // The hover cursor and its dot, parked outside the box until a pointer arrives.
   node.append(svg('line', { class: 'cursor', x1: -10, x2: -10, y1: BOX.top, y2: BOX.bottom }));
-  node.append(svg('circle', { class: 'cursor-dot', cx: -10, cy: -10, r: 3.5 }));
+  // A 4 px DOT, so r = 2. 01.1 par.6.4 writes "4 px" beside "1 px" for the cursor
+  // line, and 1 px there is unambiguously the whole width -- so 4 px is the whole
+  // dot. It was r: 3.5, a 7 px dot, nearly double. The spec does not say radius or
+  // diameter; this reading is recorded rather than left for the next reader.
+  node.append(svg('circle', { class: 'cursor-dot', cx: -10, cy: -10, r: 2 }));
   // The samples the hover snaps to, kept on the node itself. The alternative is a
   // lookup table keyed by element, which is the same thing with more moving parts.
   node.__points = (first && first.points) || [];
+
+  // Kept alongside, so the hover can read every line and not only the first.
+  node.__series = (seriesList || []).map((sr) => ({
+    label: sr.label || sr.model || sr.account_id || '',
+    points: sr.points || [],
+  }));
   return node;
 }
 
@@ -442,8 +452,24 @@ export function attachHover(card, range) {
       if (chart === source && near) {
         const readout = card.querySelector('.hover-readout');
         if (readout) {
-          readout.textContent =
-            `${new Date(near.point.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })} · ${near.point.percent}%`;
+          // Through captionTime: this is a caption, and every other one on the
+          // page follows the backend's zone (plan 01 par.3.4). It called
+          // toLocaleTimeString with no zone, as the rest did before 2026-09-09.
+          const when = captionTime(near.point.at);
+
+          // EVERY SERIES, not only the one the cursor snapped to. 01.1 par.6.4:
+          // in the per-model column the tooltip lists them all. A card showing
+          // three models reported one value and left the other two unreadable.
+          const all = chart.__series || [];
+          if (all.length > 1) {
+            const parts = all.map((sr) => {
+              const pt = nearestPoint(sr.points, x, range);
+              return pt ? `${sr.label}: ${pt.point.percent}%` : null;
+            }).filter(Boolean);
+            readout.textContent = `${when} \u00b7 ${parts.join(' \u00b7 ')}`;
+          } else {
+            readout.textContent = `${when} \u00b7 ${near.point.percent}%`;
+          }
         }
       }
     }
