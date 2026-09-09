@@ -8,8 +8,19 @@ an empty set is not a check, so zero files is now a failure.
 """
 import json, pathlib, re, sys
 
-base = pathlib.Path(sys.argv[1] if len(sys.argv) > 1
-                    else r"<repos>\claude-limits\fixtures")
+# Derived from this file, not typed in. A hard-coded absolute default means a
+# second clone scans the FIRST clone and prints a verdict about a tree the
+# person is not looking at. The directory is already printed on every run
+# below, so a verdict can be matched to what produced it -- that half was
+# right from the start; this is the other half.
+base = (pathlib.Path(sys.argv[1]).resolve() if len(sys.argv) > 1
+        else pathlib.Path(__file__).resolve().parent.parent / "fixtures")
+
+if not base.is_dir():
+    print("SECRET SCAN: FAILED")
+    print(f"   {base} is not a directory -- nothing was scanned, and a green "
+          f"here would mean nothing")
+    sys.exit(1)
 
 # `sk-ant-fixture-…` is the DELIBERATE fake shape the fixtures README mandates, and
 # tests search a program's output for exactly it to prove no token escaped. Anything

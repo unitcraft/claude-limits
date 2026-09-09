@@ -8,11 +8,41 @@ The three things that would each break the page silently:
 """
 import pathlib, re, sys
 
-web = pathlib.Path(sys.argv[1] if len(sys.argv) > 1
-                   else r"<repos>\claude-limits\src\web")
-html = (web / "index.html").read_text(encoding="utf-8")
-css = (web / "app.css").read_text(encoding="utf-8")
-js = (web / "app.js").read_text(encoding="utf-8")
+# THE DEFAULT IS THIS CHECKOUT, found from this file -- not an absolute path typed in.
+#
+# It used to be `<repos>\claude-limits\src\web`, hard-coded. Run from a
+# second clone, the guard read the FIRST clone's page and printed a verdict about it:
+# `clean` for a tree the person had never looked at, with nothing in the output saying
+# which files were read. The same shape of mistake as reading a stale log.
+#
+# Two things follow, and the second is why the first is not enough:
+#   * the root is derived from __file__, so a clone judges itself;
+#   * and the directory is PRINTED, always, so a verdict can be matched to a tree
+#     even when someone passes an argument.
+DEFAULT_WEB = pathlib.Path(__file__).resolve().parent.parent / "src" / "web"
+web = pathlib.Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else DEFAULT_WEB
+
+
+def must_read(name):
+    """Read a file the page cannot exist without, or refuse with a sentence.
+
+    An unhandled FileNotFoundError says the same thing in six lines of traceback and
+    leaves the reader to work out that the DIRECTORY was wrong rather than the file
+    missing from a real page.
+    """
+    f = web / name
+    if not f.is_file():
+        print(f"judging: {web}")
+        print("PAGE GUARD: FAILED")
+        print(f"   {name} is not there. Either this is not a page directory, or the "
+              f"page is missing a file it cannot work without.")
+        sys.exit(1)
+    return f.read_text(encoding="utf-8")
+
+
+html = must_read("index.html")
+css = must_read("app.css")
+js = must_read("app.js")
 
 bad = []
 
@@ -125,6 +155,7 @@ for mode in ("polling", "connecting"):
         bad.append(f'app.css: nothing repaints the dot for data-state="{mode}" '
                    f'-- it would stay green while the backend is unreachable')
 
+print(f"judging: {web}")
 print(f"tokens defined: {len(defined)}, tokens used: {len(used)}")
 print(f"external references: {sum(1 for b in bad if 'external' in b)}")
 print("PAGE GUARD:", "clean" if not bad else "FAILED")
