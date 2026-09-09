@@ -13,7 +13,7 @@
 
 module usage.parse_test
 
-import parse.{Usage, PollOutcome, parse, moment_ms, next_poll_delay_sec}
+import parse.{Usage, PollOutcome, parse, moment_ms, moment_iso, next_poll_delay_sec}
 
 const NORMAL = embed_str("../../fixtures/usage/normal.json")
 const LOCKED = embed_str("../../fixtures/usage/locked.json")
@@ -108,6 +108,32 @@ test "unknown fields are IGNORED, unlike in our own config file" {
 test "an unreadable moment is zero, not a crash" {
     assert(moment_ms("not a date") == 0)
     assert(moment_ms("") == 0)
+}
+
+test "a moment survives the round trip, and one instant has ONE spelling" {
+    // THE POINT IS THE SECOND HALF. A reader without a matching writer lets two
+    // spellings of one instant into the tree, and `etag_of` hashes whatever string it
+    // is handed -- so an identical body would carry a different tag and every
+    // If-None-Match would miss. Nothing looks broken; the cache just stops working.
+    ro ms = 1_757_368_800_000
+
+    // Out and back: the value is preserved.
+    ro iso = moment_iso(ms)
+    assert(moment_ms(iso) == ms)
+
+    // In and out and in: the SPELLING is preserved too. Without this the test would
+    // pass for a writer that emitted a different, still-parseable form every time.
+    assert(moment_iso(moment_ms(iso)) == iso)
+
+    // Two spellings the endpoint may legally send for the same instant must arrive at
+    // the same canonical one -- that is what makes it canonical.
+    ro a = moment_iso(moment_ms("2026-09-08T22:00:00Z"))
+    ro b = moment_iso(moment_ms("2026-09-08T22:00:00.000000+00:00"))
+    assert(a == b)
+
+    // And an unreadable input gives "" rather than a plausible wrong moment: the
+    // reader answers 0 for the same reason.
+    assert(moment_iso(moment_ms("not a date")) == moment_iso(0))
 }
 
 // ── the 429 rule ─────────────────────────────────────────────────────────────

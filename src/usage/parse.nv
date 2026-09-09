@@ -105,6 +105,27 @@ export fn moment_ms(iso str) -> int =>
         Err(_) => 0
     }
 
+/// Unix milliseconds -> the canonical spelling of a moment.
+///
+/// THE WAY OUT, and until 2026-09-09 there was none. `moment_ms` above reads a
+/// moment IN; nothing wrote one back. Inside the model a moment is `int`
+/// milliseconds (`store.nv:146`), on the wire it is `str` (`dto.nv:217`), and the
+/// bridge between the two is not written yet -- so the first person to write it
+/// would have invented a spelling on the spot, and the second would have invented a
+/// different one.
+///
+/// IT ALREADY BITES SOMETHING REAL. `etag_of` (`etag.nv:29`) hashes the strings it
+/// is given, and `snapshot.nv:199` feeds it `view.fetched_at` verbatim. Two
+/// spellings of one instant -- `...T22:00:00Z` and `...T22:00:00.000000+00:00` --
+/// hash differently, so an identical body would carry a different ETag and every
+/// `If-None-Match` would miss. Nothing would look broken; the cache would simply
+/// stop working.
+///
+/// RFC 3339 through std rather than a hand-cut format: `moment_ms` already leaves
+/// parsing to std for the reason written above it, and a producer that does not
+/// match its own reader is worse than either.
+export fn moment_iso(ms int) -> str => ms.to_unix_millis().to_rfc3339()
+
 /// The `locked_reason` of a named window, "" when there is none.
 fn named_lock(root JsonValue, key str) -> str {
     ro fields = match root.object() {
