@@ -42,22 +42,29 @@ test('the selected period is the one marked selected', () => {
   assert.deepEqual(chips.map((c) => c.attrs['aria-selected']), ['true', 'false', 'false']);
 });
 
-test('the folders control exists but says it does nothing yet', () => {
-  // ALSO PINS A DIVERGENCE, and a stranger one than it looks.
+test('the folders control is disabled, and its title names what it waits for', () => {
+  // PINS A DIVERGENCE AND ITS REASON, and the reason is not the one the title used to
+  // give.
   //
-  // 01.1 §6.1 says the Accounts/Folders control "switches §6 and §7". The chip is
-  // disabled with the title "folders view: not built yet" (stats.js:387) -- while
-  // folders.js is 291 lines, fully written, and app.js:75 already calls
-  // renderFolders when the group is 'folder'. So the control refuses to reach a view
-  // that exists.
+  // 01.1 par.6.1 says the Accounts/Folders control "switches par.6 and par.7". The
+  // chip is disabled. The old title said "not built yet" -- and folders.js is 291
+  // lines, app.js routes `group === 'folder'` to renderFolders, and test-folders.mjs
+  // passes eighteen tests against it. The view is built.
   //
-  // Not flipped here: whether that view is READY is T2.24's judgement, it depends on
-  // history data this tree cannot serve yet, and enabling a chip is not how that
-  // decision should be recorded. Named so the next reader does not take the title at
-  // face value.
+  // What is missing is the DATA: `GET /api/history?by=folder` is specified in 01.3
+  // par.3.6 and no handler serves it. Enabling the chip would draw an empty frame.
+  //
+  // On 2026-09-09 the stale title nearly cost the reversal: I read "not built yet",
+  // checked, found the view built, and enabled the chip -- then found the real
+  // blocker and put it back. THIS test is what stopped it, so it now asserts the
+  // reason rather than the wording, and a title that stops naming the endpoint fails
+  // here rather than misleading the next reader.
   const folder = all(draw(), 'chip').find((c) => c.dataset.group === 'folder');
   assert.equal(folder.disabled, true);
-  assert.match(folder.title, /not built yet/);
+  assert.match(folder.title, /by=folder/,
+    'the title must name the endpoint it waits for, not just say "not built"');
+  assert.doesNotMatch(folder.title, /not built/,
+    'the view IS built; saying otherwise is what caused a near-miss');
 });
 
 test('an empty history says so instead of drawing an empty frame', () => {

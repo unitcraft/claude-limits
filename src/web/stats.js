@@ -382,9 +382,26 @@ function renderFilters(rangeKind, history) {
     b.setAttribute('role', 'tab');
     b.setAttribute('aria-selected', String(g === 'account'));
     b.dataset.group = g;
-    // The folders view is task T2.24; the control exists so the row matches the
-    // artboard, and says why it does nothing yet instead of failing silently.
-    if (g === 'folder') { b.disabled = true; b.title = 'folders view: not built yet'; }
+    // The control exists so the row matches the artboard, and says why it does
+    // nothing instead of failing silently.
+    //
+    // THE REASON IS NOT "NOT BUILT", and the old title said so for long enough that I
+    // came back today and nearly enabled the chip on the strength of it. The view IS
+    // built: folders.js is 291 lines, app.js routes `group === 'folder'` to
+    // renderFolders, and test-folders.mjs passes eighteen tests against it.
+    //
+    // What is missing is the DATA. `GET /api/history?by=folder` is specified
+    // (01.3 par.3.6) and no handler serves it -- a grep across src/server for
+    // `by=folder` finds nothing. Enabling the chip would draw an empty frame and call
+    // it a view.
+    //
+    // The title now names which half is missing, so the next reader does not have to
+    // rediscover it. A disabled control is a promise, and the promise has to say what
+    // it is waiting for.
+    if (g === 'folder') {
+      b.disabled = true;
+      b.title = 'folders view: waiting for GET /api/history?by=folder (T2.24)';
+    }
     groups.append(b);
   }
   bar.append(groups);
