@@ -93,6 +93,28 @@ export function formatDuration(ms) {
  * null means "whatever the page is set to", and an unset page means the viewer's own
  * zone, as before.
  */
+/**
+ * View options that come from the config and change what the page DRAWS.
+ *
+ * Same shape as the caption zone below, and for the same reason: `renderRow` is
+ * reached through renderList -> renderAccount, and threading a settings object down
+ * three signatures means three places to forget it.
+ *
+ * `time_bar` is here because 01.1 §2.2 makes the strip a toggle in §5.2 -- and the
+ * page drew it unconditionally. The toggle existed in the settings panel, was written
+ * to the config, and no code on the page ever read it back: a control that changed
+ * nothing at all.
+ */
+let viewOptions = { time_bar: true };
+
+export function setViewOptions(opts) {
+  viewOptions = { time_bar: true, ...(opts || {}) };
+}
+
+export function getViewOptions() {
+  return viewOptions;
+}
+
 let captionZone = null;
 
 export function setCaptionZone(tz) {

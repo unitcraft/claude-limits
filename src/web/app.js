@@ -8,7 +8,7 @@
 //
 // Separate file rather than an inline <script>: the CSP refuses inline (01.1 §0).
 import {
-  isRetryable, retryDelay, retryAfterSeconds, setCaptionZone, getCaptionZone, captionTime, MAX_RETRIES, refuseFor, orderRequest, configPut,
+  isRetryable, retryDelay, retryAfterSeconds, setCaptionZone, getCaptionZone, captionTime, setViewOptions, MAX_RETRIES, refuseFor, orderRequest, configPut,
   footerRight, legendText, footerCounts,
 } from './format.js';
 import { createLive, silentTooLong, SILENCE_LIMIT_MS } from './live.js';
@@ -295,6 +295,10 @@ function applySnapshot(snap) {
   // stopping there is what the page did until 2026-09-09, and every reset time was
   // drawn in the viewer's zone instead of the backend's.
   setCaptionZone(state.tz);
+  // The one place a config view option reaches the renderer. `time_bar` was a toggle
+  // in the settings panel that nothing on the page read -- 01.1 §2.2 makes the strip
+  // conditional on it, and the page drew it always.
+  setViewOptions(snap.config && snap.config.ui ? snap.config.ui : undefined);
   $('[data-field="counts"]').textContent = footerCounts(accounts);
 
   // The legend describes what this snapshot actually draws (01.1 sec.1.2).

@@ -6,7 +6,7 @@
 // code nobody ships. Everything here takes a document and returns nodes; no fetch,
 // no timers, no EventSource.
 import {
-  elapsedShare, cellGeometry, formatReset, rowLabel, sortLimits, severityOf, applyOrder, wireNumber } from './format.js';
+  elapsedShare, cellGeometry, formatReset, rowLabel, sortLimits, severityOf, applyOrder, wireNumber, getViewOptions } from './format.js';
 
 // ------------------------------------------------------------- rendering ----
 
@@ -95,7 +95,7 @@ export function renderRow(limit, { dimmed = false } = {}) {
   // The time strip is computed here, not sent: only resets_at and kind are needed
   // (01.1 §2.6). Reading: fill left of the strip's end means a pace below the window.
   let elapsed = null;
-  if (limit.resets_at && !dimmed) {
+  if (limit.resets_at && !dimmed && getViewOptions().time_bar) {
     const strip = el('div', 'timebar');
     const share = elapsedShare(limit.kind, limit.resets_at);
     elapsed = Math.round(share * 100);

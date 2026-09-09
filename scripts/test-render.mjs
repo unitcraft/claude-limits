@@ -21,6 +21,7 @@ installDocument({ 'view-list': list, 'view-cards': cards });
 // possible: it takes a document and returns nodes, with no fetch, timers or
 // EventSource to drag in. Dynamic, because the stub must be installed first.
 const { renderList, renderCards, renderAccount, renderRow } = await import('../src/web/render.js');
+const { setViewOptions } = await import('../src/web/format.js');
 
 // -------------------------------------------------------------------- tests --
 
@@ -240,6 +241,28 @@ test('and marks them as a dimmed group, with the reason in the header', () => {
   assert.match(badge.textContent, /429/);
   // The text comes ready from the backend; the page decides WHERE it goes.
   assert.equal(badge.textContent, qa.message);
+});
+
+test('the time strip obeys its setting, which nothing on the page used to read', () => {
+  // 01.1 par.2.2 makes the strip conditional on the toggle in par.5.2. The toggle
+  // existed in the settings panel and was written to the config, and no code on the
+  // page ever read it back -- a control that changed nothing at all. Measured
+  // 2026-09-09: a grep for `time_bar` outside settings.js found zero hits.
+  const withReset = snap.limits.find((l) => l.resets_at);
+  assert.ok(withReset, 'the fixture needs a limit with resets_at');
+
+  setViewOptions({ time_bar: true });
+  assert.equal(renderRow(withReset).all((n) => n.className === 'timebar').length, 1);
+
+  setViewOptions({ time_bar: false });
+  assert.equal(renderRow(withReset).all((n) => n.className === 'timebar').length, 0,
+    'the toggle is off and the strip is still drawn -- the setting is being ignored');
+
+  // Absent config must not turn the strip off: a page that has not loaded settings
+  // yet should look like the default, not like someone chose to hide it.
+  setViewOptions(undefined);
+  assert.equal(renderRow(withReset).all((n) => n.className === 'timebar').length, 1,
+    'with no config the default is ON, per the settings panel default');
 });
 
 test('a dimmed row draws no strip and no ghost: both are claims about NOW', () => {
