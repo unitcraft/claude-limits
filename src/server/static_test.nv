@@ -78,6 +78,38 @@ test "the page revalidates rather than refetching" {
     }
 }
 
+test "a static response carries the security headers and, by D9, no X-Request-Id" {
+    // TWO ASSERTIONS AND THEY PULL AGAINST EACH OTHER, which is the point.
+    //
+    // The security headers must be identical to the API's: they are computed in two
+    // places (`routes.stamp`, six headers; `static.stamp`, four), and two stamps that
+    // drift leave one half of the site less protected than the other with nothing
+    // reporting it.
+    //
+    // The absent `X-Request-Id` is deviation D9 in 01.3 section 9. Until 2026-09-09 it
+    // was absent with its argument written in a CODE COMMENT (`static.nv:25-27`), and
+    // api.md section 19 calls an unrecorded deviation a review blocker -- not for
+    // form's sake: an argument living in a comment is found only by someone already
+    // reading that function, which is nobody who needs it.
+    //
+    // This test pins BOTH halves. If the id ever appears here, D9 has been dropped and
+    // the table must lose the row; if a security header disappears, the two stamps
+    // have diverged.
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro w = serve("/")
+        assert(hdr(w, "x-content-type-options") == "nosniff")
+        assert(hdr(w, "referrer-policy") == "no-referrer")
+        assert(hdr(w, "x-frame-options") == "DENY")
+        assert(hdr(w, "x-api-version") != "")
+
+        // D9: deliberately absent. Recorded in the table, not only here.
+        assert(hdr(w, "x-request-id") == "")
+
+        // And the framework must not name itself, section 0.
+        assert(hdr(w, "server") == "")
+    }
+}
+
 test "the stylesheet and the script come out too, with their own types" {
     with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
         ro css = serve("/app.css")
