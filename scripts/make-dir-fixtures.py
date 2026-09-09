@@ -6,7 +6,8 @@ deliberate `sk-ant-fixture-` prefix, home paths use the user `me`.
 """
 import json, pathlib, time
 
-base = pathlib.Path(r"<repos>\claude-limits\fixtures\dirs")
+base = pathlib.Path(__file__).resolve().parent.parent / "fixtures" / "dirs"  # derived, never written out: an absolute default means a copy of the
+  # repository acts on the ORIGINAL (same reasoning as check-plan-trees.py)
 
 HOUR = 3600 * 1000
 

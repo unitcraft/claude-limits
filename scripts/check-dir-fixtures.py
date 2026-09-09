@@ -7,7 +7,8 @@ limiting started.
 """
 import pathlib, sys
 
-repo = pathlib.Path(r"<repos>\claude-limits")
+repo = pathlib.Path(__file__).resolve().parent.parent  # derived, never written out: an absolute default means a copy of the
+  # repository acts on the ORIGINAL (same reasoning as check-plan-trees.py)
 sys.path.insert(0, str(repo / "scripts"))
 import claude_limits as ref
 

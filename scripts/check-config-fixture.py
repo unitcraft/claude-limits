@@ -6,7 +6,8 @@ Two directions, both required:
 """
 import pathlib, re, tomllib
 
-repo = pathlib.Path(r"<repos>\claude-limits")
+repo = pathlib.Path(__file__).resolve().parent.parent  # derived, never written out: an absolute default means a copy of the
+  # repository acts on the ORIGINAL (same reasoning as check-plan-trees.py)
 inv = repo / "docs" / "reports" / "T1.2-config-inventory.md"
 toml = repo / "fixtures" / "config" / "full-valid.toml"
 

@@ -93,6 +93,7 @@ const CHECKERS = [
   ['check-config-shape.py', [], 'CONFIG SHAPE'],
   ['check-artboard-labels.py', [], 'ARTBOARD LABELS'],
   ['check-citations.py', [], 'CITATIONS'],
+  ['check-guards-judge-this-tree.py', [], 'GUARDS JUDGE THIS TREE'],
 ];
 
 for (const [name, args, verdictPrefix] of CHECKERS) {
