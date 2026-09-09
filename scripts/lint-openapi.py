@@ -37,10 +37,101 @@ PHASE_6 = {
     "DELETE /api/session",
 }
 
+STORAGE_PLAN = REPO / "docs" / "plans" / "01.2-storage.md"
+
 # Parameters that must never appear in a URL: a personal e-mail, a filesystem path, a
-# secret, or an account identity. 01.3 forbids them in query and path -- URLs are
-# logged, cached by proxies and pasted into chats, so PII in one leaks in every copy.
-FORBIDDEN_PARAM_NAMES = ("email", "path", "token", "account_id")
+# secret, or an account identity. URLs are logged, cached by proxies and pasted into
+# chats, so personal data in one leaks in every copy.
+#
+# DERIVED FROM THE REGISTRY, NOT TYPED HERE. The database convention section 13.7 is
+# explicit: "Реестр единственный источник для всех производных проверок: списка
+# полей, запрещённых в URL, ..." -- and the API convention says the same from the
+# other side (api.md:593-596: "Ни один из этих списков не ведётся руками отдельно").
+#
+# This file used to carry `("email", "path", "token", "account_id")` as a literal,
+# four names against the registry's nine, four lines below a header paragraph
+# explaining why the ROUTE list is parsed rather than copied ("a second list in this
+# file would just drift away from the first"). One rule, one file, two opposite
+# decisions -- and the copy had already drifted, which is what the rule predicts.
+#
+# The registry is the table in 01.2-storage.md section 10. Every row whose class is
+# `pii`, `subject_id` or `secret` contributes its column name, its leaf, and the
+# table_leaf join, because a URL parameter may be spelled any of those ways.
+
+
+def _forbidden_from_registry(path=STORAGE_PLAN):
+    """Names no URL may carry, read from the PII registry table."""
+    if not path.exists():
+        raise SystemExit(f"lint-openapi: the PII registry is missing: {path}\n"
+                         f"  It is the single source for this list (database convention 13.7).")
+
+    text = path.read_text(encoding="utf-8")
+    # The section, then its table rows.
+    start = text.find("## 10.")
+    if start < 0:
+        raise SystemExit("lint-openapi: no section 10 (PII registry) in 01.2-storage.md")
+    end = text.find("\n## ", start + 1)
+    section = text[start:end if end > 0 else len(text)]
+
+    names = set()
+    rows = 0
+    for line in section.split("\n"):
+        if not line.startswith("|") or line.startswith("|---") or "| класс |" in line:
+            continue
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if len(cells) < 2:
+            continue
+        cls = cells[1].strip("`")
+        if cls not in ("pii", "subject_id", "secret"):
+            continue
+        rows += 1
+        for ident in re.findall(r"`([^`]+)`", cells[0]):
+            ident = ident.strip()
+            # "[server] access_token" -> "access_token"
+            ident = re.sub(r"^\[[^\]]+\]\s*", "", ident)
+            if not re.fullmatch(r"[A-Za-z0-9_.]+", ident):
+                continue
+
+            # Two rows of the registry name things that are not columns: a FILE
+            # (`config_history.toml`) and a VIEW (`v_sample_local`). Deriving
+            # parameter names from those gives "toml" and "v_sample_local", which
+            # forbid nothing real and make the list look longer than it is. A
+            # forbidden list padded with names no URL would ever carry is harder to
+            # trust than a short one.
+            if ident.endswith((".toml", ".csv", ".json")) or ident.startswith("v_"):
+                continue
+
+            parts = ident.split(".")
+            leaf = parts[-1]
+            names.add(ident.replace(".", "_").lower())
+            names.add(leaf.lower())
+            if len(parts) >= 2:
+                names.add((parts[-2] + "_" + leaf).lower())
+
+    # A check whose list came out empty passes everything. That is the failure this
+    # whole change is about, so it is an error rather than a warning.
+    if rows == 0 or not names:
+        raise SystemExit("lint-openapi: the PII registry parsed to nothing "
+                         f"(rows={rows}, names={len(names)}) -- refusing to lint "
+                         "with an empty forbidden list")
+
+    # `token` is not a column name in the registry, but `access_token` is, and a URL
+    # parameter spelled `token` carries exactly the same secret. Added explicitly so
+    # that the addition is visible rather than hidden in the derivation.
+    names.add("token")
+
+    # A bare `id` is dropped, and this is the one judgement call in here. The registry
+    # forbids `account.id` because it identifies a person; a notification's id does
+    # not, and forbidding every parameter spelled `id` would reject the second along
+    # with the first. `account_id` and `account.id` stay forbidden, so the row is
+    # still enforced -- what is given up is catching an ACCOUNT id smuggled into a URL
+    # under the name `id`. Named here rather than left as a silent gap.
+    names.discard("id")
+
+    return tuple(sorted(names))
+
+
+FORBIDDEN_PARAM_NAMES = _forbidden_from_registry()
 
 MAX_SCHEMA_DEPTH = 3
 
