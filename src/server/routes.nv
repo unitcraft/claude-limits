@@ -61,7 +61,7 @@ module server.routes
 import polaris.{Router, MethodRouter, ServerRequest, ServerResponse, Handler}
 import http.{HttpError}
 import std.identifiers.uuid.{Uuid}
-import claude_limits.server.errors.{ApiError, to_json}
+import claude_limits.server.errors.{ApiError, to_json, well_formed}
 
 /// Bumped on an INCOMPATIBLE change (01.3 §5). The page reads it from
 /// `/api/health` at load and asks for a reload when the binary moved on.
@@ -143,6 +143,19 @@ fn stamp(mut resp ServerResponse, request_id str) -> ServerResponse {
 /// on the `ApiError`, so a 429 cannot advertise one number and carry another.
 /// Same for `Allow` on a 405.
 export fn problem(e ApiError, request_id str, instance str) -> ServerResponse {
+    // THE INVARIANT IS CHECKED HERE, on the path an error actually takes.
+    //
+    // `well_formed` (errors.nv:236) states three rules the contract makes: a 422
+    // carries at least one field error, a 429 or 503 carries `Retry-After`, a 405
+    // carries `Allow`. Until 2026-09-09 it was called SIX times and all six were in
+    // errors_test.nv. An invariant asserted only about hand-built values in a test
+    // says the constructors are right; it says nothing about what leaves the process,
+    // and this function is the single door every error goes out through.
+    //
+    // Not a panic and not a refusal to answer: a malformed error body is still a
+    // better answer than none, and dying inside the error path is how one bad reply
+    // becomes an outage. The response carries the breach in a header instead, where
+    // a test and a person can both see it, and the reply still goes out.
     ro body = to_json(e, request_id, instance)
     mut resp = ServerResponse.bytes(e.status, "application/problem+json; charset=utf-8", body.bytes())
     match e.retry_after {
@@ -150,6 +163,9 @@ export fn problem(e ApiError, request_id str, instance str) -> ServerResponse {
         None => {}
     }
     if e.allow != "" { resp.header("Allow", e.allow) }
+    if !well_formed(e) {
+        resp.header("X-Contract-Violation", "malformed-problem-body")
+    }
     resp
 }
 
