@@ -23,11 +23,10 @@ module handlers.events
 
 import claude_limits.server.routes.{Ctx, ApiHandler, problem}
 import claude_limits.server.errors.{ApiError}
-import claude_limits.model.store.{Event, Registry, since, missed}
+import claude_limits.model.store.{Event, Registry, since, missed, MAX_SUBSCRIBERS}
 import polaris.{ServerResponse, StreamBody}
 
 /// At most this many at once (§3.4). The thirty-third is told no.
-const MAX_SUBSCRIBERS = 32
 
 // ── framing ──────────────────────────────────────────────────────────────────
 

@@ -37,7 +37,20 @@ export type Registry value {
     subscribers []Subscriber
     ring []Event        // the last RING_MAX events, oldest first
     next_id int
-    rejected int        // how many were turned away over the limit, for /api/health
+    /// How many were turned away over the limit.
+    ///
+    /// WAS ADVERTISED "for /api/health" AND WAS ALWAYS ZERO. Only `subscribe` below
+    /// increments it, and `subscribe` is called from nowhere outside tests -- the
+    /// live decision is made by `server/handlers/events.opening`, which takes the
+    /// registry by value and cannot write to it. `/api/health` never read the field
+    /// either, so nothing contradicted the zero.
+    ///
+    /// Left in place rather than deleted: the metric is wanted, and 01.3 §3.4 is
+    /// where it belongs. What it needs is for the refusal path to reach it, which
+    /// means `opening` taking `mut reg` or its caller counting -- a signature change
+    /// across the events handler, so it is named here rather than half-done.
+    /// [M-subscriber-refusals-uncounted]
+    rejected int
 }
 
 /// 01.3 §3.4: at most 32 subscribers, a ring buffer of 100 events.
@@ -45,7 +58,14 @@ export type Registry value {
 /// The limit is not arbitrary politeness. Each subscriber holds a channel and a fiber;
 /// a page left open in thirty tabs is a real thing, and the thirty-third must be told
 /// no rather than quietly costing everyone memory.
-const MAX_SUBSCRIBERS = 32
+/// The ceiling on live SSE subscribers (01.3 §3.4).
+///
+/// EXPORTED, and that is the fix rather than a tidy-up. It was `const` without
+/// `export` here AND `const` without `export` in `server/handlers/events.nv`, so the
+/// copy was not carelessness -- it was the only spelling available to the second
+/// module. A number that cannot be shared gets duplicated by anyone who needs it, and
+/// then the two drift, and nothing anywhere says they have.
+export const MAX_SUBSCRIBERS = 32
 const RING_MAX = 100
 
 export fn Registry.new() -> Registry =>

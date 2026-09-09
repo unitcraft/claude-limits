@@ -89,6 +89,7 @@ const CHECKERS = [
   ['check-test-domains.py', [], 'TEST DOMAINS'],
   ['check-fixture-ids.py', [], 'FIXTURE IDS'],
   ['check-scale-suffixes.py', [], 'SCALE SUFFIXES'],
+  ['check-duplicate-limits.py', [], 'DUPLICATE LIMITS'],
   ['check-artboard-labels.py', [], 'ARTBOARD LABELS'],
   ['check-citations.py', [], 'CITATIONS'],
 ];
