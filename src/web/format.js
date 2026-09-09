@@ -37,7 +37,10 @@ export function clamp(x, lo, hi) {
 export function cellGeometry(widthPx, percent, forecastPercent = null) {
   const n = Math.max(0, Math.floor((widthPx + 2) / 10));
   if (n === 0) return { cells: 0, barWidth: 0, fillWidth: 0, filledCells: 0, ghostFrom: 0, ghostWidth: 0 };
-  const filled = Math.round(clamp(percent, 0, 100) / 100 * n);
+  // Coerced before any arithmetic: see wireNumber. A fractional percent arrives as
+  // a string, and clamp() on a string returns the string unchanged.
+  const pNum = wireNumber(percent) ?? 0;
+  const filled = Math.round(clamp(pNum, 0, 100) / 100 * n);
   const geo = {
     cells: n,
     barWidth: n * 10 - 2,
@@ -48,8 +51,9 @@ export function cellGeometry(widthPx, percent, forecastPercent = null) {
   };
   // The forecast ghost runs from the filled edge to the predicted cell, and only
   // when the prediction is ahead of the present (01.1 §2.2).
-  if (forecastPercent != null && forecastPercent > percent) {
-    const to = Math.round(clamp(forecastPercent, 0, 100) / 100 * n);
+  const fp = wireNumber(forecastPercent);
+  if (fp != null && fp > pNum) {
+    const to = Math.round(clamp(fp, 0, 100) / 100 * n);
     if (to > filled) {
       geo.ghostFrom = filled * 10;
       geo.ghostWidth = (to - filled) * 10 - 2;
@@ -97,6 +101,31 @@ export function setCaptionZone(tz) {
 
 export function getCaptionZone() {
   return captionZone;
+}
+
+/**
+ * A number off the wire. The one place a contract value becomes arithmetic.
+ *
+ * WHY IT EXISTS BEFORE IT IS NEEDED. Today `percent` is an integer JSON number, so
+ * every site below works whether it coerces or not. That is what makes this worth
+ * fixing now rather than later: the convention says a FRACTIONAL share travels as a
+ * STRING (api.md:512 -- "количество, доля, процент с дробью | строка десятичного
+ * числа"), and the day one does, twelve sites change behaviour at once and only one
+ * of them coerces.
+ *
+ * The failure is not a crash. `Math.round("74.5")` is fine. But
+ * `fc.percent_at_reset > limit.percent` compares two STRINGS lexicographically, and
+ * "9.5" > "74.5" is true -- so the forecast ghost appears on the wrong rows and the
+ * bar is drawn backwards, plausibly, with no error anywhere. A silent wrong answer
+ * is the expensive kind.
+ *
+ * null and undefined come back as null rather than 0: "no value" and "zero per cent"
+ * are different, and folding them makes a missing forecast look like a full one.
+ */
+export function wireNumber(v) {
+  if (v == null || v === '') return null;
+  const n = typeof v === 'number' ? v : Number(v);
+  return Number.isFinite(n) ? n : null;
 }
 
 /**

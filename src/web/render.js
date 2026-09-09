@@ -6,8 +6,7 @@
 // code nobody ships. Everything here takes a document and returns nodes; no fetch,
 // no timers, no EventSource.
 import {
-  elapsedShare, cellGeometry, formatReset, rowLabel, sortLimits, severityOf, applyOrder,
-} from './format.js';
+  elapsedShare, cellGeometry, formatReset, rowLabel, sortLimits, severityOf, applyOrder, wireNumber } from './format.js';
 
 // ------------------------------------------------------------- rendering ----
 
@@ -30,14 +29,14 @@ export const el = (tag, cls, text) => {
  * this string as the only place their meaning survives.
  */
 export function valueText(limit, elapsedPercent = null) {
-  const parts = [`${Math.round(limit.percent ?? 0)}%`, limit.label || rowLabel(limit)];
+  const parts = [`${Math.round(wireNumber(limit.percent) ?? 0)}%`, limit.label || rowLabel(limit)];
   if (limit.locked_reason) parts.push(`locked: ${limit.locked_reason}`);
   if (limit.resets_at) parts.push(`resets ${formatReset(limit.resets_at)}`);
   else if (limit.reset_label) parts.push(`resets ${limit.reset_label}`);
   if (elapsedPercent != null) parts.push(`${elapsedPercent}% of the window elapsed`);
   const fc = limit.forecast;
   if (fc && fc.percent_at_reset != null) {
-    parts.push(`forecast ${Math.round(fc.percent_at_reset)}% at reset`);
+    parts.push(`forecast ${Math.round(wireNumber(fc.percent_at_reset) ?? 0)}% at reset`);
   }
   return parts.join('; ');
 }
@@ -73,17 +72,21 @@ export function renderRow(limit, { dimmed = false } = {}) {
   bar.setAttribute('role', 'meter');
   bar.setAttribute('aria-valuemin', '0');
   bar.setAttribute('aria-valuemax', '100');
-  bar.setAttribute('aria-valuenow', String(Math.round(limit.percent ?? 0)));
+  bar.setAttribute('aria-valuenow', String(Math.round(wireNumber(limit.percent) ?? 0)));
   const fill = el('div', 'bar-fill');
-  fill.style.width = `${Math.max(0, Math.min(100, limit.percent ?? 0))}%`;
+  fill.style.width = `${Math.max(0, Math.min(100, wireNumber(limit.percent) ?? 0))}%`;
   bar.append(fill);
   // No ghost on a dimmed row: a forecast is a claim about where the pace lands, and
   // we do not know the pace of an account we cannot reach (01.1 sec.3.2).
   const fc = dimmed ? null : limit.forecast;
-  if (fc && fc.percent_at_reset != null && fc.percent_at_reset > limit.percent) {
+  // Through wireNumber: a fractional percent arrives as a STRING (api.md:512), and
+  // `">"` on two strings compares them lexicographically -- "9.5" > "74.5" is true.
+  const fcPct = wireNumber(fc && fc.percent_at_reset);
+  const limPct = wireNumber(limit.percent) ?? 0;
+  if (fc && fcPct != null && fcPct > limPct) {
     const ghost = el('div', 'bar-ghost');
     ghost.style.left = `${limit.percent}%`;
-    ghost.style.width = `${Math.min(100, fc.percent_at_reset) - limit.percent}%`;
+    ghost.style.width = `${Math.min(100, fcPct) - limPct}%`;
     ghost.setAttribute('aria-hidden', 'true');
     bar.append(ghost);
   }
@@ -107,7 +110,8 @@ export function renderRow(limit, { dimmed = false } = {}) {
     dimmed ? `last known: ${valueText(limit, null)}` : valueText(limit, elapsed));
   row.append(bars);
 
-  const pct = el('span', 'row-pct', limit.percent == null ? '—' : `${Math.round(limit.percent)}%`);
+  const pct = el('span', 'row-pct',
+    limit.percent == null ? '—' : `${Math.round(wireNumber(limit.percent) ?? 0)}%`);
   row.append(pct);
 
   const reset = el('div', 'row-reset');
