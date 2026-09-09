@@ -11,7 +11,7 @@ import {
   BOX, yOf, linePath, areaPath, bandRect, resetLines, inferredResets,
   xTicks, nearestPoint, seriesByAccount, columnsOf,
 } from './chart.js';
-import { formatDuration } from './format.js';
+import { formatDuration, captionDateTime } from './format.js';
 import { el } from './render.js';
 
 const NS = 'http://www.w3.org/2000/svg';
@@ -209,7 +209,7 @@ export function valuesTable(seriesList, labelOf) {
   const byTime = seriesList.map((s) => new Map((s.points || []).map((p) => [p.at, p.percent])));
   for (const at of times) {
     const tr = el('tr');
-    tr.append(el('td', null, new Date(at).toLocaleString()));
+    tr.append(el('td', null, captionDateTime(at)));
     for (const map of byTime) {
       const v = map.get(at);
       // An empty cell, not a zero: a series with no sample at this moment did not

@@ -99,6 +99,32 @@ export function getCaptionZone() {
   return captionZone;
 }
 
+/**
+ * A clock caption in the page's zone. Every "19:47" on this page goes through here.
+ *
+ * WHY A FUNCTION AND NOT `toLocaleTimeString` AT EACH SITE. There were ten of those,
+ * in three syntaxes, and the audit that found them had to classify each one by hand
+ * as a caption or an axis. Captions belong in the backend's zone and axes in the
+ * browser's -- plan 01 §3.4, verbatim: "готовые подписи `*_label` считаются в поясе
+ * бэкенда, оси графиков страница строит в поясе браузера". A shared function makes
+ * the caption case the easy one to reach for; the axis case stays an explicit,
+ * visible choice in chart.js rather than an accident.
+ */
+export function captionTime(d) {
+  const at = d instanceof Date ? d : new Date(d);
+  if (Number.isNaN(at.getTime())) return '';
+  const opts = { hour: '2-digit', minute: '2-digit', hour12: false };
+  return at.toLocaleTimeString('en', captionZone ? { ...opts, timeZone: captionZone } : opts);
+}
+
+/** The same, with the date, for tables that span days. */
+export function captionDateTime(d) {
+  const at = d instanceof Date ? d : new Date(d);
+  if (Number.isNaN(at.getTime())) return '';
+  const opts = { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false };
+  return at.toLocaleString('en', captionZone ? { ...opts, timeZone: captionZone } : opts);
+}
+
 export function formatResetMoment(resetsAtIso, now = Date.now(), tz = captionZone) {
   if (!resetsAtIso) return '';
   const at = new Date(resetsAtIso);
@@ -311,7 +337,7 @@ export function footerRight(intervalSec, nextPollAt) {
   if (!nextPollAt) return head;
   const at = new Date(nextPollAt);
   if (Number.isNaN(at.getTime())) return head;
-  return `${head} \u00b7 next ${at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+  return `${head} \u00b7 next ${captionTime(at)}`;
 }
 
 /**

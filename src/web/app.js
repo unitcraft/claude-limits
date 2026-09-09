@@ -8,7 +8,7 @@
 //
 // Separate file rather than an inline <script>: the CSP refuses inline (01.1 §0).
 import {
-  isRetryable, retryDelay, retryAfterSeconds, setCaptionZone, MAX_RETRIES, refuseFor, orderRequest, configPut,
+  isRetryable, retryDelay, retryAfterSeconds, setCaptionZone, getCaptionZone, captionTime, MAX_RETRIES, refuseFor, orderRequest, configPut,
   footerRight, legendText, footerCounts,
 } from './format.js';
 import { createLive, silentTooLong, SILENCE_LIMIT_MS } from './live.js';
@@ -288,8 +288,7 @@ function applySnapshot(snap) {
   state.fetchedAt = snap.fetched_at ? new Date(snap.fetched_at) : new Date();
   state.intervalSec = snap.interval_sec ?? state.intervalSec;
 
-  $('[data-field="fetched-at"]').textContent =
-    state.fetchedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  $('[data-field="fetched-at"]').textContent = captionTime(state.fetchedAt);
 
   const accounts = snap.accounts || [];
   state.tz = snap.tz || state.tz;
@@ -562,10 +561,24 @@ async function refresh(btn) {
     if (wait > 0) {
       const until = new Date(Date.now() + wait * 1000);
       btn.disabled = true;
-      btn.title = `server asks to wait until ${until.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+      // The backend's zone, like every other caption on this page: the person
+      // reading it and the machine being waited on are not always in the same one.
+      const zone = getCaptionZone();
+      const opts = { hour: '2-digit', minute: '2-digit', hour12: false };
+      btn.title = `server asks to wait until ${
+        until.toLocaleTimeString('en', zone ? { ...opts, timeZone: zone } : opts)}`;
       setTimeout(() => { btn.disabled = false; btn.title = 'poll now'; }, wait * 1000);
     }
     // 202: the snapshot arrives over SSE; nothing to do here.
+  } catch (e) {
+    // WITHOUT THIS, A REJECTED FETCH SAID NOTHING. `try/finally` with no `catch`
+    // stopped the spinner and left the person looking at an unchanged page: the
+    // request never left, and the page behaved exactly as though it had succeeded
+    // and there was simply no news. Four of the five handlers here already had a
+    // catch, which is what made the fifth look finished.
+    //
+    // api.md:26 -- "no silent outcomes".
+    toast(`could not reach the backend (${e.message})`);
   } finally {
     btn.dataset.spinning = 'false';
   }

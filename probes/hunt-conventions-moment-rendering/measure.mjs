@@ -108,3 +108,56 @@ if (bad) process.exit(bad);
   }
   console.log('OK: a caption rendered with no zone argument follows the page zone');
 }
+
+// ---- every caption, not just the reset one --------------------------------
+//
+// Closing a class at one call site is not closing the class. A grep for
+// toLocaleTimeString / toLocaleDateString / toLocaleString found ten more, and each
+// had to be classified by hand: plan 01 par.3.4 says ready-made captions are in the
+// backend's zone and CHART AXES are in the browser's. So the axes in chart.js are
+// deliberately left alone, and the captions go through captionTime.
+//
+// This block checks the shared helpers, because "the reset caption is fixed" was
+// true an hour before the header clock still showed the viewer's time.
+{
+  const fmt = await import('../../src/web/format.js');
+  const instant = '2026-09-09T20:50:00Z';
+
+  fmt.setCaptionZone('UTC');
+  const utcT = fmt.captionTime(instant);
+  const utcDT = fmt.captionDateTime(instant);
+  fmt.setCaptionZone('Europe/Moscow');
+  const mskT = fmt.captionTime(instant);
+  const mskDT = fmt.captionDateTime(instant);
+  fmt.setCaptionZone(null);
+
+  console.log('');
+  console.log('captionTime     UTC / MSK :', JSON.stringify(utcT), '/', JSON.stringify(mskT));
+  console.log('captionDateTime UTC / MSK :', JSON.stringify(utcDT), '/', JSON.stringify(mskDT));
+
+  let bad2 = 0;
+  const chk = (c, m) => { if (!c) { console.log('  FAIL:', m); bad2 = 1; } };
+
+  chk(utcT === '20:50', `captionTime in UTC should be 20:50, got ${JSON.stringify(utcT)}`);
+  chk(mskT === '23:50', `captionTime in Moscow should be 23:50, got ${JSON.stringify(mskT)}`);
+  chk(utcT !== mskT, 'captionTime ignores the zone');
+  chk(utcDT !== mskDT, 'captionDateTime ignores the zone');
+  chk(fmt.captionTime('not a date') === '', 'a bad input should give an empty caption, not "Invalid Date"');
+
+  // The footer string the spec quotes verbatim (01.1 line 72): "polling every 300 s
+  // and next 19:52". It must follow the zone too -- it is a caption.
+  fmt.setCaptionZone('UTC');
+  const footUtc = fmt.footerRight(300, instant);
+  fmt.setCaptionZone('Europe/Moscow');
+  const footMsk = fmt.footerRight(300, instant);
+  fmt.setCaptionZone(null);
+  // Not guarded by a "if the export exists" check any more: the first version of
+  // this probe looked for footerLeft, did not find it, and printed "skipped". A
+  // skipped check reads like a passed one in a green log. The name is footerRight.
+  console.log('footer UTC / MSK          :', JSON.stringify(footUtc), '/', JSON.stringify(footMsk));
+  chk(footUtc !== footMsk, 'the next-poll caption ignores the zone');
+  chk(/20:50/.test(footUtc), 'the UTC footer should name 20:50, got ' + JSON.stringify(footUtc));
+
+  if (bad2) { console.log('\nFAILED'); process.exit(1); }
+  console.log('OK: the shared caption helpers follow the page zone');
+}
