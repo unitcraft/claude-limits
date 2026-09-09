@@ -106,21 +106,29 @@ fn fixture() -> SnapshotView => {
     ],
 }
 
-fn state(order []str, hidden []str) -> SnapshotState => {
+fn state(order []str, hidden []str) -> SnapshotState => state_at(order, hidden, Disclosure.Loopback)
+
+fn state_at(order []str, hidden []str, d Disclosure) -> SnapshotState => {
     view: fixture(),
     order,
     hidden,
     config_etag: "cfg-1",
-    disclosure: Disclosure.Loopback,
+    disclosure: d,
 }
 
-fn app(order []str, hidden []str) -> Router {
+fn app(order []str, hidden []str) -> Router => app_at(order, hidden, Disclosure.Loopback)
+
+fn app_at(order []str, hidden []str, d Disclosure) -> Router {
     ro o = order
     ro hid = hidden
-    ro src = fn() -> SnapshotState => state(o, hid)
+    ro lvl = d
+    ro src = fn() -> SnapshotState => state_at(o, hid, lvl)
     ro ah = snapshot_handler(src)
     build([route("/api/snapshot", [on(HttpMethod.Get, ah)])])!!
 }
+
+fn serve_at(d Disclosure, raw []u8) Time Random -> []u8 =>
+    serve_once(app_at([], [], d), raw)
 
 fn serve(order []str, hidden []str, raw []u8) Time Random -> []u8 => serve_once(app(order, hidden), raw)
 
@@ -288,6 +296,36 @@ test "If-None-Match on the current tag is a 304" {
         assert(status_of(second) == "HTTP/1.1 304 Not Modified")
         assert(body_of(second) == "")
         assert(hdr(second, "etag") == tag)
+    }
+}
+
+test "two disclosure levels do not share one ETag" {
+    // THE AXIS THAT WAS MISSING. The body is rendered with `st.disclosure`
+    // (`snapshot.nv:205`), which nulls PII paths below Loopback -- and the tag did not
+    // include it. Two clients at different levels sharing a tag means the second is
+    // told 304 and shown the FIRST's document, which here hands a LAN client the
+    // loopback rendering. Nothing reports it: a 304 is an ordinary reply, and the
+    // wrong body it points at is one the client already holds.
+    //
+    // SERVED, NOT COMPUTED. My first version of this test called `etag_of` with
+    // hand-built lists and compared those. It passed with the axis REMOVED from the
+    // handler, because it was measuring the hash rather than the tag -- the same
+    // "checked a copy instead of the thing" this file's neighbours keep finding. It
+    // now asks two real servers, differing only in the level, for their ETag.
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro loop_tag = hdr(serve_at(Disclosure.Loopback, req("GET", "/api/snapshot")), "etag")
+        ro lan_tag = hdr(serve_at(Disclosure.Lan, req("GET", "/api/snapshot")), "etag")
+        ro anon_tag = hdr(serve_at(Disclosure.Anonymous, req("GET", "/api/snapshot")), "etag")
+
+        assert(loop_tag != "")
+        assert(loop_tag != lan_tag)
+        assert(lan_tag != anon_tag)
+        assert(loop_tag != anon_tag)
+
+        // Identical input, identical tag -- or every request would be a miss and the
+        // three assertions above would pass for a tag that is simply random.
+        ro again = hdr(serve_at(Disclosure.Lan, req("GET", "/api/snapshot")), "etag")
+        assert(again == lan_tag)
     }
 }
 

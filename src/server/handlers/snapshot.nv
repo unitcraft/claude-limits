@@ -193,10 +193,28 @@ fn run(src SnapshotSource, ctx Ctx) -> ServerResponse {
             ro st = src()
             ro hidden_too = wants_hidden(ctx.req)
             ro view = arrange(st.view, st.order, st.hidden, hidden_too)
-            // `include_hidden` is IN the tag: without it a client that asked once
-            // with and once without would be told 304 and shown the other answer.
+            // EVERY AXIS THAT CHANGES THE BODY IS IN THE TAG. An ETag that covers
+            // some of them tells a client 304 and leaves it looking at the other
+            // answer -- and nothing anywhere reports that, because a 304 is a normal
+            // reply.
+            //
+            // `include_hidden` was in the tag from the start, with the reason written
+            // here. `disclosure` was NOT, and it changes the body on line 205 --
+            // `render_snapshot(view, st.disclosure)` nulls PII paths for anything
+            // below Loopback. Two clients at different levels sharing one tag means
+            // the second is shown the first's document, which for this axis means a
+            // LAN client can be handed the loopback rendering.
+            //
+            // The list is spelled out rather than folded into a helper: an axis is
+            // added by editing the body, and the next person to do that has to see
+            // this line and decide.
             ro flag = if hidden_too { "1" } else { "0" }
-            ro tag = etag_of([view.fetched_at, st.config_etag, flag])
+            ro level = match st.disclosure {
+                Disclosure.Loopback => "L"
+                Disclosure.Lan => "N"
+                Disclosure.Anonymous => "A"
+            }
+            ro tag = etag_of([view.fetched_at, st.config_etag, flag, level])
             if if_none_match(ctx.req, tag) {
                 mut nm = ServerResponse.empty(304)
                 nm.header("ETag", tag)
