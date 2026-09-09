@@ -4,7 +4,7 @@
 
 module handlers.exporter_test
 
-import claude_limits.server.routes.{HttpMethod, on, route, build}
+import claude_limits.server.routes.{HttpMethod, on, route, build, route_q}
 import claude_limits.server.dto.{Disclosure}
 import polaris.{Router, serve_once}
 import std.testing.handlers as th
@@ -49,7 +49,8 @@ fn state(d Disclosure) -> ExportState =>
 
 fn app(d Disclosure) -> Router {
     ro level = d
-    build([route("/api/export", [on(HttpMethod.Get, export_handler(fn() -> ExportState => state(level)))])])!!
+    build([route_q("/api/export", [on(HttpMethod.Get, export_handler(fn() -> ExportState => state(level)))],
+                   ["range", "from", "to", "login_dir_id", "format", "unmasked"])])!!
 }
 
 fn serve(d Disclosure, target str) Time Random -> str => wire_str(serve_once(app(d), get(target)))

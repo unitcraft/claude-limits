@@ -9,7 +9,7 @@
 
 module handlers.snapshot_test
 
-import claude_limits.server.routes.{HttpMethod, on, route, build, API_VERSION}
+import claude_limits.server.routes.{HttpMethod, on, route, build, API_VERSION, route_q}
 import claude_limits.server.dto.{Disclosure, SnapshotView, AccountView, DirView, LimitView, ForecastView, WorstView}
 import polaris.{Router, serve_once}
 import std.testing.handlers as th
@@ -124,7 +124,7 @@ fn app_at(order []str, hidden []str, d Disclosure) -> Router {
     ro lvl = d
     ro src = fn() -> SnapshotState => state_at(o, hid, lvl)
     ro ah = snapshot_handler(src)
-    build([route("/api/snapshot", [on(HttpMethod.Get, ah)])])!!
+    build([route_q("/api/snapshot", [on(HttpMethod.Get, ah)], ["include_hidden"])])!!
 }
 
 fn serve_at(d Disclosure, raw []u8) Time Random -> []u8 =>

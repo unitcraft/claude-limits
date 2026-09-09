@@ -117,9 +117,54 @@ export type Endpoint value { method HttpMethod, handler ApiHandler }
 export fn on(method HttpMethod, handler ApiHandler) -> Endpoint => { method, handler }
 
 /// One route: a path template and the methods it answers.
-export type Route value { path str, endpoints []Endpoint }
+/// One route: a path template, the methods it answers, and the query parameters it
+/// accepts.
+///
+/// `query` IS PART OF THE ROUTE, and the default is EMPTY. The closed list of query
+/// parameters is a rule of the contract (01.3: an unknown one is
+/// `400 invalid_parameter`), and until 2026-09-09 each handler enforced it for itself
+/// -- two of eight did, six did not, and the two that did carried byte-identical
+/// copies of the same parser.
+///
+/// Declaring nothing therefore means "this route takes no query parameters", which is
+/// the safe default: a route that forgets to declare is strict, not permissive. A
+/// route that does take them says so once, here, where the path and the methods are
+/// already written down.
+export type Route value { path str, endpoints []Endpoint, query []str }
 
-export fn route(path str, endpoints []Endpoint) -> Route => { path, endpoints }
+/// A route with no query parameters.
+export fn route(path str, endpoints []Endpoint) -> Route => { path, endpoints, query: [] }
+
+/// A route that accepts the named query parameters, and only those.
+export fn route_q(path str, endpoints []Endpoint, query []str) -> Route =>
+    { path, endpoints, query }
+
+/// The first query key of `target` that is not in `allowed`, if any.
+///
+/// Repeats are NOT judged here: whether a parameter may appear twice depends on what
+/// it means, and the two handlers that care already refuse it with their own message.
+/// This function answers the one question that is the same for every route -- is this
+/// key one the route knows at all.
+export fn unknown_query_key(target str, allowed []str) -> Option[str] {
+    ro q = match target.find("?") {
+        Some(i) => target[i + 1..target.byte_len()]
+        None    => ""
+    }
+    if q == "" { return None }
+    for part in q.split("&") {
+        if part == "" { continue }
+        ro k = match part.find("=") {
+            Some(i) => part[0..i]
+            None    => part
+        }
+        mut known = false
+        for a in allowed {
+            if a == k { known = true }
+        }
+        if !known { return Some(k) }
+    }
+    None
+}
 
 // ── the frame ────────────────────────────────────────────────────────────────
 
@@ -217,9 +262,25 @@ fn precheck(req ServerRequest) -> Option[ApiError] {
 // Hoisted out of the closure in `api` below and taking everything as a parameter:
 // calling a CAPTURED fn value by identifier is the live mis-codegen Polaris
 // documents as [M-16] and works around the same way throughout `middleware.nv`.
-fn run_api(instance str, h ApiHandler, req ServerRequest) Time Random -> ServerResponse {
+fn run_api(instance str, h ApiHandler, req ServerRequest) Time Random -> ServerResponse =>
+    run_api_q(instance, [], h, req)
+
+fn run_api_q(instance str, allowed []str, h ApiHandler, req ServerRequest) Time Random -> ServerResponse {
     ro rid = request_id_of(req)
     ro inst = if instance == "" { req.path() } else { instance }
+
+    // BEFORE THE HANDLER. An unknown query key is a `400 invalid_parameter` by the
+    // contract, and answering it here means the handler never sees a request it was
+    // not built for. The 404 fallback passes an empty list and an empty instance --
+    // a route that does not exist has no declared parameters either, and refusing on
+    // the query would answer 400 where 404 is the truth. Hence the guard below.
+    if instance != "" {
+        match unknown_query_key(req.target(), allowed) {
+            Some(k) => return problem(
+                ApiError.invalid_parameter("unknown query parameter '${k}'"), rid, inst)
+            None => {}
+        }
+    }
     // `stamp` takes its response as a `mut` in-out parameter, so each arm binds
     // one before handing it over: a temporary has no storage to write back into.
     match precheck(req) {
@@ -240,10 +301,19 @@ fn run_api(instance str, h ApiHandler, req ServerRequest) Time Random -> ServerR
 ///
 /// `instance` is the path template; `""` means "use the concrete path", which is
 /// what the 404 fallback wants and nothing else does.
-export fn api(instance str, h ApiHandler) -> Handler {
+export fn api(instance str, h ApiHandler) -> Handler => api_q(instance, [], h)
+
+/// The same, with the route's closed list of query parameters.
+///
+/// An unrecognised key is refused HERE, before the handler runs. One place instead of
+/// eight: the rule is the same for every route, and the six handlers that never
+/// enforced it were silently accepting whatever was appended to the URL -- a typo, a
+/// stale parameter from an older client, or a probe.
+export fn api_q(instance str, allowed []str, h ApiHandler) -> Handler {
     ro inst = instance
     ro inner = h
-    fn(req ServerRequest) -> ServerResponse => run_api(inst, inner, req)
+    ro keys = allowed
+    fn(req ServerRequest) -> ServerResponse => run_api_q(inst, keys, inner, req)
 }
 
 // ── mounting ─────────────────────────────────────────────────────────────────
@@ -327,7 +397,7 @@ fn add_delete(mut mr MethodRouter, h Handler) -> () { mr.delete(h) }
 export fn mount(mut r Router, rt Route) -> Result[Router, HttpError] {
     mut mr = MethodRouter.new()
     for e in rt.endpoints {
-        ro h = api(rt.path, e.handler)
+        ro h = api_q(rt.path, rt.query, e.handler)
         match e.method {
             HttpMethod.Get => add_get(mr, h)
             HttpMethod.Post => add_post(mr, h)
