@@ -321,6 +321,38 @@ export function retryDelay(attempt, retryAfterSeconds = null, rand = Math.random
  * When the forecast says the limit will not last, the spec appends the second half:
  * `· at the current rate the limit runs out at 99% of the window`.
  */
+/**
+ * Where in its window a limit runs out, as a percentage of the window -- or null when
+ * the forecast does not say it will.
+ *
+ * 01.1 §2.2 gives the formula: `(runs_out_at − window_start) / window`. Both the
+ * hatching and the tooltip need it, and computing it twice is how the two would come
+ * to disagree about the same instant.
+ *
+ * null rather than 0 when there is no forecast: "does not run out" and "runs out at
+ * the very start" are opposite answers.
+ */
+export function runsOutShare(limit) {
+  const fc = limit && limit.forecast;
+  if (!fc || !fc.runs_out_at) return null;
+
+  // THE SAME RULER AS THE FILL. `elapsedShare` derives the window from `kind` --
+  // five hours for a session, seven days otherwise, 01.1 §2.6 -- and the first
+  // version of this function read `window_sec` from the payload instead. Two
+  // measurements of one strip against two different windows: the fill would say 98%
+  // and the hatch 93% for the same instant, and the picture would be quietly wrong
+  // rather than visibly broken.
+  //
+  // Found by the hatching's own test, on data where the two sources disagreed.
+  const win = windowMs(limit.kind) / 1000;
+  if (!Number.isFinite(win) || win <= 0) return null;
+  const at = Date.parse(fc.runs_out_at);
+  const reset = Date.parse(limit.resets_at);
+  if (Number.isNaN(at) || Number.isNaN(reset)) return null;
+  const startOfWindow = reset - win * 1000;
+  return ((at - startOfWindow) / (win * 1000)) * 100;
+}
+
 export function stripTooltip(limit, elapsedPct) {
   const head = `time elapsed ${elapsedPct}%`;
   const win = Number(limit && limit.window_sec);
@@ -337,15 +369,9 @@ export function stripTooltip(limit, elapsedPct) {
     : Math.round(win * (elapsedPct / 100));
   const body = `${head} · ${formatDuration(spent * 1000)} of ${formatDuration(win * 1000)}`;
 
-  const fc = limit && limit.forecast;
-  if (!fc || !fc.runs_out_at) return body;
-  const at = Date.parse(fc.runs_out_at);
-  const reset = Date.parse(limit.resets_at);
-  if (Number.isNaN(at) || Number.isNaN(reset) || win <= 0) return body;
-  // Where in the window the limit runs out, as a share of the window itself.
-  const startOfWindow = reset - win * 1000;
-  const share = Math.round(((at - startOfWindow) / (win * 1000)) * 100);
-  return `${body} · at the current rate the limit runs out at ${share}% of the window`;
+  const share = runsOutShare(limit);
+  if (share == null) return body;
+  return `${body} · at the current rate the limit runs out at ${Math.round(share)}% of the window`;
 }
 
 /**

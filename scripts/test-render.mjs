@@ -287,6 +287,40 @@ test('a row and an account name both say which account they are (01.1 par.2.5)',
     'the name is the second place 01.1 par.2.5 names, and the handler needs its id');
 });
 
+test('the strip hatches to where the forecast runs out (01.1 par.2.2)', () => {
+  // `runs_out_at` was in every snapshot and read by NOTHING -- a grep across the page
+  // found zero uses. So the strip showed how much of the window had gone and never
+  // that it was going to end early, which is the one thing the hatching is for.
+  //
+  // A window that resets in an hour, of which 90% has gone, and a forecast that runs
+  // out ten minutes from now: the hatch must start at the elapsed point and stop
+  // before the end.
+  const now = Date.now();
+  const win = 5 * 3600;                                // a session window, 01.1 2.6
+  const lim = {
+    kind: 'session', account_id: 'a-1', percent: 80, window_sec: win,
+    resets_at: new Date(now + 360_000).toISOString(),   // 6 minutes left
+    seconds_left: 360,
+    forecast: { runs_out_at: new Date(now + 120_000).toISOString(),
+                percent_at_reset: 103, label: 'ends soon', warning: true },
+  };
+  setViewOptions({ time_bar: true });
+  const hatch = renderRow(lim).all((n) => n.className === 'timebar-hatch');
+  assert.equal(hatch.length, 1, 'the forecast says it runs out inside the window');
+  assert.ok(parseFloat(hatch[0].style.width) > 0, 'a hatch of zero width shows nothing');
+
+  // No forecast, or one that does not run out: no hatching. Without this the test
+  // would pass for a strip that always hatches.
+  const calm = { ...lim, forecast: { percent_at_reset: 40, runs_out_at: null } };
+  assert.equal(renderRow(calm).all((n) => n.className === 'timebar-hatch').length, 0);
+
+  // A run-out already BEHIND the elapsed point is a stale reading, not a warning:
+  // hatching backwards would read as the opposite of what it means.
+  const past = { ...lim, forecast: { ...lim.forecast,
+                 runs_out_at: new Date(now - 600_000).toISOString() } };
+  assert.equal(renderRow(past).all((n) => n.className === 'timebar-hatch').length, 0);
+});
+
 test('a dimmed row draws no strip and no ghost: both are claims about NOW', () => {
   const withForecast = snap.limits.find((l) => l.forecast && l.resets_at);
   assert.ok(withForecast, 'the fixture needs a limit with both');

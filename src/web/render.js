@@ -6,7 +6,7 @@
 // code nobody ships. Everything here takes a document and returns nodes; no fetch,
 // no timers, no EventSource.
 import {
-  elapsedShare, cellGeometry, formatReset, rowLabel, sortLimits, severityOf, applyOrder, wireNumber, getViewOptions, stripTooltip, percentTooltip, forecastTooltip } from './format.js';
+  elapsedShare, cellGeometry, formatReset, rowLabel, sortLimits, severityOf, applyOrder, wireNumber, getViewOptions, stripTooltip, percentTooltip, forecastTooltip, runsOutShare } from './format.js';
 
 // ------------------------------------------------------------- rendering ----
 
@@ -106,6 +106,22 @@ export function renderRow(limit, { dimmed = false } = {}) {
     const done = el('div', 'timebar-fill');
     done.style.width = `${(share * 100).toFixed(1)}%`;
     strip.append(done);
+
+    // The hatching, 01.1 §2.2: from the elapsed share to where the forecast says the
+    // limit runs out. `runs_out_at` was in every snapshot and read by nothing -- a
+    // grep found zero uses on the page -- so the strip showed only how much of the
+    // window had gone, never that it was going to end early.
+    //
+    // Drawn only when the run-out lies AHEAD of the elapsed point: a forecast already
+    // behind the present is not a warning, it is a reading that has gone stale, and
+    // hatching backwards would read as the opposite of what it means.
+    const out = runsOutShare(limit);
+    if (out != null && out > share * 100) {
+      const hatch = el('div', 'timebar-hatch');
+      hatch.style.left = `${(share * 100).toFixed(1)}%`;
+      hatch.style.width = `${(Math.min(100, out) - share * 100).toFixed(1)}%`;
+      strip.append(hatch);
+    }
     strip.title = stripTooltip(limit, elapsed);
     strip.setAttribute('aria-hidden', 'true');   // its meaning goes into valuetext
     bars.append(strip);

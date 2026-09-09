@@ -255,8 +255,18 @@ main:has(.view-wide:not([hidden])) { max-width: var(--page-width-wide); }
 .row[data-severity="warning"] .bar-ghost { color: var(--warning); }
 .row[data-severity="critical"] .bar-ghost { color: var(--critical); }
 
-.timebar { height: 3px; border-radius: 2px; background: var(--track); }
+/* The strip needs `relative` for the hatching, which is positioned against it. */
+.timebar { position: relative; height: 3px; border-radius: 2px; background: var(--track); }
 .timebar-fill { height: 100%; border-radius: 2px; background: var(--time-fill); }
+
+/* 01.1 §2.2: "the same hatching as in the main bar, in `--time-fill`". Same angle and
+   period as `.bar-ghost` above, so the two read as one language -- what differs is
+   the colour, because this one is about the WINDOW and not about usage. */
+.timebar-hatch {
+  position: absolute; top: 0; height: 100%; opacity: .75;
+  background: repeating-linear-gradient(45deg, currentColor 0 2px, transparent 2px 5px);
+  color: var(--time-fill);
+}
 
 .row-pct { font: 600 13px/1 var(--font-mono); text-align: right; white-space: nowrap; }
 .row[data-severity="warning"] .row-pct { color: var(--warning); }
