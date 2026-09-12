@@ -23,6 +23,15 @@ TWO TRAPS IT DISARMS, both measured on this file the evening it was written:
      loud. A word nobody anticipated shows up as UNCLASSIFIED, which is loud,
      instead of as "not done", which is plausible.
 
+  3. THE POSITION, found later and cheaper to state than to rediscover. A status
+     can arrive in the MIDDLE of a bullet: T1.6 opens "НАПИСАНО, НЕ ПРОГНАНО" and
+     four lines down says "СДЕЛАНО -- покрытие стало зеленью 16:59". Reading only
+     bullet-opening marks called a finished card unwritten, and a false negative
+     like that is indistinguishable from an honest one -- it just makes somebody
+     redo work already done. Mid-bullet marks are now taken too, but only when
+     they BEGIN with a known status word; sweeping every bold span would feed the
+     classifier ordinary emphasis, which is worse than missing a mark.
+
 AND IT REFUSES A PLAUSIBLE ANSWER. `--expect-at-least N` fails when fewer cards are
 found than the caller knows exist. The failure mode this guards is not a crash: it is
 a regex that quietly stops matching after the file is reformatted and reports a
@@ -48,6 +57,8 @@ DEFAULT_PLAN = os.path.join(
 CARD = re.compile(r"^\*\*(T\d+\.\d+)\s*·\s*(.+?)\*\*(.*)$")
 HEADING = re.compile(r"^#{1,6}\s")
 BOLD_BULLET = re.compile(r"^\s*[-*]\s*\*\*([^*]{2,80}?)\*\*")
+# Bold spans anywhere on a line, for a status that arrives mid-bullet (see cards_of).
+BOLD_ANY = re.compile(r"\*\*([^*]{2,80}?)\*\*")
 
 # Prefixes are NAMED here, in the open, rather than hidden in a grep. Anything a card
 # is marked with that is not on this list is reported as UNCLASSIFIED -- deliberately
@@ -95,6 +106,22 @@ def read_cards(path):
             m = BOLD_BULLET.match(ln)
             if m and any(c.isalpha() for c in m.group(1)):
                 marks.append(m.group(1).strip())
+                continue
+            # A status can arrive MID-bullet, and T1.6 is the proof: its bullet opens
+            # "НАПИСАНО, НЕ ПРОГНАНО" and four lines below says "**СДЕЛАНО -- покрытие
+            # стало зеленью 16:59**, PASS: 3 FAIL: 0". Reading only the opening mark
+            # reported a finished card as unwritten -- a false negative indis-
+            # tinguishable from an honest one, and the kind that makes somebody redo
+            # work that is done.
+            #
+            # Only marks BEGINNING with a known status word are taken here. Taking
+            # every bold span would sweep in ordinary emphasis, and a classifier fed
+            # on emphasis is worse than one that misses a mark.
+            for mid in BOLD_ANY.findall(ln):
+                t = mid.strip()
+                if t and any(t.upper().startswith(p)
+                             for p in DONE + PARTIAL + NOT_DONE):
+                    marks.append(t)
         out.append((tid, title, i + 1, marks))
     return out
 
