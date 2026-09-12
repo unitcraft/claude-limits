@@ -7,7 +7,13 @@
 
 module accounts.group
 
-import login.{Login, GroupedAccount, TokenState, state_of}
+// QUALIFIED, not the bare `import login.{...}` it used to be. A bare peer import
+// resolves relative to the ENTRY file, not to the importing module: it passes when
+// this module is checked or tested inside its own folder, and fails the moment
+// anything with a `fn main` pulls it in. Nothing did until T1.7 gave the package an
+// entry point, so this module had been unreachable from a binary since it was written
+// and every test of it was green.
+import claude_limits.accounts.login.{Login, GroupedAccount, TokenState, state_of}
 
 fn GroupedAccount.of(email str, org str, dirs []str, state TokenState, expires_at_ms int) -> GroupedAccount =>
     { email, org, dirs, state, expires_at_ms }

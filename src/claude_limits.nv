@@ -29,10 +29,12 @@ module claude_limits.claude_limits
 
 import claude_limits.version.{version_line}
 import std.os.{args, real_os}
-import claude_limits.cli.args.{parse, Mode, EXIT_OK, EXIT_CONFIG}
-import claude_limits.cli.table.{account_header, no_logins}
+import claude_limits.cli.args.{parse, EXIT_OK, EXIT_CONFIG}
+import claude_limits.cli.table.{account_header, short_name, no_logins, expired_note}
 import claude_limits.accounts.real_dirs.{with_real_disk}
 import claude_limits.accounts.discover.{scan}
+import claude_limits.accounts.login.{read_login, TokenState}
+import claude_limits.accounts.group.{group}
 
 const USAGE = "usage: claude-limits [--once] [--config PATH] [--offline DIR] [--parent DIR] [--color auto|always|never] [DIR ...]"
 
@@ -41,7 +43,7 @@ const USAGE = "usage: claude-limits [--once] [--config PATH] [--offline DIR] [--
 /// Returns lines rather than printing them: printing is the caller's job because of
 /// #1017, and returning them is also what makes the shape of this function reviewable
 /// -- a function that printed as it went would hide how many lines it decided on.
-fn folder_lines(path str) Dirs Creds -> []str {
+fn folder_lines(path str, now_ms int) Dirs Creds -> []str {
     ro folder = scan(path)
     mut out []str = []
 
@@ -50,12 +52,35 @@ fn folder_lines(path str) Dirs Creds -> []str {
         return out
     }
 
-    for login in folder.logins {
-        // The e-mail and org live in the identity file and are read in T1.7's next
-        // step; until then the directory name is what identifies the login, and it is
-        // printed rather than a blank -- an account line with nothing on it would look
-        // like a parse failure.
-        out.push(account_header(login.name, "", login.path))
+    // Identity first, then grouping. Two directories holding the same login are ONE
+    // account with both names in the brackets -- that is what `group` is for, and
+    // printing them as two accounts would double every total the phase later reports.
+    // `short_name` is applied HERE, at the only place that still has both the path
+    // and the name. `group` keeps whatever name it is given and the header prints it,
+    // so a bare `.claude` -- which every default login is called -- would identify
+    // nothing. The reference makes the same substitution at the same point
+    // (claude_limits.py:136).
+    mut logins []Login = []
+    for d in folder.logins {
+        ro shown = short_name(d.path, d.name)
+        logins.push(read_login(d.path, shown, d.identity, d.credentials))
+    }
+
+    for acc in group(logins, now_ms) {
+        mut names = ""
+        mut first = true
+        for n in acc.dirs {
+            if first { names = n } else { names = "${names}, ${n}" }
+            first = false
+        }
+        out.push(account_header(acc.email, acc.org, names))
+        // The reference prints this when the account has NO live token at all --
+        // every one of its directories expired or held none (claude_limits.py:345).
+        // `acc.state` is the WORST across the directories, which is the same thing
+        // here and would not be if a mixed account existed: one live directory means
+        // the account is usable and the note must not appear. Pinned by the
+        // differential rather than by reasoning.
+        if acc.state != TokenState.Ok { out.push(expired_note()) }
     }
     return out
 }
@@ -100,10 +125,20 @@ fn main() Io {
                         println("nothing to read: name a directory, or pass --parent DIR")
                         exit(EXIT_CONFIG, "")
                     }
+                    // THE CLOCK IS AMBIENT. `Time` is declared in the prelude with a
+                    // `#default_handler`, so `Time.now()` needs no `with` and no
+                    // import -- which is why three greps for "export fn now" in
+                    // std/src found nothing and I nearly recorded "this package has no
+                    // clock" as a finding. It is read ONCE, here, and passed down:
+                    // `state_of` takes the moment as a parameter so that nothing below
+                    // can read a clock of its own, and a function that reads one cannot
+                    // be asked about any moment but this one -- including the one a
+                    // test needs.
+                    ro now_ms = Time.now().unix_millis()
                     ro lines = with_real_disk(fn() Dirs Creds -> []str {
                         mut all []str = []
                         for d in a.dirs {
-                            for l in folder_lines(d) { all.push(l) }
+                            for l in folder_lines(d, now_ms) { all.push(l) }
                         }
                         all
                     })

@@ -84,15 +84,42 @@ export fn row(kind str, pct int, known bool, severity str, resets str) -> str {
     return "  ${k} ${bar} ${pc}  ${sev} resets ${resets}"
 }
 
-/// The account header: `email (org)  [where]`, with two spaces before the bracket.
-/// The reference pads it to a 64-wide highlight band when colour is on; with
-/// `--color never` the padding is invisible and the trailing spaces are not emitted,
-/// which is the mode the differential runs in.
+/// The account header, exactly as the reference builds it
+/// (scripts/claude_limits.py:141-143):
+///
+///     who = f"{email} ({org or '-'})" if email else "unknown account"
+///     label = f"{who}  [{', '.join(dirs)}]"
+///
+/// TWO DETAILS THAT READ WORSE AND ARE CORRECT. An empty organisation prints as `(-)`
+/// rather than being left out -- dropping the parentheses looks tidier and produces a
+/// different line. And a login with no e-mail becomes the literal `unknown account`,
+/// not a blank: a header with nothing on it looks like a parse failure, which is the
+/// one thing it must not be confused with.
+///
+/// The reference pads the whole thing into a 64-wide highlight band when colour is on;
+/// with `--color never` -- the mode the differential runs in -- no padding is emitted.
 export fn account_header(email str, org str, where str) -> str {
-    mut head = email
-    if org != "" { head = "${head} (${org})" }
-    if where != "" { head = "${head}  [${where}]" }
-    return head
+    ro who = if email == "" {
+        "unknown account"
+    } else {
+        ro o = if org == "" { "-" } else { org }
+        "${email} (${o})"
+    }
+    return "${who}  [${where}]"
+}
+
+/// What goes inside the brackets for one directory (reference `short_name`, :85-99).
+///
+/// The directory's own name, unless it is `.claude` -- every default login is called
+/// that, so a bare `.claude` would identify nothing and the full path is used instead.
+/// The reference additionally shortens a path under the home directory to
+/// `home/.claude`; that branch needs a home directory to compare against and no
+/// fixture is under one, so it is NOT implemented here rather than guessed at. When a
+/// live account is first compared, this is the line that will differ, and it says so
+/// here so the difference is recognised instead of investigated.
+export fn short_name(path str, name str) -> str {
+    if name != ".claude" { return name }
+    return path
 }
 
 /// The line for a login whose token has expired on disk. Text from the reference

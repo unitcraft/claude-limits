@@ -15,7 +15,7 @@
 
 module cli.table_test
 
-import table.{bar_of, row, filled_cells, percent_cell, account_header, no_logins, BAR_WIDTH}
+import table.{bar_of, row, filled_cells, percent_cell, account_header, short_name, no_logins, BAR_WIDTH}
 
 test "the bar is always thirty cells between brackets, whatever the percentage" {
     for p in [0, 1, 37, 50, 99, 100] {
@@ -89,11 +89,22 @@ test "a long window kind is not truncated, it pushes the row wider" {
     assert(r.contains("weekly_scoped:SomethingVeryLong"))
 }
 
-test "the account header, with and without each optional part" {
+test "the account header, in each of the reference's four shapes" {
     assert(account_header("a@b.c", "Org", "dir") == "a@b.c (Org)  [dir]")
-    assert(account_header("a@b.c", "", "dir") == "a@b.c  [dir]")
-    assert(account_header("a@b.c", "Org", "") == "a@b.c (Org)")
-    assert(account_header("a@b.c", "", "") == "a@b.c")
+    // An empty org is `(-)`, NOT omitted. Dropping the parentheses reads better and
+    // is a different line; the reference is the authority, not taste.
+    assert(account_header("a@b.c", "", "dir") == "a@b.c (-)  [dir]")
+    // No e-mail at all is the literal `unknown account`: a blank header looks like a
+    // parse failure, which is the one thing it must not be mistaken for.
+    assert(account_header("", "Org", "dir") == "unknown account  [dir]")
+    assert(account_header("", "", "d1, d2") == "unknown account  [d1, d2]")
+}
+
+test "short_name keeps a real directory name and falls back to the path for .claude" {
+    assert(short_name("/x/work", "work") == "work")
+    // Every default login is called `.claude`, so the name alone would identify
+    // nothing and the path is used.
+    assert(short_name("/x/y/.claude", ".claude") == "/x/y/.claude")
 }
 
 test "the empty-directory line quotes the path the reference quotes" {
