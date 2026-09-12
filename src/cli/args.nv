@@ -55,6 +55,7 @@ export type Args value {
     ro parent str        // --parent DIR, read every child directory
     ro dirs []str        // positional login directories
     ro color str         // auto | always | never
+    ro bar_style str     // blocks | ascii -- the reference defaults to ascii
 }
 
 /// A refusal to parse, carrying the exit code that belongs to it.
@@ -66,17 +67,18 @@ export type Complaint value {
 export fn Complaint.of(message str, code int) -> Complaint => { message, code }
 
 export fn Args.of(mode Mode, config str, offline str, parent str, dirs []str,
-                  color str) -> Args =>
-    { mode, config, offline, parent, dirs, color }
+                  color str, bar_style str) -> Args =>
+    { mode, config, offline, parent, dirs, color, bar_style }
 
 const COLORS = "auto always never"
+const BAR_STYLES = "blocks ascii"
 
 /// `--color` takes one of three words. Anything else is a configuration error (code
 /// 2) rather than a silent fallback to `auto`: a misspelled value that quietly does
 /// something reasonable is how a setting comes to be believed without being read.
-fn colour_ok(value str) -> bool {
+fn one_of(allowed str, value str) -> bool {
     mut ok = false
-    for word in COLORS.split(" ") {
+    for word in allowed.split(" ") {
         if word == value { ok = true }
     }
     return ok
@@ -99,6 +101,7 @@ export fn parse(argv []str) -> Result[Args, Complaint] {
     mut offline = ""
     mut parent = ""
     mut color = "auto"
+    mut bar_style = "ascii"
     mut dirs = Vec[str].new()
     mut i = 0
 
@@ -126,9 +129,18 @@ export fn parse(argv []str) -> Result[Args, Complaint] {
             if i + 1 >= argv.len() { return Err(needs_value("--color")) }
             i = i + 1
             color = argv[i]
-            if !colour_ok(color) {
+            if !one_of(COLORS, color) {
                 return Err(Complaint.of(
                     "--color takes auto, always or never, not '${color}'",
+                    EXIT_CONFIG))
+            }
+        } else if a == "--bar-style" {
+            if i + 1 >= argv.len() { return Err(needs_value("--bar-style")) }
+            i = i + 1
+            bar_style = argv[i]
+            if !one_of(BAR_STYLES, bar_style) {
+                return Err(Complaint.of(
+                    "--bar-style takes blocks or ascii, not '${bar_style}'",
                     EXIT_CONFIG))
             }
         } else if a.starts_with("-") {
@@ -139,5 +151,5 @@ export fn parse(argv []str) -> Result[Args, Complaint] {
         i = i + 1
     }
 
-    return Ok(Args.of(mode, config, offline, parent, dirs, color))
+    return Ok(Args.of(mode, config, offline, parent, dirs, color, bar_style))
 }

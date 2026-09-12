@@ -101,3 +101,29 @@ test "the last mode flag wins, rather than the first" {
     ro r = parse(["--version", "--help"])
     assert(r!!.mode == Mode.Help)
 }
+
+test "--bar-style takes its two words, and defaults to the reference's default" {
+    assert(parse([])!!.bar_style == "ascii")
+    assert(parse(["--bar-style", "blocks"])!!.bar_style == "blocks")
+    assert(parse(["--bar-style", "ascii"])!!.bar_style == "ascii")
+}
+
+test "a misspelled --bar-style is refused, like a misspelled --color" {
+    ro r = parse(["--bar-style", "blokcs"])
+    assert(r.is_err())
+    assert(r.err()!!.code == EXIT_CONFIG)
+    assert(r.err()!!.message.contains("blokcs"))
+}
+
+test "the flags the differential passes are all accepted together" {
+    // scripts/diff_with_probe.py invokes both programs with exactly these. This test
+    // exists because the differential found them missing: it reported CANNOT COMPARE,
+    // which is the right answer and an easy one to mistake for a difference.
+    ro r = parse(["--color", "never", "--bar-style", "ascii", "--offline", "fixtures/usage", "fixtures/dirs/no-login"])
+    assert(r.is_ok())
+    ro a = r!!
+    assert(a.color == "never")
+    assert(a.bar_style == "ascii")
+    assert(a.offline == "fixtures/usage")
+    assert(a.dirs.len() == 1)
+}

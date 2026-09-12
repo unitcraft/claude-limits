@@ -132,6 +132,21 @@ def main(argv):
         print("  Exit 2, not 1: an unimplemented side is not a disagreement.")
         return EXIT_CANNOT
 
+    # NEITHER SIDE PRODUCED ANYTHING, and `a == b` holds trivially. That is not
+    # agreement, it is an unmeasured comparison wearing the word SAME -- and this
+    # script is the acceptance mechanism for the whole of phase 1, so a vacuous green
+    # here certifies a phase nobody checked. Pointing it at a directory with no logins
+    # is an ordinary thing to do, and it used to print
+    # "SAME: 0 comparable lines agree" with the zero in plain sight.
+    if not a and not b:
+        print("CANNOT COMPARE: neither side produced a single comparable line.")
+        print(f"  Directories given: {', '.join(args.dirs)}")
+        print("  Both programs ran and exited cleanly, so this is not a crash -- there")
+        print("  is simply nothing in these directories to tabulate. Point the script")
+        print("  at a directory that holds a login.")
+        print("  Exit 2, not 0: an empty comparison is not an agreement.")
+        return EXIT_CANNOT
+
     if a == b:
         print(f"SAME: {len(a)} comparable lines agree "
               f"({'live' if args.live else 'offline'}, {len(args.dirs)} directories)")

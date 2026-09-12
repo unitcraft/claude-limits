@@ -1,0 +1,72 @@
+// real_dirs.nv — the production handlers for `Dirs` and `Creds`, over the real
+// filesystem (task T1.7, subplan 01.5).
+//
+// discover.nv has named this file as their home since it was written ("the production
+// handler over the real filesystem lives in `real_dirs.nv`") and it did not exist: every
+// user of those effects so far has been a test with its own handler. `--once` is the
+// first thing that has to read an actual disk, so the file is written now.
+//
+// WHY THE HANDLERS ARE HERE AND NOT BESIDE THE EFFECTS. Keeping them apart is what
+// makes discover.nv and login.nv testable without a filesystem at all -- the effect
+// declares three reads, the tests supply values, and no handler over `Fs` is dragged
+// into the test's compilation unit. Putting the production handler in the same module
+// would link libuv into every test that touches account discovery.
+//
+// EVERY OPERATION IS A READ, AND THAT IS ENFORCED BY SHAPE RATHER THAN BY CARE:
+// `Dirs` has `list`/`exists`/`is_dir` and `Creds` has `read`, so there is no write
+// operation to implement. A handler cannot do what its effect does not declare.
+//
+// ERRORS BECOME EMPTINESS, deliberately and narrowly. `list` answers with no entries
+// for a missing directory and `read` with an empty string for an unreadable file,
+// because both effects say so in their own comments -- the callers in discover.nv and
+// login.nv already treat those as "nothing here". This is the one place where that
+// convention is implemented, so it is stated once, here, rather than in each caller.
+
+module accounts.real_dirs
+
+import std.fs.{real_fs, read_dir, read_text, try_exists, metadata}
+import claude_limits.accounts.discover.{Dirs}
+import claude_limits.accounts.login.{Creds}
+
+/// Runs `body` with both effects served by the real filesystem.
+///
+/// One `real_fs()` for both, because two handlers would open two effect instances over
+/// the same disk and the second would be silently redundant.
+export fn with_real_disk[T](body fn() Dirs Creds -> T) Io -> T {
+    with Fs = real_fs() {
+        with Dirs = effect Dirs {
+            list(path) -> []str {
+                match read_dir(path.to_path()) {
+                    Err(_) => []
+                    Ok(entries) => {
+                        mut names []str = []
+                        for e in entries {
+                            // A name that is not valid UTF-8 is skipped, not
+                            // guessed at: a login directory whose name cannot
+                            // be read is not one we can report.
+                            match e.name_str() { Some(n) => names.push(n), None => {} }
+                        }
+                        names
+                    }
+                }
+            }
+            exists(path) -> bool {
+                match try_exists(path.to_path()) { Err(_) => false, Ok(v) => v }
+            }
+            is_dir(path) -> bool {
+                match metadata(path.to_path()) {
+                    Err(_) => false
+                    Ok(m) => m.is_dir()
+                }
+            }
+        } {
+            with Creds = effect Creds {
+                read(path) -> str {
+                    match read_text(path.to_path()) { Err(_) => "", Ok(t) => t }
+                }
+            } {
+                body()
+            }
+        }
+    }
+}

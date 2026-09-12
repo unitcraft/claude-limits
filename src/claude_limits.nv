@@ -1,32 +1,115 @@
 // bin/claude_limits.nv — entry point of the claude-limits binary.
 //
-// Task T0.0 (plan 01.5) fills this with a version line only: the skeleton has to
-// build, run and be testable before any real behaviour lands. Argument parsing,
-// the config, the pollers, the server and the widget arrive with Ф.1–Ф.3
-// (plan 01 §6); the module tree they grow into is plan 01 §3.2.
+// T0.0 filled this with a version line only. T1.7 adds `--once`: read the configured
+// directories, group the logins into accounts, and print the table.
 //
-// `println` is called HERE and nowhere else, and that is a compiler constraint
-// rather than a matter of taste: registry defect №1017 (К1, tag blocker) — the
-// two prelude variadics `print` and `println` type-check in a non-entry module
-// and then fail codegen in every unit that imports it. The rest of the prelude is
-// unaffected: `panic`, `assert`, `Option`/`Result` work in library modules, so
-// only formatting output travels out as a value. Repro and the spec citation that
-// makes this a defect rather than a rule: docs/reports/T0.0.md.
+// `println` is called HERE and nowhere else, and that is a compiler constraint rather
+// than a matter of taste: registry defect №1017 (К1, tag blocker) — the two prelude
+// variadics `print` and `println` type-check in a non-entry module and then fail
+// codegen in every unit that imports it. The rest of the prelude is unaffected:
+// `panic`, `assert`, `Option`/`Result` work in library modules, so only formatting
+// output travels out as a value. Repro and the spec citation that makes this a defect
+// rather than a rule: docs/reports/T0.0.md.
 //
-// A consequence worth keeping: no test imports this file. It would pull `main` —
-// and its `println` — into the test's own compilation unit, which is how the
-// defect above first showed up.
+// That constraint is what shaped this file. Everything that decides anything lives in
+// a peer module that a test can import -- `cli.args` parses the command line,
+// `cli.table` formats a row, `accounts.*` finds and groups logins -- and what is left
+// here is the part no test can reach anyway: reading the real disk and printing.
 //
-// Module path mirrors the file path from the SOURCE ROOT: a file in a
-// subdirectory carries no package prefix (`bin.claude_limits`), while a file
-// directly in the root does (`claude_limits.version`). Learned from
-// E_D78_MODULE_PATH_MISMATCH on T0.0; sibling packages look different only
-// because they set `[lib] src = "src"`.
+// A consequence worth keeping: no test imports this file. It would pull `main` -- and
+// its `println` -- into the test's own compilation unit, which is how the defect above
+// first showed up.
+//
+// Module path mirrors the file path from the SOURCE ROOT: a file in a subdirectory
+// carries no package prefix (`bin.claude_limits`), while a file directly in the root
+// does (`claude_limits.version`). Learned from E_D78_MODULE_PATH_MISMATCH on T0.0;
+// sibling packages look different only because they set `[lib] src = "src"`.
 
 module claude_limits.claude_limits
 
 import claude_limits.version.{version_line}
+import std.os.{args, real_os}
+import claude_limits.cli.args.{parse, Mode, EXIT_OK, EXIT_CONFIG}
+import claude_limits.cli.table.{account_header, no_logins}
+import claude_limits.accounts.real_dirs.{with_real_disk}
+import claude_limits.accounts.discover.{scan}
 
-fn main() {
-    println(version_line())
+const USAGE = "usage: claude-limits [--once] [--config PATH] [--offline DIR] [--parent DIR] [--color auto|always|never] [DIR ...]"
+
+/// One folder's worth of output, as lines, computed with the disk available.
+///
+/// Returns lines rather than printing them: printing is the caller's job because of
+/// #1017, and returning them is also what makes the shape of this function reviewable
+/// -- a function that printed as it went would hide how many lines it decided on.
+fn folder_lines(path str) Dirs Creds -> []str {
+    ro folder = scan(path)
+    mut out []str = []
+
+    if folder.logins.len() == 0 {
+        out.push(no_logins(folder.path))
+        return out
+    }
+
+    for login in folder.logins {
+        // The e-mail and org live in the identity file and are read in T1.7's next
+        // step; until then the directory name is what identifies the login, and it is
+        // printed rather than a blank -- an account line with nothing on it would look
+        // like a parse failure.
+        out.push(account_header(login.name, "", login.path))
+    }
+    return out
+}
+
+fn main() Io {
+    // `args()[0]` is the program name. `cli.args.parse` takes the vector WITHOUT
+    // it -- accepting it would make `claude-limits` a positional directory argument on
+    // every run, and the failure would look like a missing fixture rather than a bug
+    // here.
+    ro all = with Os = real_os() { args() }
+    mut argv []str = []
+    mut i = 1
+    while i < all.len() {
+        argv.push(all[i])
+        i = i + 1
+    }
+
+    match parse(argv) {
+        Err(c) => {
+            println(c.message)
+            exit(c.code, "")
+        }
+        Ok(a) => {
+            match a.mode {
+                Mode.Version => println(version_line())
+                Mode.Help => {
+                    println(version_line())
+                    println(USAGE)
+                }
+                Mode.Once => {
+                    // A BARE INVOCATION IS NOT AN ERROR. `nova test` runs every unit
+                    // with a `fn main` and no arguments, and it is right to: a program
+                    // called with nothing is being asked what it does, not misused.
+                    // Asking for a table over no directories, on the other hand, IS a
+                    // misuse -- but only once something was actually asked for.
+                    if argv.len() == 0 {
+                        println(version_line())
+                        println(USAGE)
+                        exit(EXIT_OK, "")
+                    }
+                    if a.dirs.len() == 0 && a.parent == "" {
+                        println("nothing to read: name a directory, or pass --parent DIR")
+                        exit(EXIT_CONFIG, "")
+                    }
+                    ro lines = with_real_disk(fn() Dirs Creds -> []str {
+                        mut all []str = []
+                        for d in a.dirs {
+                            for l in folder_lines(d) { all.push(l) }
+                        }
+                        all
+                    })
+                    for l in lines { println(l) }
+                }
+            }
+        }
+    }
 }
