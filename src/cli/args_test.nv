@@ -1,0 +1,103 @@
+// Tests for args.nv — the command line of claude-limits (task T1.7, subplan 01.5).
+//
+//   ./nova.sh test src/cli/
+//
+// BOTH DIRECTIONS, and here that is not a slogan. A parser is the place where a test
+// that only checks the interesting branch passes just as happily when the condition is
+// inverted: "--config took its value" is true of a parser that swallows the next
+// argument unconditionally, and "an unknown flag is refused" is true of one that
+// refuses everything. So each flag is checked for what it sets AND for what it leaves
+// alone, and each refusal is paired with an acceptance one character away.
+//
+// Nothing is touched but values: no environment, no disk, no clock.
+
+module cli.args_test
+
+import args.{parse, Mode, EXIT_CONFIG}
+
+test "no arguments at all: one table, and every option left alone" {
+    ro r = parse(Vec[str].new())
+    assert(r.is_ok())
+    ro a = r!!
+    assert(a.mode == Mode.Once)
+    assert(a.config == "")
+    assert(a.offline == "")
+    assert(a.parent == "")
+    assert(a.color == "auto")
+    assert(a.dirs.len() == 0)
+}
+
+test "--config takes the NEXT argument, and does not eat the one after it" {
+    ro r = parse(["--config", "cl.toml", "dirA"])
+    assert(r.is_ok())
+    ro a = r!!
+    assert(a.config == "cl.toml")
+    assert(a.dirs.len() == 1)
+    assert(a.dirs[0] == "dirA")
+}
+
+test "--config at the very end is a refusal, not an empty value" {
+    ro r = parse(["--config"])
+    assert(r.is_err())
+    ro c = r.err()!!
+    assert(c.code == EXIT_CONFIG)
+    assert(c.message == "--config needs a value")
+}
+
+test "--offline and --parent each take their own value" {
+    ro r = parse(["--offline", "fixtures/usage", "--parent", "fixtures/dirs"])
+    assert(r.is_ok())
+    ro a = r!!
+    assert(a.offline == "fixtures/usage")
+    assert(a.parent == "fixtures/dirs")
+    assert(a.dirs.len() == 0)
+}
+
+test "positional directories accumulate in order" {
+    ro r = parse(["one", "two", "three"])
+    assert(r.is_ok())
+    ro a = r!!
+    assert(a.dirs.len() == 3)
+    assert(a.dirs[0] == "one")
+    assert(a.dirs[2] == "three")
+}
+
+test "--color takes its three words" {
+    for word in ["auto", "always", "never"] {
+        ro r = parse(["--color", word])
+        assert(r.is_ok())
+        assert(r!!.color == word)
+    }
+}
+
+test "a misspelled --color is refused, not quietly defaulted" {
+    ro r = parse(["--color", "alwyas"])
+    assert(r.is_err())
+    ro c = r.err()!!
+    assert(c.code == EXIT_CONFIG)
+    // The message quotes the offending word back: a refusal that does not say what it
+    // refused sends the reader to the manual to guess.
+    assert(c.message.contains("alwyas"))
+}
+
+test "an unknown flag is refused, while a bare word beside it is a directory" {
+    ro bad = parse(["--quiet"])
+    assert(bad.is_err())
+    assert(bad.err()!!.code == EXIT_CONFIG)
+
+    ro good = parse(["quiet"])
+    assert(good.is_ok())
+    assert(good!!.dirs.len() == 1)
+}
+
+test "--help and --version each win over the default mode" {
+    assert(parse(["--help"])!!.mode == Mode.Help)
+    assert(parse(["-h"])!!.mode == Mode.Help)
+    assert(parse(["--version"])!!.mode == Mode.Version)
+    assert(parse(["--once"])!!.mode == Mode.Once)
+}
+
+test "the last mode flag wins, rather than the first" {
+    ro r = parse(["--version", "--help"])
+    assert(r!!.mode == Mode.Help)
+}

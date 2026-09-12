@@ -1,0 +1,143 @@
+// args.nv — the command line of claude-limits, parsed into a record (task T1.7,
+// subplan 01.5; the flag table is executor-brief §3).
+//
+// WHY THIS IS NOT IN `claude_limits.nv`, where the card puts the entry point. The
+// binary's own module cannot be imported by a test: importing it pulls `fn main` and
+// with it `println` into the test's compilation unit, and registry defect №1017 makes
+// the two prelude variadics fail codegen in any unit that is not the entry point.
+// Argument parsing left in the entry module would therefore be untestable by
+// construction. So the entry point keeps `main` and printing, and every decision it
+// makes lives here, where `args_test.nv` can reach it.
+//
+// SHAPE: pure. `parse` takes the argument vector and returns either the settings or a
+// complaint; it touches no environment, no clock and no disk. The complaint carries
+// the exit code with it, because the code is part of the diagnosis and not of the
+// printing -- a caller that had to map messages back to codes would be free to get it
+// wrong, and would.
+
+module cli.args
+
+/// Exit codes, from executor-brief §3, which is their single home:
+/// `0` success, `2` bad configuration, `3` the database will not open, `1` anything
+/// else. They live as constants rather than literals so that a new command adds a
+/// name here instead of a bare number at the call site.
+export const EXIT_OK = 0
+export const EXIT_OTHER = 1
+export const EXIT_CONFIG = 2
+export const EXIT_DB = 3
+
+/// What the binary was asked to do. One variant per verb, so a caller that forgets a
+/// case is a compile error rather than a silent fall-through to the default.
+export type Mode enum
+    | Once            // print one table and exit
+    | Version         // --version
+    | Help            // --help / -h
+
+/// The canonical receiver inside a method body is `match @`, NOT `match @self`. The
+/// latter type-checks -- `nova check` prints `ok:` on it -- and then dies in codegen
+/// with `no member named 'self' in 'struct NovaValue_Mode'`. Five probes isolating
+/// the axis are in `probes/enum-method-match-self/`; registry 221.1 `#TBD`. The form
+/// used here is the one `std` uses (`std/src/prelude/core.nv:195`).
+export fn Mode @to_str() -> str =>
+    match @ {
+        Mode.Once => "once"
+        Mode.Version => "version"
+        Mode.Help => "help"
+    }
+
+/// The parsed command line. Empty string means "not given" throughout, matching the
+/// convention already used by `storage.paths`: no flag here has a meaningful empty
+/// value, so there is nothing to confuse it with.
+export type Args value {
+    ro mode Mode
+    ro config str        // --config PATH
+    ro offline str       // --offline DIR, recorded replies instead of the endpoint
+    ro parent str        // --parent DIR, read every child directory
+    ro dirs []str        // positional login directories
+    ro color str         // auto | always | never
+}
+
+/// A refusal to parse, carrying the exit code that belongs to it.
+export type Complaint value {
+    ro message str
+    ro code int
+}
+
+export fn Complaint.of(message str, code int) -> Complaint => { message, code }
+
+export fn Args.of(mode Mode, config str, offline str, parent str, dirs []str,
+                  color str) -> Args =>
+    { mode, config, offline, parent, dirs, color }
+
+const COLORS = "auto always never"
+
+/// `--color` takes one of three words. Anything else is a configuration error (code
+/// 2) rather than a silent fallback to `auto`: a misspelled value that quietly does
+/// something reasonable is how a setting comes to be believed without being read.
+fn colour_ok(value str) -> bool {
+    mut ok = false
+    for word in COLORS.split(" ") {
+        if word == value { ok = true }
+    }
+    return ok
+}
+
+/// A flag that needs a value got none. The message names the flag, because "missing
+/// argument" without it sends the reader to the manual.
+fn needs_value(flag str) -> Complaint =>
+    Complaint.of("${flag} needs a value", EXIT_CONFIG)
+
+/// Parse the argument vector, WITHOUT the program name.
+///
+/// Unknown flags are refused rather than ignored. An ignored flag is the failure this
+/// package has already met once from the other side: a setting that silently does
+/// nothing is worse than an error, which is why encryption and `read_only` are refused
+/// in nova-duckdb too.
+export fn parse(argv []str) -> Result[Args, Complaint] {
+    mut mode = Mode.Once
+    mut config = ""
+    mut offline = ""
+    mut parent = ""
+    mut color = "auto"
+    mut dirs = Vec[str].new()
+    mut i = 0
+
+    while i < argv.len() {
+        ro a = argv[i]
+        if a == "--help" || a == "-h" {
+            mode = Mode.Help
+        } else if a == "--version" {
+            mode = Mode.Version
+        } else if a == "--once" {
+            mode = Mode.Once
+        } else if a == "--config" {
+            if i + 1 >= argv.len() { return Err(needs_value("--config")) }
+            i = i + 1
+            config = argv[i]
+        } else if a == "--offline" {
+            if i + 1 >= argv.len() { return Err(needs_value("--offline")) }
+            i = i + 1
+            offline = argv[i]
+        } else if a == "--parent" {
+            if i + 1 >= argv.len() { return Err(needs_value("--parent")) }
+            i = i + 1
+            parent = argv[i]
+        } else if a == "--color" {
+            if i + 1 >= argv.len() { return Err(needs_value("--color")) }
+            i = i + 1
+            color = argv[i]
+            if !colour_ok(color) {
+                return Err(Complaint.of(
+                    "--color takes auto, always or never, not '${color}'",
+                    EXIT_CONFIG))
+            }
+        } else if a.starts_with("-") {
+            return Err(Complaint.of("unknown option '${a}'", EXIT_CONFIG))
+        } else {
+            dirs.push(a)
+        }
+        i = i + 1
+    }
+
+    return Ok(Args.of(mode, config, offline, parent, dirs, color))
+}
