@@ -47,7 +47,7 @@ defer { st.finalize() }
 export fn Statement consume @cleanup(outcome ScopeOutcome) -> () => @finalize()
 ```
 
-По [D432](../../../nova/spec/decisions/02-types.md) объявление `@cleanup` делает тип
+По D432 (`nova/spec/decisions/02-types.md`) объявление `@cleanup` делает тип
 АФФИННЫМ: компилятор сам вставляет вызов очистки на выходных путях. Компилятор
 говорит и границу применения — дословно, в диагностике:
 

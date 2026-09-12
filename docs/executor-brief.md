@@ -87,16 +87,16 @@ export NOVA_GC_INCLUDE_DIR="$M/compiler-codegen/vcpkg_installed/x64-windows-stat
 
 ### 2.2. Раскладка пакета
 
-По канону Nova ([authoring-a-module](../../nova/docs/guide/authoring-a-module.md)): корень пакета =
+По канону Nova (`nova/docs/guide/authoring-a-module.md`): корень пакета =
 корень исходников, `module a.b` = путь `a/b.nv`, тесты рядом с модулем в `*_test.nv`. Дерево
 модулей — план 01 §3.2. Манифест `nova.toml` с `[[bin]]` и `[dependencies]` по git-тегам:
 `http` (nova-http), `polaris` (nova-polaris), `tls` (nova-tls), `duckdb` (nova-duckdb), `sdl`
 (nova-sdl). Версии тегов на момент написания — план 01 решение 5; актуальные — `git tag` в
 соседнем репозитории.
 
-Стиль `.nv` — [nv-coding-style](../../nova/docs/dev/nv-coding-style.md); устройство модулей с
-эффектами и моками — [module-conventions](../../nova/docs/dev/module-conventions.md); FFI (только
-для `nova-duckdb` и `nova-sdl`) — [ffi-cookbook](../../nova/docs/guide/ffi-cookbook.md).
+Стиль `.nv` — `nova/docs/dev/nv-coding-style.md`; устройство модулей с
+эффектами и моками — `nova/docs/dev/module-conventions.md`; FFI (только
+для `nova-duckdb` и `nova-sdl`) — `nova/docs/guide/ffi-cookbook.md`.
 Комментарии в коде и тексты диагностик — по-английски; строки интерфейса — по-английски (подплан
 01.1 §0); документы проекта — по-русски.
 
