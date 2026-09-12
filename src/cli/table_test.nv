@@ -1,0 +1,102 @@
+// Tests for table.nv — the `--once` row, against the reference's own formatting
+// (task T1.7, subplan 01.5).
+//
+//   ./nova.sh test src/cli/ --filter table
+//
+// The acceptance of T1.7 is a line-by-line diff against
+// `python scripts/claude_limits.py`, so these tests assert the exact bytes that
+// program emits, not "a reasonable table". Where a number appears below it was read
+// out of the reference or produced by running it, never chosen here.
+//
+// THE ROUNDING TESTS ARE THE POINT. Python's `round` is half-to-even, so the bar
+// length lands on a different cell count than `int(x + 0.5)` for five percentages out
+// of a hundred. Those five are pinned by name. A test suite that checked 0, 50 and 100
+// would pass on the wrong implementation.
+
+module cli.table_test
+
+import table.{bar_of, row, filled_cells, percent_cell, account_header, no_logins, BAR_WIDTH}
+
+test "the bar is always thirty cells between brackets, whatever the percentage" {
+    for p in [0, 1, 37, 50, 99, 100] {
+        ro b = bar_of(p, true)
+        assert(b.byte_len() == BAR_WIDTH + 2)
+        assert(b.starts_with("["))
+        assert(b.ends_with("]"))
+    }
+}
+
+test "an unknown percentage draws an empty bar, not a zero-length one" {
+    ro b = bar_of(0, false)
+    assert(b.byte_len() == BAR_WIDTH + 2)
+    assert(!b.contains("#"))
+}
+
+test "half-to-even: the five percentages where naive rounding would differ" {
+    // int(p * 0.3 + 0.5) would give 5, 11, 17, 23, 29 here. Python's round gives the
+    // even neighbour, and the reference is Python.
+    assert(filled_cells(15) == 4)
+    assert(filled_cells(35) == 10)
+    assert(filled_cells(55) == 16)
+    assert(filled_cells(75) == 22)
+    assert(filled_cells(95) == 28)
+}
+
+test "half-to-even: the five where it happens to agree, so the rule is not inverted" {
+    // These land on .5 as well and round UP to an even cell count. A round-half-DOWN
+    // implementation would pass the test above and fail here -- which is why both
+    // halves are pinned.
+    assert(filled_cells(5) == 2)
+    assert(filled_cells(25) == 8)
+    assert(filled_cells(45) == 14)
+    assert(filled_cells(65) == 20)
+    assert(filled_cells(85) == 26)
+}
+
+test "the ordinary percentages, where no rounding rule is in dispute" {
+    assert(filled_cells(0) == 0)
+    assert(filled_cells(100) == BAR_WIDTH)
+    assert(filled_cells(61) == 18)   // from the reference run on fixtures
+    assert(filled_cells(40) == 12)
+    assert(filled_cells(51) == 15)
+}
+
+test "out-of-range percentages are clamped, not wrapped" {
+    assert(filled_cells(-20) == 0)
+    assert(filled_cells(140) == BAR_WIDTH)
+}
+
+test "the percent cell is right-aligned in three, and a dash when unknown" {
+    assert(percent_cell(61, true) == " 61%")
+    assert(percent_cell(5, true) == "  5%")
+    assert(percent_cell(100, true) == "100%")
+    assert(percent_cell(0, false) == "-")
+}
+
+test "a whole row, byte for byte as the reference printed it on the fixtures" {
+    // Produced by:
+    //   python scripts/claude_limits.py --offline fixtures/usage --color never
+    //     --bar-style ascii --parent fixtures/dirs/default-layout
+    ro want = "  session                [##################............]  61%  normal   resets 2026-09-08 01:00 (now)"
+    assert(row("session", 61, true, "normal", "2026-09-08 01:00 (now)") == want)
+}
+
+test "a long window kind is not truncated, it pushes the row wider" {
+    // `weekly_scoped:Fable` is 19 characters and fits inside 22; the reference pads
+    // rather than cuts, so a longer name must shift the columns instead of losing
+    // characters. Silently truncating a label is how a row stops being comparable.
+    ro r = row("weekly_scoped:SomethingVeryLong", 40, true, "normal", "x")
+    assert(r.contains("weekly_scoped:SomethingVeryLong"))
+}
+
+test "the account header, with and without each optional part" {
+    assert(account_header("a@b.c", "Org", "dir") == "a@b.c (Org)  [dir]")
+    assert(account_header("a@b.c", "", "dir") == "a@b.c  [dir]")
+    assert(account_header("a@b.c", "Org", "") == "a@b.c (Org)")
+    assert(account_header("a@b.c", "", "") == "a@b.c")
+}
+
+test "the empty-directory line quotes the path the reference quotes" {
+    ro want = "no Claude Code logins found in: fixtures/dirs/no-login"
+    assert(no_logins("fixtures/dirs/no-login") == want)
+}

@@ -1,0 +1,104 @@
+// table.nv — the `--once` table, formatted (task T1.7, subplan 01.5).
+//
+// The acceptance of T1.7 is that this output matches `python scripts/claude_limits.py`
+// LINE BY LINE over the same fixture directories. So this module's job is not "print
+// something reasonable" -- it is to reproduce another program's formatting exactly,
+// and every constant below was read out of that program rather than chosen.
+//
+// The reference row (scripts/claude_limits.py:363) is:
+//
+//     f"  {kind:<22} {bar_of(pct, ...)} {pct_s:>4}  {sev:<8} resets {reset}"
+//
+// two spaces, the window kind padded to 22, a 30-cell bar in brackets, the percentage
+// right-aligned in 4, TWO spaces, the severity padded to 8, then `resets ` and the
+// moment. `pct_s` is "-" when there is no percentage, and `f"{pct:>3.0f}%"` otherwise.
+//
+// THE ROUNDING IS THE PART THAT WOULD HAVE BITTEN, and it is why this module exists
+// apart from the printing. Python's `round` is round-half-to-EVEN, not half-up:
+// round(4.5) is 4 and round(7.5) is 8. The bar length is `round(pct / 100 * 30)`, and
+// that lands exactly on .5 for ten percentages -- 5, 15, 25 ... 95. A naive
+// `int(x + 0.5)` agrees on five of them and differs on the other five: 15, 35, 55, 75
+// and 95 would each draw a bar one cell too long. Measured, not feared.
+//
+// No printing happens here: `println` lives only in the entry point (defect #1017), so
+// rows travel out as strings and `main` prints them. That is also what makes them
+// testable.
+
+module cli.table
+
+/// Read from the reference, not chosen: `BAR_WIDTH = 30` (claude_limits.py:271),
+/// the ascii glyphs `#` and `.` (:283), and the column widths of the row (:363).
+export const BAR_WIDTH = 30
+const KIND_WIDTH = 22
+const PCT_WIDTH = 4
+const SEV_WIDTH = 8
+
+/// Round half to EVEN, the way Python's `round` does, on a value scaled by 100.
+///
+/// Taking the percentage as hundredths keeps this in integers: the reference computes
+/// `pct / 100 * 30` in floating point, and for every input we can receive -- a whole
+/// percentage -- that product is exact in binary at the .5 boundary, so integer
+/// arithmetic reproduces it without inheriting float error.
+///
+/// `scaled` is `pct * BAR_WIDTH`, i.e. the numerator over 100.
+fn round_half_even(scaled int) -> int {
+    ro whole = scaled / 100
+    ro rest = scaled - whole * 100
+    if rest > 50 { return whole + 1 }
+    if rest < 50 { return whole }
+    // Exactly half: the reference goes to the even neighbour.
+    if whole % 2 == 0 { return whole }
+    return whole + 1
+}
+
+/// How many cells of the bar are filled, for a whole percentage.
+export fn filled_cells(pct int) -> int {
+    mut p = pct
+    if p < 0 { p = 0 }
+    if p > 100 { p = 100 }
+    return round_half_even(p * BAR_WIDTH)
+}
+
+/// The bar itself: `[` + filled + empty + `]`, thirty cells between the brackets.
+export fn bar_of(pct int, known bool) -> str {
+    if !known { return "[${".".repeat(BAR_WIDTH)}]" }
+    ro filled = filled_cells(pct)
+    ro full = "#".repeat(filled)
+    ro rest = ".".repeat(BAR_WIDTH - filled)
+    return "[${full}${rest}]"
+}
+
+/// The percentage column: `-` when unknown, otherwise the number right-aligned in
+/// three with a trailing `%` -- `f"{pct:>3.0f}%"` in the reference.
+export fn percent_cell(pct int, known bool) -> str {
+    if !known { return "-" }
+    return "${"${pct}".pad_start(3, ' ')}%"
+}
+
+/// One window row, byte for byte as the reference prints it.
+export fn row(kind str, pct int, known bool, severity str, resets str) -> str {
+    ro k = kind.pad_end(KIND_WIDTH, ' ')
+    ro bar = bar_of(pct, known)
+    ro pc = percent_cell(pct, known).pad_start(PCT_WIDTH, ' ')
+    ro sev = severity.pad_end(SEV_WIDTH, ' ')
+    return "  ${k} ${bar} ${pc}  ${sev} resets ${resets}"
+}
+
+/// The account header: `email (org)  [where]`, with two spaces before the bracket.
+/// The reference pads it to a 64-wide highlight band when colour is on; with
+/// `--color never` the padding is invisible and the trailing spaces are not emitted,
+/// which is the mode the differential runs in.
+export fn account_header(email str, org str, where str) -> str {
+    mut head = email
+    if org != "" { head = "${head} (${org})" }
+    if where != "" { head = "${head}  [${where}]" }
+    return head
+}
+
+/// The line for a login whose token has expired on disk. Text from the reference
+/// (claude_limits.py) so the differential does not trip over wording.
+export fn expired_note() -> str =>
+    "  token expired on disk: start Claude Code under this directory to refresh it"
+
+/// What the reference prints for a directory holding no logins.
+export fn no_logins(where str) -> str => "no Claude Code logins found in: ${where}"
