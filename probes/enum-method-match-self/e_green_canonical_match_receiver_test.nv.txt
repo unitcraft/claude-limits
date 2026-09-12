@@ -1,0 +1,16 @@
+module p7.a_test
+
+type Mode enum
+    | Once
+    | Help
+
+fn Mode @to_str() -> str =>
+    match @ {
+        Mode.Once => "once"
+        Mode.Help => "help"
+    }
+
+test "the canonical receiver form: match @ , not match @self" {
+    ro m = Mode.Help
+    assert(m.to_str() == "help")
+}
