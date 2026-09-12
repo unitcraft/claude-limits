@@ -1,0 +1,8 @@
+module p4.a
+export type Mode value { ro tag int }
+export fn Mode @to_str() -> str =>
+    match @tag {
+        0 => "once"
+        _ => "help"
+    }
+export fn pick(help bool) -> Mode => if help { { tag: 1 } } else { { tag: 0 } }

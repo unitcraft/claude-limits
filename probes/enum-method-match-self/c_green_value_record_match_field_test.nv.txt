@@ -1,0 +1,3 @@
+module p4.a_test
+import a.{pick}
+test "a VALUE record with @to_str" { assert(pick(true).tag == 1) }

@@ -1,0 +1,17 @@
+module p6.a_test
+
+type Mode enum
+    | Once
+    | Help
+
+fn Mode @to_str() -> str =>
+    match @self {
+        Mode.Once => "once"
+        Mode.Help => "help"
+    }
+
+test "same module, no import at all" {
+    ro m = Mode.Help
+    assert(m == Mode.Help)
+    assert(m.to_str() == "help")
+}

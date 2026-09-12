@@ -1,0 +1,5 @@
+module p1.a_test
+import a.{pick, Mode}
+test "enum equality across a module boundary" {
+    assert(pick(true) == Mode.Help)
+}

@@ -1,0 +1,3 @@
+module p3.a_test
+import a.{pick, Mode}
+test "method body without match @self" { assert(pick(true) == Mode.Help) }

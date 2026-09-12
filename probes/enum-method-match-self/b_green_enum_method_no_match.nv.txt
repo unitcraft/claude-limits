@@ -1,0 +1,6 @@
+module p3.a
+export type Mode enum
+    | Once
+    | Help
+export fn Mode @to_str() -> str => "constant"
+export fn pick(help bool) -> Mode => if help { Mode.Help } else { Mode.Once }
