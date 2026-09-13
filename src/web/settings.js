@@ -308,11 +308,22 @@ export function renderSettings(reply) {
   server.append(field('Allow access from the local network', lan,
     'needs a token and a certificate — LAN access arrives in a later version'));
 
-  // 5.8
+  // 5.8 — the widget toggles are inert in the first release and say so, exactly the
+  // way the LAN toggle above does. Owner's decision 2026-09-13 (plan 01, decision
+  // 13): no tray and no SDL in the MVP. A switch that saves a value and changes
+  // nothing is worse than an absent one -- the config would then claim the widget is
+  // on while no widget exists, and the person would have no way to see why.
   const w = cfg.widget || {};
   const widget = section(panel, 'Desktop widget');
-  widget.append(field('Show the widget', toggle('widget.enabled', w.enabled)));
-  widget.append(field('Always on top', toggle('widget.always_on_top', w.always_on_top)));
+  const wEnabled = toggle('widget.enabled', w.enabled);
+  const wTop = toggle('widget.always_on_top', w.always_on_top);
+  for (const t of [wEnabled, wTop]) {
+    t.disabled = true;
+    t.title = 'the desktop widget arrives after the first release';
+  }
+  widget.append(field('Show the widget', wEnabled,
+    'the page in the browser does the same job — the widget arrives after the first release'));
+  widget.append(field('Always on top', wTop));
 
   const footer = el('footer', 'settings-foot');
   const cancel = el('button', 'btn', 'Cancel');

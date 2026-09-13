@@ -202,6 +202,21 @@ test('the LAN toggle is present, inert, and says when it arrives', () => {
   assert.match(lan.title, /later version/);
 });
 
+test('the widget toggles are present, inert, and say when they arrive', () => {
+  // Owner's decision 2026-09-13 (plan 01, decision 13): no tray and no SDL in the
+  // first release. A switch that saves a value and changes nothing is worse than an
+  // absent one -- the config would claim the widget is on while no widget exists.
+  //
+  // Both toggles, not one: they are independent controls and disabling only the
+  // first would leave "Always on top" live for a window that cannot open.
+  const panel = build();
+  for (const key of ['widget.enabled', 'widget.always_on_top']) {
+    const t = at(panel, key);
+    assert.equal(t.disabled, true, `${key} must be inert until the widget ships`);
+    assert.match(t.title, /after the first release/);
+  }
+});
+
 test('every folder row can be removed and names what it removes', () => {
   const rows = build().all((n) => n.className === 'folder-row');
   assert.equal(rows.length, 3);

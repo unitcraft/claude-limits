@@ -1,8 +1,7 @@
 # claude-limits
 
 Usage limits of several Claude accounts on one page: a small local backend you
-open in the browser, plus an optional always-on-top desktop widget. Windows and
-Linux.
+open in the browser. Windows and Linux.
 
 For every Claude Code login on the machine it shows the same numbers that
 `/usage` shows inside Claude Code: the 5-hour session window, the 7-day window
@@ -132,10 +131,16 @@ and asked for once: the endpoint answers HTTP 429 to eager callers, so the
 tool also never polls more often than once a minute and, on a 429, waits the
 `Retry-After` the server names before the next snapshot.
 The real tool is written in [Nova](https://nv-lang.org): one binary that runs
-a local backend (polls the endpoint, serves a page with the bars at
-`http://127.0.0.1:7391`, pushes updates over Server-Sent Events) and, with
-`--widget`, also shows a small always-on-top window and a tray icon built on
-SDL3. The Python script stays as the reference the Nova build is diffed
+a local backend — it polls the endpoint, serves a page with the bars at
+`http://127.0.0.1:7391`, and pushes updates over Server-Sent Events. It can
+also install itself to start at login (`--install-autostart`, undone with
+`--uninstall-autostart`).
+
+A desktop widget — an always-on-top window with a tray icon, built on SDL3 —
+is designed and NOT in the first release: it costs a vendored C dependency and
+a topmost matrix across four desktop environments, and the page in the browser
+does the same job. The design is kept rather than dropped; see phase Ф.3 of the
+plan. The Python script stays as the reference the Nova build is diffed
 against. The plan, with phases and acceptance criteria, is
 [docs/plans/01-widget-on-nova.md](docs/plans/01-widget-on-nova.md) (Russian).
 
@@ -155,8 +160,8 @@ python scripts/claude_limits.py --parent C:/accounts # every child dir instead o
 - [x] reference script: discovery (default dir, `CLAUDE_CONFIG_DIR`, configured list, parent dir), same-account grouping, 429 backoff, daemon mode
 - [ ] Nova core: same table as the script, byte-for-byte (`--once`)
 - [ ] local backend: `/api/snapshot`, `/api/events` (SSE), embedded page with one bar per account per window
-- [ ] optional widget (`--widget`): always-on-top window and tray icon on Windows and Linux (StatusNotifier)
 - [ ] threshold notifications, history
+- [ ] after the first release: optional widget (`--widget`) — always-on-top window and tray icon on Windows and Linux (StatusNotifier)
 
 ## License
 
