@@ -26,6 +26,8 @@
 
 module cli.table
 
+import std.time.civil.{TimeZone, Offset}
+
 /// Read from the reference, not chosen: `BAR_WIDTH = 30` (claude_limits.py:271),
 /// the ascii glyphs `#` and `.` (:283), and the column widths of the row (:363).
 export const BAR_WIDTH = 30
@@ -129,3 +131,34 @@ export fn expired_note() -> str =>
 
 /// What the reference prints for a directory holding no logins.
 export fn no_logins(where str) -> str => "no Claude Code logins found in: ${where}"
+
+/// The row label in the CLI reference's shape: the raw window kind, with the scoped
+/// model appended after a colon (`weekly_scoped:Fable`). NOT `model.format.row_label`,
+/// which is the page's human wording from 01.1 -- both are right for their own reader,
+/// only one is comparable, and the page's contains a space, which the differential's
+/// row pattern takes as the end of the label.
+export fn cli_label(kind str, model str) -> str {
+    if model == "" { return kind }
+    return "${kind}:${model}"
+}
+
+/// The moment as the reference prints it: local time, `YYYY-MM-DD HH:MM`.
+///
+/// The differential parses exactly this shape and compares in UTC; anything else it
+/// compares verbatim, so an ISO string differs from the same instant by its seconds.
+///
+/// The zone is `TimeZone.Fixed(Offset.local())` -- std offers an offset through the
+/// Time effect rather than a named zone (spike T0.3). Correct for today and WITHOUT
+/// DST rules, which will matter for a weekly window that straddles a transition.
+export fn reference_moment(at_ms int) Time -> str {
+    if at_ms == 0 { return "-" }
+    ro zone = TimeZone.Fixed(Offset.local())
+    ro dt = at_ms.to_unix_millis().to_zoned(zone).datetime()
+    ro t = dt.time()
+    // `Date.to_iso()` is already `YYYY-MM-DD`; assembling it by hand was three lines
+    // of zero-padding that std had done.
+    ro day = dt.date().to_iso()
+    ro hh = if t.hour() < 10 { "0${t.hour()}" } else { "${t.hour()}" }
+    ro mi = if t.minute() < 10 { "0${t.minute()}" } else { "${t.minute()}" }
+    return "${day} ${hh}:${mi}"
+}

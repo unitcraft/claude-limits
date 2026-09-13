@@ -35,6 +35,9 @@ import claude_limits.accounts.real_dirs.{with_real_disk}
 import claude_limits.accounts.discover.{scan}
 import claude_limits.accounts.login.{read_login, TokenState}
 import claude_limits.accounts.group.{group}
+import claude_limits.accounts.login.{Login, GroupedAccount}
+import claude_limits.usage.parse.{parse}
+import claude_limits.cli.table.{row, cli_label, reference_moment}
 
 const USAGE = "usage: claude-limits [--once] [--config PATH] [--offline DIR] [--parent DIR] [--color auto|always|never] [DIR ...]"
 
@@ -43,46 +46,37 @@ const USAGE = "usage: claude-limits [--once] [--config PATH] [--offline DIR] [--
 /// Returns lines rather than printing them: printing is the caller's job because of
 /// #1017, and returning them is also what makes the shape of this function reviewable
 /// -- a function that printed as it went would hide how many lines it decided on.
-fn folder_lines(path str, now_ms int) Dirs Creds -> []str {
+/// The accounts in one configured folder, grouped, with the display name already
+/// substituted. Returns them rather than printing: what to print depends on the usage
+/// reply, which is fetched per account afterwards.
+fn accounts_in(path str, now_ms int) Dirs Creds -> []GroupedAccount {
     ro folder = scan(path)
-    mut out []str = []
-
-    if folder.logins.len() == 0 {
-        out.push(no_logins(folder.path))
-        return out
-    }
-
-    // Identity first, then grouping. Two directories holding the same login are ONE
-    // account with both names in the brackets -- that is what `group` is for, and
-    // printing them as two accounts would double every total the phase later reports.
-    // `short_name` is applied HERE, at the only place that still has both the path
-    // and the name. `group` keeps whatever name it is given and the header prints it,
-    // so a bare `.claude` -- which every default login is called -- would identify
-    // nothing. The reference makes the same substitution at the same point
-    // (claude_limits.py:136).
     mut logins []Login = []
     for d in folder.logins {
-        ro shown = short_name(d.path, d.name)
-        logins.push(read_login(d.path, shown, d.identity, d.credentials))
+        // `short_name` is applied HERE, at the only place that still has both the path
+        // and the name. `group` keeps whatever name it is given and the header prints
+        // it, so a bare `.claude` -- which every default login is called -- would
+        // identify nothing. The reference substitutes at the same point (:136).
+        logins.push(read_login(d.path, short_name(d.path, d.name), d.identity,
+                               d.credentials))
     }
+    return group(logins, now_ms)
+}
 
-    for acc in group(logins, now_ms) {
-        mut names = ""
-        mut first = true
-        for n in acc.dirs {
-            if first { names = n } else { names = "${names}, ${n}" }
-            first = false
-        }
-        out.push(account_header(acc.email, acc.org, names))
-        // The reference prints this when the account has NO live token at all --
-        // every one of its directories expired or held none (claude_limits.py:345).
-        // `acc.state` is the WORST across the directories, which is the same thing
-        // here and would not be if a mixed account existed: one live directory means
-        // the account is usable and the note must not appear. Pinned by the
-        // differential rather than by reasoning.
-        if acc.state != TokenState.Ok { out.push(expired_note()) }
+/// The recorded reply for one account: `<dir>/<email>.json`, else `<dir>/normal.json`
+/// -- the reference's rule (`offline_usage`, :317).
+///
+/// An absent file yields "" and `parse` then reports its own outcome, rather than this
+/// function inventing one. The reference raises instead; here the difference surfaces
+/// as a row that disagrees, which is what the differential is for.
+fn recorded_reply(offline str, email str) Creds -> str {
+    if offline == "" { return "" }
+    if email != "" {
+        ro named = "${offline}/${email}.json"
+        ro body = Creds.read(named)
+        if body != "" { return body }
     }
-    return out
+    return Creds.read("${offline}/normal.json")
 }
 
 fn main() Io {
@@ -138,7 +132,37 @@ fn main() Io {
                     ro lines = with_real_disk(fn() Dirs Creds -> []str {
                         mut all []str = []
                         for d in a.dirs {
-                            for l in folder_lines(d, now_ms) { all.push(l) }
+                            ro accs = accounts_in(d, now_ms)
+                            if accs.len() == 0 {
+                                all.push(no_logins(d))
+                                continue
+                            }
+                            for acc in accs {
+                                mut names = ""
+                                mut first = true
+                                for n in acc.dirs {
+                                    if first { names = n } else { names = "${names}, ${n}" }
+                                    first = false
+                                }
+                                all.push(account_header(acc.email, acc.org, names))
+
+                                // No live token: the reference prints the note and
+                                // makes no request at all (:344). A dead token earns a
+                                // 401 and then a 429 for the whole machine, which is
+                                // not hypothetical on this project.
+                                if acc.state != TokenState.Ok {
+                                    all.push(expired_note())
+                                    continue
+                                }
+
+                                ro body = recorded_reply(a.offline, acc.email)
+                                ro usage = parse(body)
+                                for w in usage.windows {
+                                    all.push(row(cli_label(w.kind, w.model),
+                                                 w.percent, true, "normal",
+                                                 reference_moment(w.resets_at_ms)))
+                                }
+                            }
                         }
                         all
                     })
