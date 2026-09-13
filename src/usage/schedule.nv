@@ -1,0 +1,94 @@
+// schedule.nv — when the next poll of one account may happen (task T2.10).
+//
+// The poller's card names five conditions. Four of them are arithmetic over three
+// numbers -- now, the last poll, and what the server asked for -- and nothing else:
+//
+//   one request per account per tick
+//   after a 429, no poll before `Retry-After`
+//   a `refresh` inside 60 s is refused
+//   `interval_sec = 10` is raised to 60
+//
+// The fifth ("every outcome is written to `poll`") needs the database and is not here.
+//
+// PURE, LIKE `outcome.nv` AND FOR THE SAME REASON. A scheduler that reads a clock of
+// its own can only be asked about now; one that takes the moment as a parameter can be
+// asked about the instant before a window opens and the instant after, which is where
+// every off-by-one in this file would live. `state_of` in accounts/login.nv takes the
+// moment for exactly this reason and says so.
+//
+// THE FLOOR IS A FLOOR, NOT A DEFAULT, and the distinction is the whole point of the
+// card. A configured `interval_sec = 10` is not honoured and not rejected -- it is
+// RAISED. Someone asking to poll every ten seconds is asking for a 429, and on
+// 2026-09-07 this machine got one.
+
+module usage.schedule
+
+import claude_limits.usage.outcome.{POLL_FLOOR_SEC}
+
+/// What a person configured, after the floor has been applied.
+///
+/// Held as a type rather than a bare int so that an unclamped interval cannot be
+/// passed where a clamped one is expected: the clamping happens once, at construction,
+/// and every reader afterwards has the guarantee by type.
+export type Interval value {
+    ro seconds int
+}
+
+/// Raise anything below the floor to the floor. A zero or a negative -- a missing
+/// setting, a typo -- lands on the floor too, rather than meaning "as fast as
+/// possible", which is the reading that costs a 429.
+export fn Interval.of(configured_sec int) -> Interval {
+    if configured_sec < POLL_FLOOR_SEC { return { seconds: POLL_FLOOR_SEC } }
+    return { seconds: configured_sec }
+}
+
+/// The state of one account's polling, between ticks.
+///
+/// `has_polled` IS A FIELD AND NOT A SENTINEL, and that is the whole reason it exists.
+/// The first version said "0 = never polled", which collides with the instant zero --
+/// D456 п.2 names this shape outright: an empty value standing for "no" is an Option
+/// with the checkability taken out. It is not theoretical: the tests choose their own
+/// moments, a test starting its clock at 0 polls at 0, and `due` then read the account
+/// as never polled and said yes to everything. Two tests failed for that one cause and
+/// both were right.
+export type Poll value {
+    ro has_polled bool
+    ro last_poll_ms int
+    ro next_allowed_ms int  // earliest moment the next poll may happen
+}
+
+export fn Poll.new() -> Poll =>
+    { has_polled: false, last_poll_ms: 0, next_allowed_ms: 0 }
+
+/// Is a scheduled poll due at `now_ms`?
+///
+/// An account never polled is due immediately: the first tick after start must produce
+/// a reading, or the page shows nothing until a whole interval has passed.
+export fn due(p Poll, iv Interval, now_ms int) -> bool {
+    if !p.has_polled { return now_ms >= p.next_allowed_ms }
+    if now_ms < p.next_allowed_ms { return false }
+    return now_ms - p.last_poll_ms >= iv.seconds * 1000
+}
+
+/// After a poll: record it, and set the earliest next one.
+///
+/// `wait_sec` is what the outcome asked for -- the server's `Retry-After` when it gave
+/// one, the floor otherwise. It is NOT compared against the interval here: a server
+/// asking for 600 s must be obeyed even when the person configured 60, and a server
+/// asking for 10 has still said something. The interval governs the ordinary rhythm;
+/// `wait_sec` governs the earliest moment. `due` requires BOTH.
+export fn polled(p Poll, now_ms int, wait_sec int) -> Poll =>
+    { has_polled: true, last_poll_ms: now_ms,
+      next_allowed_ms: now_ms + wait_sec * 1000 }
+
+/// May a `refresh` asked for by a person run right now?
+///
+/// The floor applies to demand as much as to the rhythm -- "refresh inside 60 s is
+/// refused" is the card's own wording. Refusing it is not rudeness: a refresh button
+/// that fires a request per click is a rate limit waiting to be earned, and the person
+/// cannot see that they are the cause.
+export fn refresh_allowed(p Poll, now_ms int) -> bool {
+    if !p.has_polled { return true }
+    if now_ms < p.next_allowed_ms { return false }
+    return now_ms - p.last_poll_ms >= POLL_FLOOR_SEC * 1000
+}
