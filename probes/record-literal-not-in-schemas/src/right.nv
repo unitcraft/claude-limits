@@ -1,0 +1,19 @@
+// The twin. Same two names, different shapes: `Ask` is a RECORD, and `parse_ask`
+// takes a second argument.
+
+module probe_record_literal_not_in_schemas.right
+
+export type Ask value {
+    path str
+    depth int
+}
+
+/// A CONSTRUCTOR, not a bare literal: codegen refuses an anonymous record literal
+/// whose struct it cannot find by name, and that refusal is a different defect from
+/// the one this probe is about. Measured -- renaming the type moved the error to the
+/// new name instead of removing it, which is how the two were told apart.
+export fn Ask.of(path str, depth int) -> Ask => { path, depth }
+
+export fn parse_ask(raw str, depth int) -> Ask => Ask.of(raw, depth)
+
+export fn describe(x Ask) -> str => "b:${x.path}/${x.depth}"

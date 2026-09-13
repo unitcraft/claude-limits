@@ -1,0 +1,119 @@
+// app.nv — the real route table, assembled from the real handlers (task T2.27).
+//
+//   ./nova.sh test src/server/ --filter app
+//
+// Source: 01.3 §2 (the route map), §3.2–§3.11 (each route and its query parameters).
+//
+// ── WHY THIS FILE DID NOT EXIST UNTIL NOW ────────────────────────────────────
+//
+// `routes.nv` builds the frame and `handlers/` fill it, and each was tested on its
+// own: `routes_test.nv` mounts STUB handlers ("a handler that answers `{}` is the
+// right handler here"), and every handler test calls its own factory directly. Both
+// were right, and between them nobody ever put the real handlers into the real
+// table. `grep -rn "build(\\[" src/ --include=*.nv` returned matches in tests only.
+//
+// That is the seam T2.27 was filed for. This file is its first half: the table, with
+// no socket in sight, so it can be proven the same way everything else here is --
+// through `serve_once`.
+//
+// ── WHAT IS ABSENT IS NAMED, NOT OMITTED ─────────────────────────────────────
+//
+// Four routes of 01.3 §2 are NOT mounted, and each has a reason on the page rather
+// than a silence. A reader comparing this file with the route map must be able to
+// account for every difference, or the next person will mount one twice.
+
+module server.app
+
+import claude_limits.server.routes.{Route, Router, HttpMethod, on, route, route_q, build}
+import claude_limits.server.handlers.health.{HealthSource, health_handler}
+import claude_limits.server.handlers.snapshot.{SnapshotSource, snapshot_handler}
+import claude_limits.server.handlers.refresh.{RefreshSource, refresh_handler}
+import claude_limits.server.handlers.events.{EventsSource, events_handler}
+import claude_limits.server.handlers.config.{ConfigSource, config_get_handler, config_put_handler}
+import claude_limits.server.handlers.folders.{ProbeSource, probe_handler}
+import claude_limits.server.handlers.token.{TokenSource, token_handler}
+import claude_limits.server.handlers.exporter.{ExportSource, export_handler}
+
+/// Everything the API reads, in one record.
+///
+/// SOURCES RATHER THAN STATE, and that is the shape the handlers already chose: each
+/// is `fn() -> XState`, read at the moment the request is served. A record of STATES
+/// would freeze the snapshot at assembly time and every request would answer with the
+/// state the process started with.
+export type Sources value {
+    health HealthSource
+    snapshot SnapshotSource
+    refresh RefreshSource
+    events EventsSource
+    config ConfigSource
+    probe ProbeSource
+    token TokenSource
+    // NOT named `export`: that is a keyword, and the parse error points at the FIELD
+    // rather than at the word, so it reads like a broken record declaration.
+    exporter ExportSource
+}
+
+export fn Sources.of(health HealthSource, snapshot SnapshotSource, refresh RefreshSource,
+                     events EventsSource, config ConfigSource, probe ProbeSource,
+                     token TokenSource, exporter ExportSource) -> Sources =>
+    { health, snapshot, refresh, events, config, probe, token, exporter }
+
+// ── query parameters, from 01.3 and nowhere else ─────────────────────────────
+//
+// The closed list is enforced by `routes.nv` for every route at once (a parameter a
+// route did not declare is refused BEFORE the handler). These lists are therefore the
+// contract itself, and each is transcribed from the section that defines it rather
+// than from a handler's behaviour -- a handler that ignores an unknown parameter and
+// a route that forbids it look identical until somebody sends one.
+
+/// §3.3.
+const Q_SNAPSHOT = ["include_hidden"]
+
+/// §3.11: `range` or `from`/`to`, `login_dir_id` (repeatable), `format`, `unmasked`.
+const Q_EXPORT = ["range", "from", "to", "login_dir_id", "format", "unmasked"]
+
+/// The API of the first release, in the order of 01.3 §2.
+///
+/// `/api/events` declares NO parameters and that is from §3.4 in those words
+/// («Query-параметров нет») -- not an oversight to be filled in later.
+export fn api_routes(s Sources) -> []Route => [
+    route("/api/health", [on(HttpMethod.Get, health_handler(s.health))]),
+    route_q("/api/snapshot", [on(HttpMethod.Get, snapshot_handler(s.snapshot))], Q_SNAPSHOT),
+    route("/api/events", [on(HttpMethod.Get, events_handler(s.events))]),
+    route("/api/snapshot/refresh", [on(HttpMethod.Post, refresh_handler(s.refresh))]),
+    route("/api/config", [on(HttpMethod.Get, config_get_handler(s.config)),
+                          on(HttpMethod.Put, config_put_handler(s.config))]),
+    route("/api/folders/probe", [on(HttpMethod.Post, probe_handler(s.probe))]),
+    route("/api/config/token", [on(HttpMethod.Post, token_handler(s.token))]),
+    route_q("/api/export", [on(HttpMethod.Get, export_handler(s.exporter))], Q_EXPORT),
+]
+
+/// What 01.3 §2 lists and this table does NOT mount, with the reason for each.
+///
+/// A FUNCTION RATHER THAN A COMMENT, because a comment cannot be asserted. The test
+/// beside this file checks that every path here answers 404 and that no path here is
+/// also in `api_routes` -- so a route that gets mounted later and is not struck from
+/// this list becomes a failure instead of a stale note.
+export fn not_yet_mounted() -> []str => [
+    // T2.15: the history endpoints read the database, and the storage chain waits on
+    // the nova-duckdb tag.
+    "/api/history",
+    "/api/history/search",
+    // T2.18: generated by Polaris from typed routes; needs the routes to be typed
+    // first, and a parameter that package does not expose yet.
+    "/api/openapi.json",
+    // Phase Ф.6: browser sessions exist only for LAN access, which is refused until
+    // TLS is there. On loopback 01.3 §2 says these answer 404 anyway -- so the first
+    // release behaves exactly as the contract describes, rather than approximately.
+    "/login",
+    "/api/session",
+    "/api/session/token",
+]
+
+/// The router for the first release.
+///
+/// Static files are NOT here yet: `GET /` and `GET /assets/{*path}` need
+/// `embed_dir`/`static_handler`, which is the next increment of T2.27. Until then a
+/// request for the page gets the router's own 404 -- visible, and not mistaken for a
+/// page that failed to render.
+export fn api_router(s Sources) -> Result[Router, HttpError] => build(api_routes(s))

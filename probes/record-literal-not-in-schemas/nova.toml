@@ -1,0 +1,18 @@
+# Probe: a record type declared OUTSIDE the entry module cannot be constructed.
+#
+# `codegen error: anonymous record literal: expected struct 'Ask' not in
+# record_schemas` -- for a constructor in tail position whose return type names the
+# struct, which is exactly the form `src/accounts/discover.nv` documents as the
+# WORKING one.
+
+[lib]
+src = "src"
+
+[package]
+name = "probe_record_literal_not_in_schemas"
+version = "0.0.0"
+description = "Probe: a record declared in a non-entry module is missing from record_schemas"
+
+[[bin]]
+name = "probe-record-literal-not-in-schemas"
+path = "src/main.nv"

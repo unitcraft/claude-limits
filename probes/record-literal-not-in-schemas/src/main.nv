@@ -1,0 +1,16 @@
+// Both siblings in ONE compilation unit.
+//
+//   cd probes/sibling-modules-share-a-name
+//   ../../nova.sh check src/main.nv    # what does the checker say?
+//   ../../nova.sh build src/main.nv    # and the C emitter?
+//
+// Each module alone compiles and passes its own tests. What has never happened in
+// claude-limits until the router was assembled is BOTH of them reaching one unit.
+
+module probe_record_literal_not_in_schemas.main
+
+import probe_record_literal_not_in_schemas.right.{Ask as AskB, parse_ask as parse_b, describe as describe_b}
+
+fn main() Io -> () {
+    print(describe_b(parse_b("/tmp", 2)))
+}
