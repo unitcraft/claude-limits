@@ -64,13 +64,28 @@ BOLD_ANY = re.compile(r"\*\*([^*]{2,200}?)\*\*")
 # is marked with that is not on this list is reported as UNCLASSIFIED -- deliberately
 # noisy, because the alternative is a wrong tally that looks right.
 DONE = ("СДЕЛАНО",
-        "НАЙДЕНО ДО",
-        "ТОЧКА ВХОДА")
-PARTIAL = ("ЧАСТИЧНО",)
+        "НАЙДЕНО ДО")
+# `ТОЧКА ВХОДА` used to sit in DONE and did not belong there: in T4.1 it means "the
+# entry point a CI step should call now exists", which is a COMPONENT being ready
+# while the card's own text says the repository has no workflow at all. A phrase that
+# reports a part as ready is a partial status, and reading it as a verdict made the
+# tally claim a card that denies it in its own words.
+PARTIAL = ("ЧАСТИЧНО", "ТОЧКА ВХОДА")
+# A decision put the card outside the current scope. NEITHER done nor pending, which
+# is the entire reason it is a bucket of its own: counted as done it would claim work
+# nobody did, counted as not-done it would invite somebody to pick it up.
+# `СУЖЕНО` is deliberately NOT here: a narrowed card still has work in it (T4.4 must
+# still tag the packages the MVP pulls), and counting it as deferred would hide
+# pending work behind a decision that did not cover it.
+DEFERRED = ("ОТЛОЖЕНО",)
 NOT_DONE = ("НЕ НАПИСАНО",
             "НАПИСАНО, НЕ ПРОГНАНО")
 # Not a status at all: a card may carry it and be finished or untouched alike.
-NOT_A_STATUS = ("Приёмка", "ЭФФЕКТ")
+# `СУЖЕНО` is a note about SCOPE, not about progress: a narrowed card may be finished
+# or untouched alike, exactly like the two words already here. It briefly lived in
+# DEFERRED and that was wrong -- it made T4.4 read as out of scope when only part of
+# it had been removed.
+NOT_A_STATUS = ("Приёмка", "ЭФФЕКТ", "СУЖЕНО")
 
 
 def is_label(mark):
@@ -103,6 +118,9 @@ def classify(mark):
     for p in DONE:
         if up.startswith(p):
             return "done"
+    for p in DEFERRED:
+        if up.startswith(p):
+            return "deferred"
     for p in PARTIAL:
         if up.startswith(p):
             return "partial"
@@ -181,7 +199,8 @@ def read_cards(path):
                 t = mid.strip()
                 if not t or is_label(t):
                     continue
-                if any(t.upper().startswith(p) for p in DONE + PARTIAL + NOT_DONE):
+                if any(t.upper().startswith(p)
+                       for p in DONE + DEFERRED + PARTIAL + NOT_DONE):
                     marks.append(t)
         # The union duplicates every mark both passes see, and the vocabulary tally
         # counts marks -- so its numbers would double without this. Order is kept:
@@ -257,6 +276,11 @@ def main():
         # first is how a marked card gets done twice.
         if "done" in verdicts:
             tally["done"] += 1
+        elif "deferred" in verdicts:
+            # Ahead of partial and not-done: a decision about scope outranks an older
+            # note about progress. Behind done: finishing something is not undone by
+            # deciding the phase around it can wait.
+            tally["deferred"] += 1
         elif "partial" in verdicts:
             tally["partial"] += 1
         elif "not-done" in verdicts:
@@ -280,6 +304,9 @@ def main():
     w.write("  done      %3d\n" % tally["done"])
     w.write("  partial   %3d\n" % tally["partial"])
     w.write("  not-done  %3d\n" % tally["not-done"])
+    w.write("  deferred  %3d   <- a DECISION put it outside the current scope. Not work\n"
+            "                     waiting to be done, and not work that was done.\n"
+            % tally["deferred"])
     w.write("  needs-rd  %3d   <- marked, but with a word this script cannot judge.\n"
             "                     Listed in full below; read them, do not assume.\n"
             % tally["needs-reading"])
