@@ -127,3 +127,52 @@ test "the flags the differential passes are all accepted together" {
     assert(a.offline == "fixtures/usage")
     assert(a.dirs.len() == 1)
 }
+
+// ── the autostart verbs (task T4.2) ──────────────────────────────────────────
+
+test "--install-autostart is a verb, and it takes no value" {
+    ro r = parse(["--install-autostart"])
+    assert(r.is_ok())
+    ro a = r!!
+    assert(a.mode.to_str() == "install-autostart")
+    // The other direction: it must not have swallowed anything, the way a
+    // value-taking flag would.
+    assert(a.dirs.len() == 0)
+    assert(a.config == "")
+}
+
+test "--uninstall-autostart is the other verb, not a flag on the first" {
+    ro r = parse(["--uninstall-autostart"])
+    assert(r.is_ok())
+    assert(r!!.mode.to_str() == "uninstall-autostart")
+}
+
+test "a directory after the verb is still a directory, not a value" {
+    // The failure this pins: a verb accidentally written to consume `argv[i+1]`
+    // would eat the path and the program would install with no argument and no
+    // complaint.
+    ro r = parse(["--install-autostart", "fixtures/dirs/no-login"])
+    assert(r.is_ok())
+    ro a = r!!
+    assert(a.mode.to_str() == "install-autostart")
+    assert(a.dirs.len() == 1)
+    assert(a.dirs[0] == "fixtures/dirs/no-login")
+}
+
+test "the two verbs cannot both hold: the last one wins" {
+    // WHY A VARIANT RATHER THAN TWO BOOLEANS. A boolean pair lets both be set, and
+    // the program then has to decide which of two contradictory orders it was given
+    // -- a rule nobody would have written down. A variant cannot hold both, so the
+    // contradiction resolves the way every other verb in this parser already does.
+    ro a = parse(["--install-autostart", "--uninstall-autostart"])!!
+    assert(a.mode.to_str() == "uninstall-autostart")
+    ro b = parse(["--uninstall-autostart", "--install-autostart"])!!
+    assert(b.mode.to_str() == "install-autostart")
+}
+
+test "a misspelled autostart verb is refused, like every other unknown flag" {
+    ro r = parse(["--install-autostrat"])
+    assert(r.is_err())
+    assert(r.err()!!.code == EXIT_CONFIG)
+    assert(r.err()!!.message.contains("install-autostrat"))
+}

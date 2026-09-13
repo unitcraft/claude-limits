@@ -136,8 +136,17 @@ fn lin_remove(home str) Fs -> bool =>
 #cfg(!target_os = "windows")
 export fn with_real_autostart[T](exe str, body fn() Autostart -> T) Io -> T {
     with Os = real_os() {
+        // `Path.to_str()` returns `Option[str]`, NOT `str` -- it refuses a path
+        // that is not valid UTF-8 rather than corrupting it. The same three lines
+        // sat in `claude_limits.nv` with the same mistake, and the compiler caught
+        // it THERE because that file is compiled on this machine; this branch is
+        // `#cfg`-ed out here and type-checks nowhere I can see. Second time tonight
+        // a cfg-ed-out branch hid a real error.
         ro home = match home_dir() {
-            Some(p) => p.to_str()
+            Some(p) => match p.to_str() {
+                Some(s) => s
+                None => ""
+            }
             None => ""
         }
         with Fs = real_fs() {

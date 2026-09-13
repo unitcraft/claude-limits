@@ -29,9 +29,11 @@ export const EXIT_DB = 3
 /// What the binary was asked to do. One variant per verb, so a caller that forgets a
 /// case is a compile error rather than a silent fall-through to the default.
 export type Mode enum
-    | Once            // print one table and exit
-    | Version         // --version
-    | Help            // --help / -h
+    | Once              // print one table and exit
+    | Version           // --version
+    | Help              // --help / -h
+    | InstallAutostart  // --install-autostart   (plan 01 Ф.4, task T4.2)
+    | UninstallAutostart // --uninstall-autostart
 
 /// The canonical receiver inside a method body is `match @`, NOT `match @self`. The
 /// latter type-checks -- `nova check` prints `ok:` on it -- and then dies in codegen
@@ -43,6 +45,8 @@ export fn Mode @to_str() -> str =>
         Mode.Once => "once"
         Mode.Version => "version"
         Mode.Help => "help"
+        Mode.InstallAutostart => "install-autostart"
+        Mode.UninstallAutostart => "uninstall-autostart"
     }
 
 /// The parsed command line. Empty string means "not given" throughout, matching the
@@ -113,6 +117,10 @@ export fn parse(argv []str) -> Result[Args, Complaint] {
             mode = Mode.Version
         } else if a == "--once" {
             mode = Mode.Once
+        } else if a == "--install-autostart" {
+            mode = Mode.InstallAutostart
+        } else if a == "--uninstall-autostart" {
+            mode = Mode.UninstallAutostart
         } else if a == "--config" {
             if i + 1 >= argv.len() { return Err(needs_value("--config")) }
             i = i + 1

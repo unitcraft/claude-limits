@@ -28,7 +28,7 @@
 module claude_limits.claude_limits
 
 import claude_limits.version.{version_line}
-import std.os.{args, real_os}
+import std.os.{args, real_os, home_dir}
 import claude_limits.cli.args.{parse, EXIT_OK, EXIT_CONFIG}
 import claude_limits.cli.table.{account_header, short_name, no_logins, expired_note}
 import claude_limits.accounts.real_dirs.{with_real_disk}
@@ -38,8 +38,11 @@ import claude_limits.accounts.group.{group}
 import claude_limits.accounts.login.{Login}
 import claude_limits.usage.parse.{parse}
 import claude_limits.cli.table.{row, cli_label, reference_moment}
+import claude_limits.install.autostart.{install, uninstall, message, entry_for, Autostart, Change}
+import claude_limits.install.real_autostart.{with_real_autostart, host}
 
 const USAGE = "usage: claude-limits [--once] [--config PATH] [--offline DIR] [--parent DIR] [--color auto|always|never] [DIR ...]"
+const USAGE_AUTOSTART = "       claude-limits --install-autostart | --uninstall-autostart"
 
 /// One folder's worth of output, as lines, computed with the disk available.
 ///
@@ -119,6 +122,21 @@ fn recorded_reply(offline str, email str) Creds -> str {
     return Creds.read("${offline}/normal.json")
 }
 
+/// The home directory as a plain string, or "" when the system will not say.
+///
+/// Only the Linux record uses it; on Windows `entry_for` ignores it entirely. It is
+/// read here rather than inside the handler so that the MESSAGE printed to the person
+/// names the same location the handler wrote to -- two independent reads could differ,
+/// and then the program would tell them to look somewhere it had not written.
+fn home_str() Os -> str =>
+    match home_dir() {
+        Some(p) => match p.to_str() {
+            Some(s) => s
+            None => ""
+        }
+        None => ""
+    }
+
 fn main() Io {
     // `args()[0]` is the program name. `cli.args.parse` takes the vector WITHOUT
     // it -- accepting it would make `claude-limits` a positional directory argument on
@@ -143,6 +161,32 @@ fn main() Io {
                 Mode.Help => {
                     println(version_line())
                     println(USAGE)
+                    println(USAGE_AUTOSTART)
+                }
+                // THE PATH THE RECORD WILL START IS `all[0]`, the program name as the
+                // system handed it to us -- which is exactly what the system will hand
+                // back at login. Resolving it to a canonical absolute path would be
+                // tidier and WRONG in the one case that matters: a program launched
+                // through a symlink or a shim should be restarted the same way it was
+                // started, not through whatever the link points at today.
+                //
+                // It can be empty in principle (a parent that spawns with no argv[0]).
+                // The record is then still written, with an empty command, and the
+                // person is told the location -- which is better than a silent refusal
+                // they cannot see the cause of.
+                Mode.InstallAutostart => {
+                    ro exe = if all.len() > 0 { all[0] } else { "" }
+                    ro e = with Os = real_os() { entry_for(host(), exe, home_str()) }
+                    ro got = with_real_autostart(exe, fn() Autostart -> Change => install(e))
+                    println(message(got, e))
+                    if !got.ok() { exit(EXIT_CONFIG, "") }
+                }
+                Mode.UninstallAutostart => {
+                    ro exe = if all.len() > 0 { all[0] } else { "" }
+                    ro e = with Os = real_os() { entry_for(host(), exe, home_str()) }
+                    ro got = with_real_autostart(exe, fn() Autostart -> Change => uninstall())
+                    println(message(got, e))
+                    if !got.ok() { exit(EXIT_CONFIG, "") }
                 }
                 Mode.Once => {
                     // A BARE INVOCATION IS NOT AN ERROR. `nova test` runs every unit
