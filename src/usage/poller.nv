@@ -39,6 +39,7 @@ import claude_limits.usage.fetch.{fetch}
 import claude_limits.usage.outcome.{Outcome}
 import claude_limits.usage.schedule.{Interval, Poll, due, polled, refresh_allowed}
 import claude_limits.usage.parse.{Usage}
+import claude_limits.accounts.login.{TokenState}
 import http.{Http}
 
 /// One account to poll: where it is and what it is called.
@@ -81,11 +82,29 @@ export type PollLog effect {
 export type Skip enum
     | NotDue        // the rhythm says later
     | TooSoon       // a person asked, inside the floor
+    | BadToken      // expired, expiring, or absent: asking would earn a 401
 
 export fn Skip @to_str() -> str =>
     match @ {
         NotDue => "not-due"
         TooSoon => "too-soon"
+        BadToken => "bad-token"
+    }
+
+/// May this account be asked at all?
+///
+/// A STALE TOKEN IS NOT A REASON TO ASK AND FIND OUT. `login.state_of` already decides
+/// staleness, including the guard window before expiry; this only reads its verdict.
+/// The rule matters because the alternative costs something real: an expired token
+/// polled every tick answers 401 every tick, and 01.2 §3.5 names exactly that as how
+/// one rejected account earns a 429 for the whole machine.
+///
+/// `NoToken` is refused for a plainer reason: there is nothing to send.
+export fn may_ask(state TokenState) -> bool =>
+    match state {
+        TokenState.Ok => true
+        TokenState.Stale => false
+        TokenState.NoToken => false
     }
 
 /// Poll one account and write the result down.
@@ -122,7 +141,11 @@ export fn wait_after(o Outcome) -> int => o.retry_after_sec
 /// Returns the new schedule state. When nothing was asked, the state comes back
 /// UNCHANGED -- a skipped tick must not move `last_poll_ms`, or an account that is
 /// never due would drift forward forever and never become due at all.
-export fn tick(a Account, p Poll, iv Interval, now_ms int) Http PollLog -> (Poll, bool) {
+export fn tick(a Account, state TokenState, p Poll, iv Interval, now_ms int) Http PollLog -> (Poll, bool) {
+    // THE TOKEN IS CHECKED BEFORE THE RHYTHM, and the order is the cheaper one: a
+    // stale account is refused without consulting the schedule, and the schedule is
+    // left untouched so that the account polls immediately once its token is renewed.
+    if !may_ask(state) { return (p, false) }
     if !due(p, iv, now_ms) { return (p, false) }
     ro r = poll_once(a, now_ms)
     (polled(p, now_ms, wait_after(r.outcome)), true)
@@ -133,7 +156,10 @@ export fn tick(a Account, p Poll, iv Interval, now_ms int) Http PollLog -> (Poll
 /// The floor applies to demand exactly as it does to the rhythm (01.3 §3.5), and the
 /// refusal is returned rather than swallowed: the page shows "server asks to wait
 /// until 19:49", which it cannot do if the refusal looks like a successful poll.
-export fn refresh(a Account, p Poll, now_ms int) Http PollLog -> (Poll, bool) {
+export fn refresh(a Account, state TokenState, p Poll, now_ms int) Http PollLog -> (Poll, bool) {
+    // A person pressing refresh cannot make a dead token work, and the 401 it would
+    // earn is charged to the whole machine rather than to them.
+    if !may_ask(state) { return (p, false) }
     if !refresh_allowed(p, now_ms) { return (p, false) }
     ro r = poll_once(a, now_ms)
     (polled(p, now_ms, wait_after(r.outcome)), true)
