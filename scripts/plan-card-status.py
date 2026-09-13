@@ -73,6 +73,31 @@ NOT_DONE = ("НЕ НАПИСАНО",
 NOT_A_STATUS = ("Приёмка", "ЭФФЕКТ")
 
 
+def is_label(mark):
+    """A status word used as a HEADING over a list, not as the card's verdict.
+
+    `**Сделано:**` means "what was done" and sits inside a card whose status is
+    something else entirely; `**СДЕЛАНО 2026-09-13, коммит abc**` is the verdict.
+    The difference is that a label is the bare word and nothing else -- no date, no
+    commit, no sentence. Measured on T4.2, where the heading moved the card from
+    partial to done and the tally then said finished about a card whose own first
+    line says otherwise.
+
+    Deliberately narrow: `WORD:` with the colon, and nothing else. The colon is the
+    whole signal -- a heading announces what follows, a verdict does not. The first
+    version of this rule dropped the colon from the test and called a bare `WORD` a
+    label too; eight cards state their verdict as exactly `**СДЕЛАНО**`, and the
+    tally fell from 26 done to 18. Believable, and wrong the other way.
+    """
+    t = mark.strip()
+    if not t.endswith(":"):
+        return False
+    # `Сделано:` is a heading. `СДЕЛАНО 2026-09-13, коммит abc:` -- were anyone to
+    # write it -- is still a verdict, so the bare-word test stays as the second half.
+    head = t.rstrip(":").strip()
+    return " " not in head and "," not in head
+
+
 def classify(mark):
     up = mark.upper()
     for p in DONE:
@@ -105,7 +130,12 @@ def read_cards(path):
         for ln in lines[i + 1:limit]:
             m = BOLD_BULLET.match(ln)
             if m and any(c.isalpha() for c in m.group(1)):
-                marks.append(m.group(1).strip())
+                # A bullet can OPEN with a label as easily as a verdict: T4.2 has
+                # `- **Сделано:**` heading a list inside a card whose status is
+                # ЧАСТИЧНО. Guarding only the mid-bullet branch left the tally
+                # unchanged, which is how this line came to exist.
+                if not is_label(m.group(1)):
+                    marks.append(m.group(1).strip())
                 continue
             # A status can arrive MID-bullet, and T1.6 is the proof: its bullet opens
             # "НАПИСАНО, НЕ ПРОГНАНО" and four lines below says "**СДЕЛАНО -- покрытие
@@ -119,8 +149,9 @@ def read_cards(path):
             # on emphasis is worse than one that misses a mark.
             for mid in BOLD_ANY.findall(ln):
                 t = mid.strip()
-                if t and any(t.upper().startswith(p)
-                             for p in DONE + PARTIAL + NOT_DONE):
+                if not t or is_label(t):
+                    continue
+                if any(t.upper().startswith(p) for p in DONE + PARTIAL + NOT_DONE):
                     marks.append(t)
         out.append((tid, title, i + 1, marks))
     return out
