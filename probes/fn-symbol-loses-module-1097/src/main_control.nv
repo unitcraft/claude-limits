@@ -1,0 +1,13 @@
+// THE CONTROL RUN: `left` and `control`. Same two same-named FUNCTIONS, return types
+// named differently. If this builds and the probe does not, the axis is the type name
+// and nothing else.
+
+module probe_fn_symbol_loses_module_1097.main_control
+
+import probe_fn_symbol_loses_module_1097.left.{parse_ask as parse_left, describe as describe_left}
+import probe_fn_symbol_loses_module_1097.control.{parse_ask as parse_ctl, describe as describe_ctl}
+
+fn main() Io -> () {
+    print(describe_left(parse_left("now")))
+    print(describe_ctl(parse_ctl("yes")))
+}

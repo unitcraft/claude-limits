@@ -1,0 +1,22 @@
+// The twin: the SAME two names, a DIFFERENT sum.
+//
+// Different variants, so the two `Ask` types are genuinely distinct and the emitted C
+// must keep them apart -- which it does for TYPES (`Nova_..._left_Ask` vs
+// `Nova_..._right_Ask`). The question is what happens to the FUNCTION symbol.
+
+module probe_fn_symbol_loses_module_1097.right
+
+export type Ask enum
+    | Yes
+    | No
+
+export fn parse_ask(raw str) -> Ask {
+    if raw == "yes" { return Yes }
+    No
+}
+
+export fn describe(x Ask) -> str =>
+    match x {
+        Yes => "right:yes"
+        No => "right:no"
+    }

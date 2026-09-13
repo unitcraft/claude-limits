@@ -1,0 +1,18 @@
+// One of two siblings. `Ask` is a SUM here, and `parse_ask` returns it.
+
+module probe_fn_symbol_loses_module_1097.left
+
+export type Ask enum
+    | Now
+    | Later
+
+export fn parse_ask(raw str) -> Ask {
+    if raw == "now" { return Now }
+    Later
+}
+
+export fn describe(x Ask) -> str =>
+    match x {
+        Now => "left:now"
+        Later => "left:later"
+    }

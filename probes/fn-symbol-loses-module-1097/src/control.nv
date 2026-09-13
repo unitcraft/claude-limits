@@ -1,0 +1,26 @@
+// THE CONTROL, and it makes the cause IMPOSSIBLE rather than merely different.
+//
+// Same shape as `right.nv` in every respect except the ONE thing the axis names: the
+// return type is called `Reply`, not `Ask`, so no type name is shared. If the axis is
+// right, a main built on `left` + `control` links; a main built on `left` + `right`
+// does not.
+//
+// Renaming only the FUNCTION would be the weak control -- it changes the carrier and
+// leaves the cause standing. That mistake cost twenty minutes earlier tonight.
+
+module probe_fn_symbol_loses_module_1097.control
+
+export type Reply enum
+    | Yes
+    | No
+
+export fn parse_ask(raw str) -> Reply {
+    if raw == "yes" { return Yes }
+    No
+}
+
+export fn describe(x Reply) -> str =>
+    match x {
+        Yes => "control:yes"
+        No => "control:no"
+    }

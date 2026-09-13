@@ -1,0 +1,17 @@
+// THE PROBE: `left` and `right` in one compilation unit.
+//
+//   cd probes/fn-symbol-loses-module-1097
+//   ../../nova.sh build src/main.nv          # expected: conflicting types
+//   ../../nova.sh build src/main_control.nv  # expected: builds and runs
+//
+// Both functions are called, so neither can be eliminated as dead.
+
+module probe_fn_symbol_loses_module_1097.main
+
+import probe_fn_symbol_loses_module_1097.left.{parse_ask as parse_left, describe as describe_left}
+import probe_fn_symbol_loses_module_1097.right.{parse_ask as parse_right, describe as describe_right}
+
+fn main() Io -> () {
+    print(describe_left(parse_left("now")))
+    print(describe_right(parse_right("yes")))
+}

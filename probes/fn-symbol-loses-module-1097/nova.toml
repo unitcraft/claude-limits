@@ -1,0 +1,16 @@
+# Probe for registry 221.1 #1097: a function's C symbol loses its module when the
+# name of its RETURN TYPE is shared between sibling modules.
+#
+# The return type is a SUM on purpose. A record would drag in a second, unrelated
+# defect (`anonymous record literal: expected struct ... not in record_schemas`), and
+# the first attempt at this probe was swallowed by exactly that -- see
+# probes/record-literal-not-in-schemas/. A sum is built by naming a variant and never
+# touches record_schemas.
+
+[lib]
+src = "src"
+
+[package]
+name = "probe_fn_symbol_loses_module_1097"
+version = "0.0.0"
+description = "Probe #1097: two sibling modules whose same-named functions return same-named sum types"
