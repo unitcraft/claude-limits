@@ -1,0 +1,54 @@
+// Do `reg add` and `reg delete` -- the exact forms the handler uses -- work?
+//
+// NOT UNDER THE AUTOSTART KEY. Installing the real record would change what starts
+// when the owner logs in, which is a persistent change to their machine and not one
+// to make while testing. This probe uses a key of its own,
+// `HKCU\Software\claude-limits-probe`, creates a value in it, reads it back, deletes
+// the value and then the key, and checks that the reads flip the right way around
+// each step.
+//
+// The forms are copied from `src/install/real_autostart.nv` argument for argument,
+// including `/f`. Without `/f` the child waits for a confirmation keypress that will
+// never come, and the install hangs -- the process effect waits for the child.
+
+module regwrite
+
+import std.os.{Command, real_os}
+
+const KEY = "HKCU\\Software\\claude-limits-probe"
+const NAME = "claude-limits"
+
+fn code_of(c Command) Os -> int =>
+    match c.run() {
+        Ok(st) => st.code()
+        Err(_) => 0 - 1
+    }
+
+fn present() Os -> int =>
+    code_of(Command.new("reg").arg("query").arg(KEY).arg("/v").arg(NAME))
+
+fn main() Io -> () {
+    with Os = real_os() {
+        print("before add,    query -> ${present()}  (expect non-zero)")
+
+        ro added = code_of(Command.new("reg").arg("add").arg(KEY).arg("/v").arg(NAME)
+            .arg("/t").arg("REG_SZ").arg("/d").arg("\"C:/apps/claude-limits.exe\"").arg("/f"))
+        print("reg add              -> ${added}  (expect 0)")
+        print("after add,     query -> ${present()}  (expect 0)")
+
+        // The idempotence the card asks about, at the level below the Nova logic:
+        // `reg add /f` over an existing value must not fail.
+        ro again = code_of(Command.new("reg").arg("add").arg(KEY).arg("/v").arg(NAME)
+            .arg("/t").arg("REG_SZ").arg("/d").arg("\"C:/apps/claude-limits.exe\"").arg("/f"))
+        print("reg add again        -> ${again}  (expect 0)")
+
+        ro removed = code_of(Command.new("reg").arg("delete").arg(KEY).arg("/v").arg(NAME).arg("/f"))
+        print("reg delete           -> ${removed}  (expect 0)")
+        print("after delete,  query -> ${present()}  (expect non-zero)")
+
+        // Leave nothing behind. A probe that creates a key and keeps it is a probe
+        // that changed the machine it was measuring.
+        ro cleaned = code_of(Command.new("reg").arg("delete").arg(KEY).arg("/f"))
+        print("key removed          -> ${cleaned}  (expect 0)")
+    }
+}

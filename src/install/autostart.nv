@@ -1,0 +1,176 @@
+// autostart.nv — starting the backend when the person logs in (task T4.2).
+//
+//   ./nova.sh test src/install/
+//
+// Source: plan 01 Ф.4 (`--install-autostart`, the `Run` registry key, `.desktop` in
+// `~/.config/autostart`), subplan 01.5 T4.2 ("the record appears and disappears on
+// both systems; installing twice is idempotent").
+//
+// ── WHAT THE EFFECT PROMISES, AND WHY IT PROMISES SO LITTLE ──────────────────
+//
+// Three operations: `present`, `install`, `remove`. In particular there is NO
+// `read()` returning what is currently installed, and that absence is a decision
+// rather than an omission (D456: do not promise a capability you do not have).
+//
+// On Linux the record is a file and its text could be read back. On Windows it is a
+// registry value, and the only tool this project can reach it with is `reg.exe`
+// through `std.os.Command` -- which reports an EXIT CODE and does not hand back the
+// child's output. So `reg query KEY /v NAME` can answer "is it there" and cannot
+// answer "what does it say".
+//
+// An effect with a `read` would therefore have one honest handler and one that
+// invents an answer, and every caller would be written against the honest one. The
+// effect says what BOTH platforms can actually do; `install` overwrites rather than
+// comparing, which is the shape `reg add /f` and a file write already have.
+//
+// ── WHAT IS PURE HERE ────────────────────────────────────────────────────────
+//
+// Everything except the three operations: which location the record takes on each
+// platform, what a `.desktop` file contains, what the command line is, and what
+// installing over an existing record should report. That is the part with rules in
+// it, and it is tested without touching a registry or a disk.
+
+module install.autostart
+
+/// Where the record goes. Named rather than detected here: detection belongs to the
+/// production handler, and a pure function that asks the machine what it is running
+/// on is no longer pure.
+export type Platform enum
+    | Windows
+    | Linux
+
+export fn Platform @to_str() -> str =>
+    match @ {
+        Windows => "windows"
+        Linux => "linux"
+    }
+
+/// The autostart record itself: where it lives and what it holds.
+///
+/// `location` means different things per platform ON PURPOSE -- a registry value
+/// name under `Run`, or an absolute file path -- because the production handler is
+/// the only code that needs to tell them apart, and every other caller just carries
+/// the pair.
+export type Entry value {
+    location str
+    content str
+}
+
+export fn Entry.of(location str, content str) -> Entry => { location, content }
+
+/// What installing or removing actually did.
+///
+/// `AlreadyInstalled` is separate from `Installed` even though both leave the same
+/// state behind, and `NotInstalled` from `Removed` likewise. The person typing
+/// `--install-autostart` twice deserves to be told the second one changed nothing;
+/// folding the two would make the command's output a lie that happens to be
+/// harmless.
+export type Change enum
+    | Installed
+    | AlreadyInstalled
+    | Removed
+    | NotInstalled
+    | Failed
+
+export fn Change @to_str() -> str =>
+    match @ {
+        Installed => "installed"
+        AlreadyInstalled => "already-installed"
+        Removed => "removed"
+        NotInstalled => "not-installed"
+        Failed => "failed"
+    }
+
+/// Whether the command left the system with autostart in place.
+export fn Change @ok() -> bool =>
+    match @ {
+        Installed => true
+        AlreadyInstalled => true
+        Removed => true
+        NotInstalled => true
+        Failed => false
+    }
+
+/// The record's name on both platforms. One constant, because the Windows registry
+/// value and the Linux file basename must agree for `--uninstall-autostart` written
+/// on one machine to describe the other.
+export const NAME = "claude-limits"
+
+/// The three reachable operations. See the header for why there is no `read`.
+export type Autostart effect {
+    present() -> bool
+    install(content str) -> bool
+    remove() -> bool
+}
+
+// ── the pure part ────────────────────────────────────────────────────────────
+
+/// The command line the record starts.
+///
+/// `--widget` is NOT included: the record starts the BACKEND, and the widget is a
+/// second, optional thing the person turns on in its own menu (plan 01 §0). An
+/// autostart entry that opened a window on every login would be the kind of default
+/// people uninstall the whole program over.
+export fn command_line(exe str) -> str => "\"${exe}\""
+
+/// The `.desktop` file freedesktop.org expects in `~/.config/autostart`.
+///
+/// `X-GNOME-Autostart-enabled` is there because GNOME hides an entry without it from
+/// its own settings UI -- the entry still runs, and the person cannot see or disable
+/// it, which is worse than not installing one.
+export fn desktop_text(exe str) -> str {
+    mut s = "[Desktop Entry]\n"
+    s = "${s}Type=Application\n"
+    s = "${s}Name=claude-limits\n"
+    s = "${s}Comment=Claude usage limits, local backend\n"
+    s = "${s}Exec=${command_line(exe)}\n"
+    s = "${s}Terminal=false\n"
+    s = "${s}X-GNOME-Autostart-enabled=true\n"
+    s
+}
+
+/// Where the record lives on `p`, and what it contains.
+///
+/// `home` is passed in rather than read, for the same reason `platform` is: this
+/// function has to be testable on a machine that is neither.
+export fn entry_for(p Platform, exe str, home str) -> Entry =>
+    match p {
+        Windows => Entry.of(NAME, command_line(exe))
+        Linux => Entry.of("${home}/.config/autostart/${NAME}.desktop", desktop_text(exe))
+    }
+
+/// The registry key the Windows record sits under. Per-user (`HKCU`), never
+/// `HKLM`: a machine-wide entry needs administrator rights and would start the
+/// backend for people who never asked for it.
+export const WIN_RUN_KEY = "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run"
+
+// ── the operations ───────────────────────────────────────────────────────────
+
+/// Put the record in place, or report that it was already there.
+///
+/// IDEMPOTENT BY SHAPE: `present` decides what to REPORT, and `install` is called
+/// only when the record is absent. The alternative -- always write, then report
+/// based on what was there before -- is idempotent in its end state too, but it
+/// rewrites a record the person may have edited by hand, and it cannot tell the
+/// difference between "mine" and "theirs".
+export fn install(e Entry) Autostart -> Change {
+    if Autostart.present() { return AlreadyInstalled }
+    if Autostart.install(e.content) { Installed } else { Failed }
+}
+
+/// Take the record away, or report that there was none.
+export fn uninstall() Autostart -> Change {
+    if !Autostart.present() { return NotInstalled }
+    if Autostart.remove() { Removed } else { Failed }
+}
+
+/// What the CLI prints. Here rather than in the CLI because the wording is part of
+/// what the acceptance checks, and a message assembled at the call site drifts.
+export fn message(o Change, e Entry) -> str =>
+    match o {
+        Installed => "autostart installed: ${e.location}"
+        AlreadyInstalled => "autostart already installed: ${e.location}"
+        Removed => "autostart removed: ${e.location}"
+        NotInstalled => "autostart was not installed: ${e.location}"
+        Failed => "autostart could not be changed: ${e.location}"
+    }

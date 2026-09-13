@@ -1,0 +1,25 @@
+// Does a fully-qualified call work without an import?
+//
+// The Linux branch of real_autostart.nv now calls `std.fs.try_exists(...)` with no
+// `import std.fs`, and on THIS machine that branch is cfg-ed out -- so it is never
+// compiled, and "check passed" says nothing about it. This file compiles the same
+// form unconditionally.
+
+module qual
+
+fn main() Io -> () {
+    with Fs = std.fs.real_fs() {
+        ro there = match std.fs.try_exists("nova.toml".to_path()) {
+            Ok(b) => b
+            Err(_) => false
+        }
+        print("qualified call reached the filesystem: ${there}")
+    }
+    with Os = std.os.real_os() {
+        ro h = match std.os.home_dir() {
+            Some(p) => p.to_str()
+            None => "(none)"
+        }
+        print("home: ${h.byte_len()} chars")
+    }
+}

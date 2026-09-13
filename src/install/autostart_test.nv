@@ -1,0 +1,230 @@
+// Tests for install/autostart.nv — task T4.2.
+//
+//   ./nova.sh test src/install/
+//
+// The acceptance: "the record appears and disappears on both systems; installing
+// twice is idempotent". The first half needs two real machines and is answered in
+// the report, not here. The second half is a rule, and a rule is answered by a test.
+//
+// THE MOCK COUNTS, IT DOES NOT ONLY REMEMBER. `present` alone cannot tell "installed
+// once" from "installed twice over itself" -- both end with the record in place. So
+// the fake keeps `writes` and `removes`, and idempotence is asserted as "the second
+// call wrote NOTHING", which is the claim the card actually makes.
+
+module install.autostart_test
+
+import autostart.{Autostart, install, uninstall, entry_for, command_line, desktop_text, message, NAME, WIN_RUN_KEY}
+
+/// What a fake autostart store remembers.
+type Fake {
+    mut there bool
+    mut writes int
+    mut removes int
+    mut last str
+}
+
+fn Fake.new() -> Fake => { there: false, writes: 0, removes: 0, last: "" }
+
+/// Pre-loaded with a record already in place, for the second-install case.
+fn Fake.occupied(content str) -> Fake => { there: true, writes: 0, removes: 0, last: content }
+
+fn Fake mut @put(c str) -> bool {
+    @there = true
+    @writes += 1
+    @last = c
+    true
+}
+
+fn Fake mut @drop() -> bool {
+    @there = false
+    @removes += 1
+    true
+}
+
+fn fake_store(mut s Fake) -> Effect[Autostart] {
+    effect Autostart {
+        present() -> bool => s.there
+        install(content str) -> bool => s.put(content)
+        remove() -> bool => s.drop()
+    }
+}
+
+/// A store where every write fails, for the `Failed` path. Without it the only
+/// tested outcome of a failing system is the one nobody writes by accident.
+fn broken_store() -> Effect[Autostart] {
+    effect Autostart {
+        present() -> bool => false
+        install(content str) -> bool => false
+        remove() -> bool => false
+    }
+}
+
+const EXE = "C:/apps/claude-limits.exe"
+const HOME = "/home/x"
+
+// ── the pure part: where the record goes and what it says ────────────────────
+
+test "on Windows the location is the value NAME, not a path" {
+    ro e = entry_for(Windows, EXE, HOME)
+    assert(e.location == NAME)
+    assert(e.location == "claude-limits")
+    assert(e.content == command_line(EXE))
+}
+
+test "on Linux the location is a .desktop under ~/.config/autostart" {
+    ro e = entry_for(Linux, "/usr/bin/claude-limits", HOME)
+    assert(e.location == "/home/x/.config/autostart/claude-limits.desktop")
+}
+
+test "the two platforms agree on the record's NAME" {
+    // The point of one constant: `--uninstall-autostart` described on one machine
+    // has to name the same record on the other.
+    ro w = entry_for(Windows, EXE, HOME)
+    ro l = entry_for(Linux, EXE, HOME)
+    assert(w.location == NAME)
+    assert(l.location.ends_with("${NAME}.desktop"))
+}
+
+test "the command line quotes the executable" {
+    // A path with a space -- which `C:/Program Files/...` always has -- becomes two
+    // arguments unquoted, and the record silently starts nothing.
+    assert(command_line("C:/Program Files/cl/cl.exe") == "\"C:/Program Files/cl/cl.exe\"")
+}
+
+test "the desktop entry carries the four keys that make it run and show" {
+    ro t = desktop_text("/usr/bin/claude-limits")
+    assert(t.starts_with("[Desktop Entry]"))
+    assert(t.contains("Type=Application"))
+    assert(t.contains("Exec=\"/usr/bin/claude-limits\""))
+    assert(t.contains("Terminal=false"))
+    // Without this GNOME runs the entry but hides it from its own settings, so the
+    // person cannot see or disable what they installed.
+    assert(t.contains("X-GNOME-Autostart-enabled=true"))
+}
+
+test "the record does NOT start the widget" {
+    // Plan 01 §0: the record starts the BACKEND. A window opening on every login is
+    // what people uninstall the whole program over.
+    assert(!command_line(EXE).contains("--widget"))
+    assert(!desktop_text(EXE).contains("--widget"))
+}
+
+test "the Windows key is per-user, never machine-wide" {
+    assert(WIN_RUN_KEY.starts_with("HKCU"))
+    assert(!WIN_RUN_KEY.contains("HKLM"))
+    assert(WIN_RUN_KEY.ends_with("CurrentVersion\\Run"))
+}
+
+// ── installing ───────────────────────────────────────────────────────────────
+
+test "installing on a clean system writes exactly once" {
+    mut s = Fake.new()
+    ro e = entry_for(Windows, EXE, HOME)
+    ro got = with Autostart = fake_store(s) { install(e) }
+    assert(got.to_str() == "installed")
+    assert(s.writes == 1)
+    assert(s.there)
+    assert(s.last == e.content)
+}
+
+test "installing TWICE writes once -- the second call does nothing at all" {
+    mut s = Fake.new()
+    ro e = entry_for(Windows, EXE, HOME)
+    ro second = with Autostart = fake_store(s) {
+        ro _ = install(e)
+        install(e)
+    }
+    assert(second.to_str() == "already-installed")
+    // The whole claim of the card. `there` would be true either way; only the count
+    // separates "idempotent" from "wrote over itself and got away with it".
+    assert(s.writes == 1)
+}
+
+test "an existing record is left alone, not rewritten" {
+    // It may be the person's own edit. Overwriting it is a change they did not ask
+    // for, and the outcome word would not tell them it happened.
+    mut s = Fake.occupied("their own command")
+    ro e = entry_for(Linux, EXE, HOME)
+    ro got = with Autostart = fake_store(s) { install(e) }
+    assert(got.to_str() == "already-installed")
+    assert(s.writes == 0)
+    assert(s.last == "their own command")
+}
+
+test "a store that cannot write reports failure, not success" {
+    ro e = entry_for(Windows, EXE, HOME)
+    ro got = with Autostart = broken_store() { install(e) }
+    assert(got.to_str() == "failed")
+    assert(!got.ok())
+}
+
+// ── uninstalling ─────────────────────────────────────────────────────────────
+
+test "uninstalling an installed record removes it once" {
+    mut s = Fake.occupied("x")
+    ro got = with Autostart = fake_store(s) { uninstall() }
+    assert(got.to_str() == "removed")
+    assert(s.removes == 1)
+    assert(!s.there)
+}
+
+test "uninstalling twice removes once and says so" {
+    mut s = Fake.occupied("x")
+    ro second = with Autostart = fake_store(s) {
+        ro _ = uninstall()
+        uninstall()
+    }
+    assert(second.to_str() == "not-installed")
+    assert(s.removes == 1)
+}
+
+test "uninstalling what was never installed is not a failure" {
+    mut s = Fake.new()
+    ro got = with Autostart = fake_store(s) { uninstall() }
+    assert(got.to_str() == "not-installed")
+    assert(got.ok())
+    assert(s.removes == 0)
+}
+
+test "install then uninstall returns the system to where it started" {
+    mut s = Fake.new()
+    ro e = entry_for(Linux, EXE, HOME)
+    with Autostart = fake_store(s) {
+        ro _ = install(e)
+        ro _ = uninstall()
+    }
+    assert(!s.there)
+    assert(s.writes == 1)
+    assert(s.removes == 1)
+}
+
+// ── what the person is told ──────────────────────────────────────────────────
+
+test "every message names the location, so the person can go look" {
+    ro e = entry_for(Linux, EXE, HOME)
+    assert(message(Installed, e).contains(e.location))
+    assert(message(AlreadyInstalled, e).contains(e.location))
+    assert(message(Removed, e).contains(e.location))
+    assert(message(NotInstalled, e).contains(e.location))
+    assert(message(Failed, e).contains(e.location))
+}
+
+test "only failure is not ok" {
+    // EVERY RECEIVER IS BOUND FIRST, and that is a compiler defect rather than a
+    // style choice: `Installed.ok()` type-checks (`nova check` prints ok:) and then
+    // fails to LINK with `undefined symbol: nova_fn_Installed_ok` -- the emitted C
+    // names the call after the VARIANT instead of the TYPE. Registry 221.1 #393,
+    // open, class K2, "a bare sum variant before `.method()` resolves to a
+    // non-existent free function". Isolated here with a two-line control:
+    // `probes/variant-method-dies-at-link/`.
+    ro a = Installed
+    ro b = AlreadyInstalled
+    ro c = Removed
+    ro d = NotInstalled
+    ro e = Failed
+    assert(a.ok())
+    assert(b.ok())
+    assert(c.ok())
+    assert(d.ok())
+    assert(!e.ok())
+}

@@ -1,0 +1,27 @@
+// A method called on a BARE VARIANT type-checks and then fails to LINK.
+//
+//   nova check  probes/variant-method-dies-at-link/probe.nv   -> ok:
+//   nova build  probes/variant-method-dies-at-link/probe.nv   -> undefined symbol
+//
+// The emitted C calls `nova_fn_Yes_ok`, named after the VARIANT rather than the
+// TYPE, and no such function is ever emitted. Binding the same variant to a name
+// first works, so the value is representable -- only this call form is not.
+
+module control
+
+type Flag enum
+    | Yes
+    | No
+
+fn Flag @ok() -> bool =>
+    match @ {
+        Yes => true
+        No => false
+    }
+
+fn main() Io -> () {
+    // WORKS: the receiver is a binding.
+    ro bound = Yes
+    print("bound: ${bound.ok()}")
+    // FAILS AT LINK: the receiver is the bare variant.
+}

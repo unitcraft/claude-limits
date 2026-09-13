@@ -1,0 +1,41 @@
+// Does the `reg query` form the handler uses actually run, and does its exit code
+// separate "present" from "absent"?
+//
+// READ-ONLY ON PURPOSE. `reg add` would install autostart on the owner's machine,
+// which is a persistent change to their login and not mine to make unasked. This
+// probe only asks.
+//
+// The shell cannot answer this: MSYS mangles `HKCU\Software\...` before `reg.exe`
+// sees it, and my first attempt got "syntax error" from the mangling rather than
+// from the key. `Command.arg` hands the string to the process with no shell in
+// between, so this is the only faithful test of the form.
+
+module regprobe
+
+import std.os.{Command, real_os}
+
+const RUN = "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run"
+
+fn code_of(c Command) Os -> int =>
+    match c.run() {
+        Ok(st) => st.code()
+        Err(_) => 0 - 1
+    }
+
+fn main() Io -> () {
+    with Os = real_os() {
+        // The key itself exists on every Windows install: a non-zero here would mean
+        // the command form is wrong, not that autostart is absent.
+        ro key = code_of(Command.new("reg").arg("query").arg(RUN))
+        print("query the Run key        -> ${key}   (0 = the form works)")
+
+        // The value this project would install. Expected non-zero: nothing installed.
+        ro mine = code_of(Command.new("reg").arg("query").arg(RUN).arg("/v").arg("claude-limits"))
+        print("query our value          -> ${mine}   (non-zero = not installed)")
+
+        // A value that certainly does not exist, as the control: if this returned 0
+        // too, the exit code would not be separating anything.
+        ro nope = code_of(Command.new("reg").arg("query").arg(RUN).arg("/v").arg("no-such-value-xyzzy"))
+        print("query a nonexistent one  -> ${nope}   (control: must match the line above)")
+    }
+}

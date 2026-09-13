@@ -1,0 +1,153 @@
+// real_autostart.nv — the production handler for `Autostart` (task T4.2).
+//
+// WHY IT IS A SEPARATE FILE, the same reason `real_dirs.nv` is: keeping the handler
+// out of `autostart.nv` is what lets the seventeen tests of the rules run without a
+// registry, a disk or libuv. A handler beside the effect would drag both into every
+// test that so much as mentions autostart.
+//
+// ── TWO PLATFORMS, ONE SHAPE ─────────────────────────────────────────────────
+//
+// Windows keeps the record as a value under the per-user `Run` key and is reached
+// through `reg.exe`; Linux keeps it as a `.desktop` file and is reached through the
+// filesystem. Both are split with `#cfg(target_os = "windows")`, which is a
+// COMPILE-TIME choice -- the platform of a binary does not change while it runs, so
+// it is not an effect (the same reasoning `std/fs/path.nv` states for `host_style`).
+//
+// ── WHAT `reg.exe` CAN AND CANNOT TELL US ────────────────────────────────────
+//
+// `std.os.Command.run()` reports an EXIT STATUS and does not capture the child's
+// output. That is the whole reason the `Autostart` effect has no `read`: `reg query
+// KEY /v NAME` answers "is it there" with its exit code and its answer to "what does
+// it say" goes to a console nobody is reading. The effect promises what both
+// platforms can do, rather than what one of them can (D456).
+//
+// `/f` on `reg add` and `reg delete` suppresses the interactive confirmation. Without
+// it the child waits for a keypress that will never come, and the install hangs --
+// the process-run effect waits for the child to exit.
+
+module install.real_autostart
+
+// SIX UNUSED IMPORTS ON A WINDOWS BUILD, AND THEY STAY. The Linux half needs
+// `std.fs`; this platform compiles none of it, so the checker is right to call the
+// names unused -- and it will be right in the mirror image on Linux about `Command`.
+//
+// Three escapes were tried and all three measured shut:
+//   * `#cfg` does not attach to an import: "expected fn / type / let / const / test,
+//     got `import`";
+//   * `// nova:allow unused-import -- reason` changes nothing: `unused-import` comes
+//     from the checker, and the suppression hatch only reaches lint codes;
+//   * calling by full path (`try_exists(...)`) DOES resolve -- but every one
+//     of these takes a `Path`, and `"...".to_path()` is an extension method that
+//     `std.fs` provides, so dropping the import breaks the Linux branch outright.
+//     Found by a probe, because that branch is cfg-ed out here and a passing `check`
+//     on this machine says nothing whatever about it.
+//
+// So the honest state is written down instead of hidden: each platform build carries
+// warnings about the other platform's names. [M-unused-import-across-cfg-split]
+import std.fs.{real_fs, write_atomic, remove_file, try_exists, create_dir_all}
+import std.os.{Command, real_os, home_dir}
+import claude_limits.install.autostart.{Autostart, Platform, Entry, entry_for, NAME, WIN_RUN_KEY}
+
+/// The platform this binary was built for.
+///
+/// A compile-time constant rather than a probe: a Windows binary asking at run time
+/// what system it is on can only ever get one answer, and the question would suggest
+/// otherwise to the next reader.
+#cfg(target_os = "windows")
+export fn host() -> Platform => Windows
+
+#cfg(!target_os = "windows")
+export fn host() -> Platform => Linux
+
+/// Where this machine's record belongs, given the executable's path.
+export fn entry_here(exe str, home str) -> Entry => entry_for(host(), exe, home)
+
+// ── Windows: the per-user Run key, through reg.exe ───────────────────────────
+
+#cfg(target_os = "windows")
+fn ran_ok(c Command) Os -> bool =>
+    match c.run() {
+        Ok(st) => st.code() == 0
+        Err(_) => false
+    }
+
+#cfg(target_os = "windows")
+fn win_present() Os -> bool =>
+    ran_ok(Command.new("reg").arg("query").arg(WIN_RUN_KEY).arg("/v").arg(NAME))
+
+#cfg(target_os = "windows")
+fn win_install(content str) Os -> bool =>
+    ran_ok(Command.new("reg").arg("add").arg(WIN_RUN_KEY).arg("/v").arg(NAME)
+        .arg("/t").arg("REG_SZ").arg("/d").arg(content).arg("/f"))
+
+#cfg(target_os = "windows")
+fn win_remove() Os -> bool =>
+    ran_ok(Command.new("reg").arg("delete").arg(WIN_RUN_KEY).arg("/v").arg(NAME).arg("/f"))
+
+#cfg(target_os = "windows")
+export fn with_real_autostart[T](exe str, body fn() Autostart -> T) Io -> T {
+    with Os = real_os() {
+        with Autostart = effect Autostart {
+            present() -> bool { win_present() }
+            install(content str) -> bool { win_install(content) }
+            remove() -> bool { win_remove() }
+        } {
+            body()
+        }
+    }
+}
+
+// ── Linux: a .desktop file under ~/.config/autostart ─────────────────────────
+
+#cfg(!target_os = "windows")
+fn desktop_path(home str) -> str => "${home}/.config/autostart/${NAME}.desktop"
+
+#cfg(!target_os = "windows")
+fn lin_present(home str) Fs -> bool =>
+    match try_exists(desktop_path(home).to_path()) {
+        Ok(b) => b
+        Err(_) => false
+    }
+
+/// WRITTEN ATOMICALLY, and the reason is not tidiness: a half-written `.desktop`
+/// file is a syntactically valid one with a missing `Exec=`, which the session
+/// manager accepts and silently never runs. A truncated file that still parses is
+/// worse than no file.
+#cfg(!target_os = "windows")
+fn lin_install(home str, content str) Fs -> bool {
+    ro dir = "${home}/.config/autostart"
+    match create_dir_all(dir.to_path()) {
+        Err(_) => return false
+        Ok(_) => ()
+    }
+    match write_atomic(desktop_path(home).to_path(), content.bytes()) {
+        Ok(_) => true
+        Err(_) => false
+    }
+}
+
+#cfg(!target_os = "windows")
+fn lin_remove(home str) Fs -> bool =>
+    match remove_file(desktop_path(home).to_path()) {
+        Ok(_) => true
+        Err(_) => false
+    }
+
+#cfg(!target_os = "windows")
+export fn with_real_autostart[T](exe str, body fn() Autostart -> T) Io -> T {
+    with Os = real_os() {
+        ro home = match home_dir() {
+            Some(p) => p.to_str()
+            None => ""
+        }
+        with Fs = real_fs() {
+            with Autostart = effect Autostart {
+                present() -> bool { lin_present(home) }
+                install(content str) -> bool { lin_install(home, content) }
+                remove() -> bool { lin_remove(home) }
+            } {
+                body()
+            }
+        }
+    }
+}
