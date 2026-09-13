@@ -1,0 +1,223 @@
+// config_file.nv — the settings file on disk: reading it, writing it, keeping the
+// old one (task T2.8).
+//
+//   ./nova.sh test src/storage/ --filter config_file
+//
+// Source: 01.2 §2.2 (read by `mtime`, canonical serialisation, `write_atomic`,
+// `If-Match`), §3.14 (`config_history`), §8 п. 1-2.
+//
+// ── WHAT THIS FILE IS NOT ────────────────────────────────────────────────────
+//
+// It does not parse, render or validate anything: `config.nv` owns all three and is
+// the only place that knows what a key means. This file knows about a PATH, a
+// MOMENT and a previous VERSION -- and nothing else. Splitting it that way is what
+// makes "writing twice gives the same bytes" a property of `render` rather than of
+// the disk, and lets the disk be a mock.
+//
+// ── THE HISTORY ROW IS AN EFFECT, LIKE `PollLog` ─────────────────────────────
+//
+// `config_history` is a table and the storage chain waits on the nova-duckdb tag. So
+// the row is written through a declared effect and the production handler arrives
+// with T2.4. The acceptance line -- «перед записью строка в `config_history` с `***`
+// вместо токена» -- is then provable against a recording handler, and provable more
+// sharply than a database would allow: what matters is that the OLD text is saved
+// and that the token is gone from it, and both are claims about this file.
+//
+// ── THE TOKEN NEVER REACHES THE HISTORY ──────────────────────────────────────
+//
+// `access_token` is stored in the file in the clear (01.2 §2.2: it is a local 0600
+// file, like Claude Code's own credentials). It must NOT be copied into the database
+// -- a backup of the database would then carry it, and the person never consented to
+// that. `redact` replaces the value, and it is applied at the only place that hands
+// text to `ConfigHistory`, not at each call site.
+
+module storage.config_file
+
+import std.fs.{write_atomic, read_text, metadata, try_exists}
+import claude_limits.config.{Config, ConfigError, parse, render, validate}
+
+/// What a version of the file was saved because of (01.2 §3.14 `source`).
+///
+/// The four words are the table's `CHECK` list, and they are spelled here once so
+/// that a fifth one cannot be invented at a call site: the database would reject it
+/// and the rejection would arrive far from the cause.
+/// PREFIXED `From…` because `Ui`, `Widget`, `File` and `Migration` are all taken:
+/// the first two are record types in `config.nv`, which every caller imports, and a
+/// bare `Ui` resolves to the record (`E7330: Ui is a record type, not a value`). The
+/// prefix also reads better where it is used -- `save(..., FromWidget)` says where
+/// the change came from, which is exactly what `config_history.source` records.
+export type Source enum
+    | FromUi
+    | FromWidget
+    | FromFile
+    | FromMigration
+
+export fn Source @to_str() -> str =>
+    match @ {
+        FromUi => "ui"
+        FromWidget => "widget"
+        FromFile => "file"
+        FromMigration => "migration"
+    }
+
+/// Where the previous text of the file is kept.
+///
+/// One operation. It takes the text and the source, and NOT the config -- a history
+/// that stored a parsed value could not answer "what did the file literally say",
+/// which is the only question it exists for.
+export type ConfigHistory effect {
+    save(toml str, source str) -> ()
+}
+
+/// The file as it was last read.
+///
+/// `mtime_ns` IS THE WHOLE POINT of this type. 01.2 §2.2 re-reads on every poll tick
+/// only when the file changed, and "changed" is answered by comparing this number,
+/// not by re-parsing and diffing -- a diff of parsed values would call a re-ordered
+/// but identical file a change, and would miss a change that parses to the same
+/// values but was edited by a person who will look for their edit.
+export type Loaded value {
+    ro cfg Config
+    ro mtime_ns i64
+    ro text str
+    ro errors []ConfigError
+    ro missing bool     // the file is not there; `cfg` holds the defaults
+}
+
+/// Why a save did not happen, or that it did.
+export type Saved enum
+    | Written
+    | Invalid       // validation refused it; the file on disk is untouched
+    | Conflict      // the file changed since it was read (01.2 §2.2, `If-Match`)
+    | WriteFailed
+
+export fn Saved @to_str() -> str =>
+    match @ {
+        Written => "written"
+        Invalid => "invalid"
+        Conflict => "conflict"
+        WriteFailed => "write-failed"
+    }
+
+export fn Saved @ok() -> bool =>
+    match @ {
+        Written => true
+        Invalid => false
+        Conflict => false
+        WriteFailed => false
+    }
+
+// ── the pure part ────────────────────────────────────────────────────────────
+
+/// Replace the value of `access_token` with `***`, leaving every other line alone.
+///
+/// LINE-ORIENTED ON PURPOSE, and not a TOML edit: the text being redacted is the OLD
+/// file, which may be anything a person typed -- including something that no longer
+/// parses. A redactor that had to parse first would refuse exactly the version most
+/// worth keeping.
+///
+/// TWO THINGS IT DOES NOT PRESERVE, said plainly because "leaves everything else
+/// alone" would otherwise be read as byte-for-byte. Line endings come back as `\n`
+/// (`lines()` splits on both and this rejoins with one), and the indentation of the
+/// redacted line is rebuilt with spaces, so a tab indent there becomes spaces. Both
+/// are acceptable for a history row, which exists to answer "what did the settings
+/// say", not "what were the bytes"; neither is acceptable silently.
+export fn redact(text str) -> str {
+    mut out = ""
+    mut first = true
+    for line in text.lines() {
+        ro t = line.trim_ascii_start()
+        ro keep = if t.starts_with("access_token") && line.contains("=") {
+            ro indent = " ".repeat(line.byte_len() - t.byte_len())
+            "${indent}access_token = \"***\""
+        } else {
+            line
+        }
+        if first { out = keep } else { out = "${out}\n${keep}" }
+        first = false
+    }
+    out
+}
+
+/// Does the file on disk differ from what was read?
+///
+/// A MISSING FILE COUNTS AS CHANGED when we had read one, and does not when we had
+/// not. Both halves matter: a deleted settings file must be noticed, and a machine
+/// that has never had one must not report a change on every tick forever.
+export fn changed(before Loaded, now_mtime_ns i64, exists_now bool) -> bool {
+    if before.missing { return exists_now }
+    if !exists_now { return true }
+    now_mtime_ns != before.mtime_ns
+}
+
+// ── the disk ─────────────────────────────────────────────────────────────────
+
+fn mtime_of(path str) Fs -> i64 =>
+    match metadata(path.to_path()) {
+        Ok(m) => m.mtime_ns
+        Err(_) => 0
+    }
+
+// NOT named `exists`: that is a reserved quantifier keyword (std/fs says so in
+// its own source), and the parse error it gives points at the CALL, not the name.
+fn file_there(path str) Fs -> bool =>
+    match try_exists(path.to_path()) {
+        Ok(b) => b
+        Err(_) => false
+    }
+
+/// Read the file, or report the defaults when there is none.
+///
+/// A MISSING FILE IS NOT AN ERROR (01.2 §2.2: a first start has no file and must come
+/// up on defaults). An UNPARSEABLE file is also not an error here -- it comes back
+/// with `errors` filled and the defaults in `cfg`, because §2.2 says a bad file is
+/// reported and the previous values keep running. The caller decides which it is;
+/// this function refuses nothing.
+export fn load(path str) Fs -> Loaded {
+    if !file_there(path) {
+        return { cfg: Config.defaults(), mtime_ns: 0, text: "", errors: [],
+                 missing: true }
+    }
+    ro text = match read_text(path.to_path()) {
+        Ok(s) => s
+        Err(_) => ""
+    }
+    ro mt = mtime_of(path)
+    match parse(text) {
+        Err(msg) => {
+            // The text is KEPT even though it did not parse: it is what goes into
+            // `config_history` if the person saves over it, and it is the only copy
+            // of what they wrote.
+            ro e = [ConfigError { field: "", code: "parse", message: msg }]
+            { cfg: Config.defaults(), mtime_ns: mt, text, errors: e, missing: false }
+        }
+        Ok((cfg, errs)) => { cfg, mtime_ns: mt, text, errors: errs, missing: false }
+    }
+}
+
+/// Write `cfg` to `path`, keeping the previous text in the history.
+///
+/// THE ORDER IS FIXED AND IT IS NOT ARBITRARY: validate, then history, then write.
+/// History BEFORE the write, because after it the old text is gone and there is
+/// nothing to keep; validation before the history, because a refused save must not
+/// leave a history row for a version that was never on disk.
+///
+/// `expected_mtime_ns` is the `If-Match` of 01.2 §2.2 expressed as what the caller
+/// last saw. Pass the value from the `Loaded` it edited; a mismatch is a `Conflict`
+/// and the file is untouched.
+export fn save(path str, before Loaded, cfg Config, source Source) Fs ConfigHistory -> Saved {
+    if validate(cfg).len() > 0 { return Invalid }
+    if changed(before, mtime_of(path), file_there(path)) { return Conflict }
+
+    // Only when there WAS something. A first write has no previous version, and a
+    // history row holding an empty string would later read as "the file was empty",
+    // which is a different and false statement.
+    if !before.missing && before.text != "" {
+        ConfigHistory.save(redact(before.text), source.to_str())
+    }
+
+    match write_atomic(path.to_path(), render(cfg).bytes()) {
+        Ok(_) => Written
+        Err(_) => WriteFailed
+    }
+}

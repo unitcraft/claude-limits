@@ -1,0 +1,309 @@
+// Tests for storage/config_file.nv — task T2.8.
+//
+//   ./nova.sh test src/storage/ --filter config_file
+//
+// The card's four acceptance lines, each with its own test:
+//
+//   * writing again with no changes gives a byte-for-byte identical file;
+//   * a change made outside is noticed by `mtime`;
+//   * before a write, a row goes into `config_history` with `***` in place of the
+//     token;
+//   * an interrupted write leaves the old file intact.
+//
+// THE DISK IS `MemFs` FROM STD, not an effect of this package's own. The card says
+// "tests with a mocked `Fs`", and std's mock is the real `Fs` interface that
+// `write_atomic` talks to -- so the atomicity being tested is the one that ships,
+// rather than a re-implementation of it that agrees with itself.
+
+module storage.config_file_test
+
+import std.fs.{mock_fs, MemFs, read_text, write_text}
+import config_file.{ConfigHistory, load, save, redact, changed}
+import claude_limits.config.{Config, parse, render}
+
+/// What the history handler was handed.
+type Kept {
+    mut rows int
+    mut last_toml str
+    mut last_source str
+}
+
+fn Kept.new() -> Kept => { rows: 0, last_toml: "", last_source: "" }
+
+fn Kept mut @took(toml str, source str) -> () {
+    @rows += 1
+    @last_toml = toml
+    @last_source = source
+}
+
+fn keeping(mut k Kept) -> Effect[ConfigHistory] {
+    effect ConfigHistory {
+        save(toml str, source str) -> () { k.took(toml, source) }
+    }
+}
+
+const P = "/cfg/claude-limits.toml"
+
+/// A file with a token in it, in the shape a person's file actually has.
+fn with_token() -> str {
+    mut s = "schema = 1\n"
+    s = "${s}\n[server]\n"
+    s = "${s}bind = \"127.0.0.1\"\n"
+    s = "${s}port = 7391\n"
+    s = "${s}access_token = \"super-secret-value\"\n"
+    s
+}
+
+// ── redaction: the pure half, and the one a secret depends on ────────────────
+
+test "the token value is replaced and nothing else moves" {
+    ro got = redact(with_token())
+    assert(!got.contains("super-secret-value"))
+    assert(got.contains("access_token = \"***\""))
+    // The other direction: everything that was not the token is byte-identical.
+    assert(got.contains("bind = \"127.0.0.1\""))
+    assert(got.contains("port = 7391"))
+    assert(got.contains("schema = 1"))
+}
+
+test "redaction works on text that does NOT parse" {
+    // The version most worth keeping is the broken one somebody is about to
+    // overwrite. A redactor that parsed first would refuse exactly that.
+    ro broken = "this is not toml at all\naccess_token = \"leak-me\"\n[[[\n"
+    ro got = redact(broken)
+    assert(!got.contains("leak-me"))
+    assert(got.contains("access_token = \"***\""))
+    assert(got.contains("this is not toml at all"))
+}
+
+test "a commented-out token is left alone" {
+    // `# access_token = "..."` is not a value, and rewriting it would change a file
+    // the person can read into one they cannot.
+    ro text = "[server]\n# access_token = \"sample\"\n"
+    ro got = redact(text)
+    assert(got.contains("# access_token = \"sample\""))
+}
+
+test "an indented token keeps its indentation" {
+    ro text = "[server]\n    access_token = \"x\"\n"
+    ro got = redact(text)
+    assert(got.contains("    access_token = \"***\""))
+}
+
+// ── writing twice gives the same bytes ───────────────────────────────────────
+
+test "saving an unchanged config produces a byte-identical file" {
+    mut fs = MemFs.new()
+    mut k = Kept.new()
+    ro first = with Fs = mock_fs(fs) {
+        with ConfigHistory = keeping(k) {
+            ro before = load(P)
+            ro r = save(P, before, Config.defaults(), FromUi)
+            assert(r.to_str() == "written")
+            match read_text(P.to_path()) {
+                Ok(s) => s
+                Err(_) => ""
+            }
+        }
+    }
+    assert(first.byte_len() > 0)
+
+    ro second = with Fs = mock_fs(fs) {
+        with ConfigHistory = keeping(k) {
+            ro before = load(P)
+            ro r = save(P, before, Config.defaults(), FromUi)
+            assert(r.to_str() == "written")
+            match read_text(P.to_path()) {
+                Ok(s) => s
+                Err(_) => ""
+            }
+        }
+    }
+    assert(second == first)
+}
+
+test "a file that round-trips parses back to the same render" {
+    // The property the byte test rests on, stated where it lives: in `config.nv`.
+    // Without this, "identical bytes" could be true of a `save` that wrote nothing.
+    ro once = render(Config.defaults())
+    ro twice = match parse(once) {
+        Ok((cfg, _)) => render(cfg)
+        Err(_) => ""
+    }
+    assert(twice == once)
+    assert(twice.byte_len() > 0)
+}
+
+// ── a change from outside is noticed ─────────────────────────────────────────
+
+test "an untouched file is not reported as changed" {
+    // The control. Without it, a `changed` that always answers true passes the test
+    // below and nothing else notices until the page re-reads on every tick.
+    mut fs = MemFs.new()
+    mut k = Kept.new()
+    with Fs = mock_fs(fs) {
+        with ConfigHistory = keeping(k) {
+            ro _ = save(P, load(P), Config.defaults(), FromUi)
+            ro seen = load(P)
+            assert(!changed(seen, seen.mtime_ns, true))
+        }
+    }
+}
+
+test "a different mtime is a change" {
+    mut fs = MemFs.new()
+    mut k = Kept.new()
+    with Fs = mock_fs(fs) {
+        with ConfigHistory = keeping(k) {
+            ro _ = save(P, load(P), Config.defaults(), FromUi)
+            ro seen = load(P)
+            assert(changed(seen, seen.mtime_ns + 1, true))
+        }
+    }
+}
+
+test "a file that disappeared is a change; one that never existed is not" {
+    mut fs = MemFs.new()
+    mut k = Kept.new()
+    with Fs = mock_fs(fs) {
+        with ConfigHistory = keeping(k) {
+            ro never = load(P)
+            assert(never.missing)
+            // Never had one, still none: not a change, or the backend would report
+            // one on every tick forever.
+            assert(!changed(never, 0, false))
+            // Never had one, now there is: a change.
+            assert(changed(never, 7, true))
+
+            ro _ = save(P, never, Config.defaults(), FromUi)
+            ro seen = load(P)
+            assert(!seen.missing)
+            // Had one, now gone: a change.
+            assert(changed(seen, 0, false))
+        }
+    }
+}
+
+test "a save on top of an out-of-date read is refused, and the file is untouched" {
+    mut fs = MemFs.new()
+    mut k = Kept.new()
+    with Fs = mock_fs(fs) {
+        with ConfigHistory = keeping(k) {
+            ro _ = save(P, load(P), Config.defaults(), FromUi)
+            ro stale = load(P)
+            // Somebody edits the file behind our back.
+            ro _w = write_text(P.to_path(), "schema = 1\n# edited by hand\n")
+            ro after = with ConfigHistory = keeping(k) { save(P, stale, Config.defaults(), FromUi) }
+            assert(after.to_str() == "conflict")
+            assert(!after.ok())
+            ro on_disk = match read_text(P.to_path()) {
+                Ok(s) => s
+                Err(_) => ""
+            }
+            assert(on_disk.contains("edited by hand"))
+        }
+    }
+}
+
+// ── the history row ──────────────────────────────────────────────────────────
+
+test "the previous text is kept, with the token gone" {
+    mut fs = MemFs.new()
+    mut k = Kept.new()
+    with Fs = mock_fs(fs) {
+        ro _w = write_text(P.to_path(), with_token())
+        with ConfigHistory = keeping(k) {
+            ro before = load(P)
+            ro r = save(P, before, Config.defaults(), FromWidget)
+            assert(r.to_str() == "written")
+        }
+    }
+    assert(k.rows == 1)
+    assert(k.last_source == "widget")
+    // THE POINT: the OLD text, not the new one, and with no secret in it.
+    assert(k.last_toml.contains("access_token = \"***\""))
+    assert(!k.last_toml.contains("super-secret-value"))
+    assert(k.last_toml.contains("port = 7391"))
+}
+
+test "a first write has no previous version and stores no row" {
+    // An empty history row would later read as "the file was empty", which is a
+    // different and false statement.
+    mut fs = MemFs.new()
+    mut k = Kept.new()
+    with Fs = mock_fs(fs) {
+        with ConfigHistory = keeping(k) {
+            ro r = save(P, load(P), Config.defaults(), FromFile)
+            assert(r.to_str() == "written")
+        }
+    }
+    assert(k.rows == 0)
+}
+
+test "the history is written BEFORE the file, so the old text still exists" {
+    mut fs = MemFs.new()
+    mut k = Kept.new()
+    with Fs = mock_fs(fs) {
+        ro _w = write_text(P.to_path(), with_token())
+        with ConfigHistory = keeping(k) {
+            ro before = load(P)
+            ro _ = save(P, before, Config.defaults(), FromUi)
+        }
+    }
+    // If the order were reversed, the kept text would be the NEW render, which has
+    // no `access_token` line at all -- so this assertion pins the order.
+    assert(k.last_toml.contains("access_token"))
+    assert(k.rows == 1)
+}
+
+// ── an interrupted write leaves the old file whole ───────────────────────────
+
+test "a failing write leaves the previous file byte-for-byte intact" {
+    mut fs = MemFs.new()
+    mut k = Kept.new()
+    ro original = with_token()
+    with Fs = mock_fs(fs) {
+        ro _w = write_text(P.to_path(), original)
+    }
+    fs.fail_writes()
+    ro verdict = with Fs = mock_fs(fs) {
+        with ConfigHistory = keeping(k) {
+            ro before = load(P)
+            save(P, before, Config.defaults(), FromUi)
+        }
+    }
+    assert(verdict.to_str() == "write-failed")
+    assert(!verdict.ok())
+    // The whole claim of the acceptance line: the old file is still there, entire.
+    ro on_disk = with Fs = mock_fs(fs) {
+        match read_text(P.to_path()) {
+            Ok(s) => s
+            Err(_) => ""
+        }
+    }
+    assert(on_disk == original)
+}
+
+// ── what `load` refuses to call an error ─────────────────────────────────────
+
+test "a missing file loads the defaults and says it was missing" {
+    mut fs = MemFs.new()
+    ro got = with Fs = mock_fs(fs) { load(P) }
+    assert(got.missing)
+    assert(got.text == "")
+    assert(got.errors.len() == 0)
+    assert(got.cfg.server.port == Config.defaults().server.port)
+}
+
+test "an unparseable file keeps its text and reports the error" {
+    mut fs = MemFs.new()
+    with Fs = mock_fs(fs) {
+        ro _w = write_text(P.to_path(), "[[[not toml\n")
+    }
+    ro got = with Fs = mock_fs(fs) { load(P) }
+    assert(!got.missing)
+    assert(got.errors.len() > 0)
+    // The text survives: it is the only copy of what the person wrote, and it is what
+    // goes into the history if they save over it.
+    assert(got.text.contains("not toml"))
+}
