@@ -142,6 +142,19 @@ def main():
     ap.add_argument("--expect-at-least", type=int, default=0,
                     help="fail if fewer cards are found; catches a regex that quietly "
                          "stopped matching and returned a believable smaller number")
+    # WHAT THIS FLAG DOES NOT DO, said here because a floor reads like a guarantee.
+    #
+    # It is a FLOOR: it catches the count going DOWN. It says nothing when the plan
+    # grows to sixty cards and the regex finds fifty-five -- the floor is satisfied and
+    # five cards are invisible. Raising it is a human act, and nothing here will remind
+    # anyone.
+    #
+    # The value in use is 51, measured on 2026-09-09 against
+    # docs/plans/01.5-work-breakdown.md and cited in the plan and the handoff. Where a
+    # baseline CAME FROM matters as much as its value: registry 221.1 #1088 is a
+    # ratchet that was below the truth from birth, seeded by a local run on a machine
+    # whose index hid two files from `git status`. It guarded a wrong number honestly
+    # for weeks.
     a = ap.parse_args()
 
     if not os.path.exists(a.plan):
