@@ -1,0 +1,10 @@
+module pf1.a_test
+type Mode enum
+    | Once
+    | Help
+// @nosuchfield on a SUM, and NO match: if the axis is the missing field, this fails.
+fn Mode @describe() -> str => @nosuchfield
+test "enum method reaching a field that does not exist, without match" {
+    ro m = Mode.Help
+    assert(m == Mode.Help)
+}

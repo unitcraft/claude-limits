@@ -1,0 +1,9 @@
+module pf2.a_test
+type Box value { ro tag int }
+// @nosuchfield on a RECORD that HAS fields, just not this one.
+fn Box @describe() -> str => @nosuchfield
+test "value record method reaching a field that does not exist" {
+    ro b = Box.of(1)
+    assert(b.tag == 1)
+}
+fn Box.of(t int) -> Box => { tag: t }
