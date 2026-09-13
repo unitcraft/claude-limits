@@ -1,0 +1,90 @@
+// sse_loop.nv — what one SSE connection does between events (T2.13, 01.3 §3.4).
+//
+// `events.nv` decides what an event LOOKS LIKE on the wire and says in its own header
+// that the loop "arrives with the store fiber it reads from". The store fiber landed,
+// so this is that loop -- or rather, the part of it with rules in it.
+//
+// THE DECISION IS PURE AND THE WAITING IS NOT, and they are separated for the reason
+// the whole package separates them: three of this card's seven conditions are about
+// TIMING (`ping` after silence, `bye` at shutdown, a refresh arriving within a tick),
+// and a rule tested through a real clock is a rule tested through a real clock. Here
+// the elapsed time is a parameter, so "one millisecond before the ping is due" is a
+// value a test writes down rather than a sleep it has to survive.
+//
+// WHY `Bye` OUTRANKS EVERYTHING. When the server is stopping, a pending event is not
+// worth sending: the connection is about to close and a client that receives a snapshot
+// and then a silent disconnect cannot tell whether more was coming. `bye` first means
+// the client always learns the stream ended on purpose.
+
+module handlers.sse_loop
+
+import claude_limits.model.store.{Event}
+
+/// How long silence may last before a keep-alive (01.3 §3.4).
+///
+/// Thirty seconds, not sixty: proxies and browsers drop an idle connection at a minute
+/// often enough that a keep-alive at the limit is a keep-alive that arrives too late.
+export const PING_AFTER_MS = 30 * 1000
+
+/// What the connection should do next.
+export type Tick enum
+    /// Write this event and reset the silence.
+    | Send(Event)
+    /// Write a keep-alive comment; the silence resets but no id is consumed.
+    | Ping
+    /// Write the farewell and close.
+    | Bye
+    /// Nothing to do; keep waiting.
+    | Wait
+
+/// Decide, given everything that could matter.
+///
+/// `pending` is the event the store handed over, if any. `silent_ms` is how long since
+/// anything was written -- an EVENT or a ping, because a ping is traffic too and a
+/// connection that pings is not silent.
+export fn next_action(stopping bool, pending Option[Event], silent_ms int) -> Tick {
+    // STOPPING FIRST, ahead of a pending event. See the header: a client that gets a
+    // snapshot and then a silent disconnect cannot tell whether more was coming.
+    if stopping { return Tick.Bye }
+
+    match pending {
+        Some(e) => Tick.Send(e)
+        None => {
+            // `>=` and not `>`: at exactly thirty seconds the keep-alive is due. The
+            // other reading delays every ping by one scheduler tick, which is
+            // invisible in a test and cumulative in production.
+            if silent_ms >= PING_AFTER_MS { return Tick.Ping }
+            Tick.Wait
+        }
+    }
+}
+
+/// The silence after taking an action.
+///
+/// A SEND AND A PING BOTH RESET IT, and that is the rule this function exists to hold
+/// in one place: a ping is traffic, so a connection that just pinged is not silent and
+/// must not ping again immediately. Counting only events would turn one idle connection
+/// into a ping per tick.
+export fn silence_after(t Tick, silent_ms int) -> int {
+    match t {
+        Tick.Send(_) => 0
+        Tick.Ping => 0
+        Tick.Bye => silent_ms      // nothing follows; the value no longer matters
+        Tick.Wait => silent_ms     // unchanged: the waiting is somebody else's to add
+    }
+}
+
+/// The bytes for a tick, or "" when there is nothing to write.
+///
+/// The comment form for a ping is deliberate: `: ping` is an SSE COMMENT, so it keeps
+/// the connection alive without becoming an event the client must number. An event with
+/// no id is an event a client cannot resume from -- the reason `events.nv` writes its
+/// own `frame` rather than using the one Polaris offers.
+export fn bytes_of(t Tick, frame_of fn(Event) -> str) -> str {
+    match t {
+        Tick.Send(e) => frame_of(e)
+        Tick.Ping => ": ping\n\n"
+        Tick.Bye => "event: bye\ndata: {}\n\n"
+        Tick.Wait => ""
+    }
+}

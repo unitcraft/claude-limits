@@ -1,0 +1,93 @@
+// Tests for sse_loop.nv — the three timing rules of T2.13 (01.3 §3.4).
+//
+//   ./nova.sh test src/server/ --filter sse_loop
+//
+// NO CLOCK AND NO FIBER. Elapsed time is a parameter, so "one millisecond before the
+// ping is due" is a value written here rather than a sleep a test has to survive. That
+// is the whole reason the decision was separated from the waiting: a rule tested
+// through a real scheduler is a rule tested through a real scheduler.
+//
+// Every boundary is checked on BOTH SIDES. A keep-alive rule is all boundary: "pings
+// eventually" passes for a loop that pings every tick, and "does not ping early" passes
+// for one that never pings at all.
+
+module handlers.sse_loop_test
+
+import sse_loop.{Tick, next_action, silence_after, bytes_of, PING_AFTER_MS}
+import claude_limits.model.store.{Event}
+
+fn an_event() -> Event => Event.of(7, "snapshot", "{}")
+
+fn is_ping(t Tick) -> bool => match t { Tick.Ping => true, _ => false }
+fn is_bye(t Tick) -> bool => match t { Tick.Bye => true, _ => false }
+fn is_wait(t Tick) -> bool => match t { Tick.Wait => true, _ => false }
+fn sent_id(t Tick) -> int => match t { Tick.Send(e) => e.id, _ => 0 - 1 }
+
+test "a pending event is sent, and it is the event that was pending" {
+    // Not just "something was sent": a loop that invented its own event would satisfy
+    // that, and the client would resume from an id nobody published.
+    assert(sent_id(next_action(false, Some(an_event()), 0)) == 7)
+}
+
+test "silence shorter than the limit waits; exactly the limit pings" {
+    assert(is_wait(next_action(false, None, PING_AFTER_MS - 1)))
+    // `>=` and not `>`: at exactly thirty seconds the keep-alive is due. The other
+    // reading delays every ping by a scheduler tick -- invisible here, cumulative in
+    // production.
+    assert(is_ping(next_action(false, None, PING_AFTER_MS)))
+    assert(is_ping(next_action(false, None, PING_AFTER_MS + 1)))
+}
+
+test "an event beats a due ping: traffic is traffic" {
+    // Silence is long past the limit AND an event is waiting. Sending it keeps the
+    // connection alive by itself, and a ping alongside would be noise the client has
+    // to skip.
+    assert(sent_id(next_action(false, Some(an_event()), PING_AFTER_MS * 10)) == 7)
+}
+
+test "stopping outranks everything, including a pending event" {
+    // The rule the header argues for: a client that receives a snapshot and then a
+    // silent disconnect cannot tell whether more was coming. `bye` first means the
+    // stream always ends on purpose.
+    assert(is_bye(next_action(true, Some(an_event()), 0)))
+    assert(is_bye(next_action(true, None, 0)))
+    assert(is_bye(next_action(true, None, PING_AFTER_MS * 10)))
+}
+
+test "a ping resets the silence, or one idle connection pings every tick" {
+    // The half a single test would miss. Counting only EVENTS as traffic leaves the
+    // silence past the limit forever, and the loop pings on every pass.
+    assert(silence_after(Tick.Ping, PING_AFTER_MS) == 0)
+    assert(silence_after(Tick.Send(an_event()), PING_AFTER_MS) == 0)
+    // Waiting does not reset it -- that is what makes the silence grow at all.
+    assert(silence_after(Tick.Wait, 1234) == 1234)
+}
+
+test "the ping is an SSE COMMENT, not an event" {
+    // An event with no id is an event a client cannot resume from; an event WITH an id
+    // consumes a number nobody published. A comment is neither.
+    ro b = bytes_of(Tick.Ping, fn(e Event) -> str => "FRAME")
+    assert(b.starts_with(":"))
+    assert(!b.contains("id:"))
+    assert(!b.contains("event:"))
+    // Two newlines, or the client buffers it waiting for the rest.
+    assert(b.ends_with("\n\n"))
+}
+
+test "the farewell is a named event, so the client knows the end was deliberate" {
+    ro b = bytes_of(Tick.Bye, fn(e Event) -> str => "FRAME")
+    assert(b.contains("event: bye"))
+    assert(b.ends_with("\n\n"))
+}
+
+test "a send is framed by the framer it was given, not by a second spelling" {
+    // `events.nv` owns the wire format and says so: the loop must not invent a second
+    // way to write an event, or `id:` goes missing from one of them and a client
+    // cannot resume.
+    ro got = bytes_of(Tick.Send(an_event()), fn(e Event) -> str => "FRAMED-${e.id}")
+    assert(got == "FRAMED-7")
+}
+
+test "waiting writes nothing at all" {
+    assert(bytes_of(Tick.Wait, fn(e Event) -> str => "FRAME") == "")
+}
