@@ -100,3 +100,22 @@ test "a request that never arrived is unknown, and carries no message of its own
     assert(o.message == "")
     assert(o.retry_after_sec == POLL_FLOOR_SEC)
 }
+
+test "NO outcome this module can build waits less than the floor" {
+    // THE POINT OF THIS TEST IS THE LIST, and the list is the whole public surface of
+    // the module. `poller.wait_after` passes `retry_after_sec` straight to the
+    // schedule, so if any constructor here returned 0 the next poll would be allowed
+    // immediately -- which is how one 429 becomes a steady stream of them.
+    //
+    // It exists because a mutation probe found the poller re-deciding this floor in a
+    // branch nothing could reach. A guarantee asserted where it is PROVIDED can fail;
+    // asserted where it is consumed, it was dead code.
+    assert(of_status(429, 120).retry_after_sec == 120)
+    assert(of_status(429, 0).retry_after_sec == POLL_FLOOR_SEC)
+    assert(of_status(401, 0).retry_after_sec >= POLL_FLOOR_SEC)
+    assert(of_status(500, 0).retry_after_sec >= POLL_FLOOR_SEC)
+    assert(of_status(200, 0).retry_after_sec >= POLL_FLOOR_SEC)
+    assert(of_status(302, 0).retry_after_sec >= POLL_FLOOR_SEC)
+    assert(bad_body().retry_after_sec >= POLL_FLOOR_SEC)
+    assert(transport_failed().retry_after_sec >= POLL_FLOOR_SEC)
+}

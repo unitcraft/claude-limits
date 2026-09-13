@@ -1,0 +1,140 @@
+// poller.nv — who gets polled, when, and what is written down (task T2.10).
+//
+//   ./nova.sh test src/usage/ --filter poller
+//
+// Source: plan 01 §0 («Правила опроса»), §3.1; 01.3 §3.5 (the 60 s floor, backoff on
+// 429); 01.2 §3.8 (the `poll` table).
+//
+// ── THIS FILE DECIDES NOTHING NEW ────────────────────────────────────────────
+//
+// Every rule it obeys already exists: `schedule.nv` says when an account is due and
+// whether a refresh may run, `outcome.nv` says what a status means and how long to
+// wait, `fetch.nv` asks and reads the reply. This file only puts them in order and
+// records what happened.
+//
+// That is worth saying because the temptation is the opposite. A poller is where
+// "just here" rules accumulate -- one more special case for 503, one more clamp on
+// the interval -- and each of them is then a rule with two homes. If something here
+// needs a new decision, it belongs in the module that owns that decision, and this
+// file calls it.
+//
+// ── THE RECORD IS AN EFFECT BECAUSE THE TABLE IS NOT HERE YET ────────────────
+//
+// «каждый исход пишется в `poll`» is one of the card's acceptance lines, and the
+// `poll` table lives in the storage chain, which waits on the nova-duckdb tag. So the
+// poller declares `PollLog` and the production handler arrives with T2.4. The
+// acceptance is provable today against a counting handler -- and it is a BETTER proof
+// than a database would give, because "one record per outcome" is a claim about this
+// file rather than about DuckDB.
+//
+// ── WHAT NEVER REACHES THE LOG ───────────────────────────────────────────────
+//
+// `record` takes an e-mail, a state, a message and a moment. It does NOT take the
+// token, and `Account` hands the token only to `fetch`. A log operation that could
+// accept a token would eventually be given one.
+
+module usage.poller
+
+import claude_limits.usage.fetch.{fetch}
+import claude_limits.usage.outcome.{Outcome}
+import claude_limits.usage.schedule.{Interval, Poll, due, polled, refresh_allowed}
+import claude_limits.usage.parse.{Usage}
+import http.{Http}
+
+/// One account to poll: where it is and what it is called.
+///
+/// The token sits here because the poller must pass it to `fetch`, and NOWHERE else
+/// in this file is it read. It is not part of `Reading` and not part of what `record`
+/// is given.
+export type Account value {
+    ro email str
+    ro host str
+    ro port int
+    ro secure bool
+    ro path str
+    ro token str
+}
+
+export fn Account.of(email str, host str, port int, secure bool, path str,
+                     token str) -> Account =>
+    { email, host, port, secure, path, token }
+
+/// What one poll produced, for a caller that wants the numbers rather than the state.
+export type Reading value {
+    ro email str
+    ro outcome Outcome
+    ro usage Usage
+    ro at_ms int
+}
+
+/// Where the outcome of a poll is written down.
+///
+/// One operation, and its arguments are the four things 01.2 §3.8 stores. No token,
+/// no raw body, no header block: an operation that CAN carry a secret will be handed
+/// one eventually, and the handler that logs to a file will log it.
+export type PollLog effect {
+    record(email str, state str, message str, at_ms int) -> ()
+}
+
+/// Why a poll did not happen. A refusal is not a failure and is never recorded in
+/// `poll` -- the table holds what the endpoint said, and nothing was asked.
+export type Skip enum
+    | NotDue        // the rhythm says later
+    | TooSoon       // a person asked, inside the floor
+
+export fn Skip @to_str() -> str =>
+    match @ {
+        NotDue => "not-due"
+        TooSoon => "too-soon"
+    }
+
+/// Poll one account and write the result down.
+///
+/// UNCONDITIONAL: the caller has already decided this account is due. Splitting the
+/// decision from the act is what makes both testable -- `due` without a network, and
+/// this without a clock.
+export fn poll_once(a Account, now_ms int) Http PollLog -> Reading {
+    ro got = fetch(a.host, a.port, a.secure, a.path, a.token)
+    // WRITTEN BEFORE ANYTHING ELSE CAN GO WRONG. Every outcome is recorded, including
+    // the ones nobody wants to look at: a 429 that is not in `poll` is a 429 nobody
+    // can explain the next morning.
+    PollLog.record(a.email, got.outcome.state.to_str(), got.outcome.message, now_ms)
+    { email: a.email, outcome: got.outcome, usage: got.usage, at_ms: now_ms }
+}
+
+/// The wait the schedule should take from an outcome: whatever the outcome says.
+///
+/// A PASS-THROUGH, AND IT USED TO BE MORE. It began as "the server's number when it
+/// gave one, the floor when it did not" -- and a mutation probe showed the second
+/// half was unreachable: every constructor in `outcome.nv` already sets
+/// `retry_after_sec` to at least the floor (`of_status` on all five paths,
+/// `bad_body`, `transport_failed`). Changing the fallback to `return 0` left all
+/// seventeen tests green, because nothing can reach it.
+///
+/// That is the shape this file's header warns about: a rule with two homes, where
+/// the second copy is dead and can therefore drift from the first in silence.
+/// `outcome.nv` owns the floor. The guarantee is asserted over every constructor in
+/// `outcome_test.nv`, where a new constructor returning zero reddens something.
+export fn wait_after(o Outcome) -> int => o.retry_after_sec
+
+/// One tick for one account: poll it if it is due, and say so either way.
+///
+/// Returns the new schedule state. When nothing was asked, the state comes back
+/// UNCHANGED -- a skipped tick must not move `last_poll_ms`, or an account that is
+/// never due would drift forward forever and never become due at all.
+export fn tick(a Account, p Poll, iv Interval, now_ms int) Http PollLog -> (Poll, bool) {
+    if !due(p, iv, now_ms) { return (p, false) }
+    ro r = poll_once(a, now_ms)
+    (polled(p, now_ms, wait_after(r.outcome)), true)
+}
+
+/// A refresh asked for by a person.
+///
+/// The floor applies to demand exactly as it does to the rhythm (01.3 §3.5), and the
+/// refusal is returned rather than swallowed: the page shows "server asks to wait
+/// until 19:49", which it cannot do if the refusal looks like a successful poll.
+export fn refresh(a Account, p Poll, now_ms int) Http PollLog -> (Poll, bool) {
+    if !refresh_allowed(p, now_ms) { return (p, false) }
+    ro r = poll_once(a, now_ms)
+    (polled(p, now_ms, wait_after(r.outcome)), true)
+}
