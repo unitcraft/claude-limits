@@ -49,6 +49,10 @@ export type Usage value {
 fn Usage.of(windows []Window, outcome PollOutcome, from_fallback bool) -> Usage =>
     { windows, outcome, from_fallback }
 
+/// Nothing was read. `NoWindows` and not `BadJson`: there was no body to fail on, and
+/// calling a transport failure a parse failure would send a reader looking at the JSON.
+export fn Usage.empty() -> Usage => Usage.of([], NoWindows, false)
+
 fn str_field(obj JsonValue, key str) -> str =>
     match obj.object() {
         None => ""

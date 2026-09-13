@@ -1,0 +1,8 @@
+module cc1.lib_test
+import lib.{who}
+const MARK = "FROM-TEST"
+fn mine() -> str => MARK
+test "whose constant wins when both modules declare MARK" {
+    assert(who() == "FROM-LIB")
+    assert(mine() == "FROM-TEST")
+}

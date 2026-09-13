@@ -1,0 +1,150 @@
+// fetch.nv — one poll of the usage endpoint (tasks T1.5, T2.10).
+//
+// The piece that ties the three that were already here: `parse.nv` reads a body,
+// `outcome.nv` decides what a status means, `schedule.nv` decides when to ask again.
+// This one asks.
+//
+// WHY IT EXISTS NOW, when the card said it was blocked. `usage/fetch.nv` was recorded
+// as standing behind registry #1033 -- the shim that will not link -- and that was
+// measured wrong. `nova-http` declares `Http` as an EFFECT: a probe importing
+// `http.client.mock_http` inside this package builds, links and passes. #1033 holds
+// `real_http` over Net/TLS and nothing above it, so everything here is writable and
+// testable today; only a live request is not.
+//
+// EVERYTHING EXCEPT `fetch` IS PURE, and that is deliberate rather than tidy. The
+// `Http` effect hands over a raw request string and hands back a raw response string,
+// so reading a status line, finding a header and separating a body are decisions about
+// text. Keeping them out of the effectful function is what lets a malformed reply be a
+// test rather than an incident.
+//
+// THE TOKEN IS BUILT INTO THE REQUEST AND NEVER ANYWHERE ELSE. It is not returned, not
+// logged, not placed in an error message. `request_for` takes it and the string it
+// builds goes straight to `Http.send`; no other function in this file sees it.
+
+module usage.fetch
+
+import http.{Http, HttpError}
+import claude_limits.usage.outcome.{Outcome, of_status, bad_body, transport_failed}
+import claude_limits.usage.parse.{Usage, PollOutcome, parse}
+
+/// CRLF, spelled once. Written as an escape rather than a literal because a literal
+/// carriage return in a source file is invisible and survives a copy-paste into
+/// something that strips it.
+// PRIVATE on purpose while the defect stands: an `export const` is emitted without a
+// module prefix, so any other module declaring `CRLF` collides
+// (`probes/exported-const-loses-module-prefix/`). Private keeps the prefix.
+const CRLF = "\r\n"
+
+/// What one poll produced: how it went, and what the body said when there was one.
+export type Poll value {
+    ro outcome Outcome
+    ro usage Usage
+}
+
+export fn Poll.of(outcome Outcome, usage Usage) -> Poll => { outcome, usage }
+
+/// The request, serialised.
+///
+/// `Connection: close` because the effect is one hop by contract -- `nova-http` says so
+/// in its own header, and keep-alive decisions belong to a client this package does not
+/// have.
+export fn request_for(host str, path str, token str) -> str {
+    mut r = "GET ${path} HTTP/1.1${CRLF}"
+    r = "${r}Host: ${host}${CRLF}"
+    r = "${r}Authorization: Bearer ${token}${CRLF}"
+    r = "${r}Accept: application/json${CRLF}"
+    r = "${r}Connection: close${CRLF}${CRLF}"
+    r
+}
+
+/// The status code of a raw response, or 0 when the first line is not a status line.
+///
+/// ZERO MEANS "COULD NOT READ IT", and the caller must not treat it as a status: a
+/// reply whose first line is unreadable is a transport failure, not an HTTP one.
+export fn status_of(raw str) -> int {
+    ro line = match raw.split_once(CRLF) {
+        Some((first, _)) => first
+        None => raw
+    }
+    // `HTTP/1.1 429 Too Many Requests` -- the code is the second word.
+    ro after_version = match line.split_once(" ") {
+        Some((_, rest)) => rest
+        None => return 0
+    }
+    ro code_text = match after_version.split_once(" ") {
+        Some((code, _)) => code
+        None => after_version
+    }
+    match code_text.trim_ascii().to_int() {
+        Ok(n) => n
+        Err(_) => 0
+    }
+}
+
+/// The value of one header, case-insensitively, or "" when absent.
+///
+/// CASE-INSENSITIVE BECAUSE HTTP SAYS SO, and because the one header this package
+/// actually depends on -- `Retry-After` -- has been seen spelled `retry-after` by real
+/// servers. Matching exactly would read a present header as absent, and an absent
+/// `Retry-After` means "use our floor", which is the more aggressive of the two.
+export fn header_of(raw str, name str) -> str {
+    ro want = name.to_ascii_lower()
+    for line in raw.split(CRLF) {
+        if line == "" { return "" }        // end of headers
+        match line.split_once(":") {
+            Some((k, v)) => {
+                if k.trim_ascii().to_ascii_lower() == want { return v.trim_ascii() }
+            }
+            None => { }
+        }
+    }
+    ""
+}
+
+/// Everything after the blank line, or "" when there is no blank line.
+export fn body_of(raw str) -> str {
+    ro sep = "${CRLF}${CRLF}"
+    match raw.split_once(sep) {
+        Some((_, body)) => body
+        None => ""
+    }
+}
+
+/// `Retry-After` in seconds, or 0 when absent or unreadable.
+///
+/// ZERO MEANS ABSENT, not "immediately" -- `outcome.of_status` is written to that
+/// convention, and the two readings are opposite instructions. A header carrying an
+/// HTTP-date rather than a count also lands here as 0: we do not parse dates, and
+/// guessing would be worse than falling back to the floor.
+export fn retry_after_of(raw str) -> int {
+    ro v = header_of(raw, "Retry-After")
+    if v == "" { return 0 }
+    match v.to_int() {
+        Ok(n) => if n > 0 { n } else { 0 }
+        Err(_) => 0
+    }
+}
+
+/// One poll. The only effectful function here.
+export fn fetch(host str, port int, secure bool, path str, token str) Http -> Poll {
+    match Http.send(host, port, secure, request_for(host, path, token)) {
+        // The request never arrived. `unknown`, and the last good reading stays.
+        Err(_) => Poll.of(transport_failed(), Usage.empty())
+        Ok(raw) => {
+            ro status = status_of(raw)
+            // A first line we cannot read is not an HTTP outcome at all.
+            if status == 0 { return Poll.of(transport_failed(), Usage.empty()) }
+
+            ro out = of_status(status, retry_after_of(raw))
+            if !out.body_usable { return Poll.of(out, Usage.empty()) }
+
+            ro usage = parse(body_of(raw))
+            // A 200 whose body will not parse is `error`, per 01.1 §3.2 -- see the
+            // note in `outcome_test` about the fixture that says `unknown` instead.
+            if usage.outcome == PollOutcome.BadJson {
+                return Poll.of(bad_body(), usage)
+            }
+            Poll.of(out, usage)
+        }
+    }
+}

@@ -1,0 +1,140 @@
+// Tests for fetch.nv — one poll, against a mock endpoint (T1.5, T2.10).
+//
+//   ./nova.sh test src/usage/ --filter fetch
+//
+// NO NETWORK AND NO TOKEN. The `Http` effect is served by an in-memory handler, which
+// is why this file exists at all while the real client cannot link here (#1033): the
+// blocker holds `real_http`, not the effect.
+//
+// The pure half is tested directly -- a status line, a header, a body are decisions
+// about text and deserve to fail as text, not as an incident. The effectful half gets
+// one test per row of `fixtures/transport/`.
+
+module usage.fetch_test
+
+import http.{Http, HttpError}
+import claude_limits.usage.fetch.{request_for, status_of, header_of, body_of, retry_after_of, fetch}
+import claude_limits.model.snapshot.{AccountState}
+
+const EOL = "\r\n"
+
+fn reply(status_line str, headers str, body str) -> str =>
+    "${status_line}${EOL}${headers}${EOL}${EOL}${body}"
+
+// ── the request ─────────────────────────────────────────────────────────────
+
+test "the request carries the token as a bearer, and the host it was given" {
+    ro r = request_for("api.example.com", "/v1/usage", "secret-token")
+    assert(r.starts_with("GET /v1/usage HTTP/1.1"))
+    assert(r.contains("Host: api.example.com"))
+    assert(r.contains("Authorization: Bearer secret-token"))
+    // One hop by contract: `nova-http` says a single `send` is exactly one hop, so
+    // keep-alive is not ours to ask for.
+    assert(r.contains("Connection: close"))
+    // Headers end with a blank line, or the server waits for more of them.
+    assert(r.ends_with("${EOL}${EOL}"))
+}
+
+// ── reading a reply, as text ────────────────────────────────────────────────
+
+test "the status code is the second word, whatever follows it" {
+    assert(status_of("HTTP/1.1 200 OK${EOL}${EOL}") == 200)
+    assert(status_of("HTTP/1.1 429 Too Many Requests${EOL}${EOL}") == 429)
+    // No reason phrase at all is still a status line.
+    assert(status_of("HTTP/1.1 204${EOL}${EOL}") == 204)
+}
+
+test "an unreadable first line is 0, and 0 is NOT a status" {
+    // The distinction the caller depends on: a reply whose first line we cannot read
+    // is a transport failure, not an HTTP outcome. Returning 200 or 500 here would
+    // invent an answer the server never gave.
+    assert(status_of("") == 0)
+    assert(status_of("garbage") == 0)
+    assert(status_of("HTTP/1.1 not-a-number OK${EOL}${EOL}") == 0)
+}
+
+test "a header is found whatever its case, and absence is empty" {
+    ro raw = reply("HTTP/1.1 429 x", "Retry-After: 120${EOL}Content-Type: text/plain", "no")
+    assert(header_of(raw, "Retry-After") == "120")
+    // Case-insensitive BOTH ways: the name we ask with and the name on the wire.
+    assert(header_of(raw, "retry-after") == "120")
+    assert(header_of(raw, "RETRY-AFTER") == "120")
+    assert(header_of(raw, "X-Absent") == "")
+}
+
+test "a header is not found in the BODY, which is where a naive search would look" {
+    // The body mentions the header name. A search that did not stop at the blank line
+    // would return this, and the account would wait a made-up number of seconds.
+    ro raw = reply("HTTP/1.1 200 OK", "Content-Type: text/plain",
+                   "Retry-After: 9999 is written here in the body")
+    assert(header_of(raw, "Retry-After") == "")
+}
+
+test "the body is everything after the blank line, and empty when there is none" {
+    assert(body_of(reply("HTTP/1.1 200 OK", "A: b", "{\"x\":1}")) == "{\"x\":1}")
+    assert(body_of("HTTP/1.1 200 OK${EOL}A: b") == "")
+}
+
+test "Retry-After: absent, unreadable and non-positive all read as ZERO" {
+    // Zero means ABSENT, and `of_status` turns that into the floor. Reading any of
+    // these as "immediately" would turn a rate limit into a tighter loop.
+    assert(retry_after_of(reply("HTTP/1.1 429 x", "Content-Type: text/plain", "")) == 0)
+    // An HTTP-date rather than a count: we do not parse dates and do not guess.
+    assert(retry_after_of(reply("HTTP/1.1 429 x", "Retry-After: Wed, 21 Oct 2026 07:28:00 GMT", "")) == 0)
+    assert(retry_after_of(reply("HTTP/1.1 429 x", "Retry-After: 0", "")) == 0)
+    assert(retry_after_of(reply("HTTP/1.1 429 x", "Retry-After: -5", "")) == 0)
+    // And a real one is itself.
+    assert(retry_after_of(reply("HTTP/1.1 429 x", "Retry-After: 120", "")) == 120)
+}
+
+// ── one poll, end to end, against a mock ────────────────────────────────────
+
+fn poll_against(raw str) -> AccountState {
+    mut state = AccountState.Unknown
+    // An INLINE handler rather than `mock_http().build()`. The mock's own header warns
+    // that the built closure copies its routes into a heap env the current runtime does
+    // not root ([M-178-mock-handler-gc-trace]); and this test needs one fixed reply,
+    // not a route table, so the simpler thing is also the safer one.
+    with Http = effect Http {
+        send(host, port, secure, request) -> Result[str, HttpError] { Ok(raw) }
+    } {
+        state = fetch("api.example.com", 443, true, "/v1/usage", "t").outcome.state
+    }
+    state
+}
+
+test "429 with a header: unknown, and the body is not read" {
+    // fixtures/transport/rate-limited-with-retry-after.json
+    ro raw = reply("HTTP/1.1 429 Too Many Requests",
+                   "Retry-After: 120${EOL}Content-Type: text/plain",
+                   "rate limit exceeded")
+    assert(poll_against(raw) == AccountState.Unknown)
+}
+
+test "401: error, because the token was live enough to try" {
+    // fixtures/transport/unauthorized.json
+    ro raw = reply("HTTP/1.1 401 Unauthorized", "Content-Type: application/json",
+                   "{\"error\":{\"type\":\"authentication_error\"}}")
+    assert(poll_against(raw) == AccountState.Error)
+}
+
+test "500: unknown, and NEVER error -- the fault is the server's" {
+    // fixtures/transport/server-error.json. The second half is the one that matters:
+    // `unknown` alone would pass if every status mapped to it.
+    ro state = poll_against(reply("HTTP/1.1 500 Internal Server Error", "A: b", "oops"))
+    assert(state == AccountState.Unknown)
+    assert(state != AccountState.Error)
+}
+
+test "200 with a truncated body: error, not a crash and not a silent empty" {
+    // fixtures/transport/malformed-body.json. The fixture asks for `unknown` and
+    // 01.1 section 3.2 puts invalid JSON under `error`; the spec row wins and the
+    // disagreement is recorded in `outcome_test`. Whichever it becomes, the property
+    // this test really pins is that the process survives a truncated reply.
+    ro raw = reply("HTTP/1.1 200 OK", "Content-Type: application/json", "{\"limits\":[")
+    assert(poll_against(raw) == AccountState.Error)
+}
+
+test "a reply that is not HTTP at all is a transport failure, not a status" {
+    assert(poll_against("this is not a response") == AccountState.Unknown)
+}

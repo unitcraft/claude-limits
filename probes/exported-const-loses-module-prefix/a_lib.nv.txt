@@ -1,0 +1,3 @@
+module cc1.lib
+export const MARK = "FROM-LIB"
+export fn who() -> str => MARK
