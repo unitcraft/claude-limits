@@ -1,0 +1,102 @@
+// Tests for outcome.nv — one per row of `fixtures/transport/` (tasks T1.5, T2.10).
+//
+//   ./nova.sh test src/usage/ --filter outcome
+//
+// EVERY EXPECTATION HERE IS COPIED FROM A FIXTURE'S `_expected` FIELD, not invented.
+// Those files exist to pin exactly these rules and each says in its own words what must
+// happen; a test that agreed with the code instead of with them would prove only that
+// the code agrees with itself.
+//
+// BOTH DIRECTIONS THROUGHOUT. The dangerous half of a status table is not the row you
+// wrote -- it is the neighbouring row you did not. So 429 is checked WITH and WITHOUT
+// the header; 500 is checked to be `unknown` AND not `error`; an unknown status is
+// checked not to borrow the meaning of the ones beside it.
+
+module usage.outcome_test
+
+import outcome.{of_status, bad_body, transport_failed, POLL_FLOOR_SEC}
+import claude_limits.model.snapshot.{AccountState}
+
+test "429 with Retry-After: the server's number, not our floor" {
+    // rate-limited-with-retry-after.json: "next_poll_at = now + 120s", and the file
+    // says why it exists -- this is what actually happened to this machine.
+    ro o = of_status(429, 120)
+    assert(o.state == AccountState.Unknown)
+    assert(o.retry_after_sec == 120)
+    assert(!o.body_usable)
+}
+
+test "429 without the header: the floor, and NOT zero" {
+    // rate-limited-no-header.json: "next poll in 60 s — the floor". Zero means the
+    // header was absent; reading it as "immediately" would turn a rate limit into a
+    // tighter loop, which is the opposite instruction.
+    ro o = of_status(429, 0)
+    assert(o.state == AccountState.Unknown)
+    assert(o.retry_after_sec == POLL_FLOOR_SEC)
+}
+
+test "a shorter Retry-After than the floor is still honoured as the server's word" {
+    // The rule is "the server's number when it gives one". A server asking for 10 s
+    // has said something; substituting our 60 would be us overruling it. Pinned so
+    // that a later `max(floor, header)` cannot slip in unnoticed.
+    assert(of_status(429, 10).retry_after_sec == 10)
+}
+
+test "401: error, with the reason, and NOT retried faster" {
+    // unauthorized.json: the account keeps its place, and "the NEXT cycle does not
+    // retry it faster than the interval — a rejected token retried in a loop is how
+    // 401 turns into 429 for the whole machine".
+    ro o = of_status(401, 0)
+    assert(o.state == AccountState.Error)
+    assert(o.message != "")
+    assert(o.retry_after_sec == POLL_FLOOR_SEC)
+    assert(!o.body_usable)
+}
+
+test "500 is unknown and NEVER error" {
+    // server-error.json: "`unknown` — never `stale`: the fault is the server's and the
+    // user has nothing to fix". The second assert is the one that matters: `unknown`
+    // alone would also pass if every status mapped to it.
+    for s in [500, 502, 503, 599] {
+        ro o = of_status(s, 0)
+        assert(o.state == AccountState.Unknown)
+        assert(o.state != AccountState.Error)
+    }
+}
+
+test "200 is the only status whose body is worth parsing" {
+    assert(of_status(200, 0).body_usable)
+    for s in [401, 429, 500, 204, 301, 418] {
+        assert(!of_status(s, 0).body_usable)
+    }
+}
+
+test "an unrecognised status does not borrow its neighbours' meaning" {
+    // 403 sits next to 401 and 429 sits next to both; a table written with ranges
+    // rather than cases would quietly give 403 the 401 treatment, and this window has
+    // no grounds to claim a token was rejected when the server did not say so.
+    ro o = of_status(403, 0)
+    assert(o.state == AccountState.Unknown)
+    assert(o.message == "")
+}
+
+test "a body that will not parse is error, like 401 but with its own reason" {
+    // malformed-body.json: "200, truncated JSON -> `unknown`, no panic". The FIXTURE
+    // says unknown and 01.1 section 3.2 says `error` for "невалидный JSON". The state
+    // table is the authority -- a fixture's prose is a note, a spec row is a rule --
+    // and this disagreement is recorded here rather than settled silently, because
+    // whoever writes the page will meet it too.
+    ro o = bad_body()
+    assert(o.state == AccountState.Error)
+    assert(o.message != "")
+    assert(o.message != of_status(401, 0).message)
+}
+
+test "a request that never arrived is unknown, and carries no message of its own" {
+    // The badge text belongs to the page (`network_badge`); two places composing the
+    // same sentence drift apart on the first edit.
+    ro o = transport_failed()
+    assert(o.state == AccountState.Unknown)
+    assert(o.message == "")
+    assert(o.retry_after_sec == POLL_FLOOR_SEC)
+}
