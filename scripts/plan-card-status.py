@@ -41,7 +41,7 @@ happened to know the order of magnitude. 47 would have been accepted.
 Usage:
     python scripts/plan-card-status.py                      # the tally
     python scripts/plan-card-status.py --verbose            # every card
-    python scripts/plan-card-status.py --expect-at-least 51 # for a gate
+    python scripts/plan-card-status.py --expect-at-least 52 # for a gate
 """
 import argparse
 import collections
@@ -238,8 +238,11 @@ def main():
     # five cards are invisible. Raising it is a human act, and nothing here will remind
     # anyone.
     #
-    # The value in use is 51, measured on 2026-09-09 against
-    # docs/plans/01.5-work-breakdown.md and cited in the plan and the handoff. Where a
+    # The value in use is 52, measured on 2026-09-14 against
+    # docs/plans/01.5-work-breakdown.md and cited in the plan and the handoff. It was
+    # 51 from 2026-09-09 until T2.27 was filed; the floor passed at 52 >= 51 without a
+    # murmur, and the only thing that raised it was somebody reading this comment.
+    # That is the weakness named below, happening exactly as described. Where a
     # baseline CAME FROM matters as much as its value: registry 221.1 #1088 is a
     # ratchet that was below the truth from birth, seeded by a local run on a machine
     # whose index hid two files from `git status`. It guarded a wrong number honestly

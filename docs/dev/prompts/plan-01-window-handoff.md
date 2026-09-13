@@ -113,7 +113,7 @@
 
 ```
 python scripts/plan-card-status.py --verbose
-python scripts/plan-card-status.py --expect-at-least 51   # для гейта
+python scripts/plan-card-status.py --expect-at-least 52   # для гейта
 ```
 
 Числа в этот файл НЕ пишутся, и это не аккуратность, а замер: число в прозе
