@@ -1,0 +1,317 @@
+// Tests for widget/layout.nv — task T3.1.
+//
+//   ./nova.sh test src/widget/ --filter layout
+//
+// The acceptance, in plan 01 F.3's own words: "pure functions, tests on rectangles
+// for 1/2/3 accounts and 0/1/2 scoped models". An account's rows are `session` +
+// `all 7d` + one per scoped model (01.1 §2.1), so those six vectors are the counts
+// 2, 3 and 4 in lists of length 1, 2 and 3.
+//
+// WHAT THESE TESTS ASSERT, AND WHY IT IS NOT THE COORDINATES. Pinning `bar.x == 124`
+// would pass today and fail on the first change to the padding, without anything
+// being wrong. So the assertions are RELATIONS -- columns abut with the declared
+// gap, the row ends where the padding says, nothing overlaps its neighbour, the
+// whole thing is as tall as its parts. A relation survives a redesign and still
+// catches an arithmetic slip, which is the only bug this file can have.
+//
+// The exception is the six declared widths. Those ARE numbers in 01.1 §2, and a
+// test that did not pin them would let the grid drift away from the page the widget
+// is supposed to mirror.
+
+module widget.layout_test
+
+import layout.{Rect, Metrics, layout, row_height, scaled, is_narrow, bar_width_wide, NAME_W, PCT_W, RESET_W, COL_GAP, PAD, TIME_H, BAR_STACK_GAP, ROW_GAP, BLOCK_GAP, LINE_H, RESET_LINE1_H, RESET_LINE2_H, ACC_HEADER_H, HEADER_H, FOOTER_H, BAR_MIN_W}
+
+/// Wide enough that no row goes narrow: the four columns plus a comfortable bar.
+const WIDE = 720
+
+// ── the grid of one row (01.1 §2) ────────────────────────────────────────────
+
+test "the declared columns keep their declared widths at 100 percent" {
+    ro l = layout(Metrics.at(WIDE, 100), [3])
+    ro r = l.accounts[0].rows[0]
+    assert(r.name.w == NAME_W)
+    assert(r.percent.w == PCT_W)
+    assert(r.reset.w == RESET_W)
+    assert(r.name.w == 100)
+    assert(r.percent.w == 44)
+    assert(r.reset.w == 170)
+}
+
+test "the numbers 01.1 states are the numbers this file uses" {
+    // FOUND BY A MUTATION PROBE, and it is worth saying why the rest of the suite
+    // could not find it. Every other assertion about spacing is written THROUGH the
+    // constant -- `bar.x == name.right() + COL_GAP` -- so changing COL_GAP from 12
+    // to 13 moved both sides and the suite stayed green. A relation survives a
+    // redesign, which is why the suite prefers relations; it cannot notice that a
+    // DECLARED number drifted, and these are declared, in 01.1 §2 and §2.2.
+    assert(COL_GAP == 12)
+    assert(PAD == 12)
+    assert(BAR_STACK_GAP == 3)
+    assert(TIME_H == 3)
+    assert(ROW_GAP == 6)
+}
+
+test "the four columns abut with exactly one gap between them" {
+    ro l = layout(Metrics.at(WIDE, 100), [3])
+    ro r = l.accounts[0].rows[0]
+    assert(r.bar.x == r.name.right() + COL_GAP)
+    assert(r.percent.x == r.bar.right() + COL_GAP)
+    assert(r.reset.x == r.percent.right() + COL_GAP)
+}
+
+test "the row spans the window exactly, edge padding included" {
+    ro l = layout(Metrics.at(WIDE, 100), [3])
+    ro r = l.accounts[0].rows[0]
+    assert(r.name.x == PAD)
+    assert(r.reset.right() == WIDE - PAD)
+    // The bar is what absorbs the slack, so it is the only column whose width is
+    // arithmetic rather than a constant.
+    assert(r.bar.w == WIDE - PAD * 2 - NAME_W - PCT_W - RESET_W - COL_GAP * 3)
+    assert(r.bar.w > 0)
+}
+
+test "the time strip sits under the bar, same width, declared gap" {
+    ro l = layout(Metrics.at(WIDE, 100), [3])
+    ro r = l.accounts[0].rows[0]
+    assert(r.time.is_drawn())
+    assert(r.time.x == r.bar.x)
+    assert(r.time.w == r.bar.w)
+    assert(r.time.h == TIME_H)
+    assert(r.time.y == r.bar.bottom() + BAR_STACK_GAP)
+}
+
+test "the forecast line sits under the reset line, same width" {
+    ro l = layout(Metrics.at(WIDE, 100), [3])
+    ro r = l.accounts[0].rows[0]
+    assert(r.forecast.is_drawn())
+    assert(r.forecast.x == r.reset.x)
+    assert(r.forecast.w == r.reset.w)
+    assert(r.forecast.y == r.reset.bottom())
+}
+
+// ── what the toggles remove (01.1 §5.2, §5.3) ────────────────────────────────
+
+test "with the time strip off the strip is not drawn and the row is shorter" {
+    ro on = Metrics.of(WIDE, 100, true, true)
+    ro off = Metrics.of(WIDE, 100, false, true)
+    ro a = layout(on, [3]).accounts[0].rows[0]
+    ro b = layout(off, [3]).accounts[0].rows[0]
+    assert(a.time.is_drawn())
+    assert(!b.time.is_drawn())
+    assert(b.bar.w == a.bar.w)
+}
+
+test "with the forecast off there is no second reset line" {
+    ro off = Metrics.of(WIDE, 100, true, false)
+    ro r = layout(off, [3]).accounts[0].rows[0]
+    assert(!r.forecast.is_drawn())
+    assert(r.reset.is_drawn())
+}
+
+test "a row with neither strip is the bare line height" {
+    ro bare = Metrics.of(WIDE, 100, false, false)
+    assert(row_height(bare) == LINE_H)
+    // With both, the tallest stack wins and it is the reset column's two lines.
+    ro full = Metrics.of(WIDE, 100, true, true)
+    assert(row_height(full) == RESET_LINE1_H + RESET_LINE2_H)
+}
+
+// ── the acceptance vectors: 1/2/3 accounts, 0/1/2 scoped models ──────────────
+
+test "one account, zero scoped models" {
+    ro l = layout(Metrics.at(WIDE, 100), [2])
+    assert(l.accounts.len() == 1)
+    assert(l.accounts[0].rows.len() == 2)
+}
+
+test "two accounts, one scoped model each" {
+    ro l = layout(Metrics.at(WIDE, 100), [3, 3])
+    assert(l.accounts.len() == 2)
+    assert(l.accounts[0].rows.len() == 3)
+    assert(l.accounts[1].rows.len() == 3)
+}
+
+test "three accounts with zero, one and two scoped models" {
+    ro l = layout(Metrics.at(WIDE, 100), [2, 3, 4])
+    assert(l.accounts.len() == 3)
+    assert(l.accounts[0].rows.len() == 2)
+    assert(l.accounts[1].rows.len() == 3)
+    assert(l.accounts[2].rows.len() == 4)
+}
+
+test "rows inside a block are one gap apart and never overlap" {
+    ro l = layout(Metrics.at(WIDE, 100), [4])
+    ro rows = l.accounts[0].rows
+    mut i = 1
+    while i < rows.len() {
+        assert(rows[i].bounds.y == rows[i - 1].bounds.bottom() + ROW_GAP)
+        i += 1
+    }
+}
+
+test "blocks are one block-gap apart and never overlap" {
+    ro l = layout(Metrics.at(WIDE, 100), [2, 3, 4])
+    mut i = 1
+    while i < l.accounts.len() {
+        assert(l.accounts[i].bounds.y == l.accounts[i - 1].bounds.bottom() + BLOCK_GAP)
+        i += 1
+    }
+}
+
+test "a block bounds its own header and every one of its rows" {
+    ro l = layout(Metrics.at(WIDE, 100), [2, 4])
+    mut a = 0
+    while a < l.accounts.len() {
+        ro b = l.accounts[a]
+        assert(b.header.y >= b.bounds.y)
+        mut i = 0
+        while i < b.rows.len() {
+            assert(b.rows[i].bounds.y >= b.bounds.y)
+            assert(b.rows[i].bounds.bottom() <= b.bounds.bottom())
+            i += 1
+        }
+        a += 1
+    }
+}
+
+// ── the account with no rows (01.1 §3.2, `stale`) ────────────────────────────
+
+test "an account with zero rows keeps its header and takes exactly its height" {
+    ro l = layout(Metrics.at(WIDE, 100), [0])
+    assert(l.accounts.len() == 1)
+    assert(l.accounts[0].rows.len() == 0)
+    assert(l.accounts[0].header.is_drawn())
+    assert(l.accounts[0].bounds.h == ACC_HEADER_H)
+}
+
+test "a stale account between two live ones does not disturb them" {
+    ro l = layout(Metrics.at(WIDE, 100), [3, 0, 3])
+    assert(l.accounts.len() == 3)
+    assert(l.accounts[1].bounds.y == l.accounts[0].bounds.bottom() + BLOCK_GAP)
+    assert(l.accounts[2].bounds.y == l.accounts[1].bounds.bottom() + BLOCK_GAP)
+}
+
+// ── height ───────────────────────────────────────────────────────────────────
+
+test "the whole thing is as tall as its parts, header and footer included" {
+    ro l = layout(Metrics.at(WIDE, 100), [3])
+    assert(l.header.y == PAD)
+    assert(l.header.h == HEADER_H)
+    assert(l.footer.h == FOOTER_H)
+    assert(l.footer.y >= l.accounts[0].bounds.bottom())
+    assert(l.height == l.footer.bottom() + PAD)
+}
+
+test "more accounts is taller, and strictly" {
+    ro one = layout(Metrics.at(WIDE, 100), [3])
+    ro two = layout(Metrics.at(WIDE, 100), [3, 3])
+    ro three = layout(Metrics.at(WIDE, 100), [3, 3, 3])
+    assert(two.height > one.height)
+    assert(three.height > two.height)
+}
+
+test "an empty widget still has a header and a footer" {
+    ro l = layout(Metrics.at(WIDE, 100), [])
+    assert(l.accounts.len() == 0)
+    assert(l.header.is_drawn())
+    assert(l.footer.is_drawn())
+    assert(l.height > 0)
+}
+
+// ── HiDPI (plan 01 F.3: the scale is a parameter) ────────────────────────────
+
+test "at 200 percent every declared width doubles" {
+    ro l = layout(Metrics.at(WIDE * 2, 200), [3])
+    ro r = l.accounts[0].rows[0]
+    assert(r.name.w == NAME_W * 2)
+    assert(r.percent.w == PCT_W * 2)
+    assert(r.reset.w == RESET_W * 2)
+    assert(r.bar.x == r.name.right() + COL_GAP * 2)
+    assert(r.name.x == PAD * 2)
+    assert(r.reset.right() == WIDE * 2 - PAD * 2)
+}
+
+test "at 150 percent the row is taller than at 100" {
+    ro a = row_height(Metrics.at(WIDE, 100))
+    ro b = row_height(Metrics.at(WIDE, 150))
+    assert(b > a)
+}
+
+test "a nonsense scale degrades to 1x rather than to nothing" {
+    // The failure this guards is a blank window read as "no data" (see `scaled`).
+    assert(scaled(100, 0) == 100)
+    assert(scaled(100, 0 - 50) == 100)
+    ro l = layout(Metrics.at(WIDE, 0), [3])
+    assert(l.accounts[0].rows[0].name.w == NAME_W)
+    assert(l.height > 0)
+}
+
+// ── the single adaptation (01.1 §1.3) ────────────────────────────────────────
+
+test "a wide window is not narrow and a cramped one is" {
+    assert(!is_narrow(Metrics.at(WIDE, 100)))
+    assert(is_narrow(Metrics.at(380, 100)))
+}
+
+test "the narrow threshold follows the BAR, not the window" {
+    // The whole reason `is_narrow` measures the bar: at 200 % a 700 px window has
+    // the bar of a 350 px one, and a rule written as "below 560 px of window" would
+    // call it wide while the bar is already unreadable.
+    ro wide_window_big_scale = Metrics.at(700, 200)
+    assert(is_narrow(wide_window_big_scale))
+    assert(bar_width_wide(wide_window_big_scale) < scaled(BAR_MIN_W, 200))
+}
+
+test "in the narrow form the reset column drops under the bar" {
+    ro m = Metrics.at(380, 100)
+    ro l = layout(m, [3])
+    assert(l.narrow)
+    ro r = l.accounts[0].rows[0]
+    assert(r.reset.x == r.bar.x)
+    assert(r.reset.y >= r.bar.bottom())
+    // And the percent stays to the RIGHT of the bar -- the half of §1.3 that is
+    // easy to drop, because "the reset goes below" sounds like the whole rule.
+    assert(r.percent.x == r.bar.right() + COL_GAP)
+    assert(r.percent.y < r.reset.y)
+}
+
+test "the narrow bar is wider than the wide one would have been" {
+    // The point of the adaptation: the space the reset column gave up goes to the
+    // bar. If it did not, dropping the column would buy nothing.
+    ro m = Metrics.at(380, 100)
+    ro r = layout(m, [3]).accounts[0].rows[0]
+    assert(r.bar.w > bar_width_wide(m))
+    assert(r.bar.w > 0)
+}
+
+test "a narrow row is taller than a wide one, by the line it gained" {
+    ro narrow = layout(Metrics.at(380, 100), [3]).accounts[0].rows[0]
+    ro wide = layout(Metrics.at(WIDE, 100), [3]).accounts[0].rows[0]
+    assert(narrow.bounds.h > wide.bounds.h)
+}
+
+test "narrow rows still stack without overlapping" {
+    ro l = layout(Metrics.at(380, 100), [4])
+    ro rows = l.accounts[0].rows
+    mut i = 1
+    while i < rows.len() {
+        assert(rows[i].bounds.y == rows[i - 1].bounds.bottom() + ROW_GAP)
+        i += 1
+    }
+}
+
+// ── Rect itself ──────────────────────────────────────────────────────────────
+
+test "an empty rect is not drawn and a real one is" {
+    assert(!Rect.none().is_drawn())
+    assert(Rect.of(0, 0, 10, 0).is_drawn() == false)
+    assert(Rect.of(0, 0, 0, 10).is_drawn() == false)
+    assert(Rect.of(1, 2, 3, 4).is_drawn())
+}
+
+test "right and bottom are the far edges" {
+    ro r = Rect.of(10, 20, 30, 40)
+    assert(r.right() == 40)
+    assert(r.bottom() == 60)
+}

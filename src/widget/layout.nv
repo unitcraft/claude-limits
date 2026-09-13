@@ -1,0 +1,327 @@
+// layout.nv — where every rectangle of the widget goes (task T3.1).
+//
+//   ./nova.sh test src/widget/ --filter layout
+//
+// Source: plan 01 F.3 ("the same layout as the page, a shared `format.nv`"),
+// 01.1 §1.3 (the frame and the single adaptation), §2 (the row grid
+// `100px · bar · 44px · 170px`, gap 12), §2.2 (the bar stack: 10 px bar, 3 px gap,
+// 3 px time strip), §2.4 (the reset column is two lines, the second only when the
+// forecast is on), §3.1 (an account block: a header line, then limit rows 6 px apart).
+//
+// PURE, and that is the whole reason this file exists separately from `draw.nv`.
+// No SDL type appears here, nothing is measured from a font, nothing is read from a
+// snapshot. Rectangles in, rectangles out -- so the acceptance is a test rather than
+// a screenshot, and a layout bug is caught without a window on screen.
+//
+// ── WHAT THE PAGE DOES NOT HAVE TO DECIDE AND THIS FILE DOES ─────────────────
+//
+// 01.1 gives widths in CSS pixels and leaves heights to the browser: a line box is
+// whatever the font makes it. A widget has no such luxury -- it draws into a surface
+// of known size, so the text line heights below are THIS FILE'S numbers, chosen once
+// and named, not transcribed from the subplan. They are marked `widget's own` where
+// they appear. Changing a font may require changing them; nothing else here.
+//
+// The padding is the other one. The page uses 24 px fields (§1.3). The widget uses
+// 12: 24 px of a 320 px window is fifteen per cent of the width spent on nothing,
+// and the widget has no browser chrome to sit inside.
+//
+// ── SCALE ────────────────────────────────────────────────────────────────────
+//
+// HiDPI arrives as a PARAMETER, per the plan's acceptance line, and not as a global.
+// `SDL_GetWindowDisplayScale` gives a factor; it reaches here as a percentage
+// (100, 125, 150, 200) so the arithmetic stays integral. Every constant below is in
+// logical pixels at 100 %, and `scaled` is the only place the factor is applied.
+
+module widget.layout
+
+// ── the grid of one limit row (01.1 §2) ──────────────────────────────────────
+
+/// The window name column: `session 5h`, `Opus 7d` (§2.1).
+export const NAME_W = 100
+/// The percent column, right-aligned (§2.3).
+export const PCT_W = 44
+/// The reset column: `Tue 13:00 (2d 17h)` and, under it, the forecast (§2.4).
+export const RESET_W = 170
+/// Between the four columns of a row (§2).
+export const COL_GAP = 12
+
+/// The consumption bar itself (§2.2).
+export const BAR_H = 10
+/// Between the bar and the time strip (§2.2).
+export const BAR_STACK_GAP = 3
+/// The strip showing how much of the window has elapsed (§2.2, toggled in §5.2).
+export const TIME_H = 3
+
+/// A bar narrower than this stops carrying information -- the fill and the time
+/// strip become indistinguishable. Reaching it is what switches the row to its
+/// narrow form, NOT the window width: the trigger belongs to the thing that
+/// suffers, and a wider window with a huge scale factor suffers identically.
+export const BAR_MIN_W = 60
+
+// ── vertical metrics (the widget's own; see the header) ──────────────────────
+
+/// The single-line text box of the name and the percent columns.
+export const LINE_H = 14
+/// Line 1 of the reset column, 11 px type (§2.4).
+export const RESET_LINE1_H = 14
+/// Line 2, the forecast, 10 px type (§2.4). Absent when the forecast is off, and
+/// then the row is shorter -- 01.1 calls that normal rather than a defect.
+export const RESET_LINE2_H = 13
+
+/// The account header: e-mail, organisation, directories in one line (§3.1).
+export const ACC_HEADER_H = 18
+/// Between limit rows inside one account block (§3.1).
+export const ROW_GAP = 6
+/// Between account blocks. The page draws a border line here (§3), the widget
+/// leaves the gap and draws the line in `draw.nv`.
+export const BLOCK_GAP = 10
+
+/// The widget's header strip: the name, the live dot, the freshness (§1.1).
+export const HEADER_H = 28
+/// The footer: address, counts, the legend (§1.2).
+export const FOOTER_H = 20
+/// Around everything. See the header for why it is not 24.
+export const PAD = 12
+
+// ── types ────────────────────────────────────────────────────────────────────
+
+/// A rectangle in device pixels, origin top-left.
+export type Rect value {
+    x int
+    y int
+    w int
+    h int
+}
+
+export fn Rect.of(x int, y int, w int, h int) -> Rect => { x, y, w, h }
+
+/// The empty rectangle, which is how this file says "this element is not drawn".
+///
+/// NOT an `Option[Rect]`, deliberately. Every consumer of a layout walks all of it
+/// and asks each rectangle for its width; a zero-width rectangle answers that
+/// question correctly, and an `Option` would make every call site carry a branch
+/// whose only outcome is to skip. The one rule that follows is stated where it
+/// matters: `is_drawn` below, and never compare a rectangle to it by hand.
+export fn Rect.none() -> Rect => { x: 0, y: 0, w: 0, h: 0 }
+
+export fn Rect @right() -> int => @x + @w
+export fn Rect @bottom() -> int => @y + @h
+
+/// Whether this rectangle is to be drawn at all. A rectangle with no area is not.
+export fn Rect @is_drawn() -> bool => @w > 0 && @h > 0
+
+/// The four (or five) rectangles of one limit row.
+export type LimitRow value {
+    name Rect
+    bar Rect
+    /// The time strip under the bar. `Rect.none()` when §5.2 is off.
+    time Rect
+    percent Rect
+    /// Line 1 of the reset column.
+    reset Rect
+    /// Line 2 of the reset column, the forecast. `Rect.none()` when §5.3 is off.
+    forecast Rect
+    /// The whole row, for the hover highlight of §2.5.
+    bounds Rect
+}
+
+/// One account: a header line and its limit rows (§3.1).
+export type AccountBlock value {
+    header Rect
+    rows []LimitRow
+    bounds Rect
+}
+
+/// Everything, placed.
+export type Layout value {
+    header Rect
+    accounts []AccountBlock
+    footer Rect
+    width int
+    /// What the window must be for all of this to fit. The caller resizes to it or
+    /// scrolls; this file does neither.
+    height int
+    /// True when the reset column had to go under the bar (§1.3). Exposed because
+    /// `draw.nv` aligns its text differently in that form, and because a test can
+    /// then assert the FORM rather than infer it from coordinates.
+    narrow bool
+}
+
+/// What the caller knows and this file does not.
+export type Metrics value {
+    /// The window's inner width in device pixels.
+    width int
+    /// 100, 125, 150, 200 -- see the header.
+    scale_pct int
+    /// §5.2: the time strip under each bar.
+    time_strip bool
+    /// §5.3: the forecast line under the reset time.
+    forecast bool
+}
+
+export fn Metrics.of(width int, scale_pct int, time_strip bool, forecast bool) -> Metrics =>
+    { width, scale_pct, time_strip, forecast }
+
+/// The defaults a fresh install draws with: both strips on.
+export fn Metrics.at(width int, scale_pct int) -> Metrics =>
+    { width, scale_pct, time_strip: true, forecast: true }
+
+// ── the arithmetic ───────────────────────────────────────────────────────────
+
+/// A logical pixel count in device pixels.
+///
+/// A GUARD RATHER THAN A FORMULA: a scale of zero (or a negative one, which an
+/// unchecked `SDL_GetWindowDisplayScale` conversion can produce) would collapse
+/// every rectangle to nothing, and a widget that draws a blank window looks like a
+/// widget with no data rather than one with a bad scale. 100 is the identity, so
+/// falling back to it degrades to "correct at 1x" instead of "invisible".
+export fn scaled(v int, scale_pct int) -> int {
+    if scale_pct <= 0 { return v }
+    v * scale_pct / 100
+}
+
+/// The height of one limit row, which is the tallest of its three stacks.
+///
+/// Not a constant, because two of the three stacks are optional: with neither the
+/// time strip nor the forecast a row is 14 px tall, with both it is 27.
+export fn row_height(m Metrics) -> int {
+    ro bar_stack = if m.time_strip { BAR_H + BAR_STACK_GAP + TIME_H } else { BAR_H }
+    ro reset_stack = if m.forecast { RESET_LINE1_H + RESET_LINE2_H } else { RESET_LINE1_H }
+    mut h = LINE_H
+    if bar_stack > h { h = bar_stack }
+    if reset_stack > h { h = reset_stack }
+    scaled(h, m.scale_pct)
+}
+
+/// The width left for the bar when every other column keeps its size.
+///
+/// May be NEGATIVE, and the caller below relies on that: a negative number is how
+/// this function says "the wide form does not fit", and clamping it to zero here
+/// would destroy the very information the decision needs.
+export fn bar_width_wide(m Metrics) -> int {
+    ro columns = scaled(NAME_W + PCT_W + RESET_W, m.scale_pct)
+    ro gaps = scaled(COL_GAP, m.scale_pct) * 3
+    ro pads = scaled(PAD, m.scale_pct) * 2
+    m.width - columns - gaps - pads
+}
+
+/// Whether the reset column must drop under the bar (§1.3).
+///
+/// 01.1 phrases the rule as a window width ("below 560 px"), and this file phrases
+/// it as the bar's own width instead. The two agree at 100 % scale and part company
+/// at 200 %, where a 700 px window has the bar of a 350 px one. The bar is what the
+/// rule protects, so the bar is what is measured -- and a threshold written as a
+/// width in logical pixels would have silently measured the wrong thing on exactly
+/// the machines HiDPI exists for.
+export fn is_narrow(m Metrics) -> bool => bar_width_wide(m) < scaled(BAR_MIN_W, m.scale_pct)
+
+// ── placing ──────────────────────────────────────────────────────────────────
+
+fn place_row(m Metrics, x int, y int, inner_w int, narrow bool) -> LimitRow {
+    ro gap = scaled(COL_GAP, m.scale_pct)
+    ro name_w = scaled(NAME_W, m.scale_pct)
+    ro pct_w = scaled(PCT_W, m.scale_pct)
+    ro reset_w = scaled(RESET_W, m.scale_pct)
+    ro bar_h = scaled(BAR_H, m.scale_pct)
+    ro time_h = scaled(TIME_H, m.scale_pct)
+    ro stack_gap = scaled(BAR_STACK_GAP, m.scale_pct)
+    ro line_h = scaled(LINE_H, m.scale_pct)
+    ro r1_h = scaled(RESET_LINE1_H, m.scale_pct)
+    ro r2_h = scaled(RESET_LINE2_H, m.scale_pct)
+    ro h = row_height(m)
+
+    ro name = Rect.of(x, y + (h - line_h) / 2, name_w, line_h)
+
+    // In the narrow form the reset column leaves the row and the bar takes its
+    // width; the percent stays to the right of the bar, which is the half of §1.3
+    // people forget.
+    ro bar_x = x + name_w + gap
+    ro bar_w = if narrow {
+        inner_w - name_w - pct_w - gap * 2
+    } else {
+        inner_w - name_w - pct_w - reset_w - gap * 3
+    }
+    ro bar = Rect.of(bar_x, y + (h - bar_h) / 2, bar_w, bar_h)
+    ro time = if m.time_strip {
+        Rect.of(bar_x, bar.bottom() + stack_gap, bar_w, time_h)
+    } else {
+        Rect.none()
+    }
+
+    ro pct_x = bar_x + bar_w + gap
+    ro percent = Rect.of(pct_x, y + (h - line_h) / 2, pct_w, line_h)
+
+    // Wide: the reset column sits right of the percent. Narrow: it starts under the
+    // bar, on its own line, and the row is taller by exactly that line.
+    ro reset = if narrow {
+        Rect.of(bar_x, y + h, inner_w - name_w - gap, r1_h)
+    } else {
+        Rect.of(pct_x + pct_w + gap, y + (h - r1_h - (if m.forecast { r2_h } else { 0 })) / 2, reset_w, r1_h)
+    }
+    ro forecast = if m.forecast {
+        Rect.of(reset.x, reset.bottom(), reset.w, r2_h)
+    } else {
+        Rect.none()
+    }
+
+    ro total_h = if narrow { h + r1_h + (if m.forecast { r2_h } else { 0 }) } else { h }
+    ro bounds = Rect.of(x, y, inner_w, total_h)
+    { name, bar, time, percent, reset, forecast, bounds }
+}
+
+/// Place the whole widget.
+///
+/// `rows_per_account` is a COUNT per account, not the accounts themselves: layout is
+/// geometry, and geometry needs to know how many rows there are and nothing else.
+/// An account shows `session` + `all 7d` + one row per scoped model (§2.1), so the
+/// acceptance vectors of plan 01 F.3 -- "0/1/2 scoped models" -- are 2, 3 and 4.
+///
+/// An account with ZERO rows is legal and drawn: that is the `stale` block of §3.2,
+/// a header line and nothing under it. Dropping it would erase the account whose
+/// problem the person most needs to see.
+export fn layout(m Metrics, rows_per_account []int) -> Layout {
+    ro pad = scaled(PAD, m.scale_pct)
+    ro inner_w = m.width - pad * 2
+    ro narrow = is_narrow(m)
+    ro row_gap = scaled(ROW_GAP, m.scale_pct)
+    ro block_gap = scaled(BLOCK_GAP, m.scale_pct)
+    ro acc_h = scaled(ACC_HEADER_H, m.scale_pct)
+    ro header_h = scaled(HEADER_H, m.scale_pct)
+    ro footer_h = scaled(FOOTER_H, m.scale_pct)
+
+    ro header = Rect.of(pad, pad, inner_w, header_h)
+    mut y = header.bottom() + block_gap
+
+    mut blocks = []AccountBlock.new()
+    mut a = 0
+    while a < rows_per_account.len() {
+        ro top = y
+        ro acc_header = Rect.of(pad, y, inner_w, acc_h)
+        y = acc_header.bottom()
+
+        // THE GAP GOES BEFORE EACH ROW, not after. The other form -- add a gap per
+        // row, then take one back if there was at least one row -- is correct for
+        // every count except zero, and zero is precisely the `stale` account of
+        // 01.1 §3.2, which then claimed the height of a row it does not draw.
+        // Caught by the test rather than by reading; an off-by-one gap is invisible
+        // in prose and obvious in an assertion.
+        mut rows = []LimitRow.new()
+        mut i = 0
+        while i < rows_per_account[a] {
+            y += row_gap
+            ro row = place_row(m, pad, y, inner_w, narrow)
+            y = row.bounds.bottom()
+            rows.push(row)
+            i += 1
+        }
+
+        blocks.push({ header: acc_header, rows, bounds: Rect.of(pad, top, inner_w, y - top) })
+        y += block_gap
+        a += 1
+    }
+
+    if rows_per_account.len() > 0 { y -= block_gap }
+
+    ro footer = Rect.of(pad, y + block_gap, inner_w, footer_h)
+    { header, accounts: blocks, footer, width: m.width, height: footer.bottom() + pad, narrow }
+}
