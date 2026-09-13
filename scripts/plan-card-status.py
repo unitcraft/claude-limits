@@ -56,9 +56,9 @@ DEFAULT_PLAN = os.path.join(
 
 CARD = re.compile(r"^\*\*(T\d+\.\d+)\s*·\s*(.+?)\*\*(.*)$")
 HEADING = re.compile(r"^#{1,6}\s")
-BOLD_BULLET = re.compile(r"^\s*[-*]\s*\*\*([^*]{2,80}?)\*\*")
+BOLD_BULLET = re.compile(r"^\s*[-*]\s*\*\*([^*]{2,200}?)\*\*")
 # Bold spans anywhere on a line, for a status that arrives mid-bullet (see cards_of).
-BOLD_ANY = re.compile(r"\*\*([^*]{2,80}?)\*\*")
+BOLD_ANY = re.compile(r"\*\*([^*]{2,200}?)\*\*")
 
 # Prefixes are NAMED here, in the open, rather than hidden in a grep. Anything a card
 # is marked with that is not on this list is reported as UNCLASSIFIED -- deliberately
@@ -126,8 +126,38 @@ def read_cards(path):
             if HEADING.match(lines[j]):
                 limit = j
                 break
+        # JOIN A WRAPPED BOLD MARK BEFORE MATCHING ANYTHING. A verdict long enough to
+        # name a date and two commits does not fit one line, and `**` does not cross
+        # a newline -- so the mark was not seen at all, and the card kept whatever
+        # older status it had. Measured on T1.5, which read as ЧАСТИЧНО while its own
+        # first bullet said СДЕЛАНО. An uncounted DONE is the bad direction: it looks
+        # like unfinished work and invites somebody to do it twice.
+        #
+        # Narrow by construction: only a line with an ODD number of `**` has an open
+        # span, and at most four lines are joined -- beyond that it is prose, not a
+        # mark.
+        block = []
+        span = list(lines[i + 1:limit])
+        n = 0
+        while n < len(span):
+            cur = span[n]
+            joined = 0
+            while cur.count("**") % 2 == 1 and n + 1 < len(span) and joined < 4:
+                n += 1
+                joined += 1
+                cur = cur + " " + span[n].strip()
+            block.append(cur)
+            n += 1
+
+        # THE UNION OF RAW AND JOINED, and that is the whole safety of the joiner.
+        # Joining a line whose `**` count is odd can RE-PAIR the markers on the line
+        # that follows, turning a perfectly readable mark into half of a different
+        # span -- measured: the first version of this found T1.5's verdict and lost
+        # T2.8's, moving a card the change was not aimed at. Scanning both and taking
+        # the union makes a join strictly additive: it can reveal a mark, never
+        # replace one.
         marks = []
-        for ln in lines[i + 1:limit]:
+        for ln in list(span) + block:
             m = BOLD_BULLET.match(ln)
             if m and any(c.isalpha() for c in m.group(1)):
                 # A bullet can OPEN with a label as easily as a verdict: T4.2 has
@@ -153,7 +183,16 @@ def read_cards(path):
                     continue
                 if any(t.upper().startswith(p) for p in DONE + PARTIAL + NOT_DONE):
                     marks.append(t)
-        out.append((tid, title, i + 1, marks))
+        # The union duplicates every mark both passes see, and the vocabulary tally
+        # counts marks -- so its numbers would double without this. Order is kept:
+        # the card's FIRST mark stays first, which is what a reader looks at.
+        seen = set()
+        uniq = []
+        for mk in marks:
+            if mk not in seen:
+                seen.add(mk)
+                uniq.append(mk)
+        out.append((tid, title, i + 1, uniq))
     return out
 
 
