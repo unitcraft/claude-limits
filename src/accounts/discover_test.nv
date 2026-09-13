@@ -217,3 +217,34 @@ test "leaf is what a person calls the folder" {
     assert(leaf("C:\\Users\\dev\\.claude\\") == ".claude")
     assert(leaf("solo") == "solo")
 }
+
+test "pointed AT a .claude directory, the identity is found BESIDE it" {
+    // The default layout keeps `.claude.json` next to the `.claude` directory, and
+    // CLAUDE_CONFIG_DIR points at that directory -- so this is how a hand-configured
+    // path arrives. Before the fix the login came back with no e-mail, and `group`
+    // then dropped it, so the whole account disappeared.
+    ro got = fake_dirs(fn() -> Option[LoginDir] => login_at("/fx/default-layout/.claude"))
+    match got {
+        None => assert(false)
+        Some(one) => {
+            assert(one.credentials == "/fx/default-layout/.claude/.credentials.json")
+            assert(one.identity == "/fx/default-layout/.claude.json")
+        }
+    }
+}
+
+test "a NON-.claude directory does not borrow the parent's identity" {
+    // The other direction, and it is the one that matters: a `.claude.json` beside
+    // some other directory belongs to a different login. Taking it would invent an
+    // identity rather than find one, and the account would be labelled with somebody
+    // else's e-mail.
+    ro got = fake_dirs(fn() -> Option[LoginDir] => login_at("/fx/config-dir-layout/work"))
+    match got {
+        None => assert(false)
+        Some(one) => {
+            // Its OWN identity, which it has -- not the parent's.
+            ro want = "/fx/config-dir-layout/work/.claude.json"
+            assert(one.identity == want)
+        }
+    }
+}

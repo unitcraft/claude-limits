@@ -35,7 +35,7 @@ import claude_limits.accounts.real_dirs.{with_real_disk}
 import claude_limits.accounts.discover.{scan}
 import claude_limits.accounts.login.{read_login, TokenState}
 import claude_limits.accounts.group.{group}
-import claude_limits.accounts.login.{Login, GroupedAccount}
+import claude_limits.accounts.login.{Login}
 import claude_limits.usage.parse.{parse}
 import claude_limits.cli.table.{row, cli_label, reference_moment}
 
@@ -49,8 +49,15 @@ const USAGE = "usage: claude-limits [--once] [--config PATH] [--offline DIR] [--
 /// The accounts in one configured folder, grouped, with the display name already
 /// substituted. Returns them rather than printing: what to print depends on the usage
 /// reply, which is fetched per account afterwards.
-fn accounts_in(path str, now_ms int) Dirs Creds -> []GroupedAccount {
+/// Every login in one configured folder, with the display name already substituted.
+///
+/// Returns LOGINS, not accounts, and that is the whole point: grouping happens once
+/// over all the configured directories, because one account may live in several of
+/// them. Grouping per directory turns one account into two, each showing its own
+/// percentage, with nothing to say they are the same.
+fn logins_in(path str) Dirs Creds -> []Login {
     ro folder = scan(path)
+    // `folder.problem` is DELIBERATELY not swallowed here -- see `folder_problem`.
     mut logins []Login = []
     for d in folder.logins {
         // `short_name` is applied HERE, at the only place that still has both the path
@@ -60,7 +67,40 @@ fn accounts_in(path str, now_ms int) Dirs Creds -> []GroupedAccount {
         logins.push(read_login(d.path, short_name(d.path, d.name), d.identity,
                                d.credentials))
     }
-    return group(logins, now_ms)
+    return logins
+}
+
+/// Logins that `group` will drop, because they carry no e-mail.
+///
+/// `group` drops them deliberately -- merging every nameless directory into one
+/// phantom account would be worse -- and its comment says they are "reported by the
+/// discovery layer, which knows the path". This is that reporting, and its absence is
+/// what made `--once` answer "no Claude Code logins found in:" for a directory holding
+/// `.credentials.json` and nothing else.
+///
+/// The reference keeps them too, keyed by path and labelled `unknown account`
+/// (claude_limits.py:132 and :142). One line each: two nameless directories are two
+/// accounts, not one.
+fn nameless_in(path str) Dirs Creds -> []str {
+    ro folder = scan(path)
+    mut out []str = []
+    for d in folder.logins {
+        ro l = read_login(d.path, short_name(d.path, d.name), d.identity, d.credentials)
+        if l.email == "" { out.push(short_name(d.path, d.name)) }
+    }
+    return out
+}
+
+/// Why a folder yielded nothing, in the folder's own words -- "" when it held logins.
+///
+/// Without this, three different states print the same line: the path does not exist,
+/// the path is not a directory, and the directory holds no login. `scan` distinguishes
+/// them and says so in `folder.problem`; discarding that and printing "no logins found"
+/// for all three is how I spent an hour unable to tell which of them I was looking at.
+fn folder_problem(path str) Dirs -> str {
+    ro folder = scan(path)
+    if folder.logins.len() > 0 { return "" }
+    return folder.problem
 }
 
 /// The recorded reply for one account: `<dir>/<email>.json`, else `<dir>/normal.json`
@@ -131,37 +171,67 @@ fn main() Io {
                     ro now_ms = Time.now().unix_millis()
                     ro lines = with_real_disk(fn() Dirs Creds -> []str {
                         mut all []str = []
+
+                        // EVERY directory first, then ONE grouping. An account may
+                        // live in several configured directories, and grouping inside
+                        // each would report it once per directory.
+                        mut logins []Login = []
                         for d in a.dirs {
-                            ro accs = accounts_in(d, now_ms)
-                            if accs.len() == 0 {
-                                all.push(no_logins(d))
+                            for l in logins_in(d) { logins.push(l) }
+                        }
+
+                        // The nameless ones are reported here, in discovery order:
+                        // `group` drops a login with no e-mail on purpose, and says
+                        // its own comment that the discovery layer must report them.
+                        // When it did not, an account holding only credentials
+                        // vanished and `--once` claimed the directory was empty.
+                        mut named = 0
+                        for l in logins {
+                            if l.email == "" {
+                                all.push(account_header("", "", l.name))
+                            } else {
+                                named = named + 1
+                            }
+                        }
+
+                        if logins.len() == 0 {
+                            for d in a.dirs {
+                                ro why = folder_problem(d)
+                                if why == "" {
+                                    all.push(no_logins(d))
+                                } else {
+                                    all.push("${no_logins(d)} (${why})")
+                                }
+                            }
+                            return all
+                        }
+
+                        if named == 0 { return all }
+
+                        for acc in group(logins, now_ms) {
+                            mut names = ""
+                            mut first = true
+                            for n in acc.dirs {
+                                if first { names = n } else { names = "${names}, ${n}" }
+                                first = false
+                            }
+                            all.push(account_header(acc.email, acc.org, names))
+
+                            // No live token: the reference prints the note and makes
+                            // no request at all (:344). A dead token earns a 401 and
+                            // then a 429 for the whole machine, which is not
+                            // hypothetical on this project.
+                            if acc.state != TokenState.Ok {
+                                all.push(expired_note())
                                 continue
                             }
-                            for acc in accs {
-                                mut names = ""
-                                mut first = true
-                                for n in acc.dirs {
-                                    if first { names = n } else { names = "${names}, ${n}" }
-                                    first = false
-                                }
-                                all.push(account_header(acc.email, acc.org, names))
 
-                                // No live token: the reference prints the note and
-                                // makes no request at all (:344). A dead token earns a
-                                // 401 and then a 429 for the whole machine, which is
-                                // not hypothetical on this project.
-                                if acc.state != TokenState.Ok {
-                                    all.push(expired_note())
-                                    continue
-                                }
-
-                                ro body = recorded_reply(a.offline, acc.email)
-                                ro usage = parse(body)
-                                for w in usage.windows {
-                                    all.push(row(cli_label(w.kind, w.model),
-                                                 w.percent, true, "normal",
-                                                 reference_moment(w.resets_at_ms)))
-                                }
+                            ro body = recorded_reply(a.offline, acc.email)
+                            ro usage = parse(body)
+                            for w in usage.windows {
+                                all.push(row(cli_label(w.kind, w.model), w.percent,
+                                             true, "normal",
+                                             reference_moment(w.resets_at_ms)))
                             }
                         }
                         all

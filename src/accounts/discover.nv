@@ -131,7 +131,28 @@ export fn login_at(path str) Dirs -> Option[LoginDir] {
     ro here_creds = under(dir, CREDS)
     if Dirs.exists(here_creds) {
         ro here_ident = under(dir, IDENT)
-        ro ident = if Dirs.exists(here_ident) { here_ident } else { "" }
+        mut ident = if Dirs.exists(here_ident) { here_ident } else { "" }
+
+        // POINTED AT A `.claude` DIRECTORY ITSELF. The default layout keeps the
+        // identity BESIDE that directory, not inside it, so looking only here finds
+        // no e-mail -- and a login with no e-mail is dropped by `group`, which makes
+        // the account vanish rather than show up nameless. Measured 2026-09-13:
+        // `--once` answered "no Claude Code logins found in:" for a directory plainly
+        // holding `.credentials.json`, and the reference found the account.
+        //
+        // Only for a directory NAMED `.claude`: under any other name a `.claude.json`
+        // in the parent belongs to a different login, and taking it would invent an
+        // identity instead of finding one.
+        if ident == "" && leaf(dir) == CLAUDE_DIR {
+            match dir.rsplit_once("/") {
+                Some((parent, _)) => {
+                    ro beside = under(parent, IDENT)
+                    if Dirs.exists(beside) { ident = beside }
+                }
+                None => {}
+            }
+        }
+
         return Some(LoginDir.of(leaf(dir), dir, ident, here_creds))
     }
 

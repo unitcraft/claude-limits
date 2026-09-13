@@ -62,7 +62,14 @@ def normalise(text):
     for line in text.splitlines():
         m = ACCOUNT.match(line.strip()) if "@" in line else None
         if m:
-            dirs = ",".join(sorted(d.strip() for d in m["dirs"].split(",")))
+            # Separators are flattened HERE and nowhere else. The reference prints the
+            # OS form (`\` on Windows) and the Nova side normalises to `/` by design,
+            # so the same directory arrives spelled two ways -- a platform detail, not
+            # a disagreement about what was found. Doing this globally would hide a
+            # backslash inside a window label or a severity, where it WOULD be a real
+            # difference.
+            dirs = ",".join(sorted(d.strip().replace("\\", "/")
+                                   for d in m["dirs"].split(",")))
             out.append(f"ACCOUNT {m['who'].lower()} ({m['org']}) [{dirs}]")
             continue
         m = ROW.match(line)
