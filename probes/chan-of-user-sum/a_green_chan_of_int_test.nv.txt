@@ -1,0 +1,7 @@
+module ch3.a_test
+import std.concurrency.nvchan.{Chan}
+test "a channel of int" {
+    ro p = Chan[int].new(1)
+    ro _ = p.tx.send(7)
+    assert(p.rx.recv()!! == 7)
+}

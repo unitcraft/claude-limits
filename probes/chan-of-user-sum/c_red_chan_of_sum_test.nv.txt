@@ -1,0 +1,15 @@
+module ch1.a_test
+import std.concurrency.nvchan.{Chan}
+
+type Req enum
+    | Get
+    | Put(int)
+
+test "a channel of a PLAIN sum" {
+    ro p = Chan[Req].new(1)
+    ro _ = p.tx.send(Req.Put(7))
+    match p.rx.recv() {
+        Some(Req.Put(n)) => assert(n == 7)
+        _ => assert(false)
+    }
+}

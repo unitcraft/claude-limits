@@ -1,0 +1,163 @@
+// Tests for store_fiber.nv — the request/reply loop (T2.9, T2.13).
+//
+//   ./nova.sh test src/model/ --filter store_fiber
+//
+// These are the conditions that stood open with "there is no fiber" beside them.
+// `store_test.nv` proves the state machine; this proves something answers.
+//
+// EVERY TEST RUNS THE FIBER FOR REAL, under `supervised`, and closes the channel to end
+// it. A test that called `run` on the same fiber as the caller would deadlock on the
+// first reply -- which is itself worth knowing, and is why the shape below is the shape.
+
+module model.store_fiber_test
+
+import std.concurrency.nvchan.{Chan}
+import store_fiber.{Envelope, Store, run}
+import store.{Snapshot, AccountSlot, Event}
+
+// Boxes for the results that are LISTS. `Chan[[]T]` hits the same defect as
+// `Chan[<sum>]`: a pointer-represented element gets no `ChanTx`/`ChanRx`
+// instantiation. Same workaround, same marker, so both are removed together.
+// [M-chan-envelope-workaround]
+type Ids value { ro items []int }
+type Evts value { ro items []Event }
+type Flags value { ro items []bool }
+
+// Constructors, because an anonymous record literal is refused by codegen -- the same
+// reason `discover.nv` gives for `LoginDir.of` and `Folder.of`.
+fn Ids.of(items []int) -> Ids => { items }
+fn Evts.of(items []Event) -> Evts => { items }
+fn Flags.of(items []bool) -> Flags => { items }
+
+// Runs the store in its own fiber, hands `body` its address, then closes the channel so
+// the loop ends and the supervised scope can finish.
+fn with_store[T](start Snapshot, body fn(Store) -> T) -> T {
+    ro pair = Chan[Envelope].new(16)
+    ro back = Chan[T].new(1)
+
+    // THE STORE RUNS HERE, NOT IN THE SPAWN, and the checker is why. `run` reaches a
+    // `Vec.push` through `merge`, and D446 refuses an unguarded mutation reachable from
+    // inside a `spawn`: the fiber may migrate across threads. The diagnostic names three
+    // fixes and this is the third -- restructure so the call is not inside a spawn.
+    //
+    // It is also the shape the application wants: `main` owns the store loop and spawns
+    // the server, because the loop is the one thing that must not be preempted between
+    // reading a request and answering it.
+    //
+    // THE BODY'S RESULT COMES BACK BY CHANNEL, not by assigning an outer variable --
+    // which would be the very unguarded write the checker refuses, and rightly: a value
+    // written from a fiber and read after `supervised` is a race the type system cannot
+    // see. Same discipline as the store itself.
+    supervised {
+        spawn {
+            ro got = body(Store.of(pair.tx))
+            ro _ = back.tx.send(got)
+            // Closing ends the loop, which lets the supervised scope finish. Without it
+            // `run` waits in `recv` forever -- a hang, not a failure.
+            pair.tx.close()
+        }
+        run(pair.rx, start)
+    }
+
+    match back.rx.recv() {
+        Some(v) => v
+        // Unreachable while the body always sends: `supervised` has already joined the
+        // fiber by here, so the value is either in the channel or the fiber panicked --
+        // and a panic would have surfaced before this line.
+        None => panic("the store body produced no result")
+    }
+}
+
+test "request/reply answers: an empty store gives an empty snapshot" {
+    // The first of T2.9's two open conditions. Before the fiber there was nobody to
+    // ask, and the condition was not "unproven" but unaskable.
+    ro snap = with_store(Snapshot.empty(), fn(s Store) -> Snapshot => s.snapshot())
+    assert(snap.accounts.len() == 0)
+    assert(!snap.restored)
+}
+
+test "a merge is visible to the next reader, and only one row per account" {
+    ro snap = with_store(Snapshot.empty(), fn(s Store) -> Snapshot {
+        s.merge(AccountSlot.of("a@b.c", "ok", 1000, 3))
+        s.merge(AccountSlot.of("a@b.c", "ok", 2000, 4))
+        s.snapshot()
+    })
+    // Two readings of ONE account are one row -- appending would grow the page by a
+    // row per tick, which is the failure `merge` was written against.
+    assert(snap.accounts.len() == 1)
+    assert(snap.accounts[0].polled_at_ms == 2000)
+    assert(snap.fetched_at_ms == 2000)
+}
+
+test "a restored snapshot arrives restored, and its accounts survive the replay" {
+    // T2.9's second condition, the positive half. The negative half ("a fresh snapshot
+    // is NOT marked restored") is the test above, and both are needed: a `restored`
+    // that is always true would pass one and fail the other.
+    mut start = Snapshot.empty()
+    start.accounts.push(AccountSlot.of("kept@example.com", "ok", 500, 2))
+    start.fetched_at_ms = 500
+    start.restored = true
+
+    ro snap = with_store(start, fn(s Store) -> Snapshot => s.snapshot())
+    assert(snap.restored)
+    assert(snap.accounts.len() == 1)
+    assert(snap.accounts[0].email == "kept@example.com")
+    assert(snap.fetched_at_ms == 500)
+}
+
+test "subscribers get monotonic ids from the fiber, and the 33rd is refused" {
+    // The registry already pinned this; what is new is that it holds ACROSS the
+    // boundary -- ids handed out by one fiber to callers that never touch the registry.
+    ro box = with_store(Snapshot.empty(), fn(s Store) -> Ids {
+        mut got = []int.new()
+        mut i = 0
+        while i < 33 {
+            got.push(s.subscribe())
+            i = i + 1
+        }
+        Ids.of(got)
+    })
+    ro ids = box.items
+    assert(ids.len() == 33)
+    assert(ids[0] > 0)
+    assert(ids[1] > ids[0])
+    // The 33rd is refused with -1, which is `subscribe`'s own signal for "full" --
+    // NOT 0, which is what I assumed and what the test asserted until it failed.
+    // The two are different answers and both matter: -1 means the fiber replied and
+    // said no; 0 means nothing replied at all (see `Store @subscribe`).
+    assert(ids[32] == 0 - 1)
+    // And the 32nd is not -- the limit is not off by one.
+    assert(ids[31] > 0)
+}
+
+test "publish assigns an id and `since` returns what came after it" {
+    ro box = with_store(Snapshot.empty(), fn(s Store) -> Evts {
+        ro _ = s.subscribe()
+        ro first = s.publish("snapshot", "{}")
+        assert(first.is_some())
+        ro _ = s.publish("snapshot", "{\"n\":2}")
+        ro _ = s.publish("snapshot", "{\"n\":3}")
+        Evts.of(s.since(first!!.id))
+    })
+    ro evts = box.items
+    // Everything AFTER the first, not including it.
+    assert(evts.len() == 2)
+    assert(evts[0].data.contains("2"))
+    assert(evts[1].data.contains("3"))
+}
+
+test "a cursor that has fallen off the ring is reported as missed" {
+    ro box = with_store(Snapshot.empty(), fn(s Store) -> Flags {
+        ro _ = s.subscribe()
+        ro e = s.publish("snapshot", "{}")
+        mut out = []bool.new()
+        // A live cursor has not missed anything...
+        out.push(s.missed(e!!.id))
+        // ...and one from before the ring began has.
+        out.push(s.missed(0 - 500))
+        Flags.of(out)
+    })
+    ro answers = box.items
+    assert(!answers[0])
+    assert(answers[1])
+}

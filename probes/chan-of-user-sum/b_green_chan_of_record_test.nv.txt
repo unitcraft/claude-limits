@@ -1,0 +1,8 @@
+module ch4.a_test
+import std.concurrency.nvchan.{Chan}
+type Box value { ro n int }
+test "a channel of a user RECORD" {
+    ro p = Chan[Box].new(1)
+    ro _ = p.tx.send({ n: 7 })
+    assert(p.rx.recv()!!.n == 7)
+}

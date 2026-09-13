@@ -1,0 +1,207 @@
+// store_fiber.nv — the fiber that owns the snapshot and the subscriptions (T2.9, T2.13).
+//
+// `store.nv` is the state machine: a registry with a ring of events, a snapshot that
+// merges account readings. It is pure and has been testable since it was written. What
+// it never had is an OWNER -- something that holds the one copy and serialises every
+// touch of it. That is this file, and its absence is why three conditions of T2.9 and
+// three of T2.13 stood open with "there is no fiber" written beside them.
+//
+// WHY A FIBER AND NOT A LOCK, decided by spike T0.4 rather than by preference. The
+// spike measured connection fibers running on ten OS threads and found NO race across
+// 400 concurrent increments on unprotected state -- and still concluded the fiber is
+// mandatory, because the property that would have to be relied on is written down
+// nowhere. A measurement that comes out clean does not make a guarantee; it makes an
+// observation about one run on one machine.
+//
+// REQUEST/REPLY, AND EVERY REQUEST CARRIES ITS OWN REPLY CHANNEL. The alternative --
+// one shared reply channel -- delivers answers to whoever asks next, which is a bug
+// that appears only under load and reads as data corruption rather than as a mistake in
+// the plumbing.
+//
+// THE LOOP ENDS WHEN THE CHANNEL CLOSES, not on a `Stop` message. A sentinel message
+// races with the messages behind it: the sender that closes has no way to know whether
+// somebody queued a request first, and those requests then wait forever on a reply that
+// will never come. Closing is the signal the channel itself provides.
+
+module model.store_fiber
+
+import std.concurrency.nvchan.{Chan, ChanTx, ChanRx}
+import claude_limits.model.store.{Registry, Snapshot, AccountSlot, Event, subscribe, unsubscribe, publish, since, missed, merge}
+
+/// One thing to ask of the store.
+///
+/// A sum, because the alternative is a record with a "kind" field and five optional
+/// payloads -- which makes every unused combination representable and none of them
+/// checked.
+export type Request enum
+    /// Give me the snapshot as it stands.
+    | GetSnapshot(ChanTx[Snapshot])
+    /// Fold one account's reading in. No reply: the sender has nothing to wait for,
+    /// and making it wait would serialise the pollers behind each other.
+    | Merge(AccountSlot)
+    /// Register a subscriber; the reply is its id.
+    | Subscribe(ChanTx[int])
+    /// Drop a subscriber. No reply, for the same reason as `Merge`.
+    | Unsubscribe(int)
+    /// Publish an event to every subscriber; the reply is the event, so a caller that
+    /// needs the assigned id can have it.
+    | Publish(str, str, ChanTx[Event])
+    /// Everything after `id`; the reply is the events, oldest first.
+    | Since(int, ChanTx[Events])
+    /// Has `id` fallen off the ring? The reply says so.
+    | Missed(int, ChanTx[bool])
+
+/// The envelope the request travels in. A WORKAROUND, not a form.
+///
+/// `Chan[Request]` does not compile: `Chan[T].new` emits `ChanPair[T]` and not the two
+/// types its own fields are made of, when T is a user-defined sum. Four probes isolate
+/// it in `probes/chan-of-user-sum/` -- `Chan[int]` and `Chan[<record>]` pass, a sum
+/// fails, and a record CONTAINING the same sum passes. `nova check` says `ok:` to all
+/// four.
+///
+/// The sum is kept: a record with a `kind` field and five optional payloads would make
+/// every unused combination representable and none of them checked.
+///
+/// REMOVE THIS WHEN THE DEFECT IS FIXED. One line here, one unwrap in the loop.
+/// [M-chan-envelope-workaround]
+export type Envelope value {
+    ro req Request
+}
+
+export fn Envelope.of(req Request) -> Envelope => { req }
+
+/// A list of events, boxed for the same reason as `Envelope`: a channel cannot carry a
+/// VECTOR either. The axis turned out to be pointer representation, not sums -- vectors
+/// and sums both fail, scalars, `str` and value records pass.
+/// [M-chan-envelope-workaround]
+export type Events value {
+    ro items []Event
+}
+
+export fn Events.of(items []Event) -> Events => { items }
+
+/// The address of a running store. Cheap to copy; every holder talks to one fiber.
+export type Store value {
+    ro tx ChanTx[Envelope]
+}
+
+export fn Store.of(tx ChanTx[Envelope]) -> Store => { tx }
+
+/// The loop. Runs until the request channel closes.
+///
+/// Takes the snapshot it starts from, so a restored one (01.2 §3.16) and an empty one
+/// are the same code path -- the difference is a value the caller supplies, not a
+/// branch here.
+export fn run(rx ChanRx[Envelope], start Snapshot) -> () {
+    // STARTS EMPTY AND REPLAYS, rather than copying `start`.
+    //
+    // `Snapshot` has no `clone`, and copying the record would share its `accounts`
+    // vector -- the precise co-ownership this fiber exists to prevent: the caller's
+    // value and the fiber's would be one storage, and every merge visible through both.
+    //
+    // Declaring the parameter `mut` compiles and is worse: `mut` is in-out, so the
+    // caller would see each merge in its own value. That is harmless only because
+    // today's caller hands the snapshot over and stops using it -- a property of the
+    // call site, not of the type, and the first person to keep their copy inherits an
+    // aliasing bug nobody wrote down.
+    //
+    // Replaying costs one pass at start-up, has no aliasing question, and runs a
+    // restored snapshot through the SAME path a polled one takes -- so the two cannot
+    // be subtly different.
+    mut snap = Snapshot.empty()
+    for slot in start.accounts { merge(snap, slot) }
+    snap.fetched_at_ms = start.fetched_at_ms
+    snap.restored = start.restored
+    mut reg = Registry.new()
+
+    mut going = true
+    while going {
+        match rx.recv() {
+            None => { going = false }
+            Some(env) => {
+                // Unwrap the envelope. [M-chan-envelope-workaround]
+                match env.req {
+                    Request.GetSnapshot(reply) => { ro _ = reply.send(snap) }
+                    Request.Merge(slot) => { merge(snap, slot) }
+                    Request.Subscribe(reply) => { ro _ = reply.send(subscribe(reg)) }
+                    Request.Unsubscribe(id) => { unsubscribe(reg, id) }
+                    Request.Publish(name, data, reply) => {
+                        ro _ = reply.send(publish(reg, name, data))
+                    }
+                    Request.Since(after, reply) => { ro _ = reply.send(Events.of(since(reg, after))) }
+                    Request.Missed(after, reply) => { ro _ = reply.send(missed(reg, after)) }
+                }
+            }
+        }
+    }
+}
+
+// ── the caller's side ────────────────────────────────────────────────────────
+//
+// Each of these makes its OWN reply channel, capacity 1. One shared reply channel
+// would deliver answers to whoever asked next.
+
+/// The snapshot as it stands.
+export fn Store @snapshot() -> Snapshot {
+    ro pair = Chan[Snapshot].new(1)
+    ro _ = @tx.send(Envelope.of(Request.GetSnapshot(pair.tx)))
+    match pair.rx.recv() {
+        Some(s) => s
+        // The fiber is gone. An empty snapshot is the honest answer: we know nothing,
+        // which is exactly what an empty one says. Inventing a stale one would be
+        // worse -- a page showing yesterday's numbers as today's.
+        None => Snapshot.empty()
+    }
+}
+
+/// Fold one account's reading in. Returns nothing and waits for nothing.
+export fn Store @merge(slot AccountSlot) -> () {
+    ro _ = @tx.send(Envelope.of(Request.Merge(slot)))
+}
+
+/// Register a subscriber, and get its id.
+export fn Store @subscribe() -> int {
+    ro pair = Chan[int].new(1)
+    ro _ = @tx.send(Envelope.of(Request.Subscribe(pair.tx)))
+    match pair.rx.recv() {
+        Some(id) => id
+        // ZERO, AND IT IS DISTINCT FROM -1 ON PURPOSE. `subscribe` answers -1 when the
+        // registry is full -- the fiber replied and said no. Zero means nothing replied
+        // at all, because the store is gone. A caller that conflates them retries a
+        // full registry forever, or gives up on a store that is merely busy starting.
+        None => 0
+    }
+}
+
+export fn Store @unsubscribe(id int) -> () {
+    ro _ = @tx.send(Envelope.of(Request.Unsubscribe(id)))
+}
+
+/// Publish, and get the event with its assigned id.
+export fn Store @publish(name str, data str) -> Option[Event] {
+    ro pair = Chan[Event].new(1)
+    ro _ = @tx.send(Envelope.of(Request.Publish(name, data, pair.tx)))
+    pair.rx.recv()
+}
+
+/// Everything after `id`.
+export fn Store @since(after int) -> []Event {
+    ro pair = Chan[Events].new(1)
+    ro _ = @tx.send(Envelope.of(Request.Since(after, pair.tx)))
+    match pair.rx.recv() {
+        Some(box) => box.items
+        None => []
+    }
+}
+
+/// Has `after` fallen off the ring?
+export fn Store @missed(after int) -> bool {
+    ro pair = Chan[bool].new(1)
+    ro _ = @tx.send(Envelope.of(Request.Missed(after, pair.tx)))
+    match pair.rx.recv() {
+        Some(v) => v
+        // Unknown. `true` and not `false`: a caller that cannot reach the store should
+        // resend the whole snapshot rather than assume its cursor is still good.
+        None => true
+    }
+}

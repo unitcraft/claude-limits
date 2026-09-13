@@ -1,0 +1,18 @@
+module ch5.a_test
+import std.concurrency.nvchan.{Chan}
+
+type Req enum
+    | Get
+    | Put(int)
+
+// A record WRAPPING the sum.
+type Envelope value { ro req Req }
+
+test "a channel of a record that CONTAINS a sum" {
+    ro p = Chan[Envelope].new(1)
+    ro _ = p.tx.send({ req: Req.Put(7) })
+    match p.rx.recv()!!.req {
+        Req.Put(n) => assert(n == 7)
+        _ => assert(false)
+    }
+}
