@@ -1,0 +1,227 @@
+// repo.nv — writing one tick (task T2.4).
+//
+//   ./nova.sh test src/storage/ --filter repo_test
+//
+// Source: 01.2 §3.1 «Запись» (idempotent upserts, the service set filled by THIS
+// layer), §3.6–§3.11 (account, window, cycle, sample, the poll journal), §4 (one
+// transaction), §8 п. 4 (including "twice in a row").
+//
+// ── ONE TICK IS ONE TRANSACTION ──────────────────────────────────────────────
+//
+// The acceptance line that shapes this file is «инъекция ошибки на переносе не
+// оставляет `poll` без пары»: a poll row without its samples is a lie about what the
+// endpoint said. So everything a tick writes goes inside `BEGIN`/`COMMIT`, and any
+// failure rolls the whole thing back — the journal entry included.
+//
+// ── PARAMETERS: WHAT THE SPEC ASKS FOR AND WHAT THE EFFECT HAS ───────────────
+//
+// 01.2 §3.1 ends with «Все запросы — `sql`…`` с параметрами». The `Db` effect has
+// `exec(conn, sql str)` and nothing else: no `prepare`, no `bind`. Those live on the
+// package's FACADE, which the card forbids here for a reason that outweighs it — the
+// error injection this file must survive is impossible against a live database.
+//
+// So the SQL is built as text, and the quoting is a named, tested function rather
+// than an inline `'${x}'` at eleven call sites. `quote` doubles single quotes, which
+// is the SQL standard's own escape; there is a test with a value that would otherwise
+// close the literal and start a statement. When plan 286's boundary arrives with
+// binding, `quote` is the one thing to delete.
+
+module storage.repo
+
+import duckdb.db_effect.{Db, ConnRef}
+import duckdb.errors.{DuckError}
+
+/// One window's reading inside a tick.
+export type WindowRow value {
+    ro kind str          // session | weekly_all | weekly_scoped (01.2 §3.2)
+    ro model str         // "" for the two that have no model
+    ro percent int
+    ro locked bool
+    ro locked_reason str
+    ro server_severity str
+    ro starts_at_ms int
+    ro resets_at_ms int
+}
+
+export fn WindowRow.of(kind str, model str, percent int, locked bool, locked_reason str,
+                       server_severity str, starts_at_ms int, resets_at_ms int) -> WindowRow =>
+    { kind, model, percent, locked, locked_reason, server_severity, starts_at_ms, resets_at_ms }
+
+/// Everything one poll of one account produced.
+export type Tick value {
+    ro instance str      // the author of every row: `created_by` / `updated_by`
+    ro at_ms int
+    ro email str
+    ro org str
+    ro outcome str       // poll_outcome (01.2 §3.2)
+    ro http_status int
+    ro retry_after_sec int
+    ro latency_ms int
+    ro error str
+    ro windows []WindowRow
+}
+
+// ── quoting ──────────────────────────────────────────────────────────────────
+
+/// A SQL string literal, quoted the standard way: a single quote doubles itself.
+///
+/// NOT A CONVENIENCE. Every value in a tick comes from outside — an e-mail from a
+/// credentials file, a `locked_reason` from the endpoint, an error text from the
+/// network layer. One of them containing `'` would end the literal and start
+/// whatever followed. There is a test with exactly that value.
+///
+/// It is also the thing to DELETE when the driver boundary of plan 286 brings real
+/// parameter binding: a quoting function is a smaller lie than an unquoted literal,
+/// not a solution.
+/// Named so a probe can neutralise the loop without fighting three layers of quote
+/// escaping: the mutation that matters here is "stop doubling", and its anchor must
+/// not itself be a nest of apostrophes.
+const EMPTY = ""
+
+export fn quote(s str) -> str {
+    mut out = "'"
+    for ch in s.chars() {
+        if ch == '\'' { out = "${out}''" } else { out = "${out}${ch}" }
+    }
+    "${out}'"
+}
+
+/// A moment as DuckDB reads it: microseconds since the epoch, cast to TIMESTAMPTZ.
+///
+/// `make_timestamp` rather than a formatted string: formatting would put a timezone
+/// and a locale between us and the number, and 01.2 §3.1 says the column is UTC
+/// microseconds.
+export fn moment(ms int) -> str => "make_timestamp(${ms * 1000})"
+
+/// A `NULL` or a quoted value — the difference between "not set" and "empty", which
+/// 01.2 §0 treats as opposite answers.
+export fn opt(s str) -> str {
+    if s == "" { return "NULL" }
+    quote(s)
+}
+
+// ── the statements ───────────────────────────────────────────────────────────
+
+/// Upsert the account, touching `last_seen_at` and the service set (01.2 §3.1).
+///
+/// THE E-MAIL IS LOWERED HERE, before the CHECK ever sees it: the column refuses
+/// anything else, and a row refused at the database is a tick lost for a reason the
+/// caller cannot fix.
+export fn upsert_account_sql(t Tick, id str) -> str {
+    ro at = moment(t.at_ms)
+    ro email = t.email.to_ascii_lower()
+    "INSERT INTO account (id, created_at, updated_at, created_by, updated_by, email, org_name, color_slot, first_seen_at, last_seen_at) VALUES (${quote(id)}, ${at}, ${at}, ${quote(t.instance)}, ${quote(t.instance)}, ${quote(email)}, ${opt(t.org)}, 0, ${at}, ${at}) ON CONFLICT (email) DO UPDATE SET last_seen_at = excluded.last_seen_at, updated_at = excluded.updated_at, updated_by = excluded.updated_by"
+}
+
+/// Upsert one limit window of an account.
+export fn upsert_window_sql(t Tick, w WindowRow, id str, account_id str) -> str {
+    ro at = moment(t.at_ms)
+    "INSERT INTO limit_window (id, created_at, updated_at, created_by, updated_by, account_id, kind, model, first_seen_at, last_seen_at) VALUES (${quote(id)}, ${at}, ${at}, ${quote(t.instance)}, ${quote(t.instance)}, ${quote(account_id)}, ${quote(w.kind)}, ${opt(w.model)}, ${at}, ${at}) ON CONFLICT (account_id, kind, model) DO UPDATE SET last_seen_at = excluded.last_seen_at, updated_at = excluded.updated_at, updated_by = excluded.updated_by"
+}
+
+/// Upsert the cycle this reading belongs to (01.2 §3.10: one pass of a window).
+export fn upsert_cycle_sql(t Tick, w WindowRow, id str, window_id str) -> str {
+    ro at = moment(t.at_ms)
+    "INSERT INTO window_cycle (id, created_at, updated_at, created_by, updated_by, window_id, starts_at, resets_at) VALUES (${quote(id)}, ${at}, ${at}, ${quote(t.instance)}, ${quote(t.instance)}, ${quote(window_id)}, ${moment(w.starts_at_ms)}, ${moment(w.resets_at_ms)}) ON CONFLICT (window_id, starts_at) DO NOTHING"
+}
+
+/// The reading itself.
+///
+/// `DO NOTHING` on `(window_id, sampled_at)`: polling the same window twice in the
+/// same instant is the same fact, and the acceptance line «повтор того же тика не
+/// меняет счётчиков» rests on this clause rather than on the caller remembering.
+export fn insert_sample_sql(t Tick, w WindowRow, id str, window_id str, cycle_id str) -> str {
+    ro at = moment(t.at_ms)
+    ro locked = if w.locked { "true" } else { "false" }
+    "INSERT INTO sample (id, created_at, updated_at, created_by, updated_by, window_id, sampled_at, cycle_id, percent, locked, locked_reason, server_severity, active) VALUES (${quote(id)}, ${at}, ${at}, ${quote(t.instance)}, ${quote(t.instance)}, ${quote(window_id)}, ${at}, ${quote(cycle_id)}, ${w.percent}, ${locked}, ${opt(w.locked_reason)}, ${opt(w.server_severity)}, true) ON CONFLICT (window_id, sampled_at) DO NOTHING"
+}
+
+/// The journal entry: what the endpoint answered, whatever that was.
+///
+/// WRITTEN FOR EVERY OUTCOME, including the ones nobody wants to look at. A 429 that
+/// is not in `poll` is a 429 nobody can explain the next morning.
+export fn insert_poll_sql(t Tick, id str, account_id str) -> str {
+    ro at = moment(t.at_ms)
+    "INSERT INTO poll (id, created_at, updated_at, created_by, updated_by, account_id, polled_at, outcome, http_status, retry_after_sec, latency_ms, error) VALUES (${quote(id)}, ${at}, ${at}, ${quote(t.instance)}, ${quote(t.instance)}, ${quote(account_id)}, ${at}, ${quote(t.outcome)}, ${t.http_status}, ${t.retry_after_sec}, ${t.latency_ms}, ${opt(t.error)}) ON CONFLICT (account_id, polled_at) DO NOTHING"
+}
+
+// ── the tick ─────────────────────────────────────────────────────────────────
+
+/// Ids the caller supplies, so the write stays deterministic in a test.
+///
+/// UUID v7 IS CREATED BY THE APPLICATION (01.2 §3.1: no server-side DEFAULT), and a
+/// function that minted them inside would make every assertion about a row depend on
+/// a clock. The caller mints; this file writes.
+export type Ids value {
+    ro account str
+    ro poll str
+    ro windows []str
+    ro cycles []str
+    ro samples []str
+}
+
+export fn Ids.of(account str, poll str, windows []str, cycles []str, samples []str) -> Ids =>
+    { account, poll, windows, cycles, samples }
+
+/// Write one tick, or write nothing at all.
+///
+/// THE ORDER IS FORCED BY THE FOREIGN KEYS: account, then its windows, then each
+/// window's cycle, then the samples, and the journal entry last. The journal goes
+/// LAST on purpose — if anything above it fails, the rollback takes the whole tick,
+/// and `poll` never gains a row whose samples do not exist.
+export fn write_tick(conn ConnRef, t Tick, ids Ids) Db -> Result[(), DuckError] {
+    match Db.exec(conn, "BEGIN TRANSACTION") {
+        Err(e) => return Err(e)
+        Ok(_) => ()
+    }
+
+    ro steps = plan_sql(t, ids)
+    mut i = 0
+    while i < steps.len() {
+        match Db.exec(conn, steps[i]) {
+            Err(e) => {
+                // Best effort: if the rollback itself fails the connection is gone,
+                // and the original error is the one worth reporting.
+                ro _ = Db.exec(conn, "ROLLBACK")
+                return Err(e)
+            }
+            Ok(_) => ()
+        }
+        i += 1
+    }
+
+    match Db.exec(conn, "COMMIT") {
+        Err(e) => {
+            ro _ = Db.exec(conn, "ROLLBACK")
+            Err(e)
+        }
+        Ok(_) => {
+            // 01.2 §5: `CHECKPOINT` after every tick, so `.wal` merges into the file
+            // and the database on disk is always whole and copyable.
+            ro _ = Db.exec(conn, "CHECKPOINT")
+            Ok(())
+        }
+    }
+}
+
+/// Every statement of a tick, in order — PURE, so the order itself can be asserted.
+///
+/// Separated from `write_tick` because the order is the part with a rule in it, and a
+/// rule inside an effectful loop can only be checked by watching the effect.
+export fn plan_sql(t Tick, ids Ids) -> []str {
+    mut out = []str.new()
+    out.push(upsert_account_sql(t, ids.account))
+    mut i = 0
+    while i < t.windows.len() {
+        ro w = t.windows[i]
+        ro wid = if i < ids.windows.len() { ids.windows[i] } else { "" }
+        ro cid = if i < ids.cycles.len() { ids.cycles[i] } else { "" }
+        ro sid = if i < ids.samples.len() { ids.samples[i] } else { "" }
+        out.push(upsert_window_sql(t, w, wid, ids.account))
+        out.push(upsert_cycle_sql(t, w, cid, wid))
+        out.push(insert_sample_sql(t, w, sid, wid, cid))
+        i += 1
+    }
+    out.push(insert_poll_sql(t, ids.poll, ids.account))
+    out
+}

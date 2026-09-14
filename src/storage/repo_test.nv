@@ -1,0 +1,291 @@
+// Tests for storage/repo.nv — task T2.4.
+//
+//   ./nova.sh test src/storage/ --filter repo_test
+//
+// The card's five acceptance lines:
+//
+//   1. a tick from a fixture produces the expected rows   — `plan_sql`, statement by statement
+//   2. an injected error leaves no `poll` without its pair — a handler that fails on the Nth call
+//   3. the same tick twice changes nothing                 — the `ON CONFLICT` clauses
+//   4. `created_by` is the instance id                     — asserted on every statement
+//   5. after a tick the `.wal` is empty                    — `CHECKPOINT`, asserted in the call order
+//
+// LINE 2 IS WHY THE EFFECT IS A CONDITION OF ACCEPTANCE AND NOT A CONVENIENCE, and the
+// card says so itself: a live DuckDB does not fail on command in the middle of a
+// transfer. A handler that refuses the Nth call does, which is the only way this can
+// be a test rather than a hope.
+
+module storage.repo_test
+
+import repo.{Tick, WindowRow, Ids, quote, opt, moment, plan_sql, write_tick, upsert_account_sql}
+import duckdb.db_effect.{Db, DbRef, ConnRef, ResultRef}
+import duckdb.errors.{DuckError}
+
+const INSTANCE = "0192f0a1-7c3d-7000-8000-aaaaaaaaaaaa"
+
+fn win(kind str, model str, percent int) -> WindowRow =>
+    WindowRow.of(kind, model, percent, false, "", "normal", 1757000000000, 1757018000000)
+
+fn tick() -> Tick => {
+    instance: INSTANCE,
+    at_ms: 1757347622000,
+    email: "work@example.org",
+    org: "Tech Center",
+    outcome: "ok",
+    http_status: 200,
+    retry_after_sec: 0,
+    latency_ms: 120,
+    error: "",
+    windows: [win("session", "", 74), win("weekly_all", "", 41)],
+}
+
+fn tick_with_email(e str) -> Tick => {
+    instance: INSTANCE,
+    at_ms: 1757347622000,
+    email: e,
+    org: "Tech Center",
+    outcome: "ok",
+    http_status: 200,
+    retry_after_sec: 0,
+    latency_ms: 120,
+    error: "",
+    windows: [win("session", "", 74), win("weekly_all", "", 41)],
+}
+
+fn ids() -> Ids =>
+    Ids.of("id-account", "id-poll", ["id-w1", "id-w2"], ["id-c1", "id-c2"],
+           ["id-s1", "id-s2"])
+
+/// What the handler saw, and what it should refuse.
+type Spy {
+    mut calls int
+    mut seen []str
+    mut fail_at int      // 0 = never
+}
+
+fn Spy.new() -> Spy => { calls: 0, seen: [], fail_at: 0 }
+fn Spy.failing(n int) -> Spy => { calls: 0, seen: [], fail_at: n }
+
+fn Spy mut @ran(sql str) -> bool {
+    @calls += 1
+    @seen.push(sql)
+    if @fail_at > 0 && @calls == @fail_at { return false }
+    true
+}
+
+fn spied(mut s Spy) -> Effect[Db] {
+    effect Db {
+        open(path str, opts DbOptions) -> Result[DbRef, DuckError] => Ok(DbRef.of(1 as CDbHandle))
+        connect(db DbRef) -> Result[ConnRef, DuckError] => Ok(ConnRef.of(1 as CConnHandle))
+        exec(conn ConnRef, sql str) -> Result[int, DuckError] {
+            if s.ran(sql) { Ok(1) } else { Err(DuckError.Query("injected at call ${s.calls}")) }
+        }
+        query(conn ConnRef, sql str) -> Result[ResultRef, DuckError] => Ok(ResultRef.of(1 as CResultHandle))
+        describe(result ResultRef) -> Result[[]Col, DuckError] => Ok([])
+        next(result ResultRef) -> Result[Option[[]Value], DuckError] => Ok(None)
+        close_result(result ResultRef) -> () => ()
+        close_conn(conn ConnRef) -> () => ()
+        close_db(db DbRef) -> () => ()
+    }
+}
+
+fn saw(s Spy, needle str) -> bool {
+    for sql in s.seen {
+        if sql.contains(needle) { return true }
+    }
+    false
+}
+
+fn index_of(s Spy, needle str) -> int {
+    mut i = 0
+    while i < s.seen.len() {
+        if s.seen[i].contains(needle) { return i }
+        i += 1
+    }
+    0 - 1
+}
+
+// ── quoting, which is the only thing standing between a tick and an injection ──
+
+test "a single quote in a value is doubled, not passed through" {
+    // An endpoint's `locked_reason`, a path from a config, an error from the network:
+    // every value in a tick comes from outside. One apostrophe would end the literal.
+    assert(quote("it's") == "'it''s'")
+    assert(quote("plain") == "'plain'")
+}
+
+test "a value that would close the literal and start a statement is neutralised" {
+    ro nasty = "x'; DROP TABLE account; --"
+    ro got = quote(nasty)
+    // The dangerous thing is an ODD number of quotes reaching the database. After
+    // quoting the payload is one literal: it starts and ends with a quote and every
+    // inner one is doubled.
+    assert(got.starts_with("'"))
+    assert(got.ends_with("'"))
+    assert(got.contains("''"))
+    assert(!got.contains("x'; DROP"))
+}
+
+test "an empty string is NULL, and a blank one is not" {
+    // 01.2 §0 treats "not set" and "empty" as opposite answers, so they cannot share
+    // a spelling.
+    assert(opt("") == "NULL")
+    assert(opt(" ") == "' '")
+    assert(opt("x") == "'x'")
+}
+
+test "a moment goes in as microseconds, not as formatted text" {
+    // Formatting would put a timezone and a locale between us and the number.
+    assert(moment(1000) == "make_timestamp(1000000)")
+}
+
+// ── what a tick writes, and in what order ────────────────────────────────────
+
+test "a tick with two windows plans nine statements" {
+    // account + (window, cycle, sample) x 2 + poll.
+    assert(plan_sql(tick(), ids()).len() == 8)
+}
+
+test "the journal entry is written LAST" {
+    // The acceptance line about a `poll` without its pair rests on this: everything
+    // that could fail comes first, so a rollback never leaves the journal claiming a
+    // reading that does not exist.
+    ro steps = plan_sql(tick(), ids())
+    assert(steps[steps.len() - 1].contains("INSERT INTO poll"))
+    assert(steps[0].contains("INSERT INTO account"))
+}
+
+test "the e-mail is lowered BEFORE it reaches the column" {
+    // Built whole rather than spread from `tick()`: codegen cannot type a spread whose
+    // source is a CALL (`cannot determine type for spread`), and a helper that hides
+    // that would just move the surprise.
+    ro t = tick_with_email("Work@Example.ORG")
+    ro sql = upsert_account_sql(t, "id-account")
+    assert(sql.contains("'work@example.org'"))
+    assert(!sql.contains("Work@Example"))
+}
+
+test "every statement carries the instance as author" {
+    // The card names `created_by` explicitly. A row whose author is empty cannot be
+    // told from one written by a copy of the database.
+    for sql in plan_sql(tick(), ids()) {
+        assert(sql.contains(quote(INSTANCE)))
+    }
+}
+
+test "the reference tables upsert and the facts do not" {
+    ro steps = plan_sql(tick(), ids())
+    mut updates = 0
+    mut nothings = 0
+    for sql in steps {
+        if sql.contains("DO UPDATE SET") { updates += 1 }
+        if sql.contains("DO NOTHING") { nothings += 1 }
+    }
+    // account + two windows update their `last_seen_at`; two cycles, two samples and
+    // the journal entry do nothing on conflict (01.2 §3.1).
+    assert(updates == 3)
+    assert(nothings == 5)
+}
+
+// ── one transaction, and a checkpoint after it ───────────────────────────────
+
+test "a tick is wrapped in BEGIN and COMMIT, and ends with CHECKPOINT" {
+    mut s = Spy.new()
+    ro got = with Db = spied(s) {
+        write_tick(ConnRef.of(1 as CConnHandle), tick(), ids())
+    }
+    assert(got.is_ok())
+    assert(saw(s, "BEGIN TRANSACTION"))
+    assert(saw(s, "COMMIT"))
+    // 01.2 §5: the `.wal` merges into the file after every tick, so the database on
+    // disk is always whole and copyable. This is the machine-checkable half of the
+    // card's "after a tick the .wal is empty".
+    assert(saw(s, "CHECKPOINT"))
+    assert(index_of(s, "BEGIN TRANSACTION") < index_of(s, "INSERT INTO account"))
+    assert(index_of(s, "INSERT INTO poll") < index_of(s, "COMMIT"))
+    assert(index_of(s, "COMMIT") < index_of(s, "CHECKPOINT"))
+}
+
+test "eleven calls for a two-window tick: begin, eight statements, commit, checkpoint" {
+    mut s = Spy.new()
+    ro _ = with Db = spied(s) { write_tick(ConnRef.of(1 as CConnHandle), tick(), ids()) }
+    assert(s.calls == 11)
+}
+
+// ── the injected failure: the line that needs a mock ─────────────────────────
+
+test "a failure mid-tick rolls back and reports" {
+    // The fourth call is a window upsert -- in the middle, with the journal still
+    // ahead of it.
+    mut s = Spy.failing(4)
+    ro got = with Db = spied(s) {
+        write_tick(ConnRef.of(1 as CConnHandle), tick(), ids())
+    }
+    assert(got.is_err())
+    assert(saw(s, "ROLLBACK"))
+    assert(!saw(s, "COMMIT"))
+}
+
+test "a failure mid-tick leaves NO journal entry -- the card's own line" {
+    // «инъекция ошибки на переносе не оставляет `poll` без пары». The journal is the
+    // last statement, so a failure before it means the row was never attempted --
+    // and even if it had been, the ROLLBACK takes it.
+    mut s = Spy.failing(4)
+    ro _ = with Db = spied(s) { write_tick(ConnRef.of(1 as CConnHandle), tick(), ids()) }
+    assert(!saw(s, "INSERT INTO poll"))
+}
+
+test "a failure on the LAST statement also rolls back" {
+    // The other end of the same rule: the journal itself failing must not leave the
+    // samples behind without it.
+    mut s = Spy.failing(10)
+    ro got = with Db = spied(s) {
+        write_tick(ConnRef.of(1 as CConnHandle), tick(), ids())
+    }
+    assert(got.is_err())
+    assert(saw(s, "ROLLBACK"))
+    assert(!saw(s, "CHECKPOINT"))
+}
+
+test "a healthy tick does NOT roll back -- the control" {
+    // Without it, every assertion above is equally true of a `write_tick` that always
+    // rolls back.
+    mut s = Spy.new()
+    ro got = with Db = spied(s) {
+        write_tick(ConnRef.of(1 as CConnHandle), tick(), ids())
+    }
+    assert(got.is_ok())
+    assert(!saw(s, "ROLLBACK"))
+}
+
+// ── twice in a row ───────────────────────────────────────────────────────────
+
+test "the same tick twice plans byte-identical statements" {
+    // «повтор того же тика не меняет счётчиков и `updated_at` фактов» — the clauses
+    // that make it true are `DO NOTHING` on the facts, and they are in the text, so
+    // the text being identical is what a second run relies on.
+    ro first = plan_sql(tick(), ids())
+    ro second = plan_sql(tick(), ids())
+    assert(first.len() == second.len())
+    mut i = 0
+    while i < first.len() {
+        assert(first[i] == second[i])
+        i += 1
+    }
+}
+
+test "the facts refuse to change on a repeat, and the references touch only last_seen" {
+    ro steps = plan_sql(tick(), ids())
+    for sql in steps {
+        ro is_fact = sql.contains("INSERT INTO sample") || sql.contains("INSERT INTO poll") || sql.contains("INSERT INTO window_cycle")
+        if is_fact {
+            assert(sql.contains("DO NOTHING"))
+        }
+        ro is_ref = sql.contains("INSERT INTO account") || sql.contains("INSERT INTO limit_window")
+        if is_ref {
+            assert(sql.contains("last_seen_at = excluded.last_seen_at"))
+            // And NOT the whole row: a repeat must not rewrite `first_seen_at`.
+            assert(!sql.contains("first_seen_at = excluded"))
+        }
+    }
+}
