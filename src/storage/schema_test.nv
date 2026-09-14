@@ -1,0 +1,246 @@
+// Tests for migrations/0001_init.sql — task T2.3.
+//
+//   ./nova.sh test src/storage/ --filter schema_test
+//
+// THIS ONE NEEDS A LIVE DATABASE, and that is the point. Every acceptance line of the
+// card is a question only DuckDB can answer: what `information_schema.columns` holds,
+// what `duckdb_constraints()` named things, and whether a string really is refused by
+// a `TIMESTAMPTZ` column. A mock would answer whatever it was told, which is the one
+// thing that proves nothing about a schema.
+//
+// It runs in memory — no file, no key, no temp directory — so it costs a second and
+// leaves nothing behind. It DOES need the vendored DuckDB: on a checkout that has
+// never built it, this file is the one that will not run. That is the price of asking
+// the database instead of a mock, and it is named rather than discovered.
+
+module storage.schema_test
+
+import std.fs.{real_fs, read_text}
+import duckdb.{Database, DbOptions}
+import duckdb.types.{Value}
+import claude_limits.accounts.discover.{FolderKind}
+
+/// The migration, read from the tree rather than embedded: the test must fail when
+/// the FILE changes, and an embedded copy would test the copy.
+fn migration() Io -> str =>
+    with Fs = real_fs() {
+        match read_text("migrations/0001_init.sql".to_path()) {
+            Ok(s) => s
+            Err(_) => ""
+        }
+    }
+
+/// Every domain table. `schema_meta` is deliberately NOT here: 01.2 §3.3 calls it the
+/// mechanism's own table, and the service column set is a rule about domain tables
+/// (§3.1, convention §6).
+fn domain_tables() -> []str => [
+    "folder", "login_dir", "account", "occupancy", "poll", "limit_window",
+    "window_cycle", "sample", "lock_period", "daily_rollup", "config_history",
+]
+
+fn service_columns() -> []str => ["id", "created_at", "updated_at", "created_by", "updated_by"]
+
+/// One column of text out of a query, as a list.
+fn column_of(sql str) Io -> []str {
+    mut out = []str.new()
+    with Fail[DuckError] = |_| { () } {
+        consume db = Database.open_memory(DbOptions.defaults())!! {
+            consume con = db.connect()!! {
+                ro _ = con.exec(migration())!!
+                consume r = con.query(sql)!! {
+                    mut i = 0
+                    while i < r.rows() {
+                        match r.value(i, 0)!! {
+                            Value.Text(s) => out.push(s)
+                            _ => ()
+                        }
+                        i += 1
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Does `sql` fail? Used for the three refusals the card names.
+///
+/// TRUE MEANS REFUSED. A test that only checks acceptance passes on a schema with no
+/// constraints at all, which is exactly the schema somebody writes in a hurry.
+fn refused(sql str) Io -> bool {
+    mut ok = false
+    with Fail[DuckError] = |_| { () } {
+        consume db = Database.open_memory(DbOptions.defaults())!! {
+            consume con = db.connect()!! {
+                ro _ = con.exec(migration())!!
+                match con.exec(sql) {
+                    Ok(_) => { ok = true }
+                    Err(_) => { ok = false }
+                }
+            }
+        }
+    }
+    !ok
+}
+
+fn has(list []str, want str) -> bool {
+    for x in list {
+        if x == want { return true }
+    }
+    false
+}
+
+// ── the migration applies at all ─────────────────────────────────────────────
+
+test "the file is read, and it is not empty" {
+    // The control for everything below: `column_of` swallows failures, so an empty
+    // migration would make every list empty and every `has` assertion vacuous. This
+    // is the test that stops the suite lying about a file it never read.
+    assert(migration().byte_len() > 1000)
+    assert(migration().contains("CREATE TABLE schema_meta"))
+}
+
+test "twelve tables and three views, and no others" {
+    ro names = column_of("SELECT table_name FROM information_schema.tables ORDER BY table_name")
+    assert(names.len() == 15)
+    for t in domain_tables() { assert(has(names, t)) }
+    assert(has(names, "schema_meta"))
+    for v in ["v_current_occupancy", "v_latest_sample", "v_sample_local"] {
+        assert(has(names, v))
+    }
+}
+
+test "`notification` is NOT in the first migration" {
+    // 01.2 §3.14 says so in its own words: it arrives with phase F5, together with its
+    // setting, its line in `forget` and its retention. A draft table shipped early is
+    // one the code starts using before its rules exist.
+    ro names = column_of("SELECT table_name FROM information_schema.tables")
+    assert(!has(names, "notification"))
+}
+
+// ── the service column set (01.2 §3.1, convention §6) ────────────────────────
+
+test "every domain table carries the service set" {
+    for t in domain_tables() {
+        ro cols = column_of("SELECT column_name FROM information_schema.columns WHERE table_name = '${t}'")
+        assert(cols.len() > 0)
+        for c in service_columns() { assert(has(cols, c)) }
+    }
+}
+
+test "schema_meta is exempt, and that is a decision" {
+    // It is the mechanism's own table (§3.3), not a domain entity: it has no `id`,
+    // no author, and asserting the opposite here would force a column nobody wants.
+    ro cols = column_of("SELECT column_name FROM information_schema.columns WHERE table_name = 'schema_meta'")
+    assert(cols.len() > 0)
+    assert(!has(cols, "id"))
+}
+
+test "not one column is named is_*" {
+    // The card names this outright. A boolean called `is_locked` is a column that
+    // will one day need a third state.
+    ro cols = column_of("SELECT column_name FROM information_schema.columns WHERE column_name LIKE 'is\\_%' ESCAPE '\\'")
+    assert(cols.len() == 0)
+}
+
+// ── constraint names follow one template ─────────────────────────────────────
+
+test "our constraint names follow one template -- checked in the FILE" {
+    // MEASURED, AND IT CHANGED THIS TEST: DuckDB does not keep the names we give.
+    // The DDL says `CONSTRAINT account_email_ck`; `duckdb_constraints()` reports
+    // `account_email_email_email_email_check`, `account_email_key`,
+    // `folder_kind_check` -- its own generated names. So the card's line about
+    // reading the template out of `duckdb_constraints()` cannot hold as written: it
+    // would be checking DuckDB's convention, not ours.
+    //
+    // The template is ours and lives in the file, so the file is where it is checked.
+    ro sql = migration()
+    mut named = 0
+    for line in sql.lines() {
+        ro t = line.trim_ascii()
+        if t.starts_with("CONSTRAINT ") {
+            named += 1
+            // `<table>_<what>_<ck|uq>` — the suffix is what makes a name readable in
+            // a diff, and the prefix is what makes it unique across tables.
+            assert(t.contains("_ck ") || t.contains("_uq "))
+        }
+    }
+    assert(named >= 20)
+}
+
+test "the database really has CHECK and UNIQUE constraints -- the half it CAN answer" {
+    // The control for the test above: a file full of `CONSTRAINT …_ck` lines that
+    // DuckDB silently ignored would satisfy the template perfectly.
+    ro kinds = column_of("SELECT constraint_type FROM duckdb_constraints() WHERE constraint_type IN ('CHECK','UNIQUE')")
+    assert(kinds.len() >= 20)
+}
+
+// ── the CHECK lists, against 01.2 §3.2 ───────────────────────────────────────
+
+test "folder.kind carries exactly the four values of 01.2 §3.2" {
+    ro sql = column_of("SELECT constraint_text FROM duckdb_constraints() WHERE table_name = 'folder' AND constraint_text LIKE '%kind%'")
+    assert(sql.len() > 0)
+    ro text = sql[0]
+    for v in ["single", "parent", "empty", "missing"] { assert(text.contains(v)) }
+}
+
+test "the CHECK on folder.kind agrees with the enum IN THE CODE" {
+    // The card asks for this comparison by name. `FolderKind` is what discovery
+    // produces, and a value the code can emit that the column refuses is an insert
+    // that fails at the first real poll.
+    ro sql = column_of("SELECT constraint_text FROM duckdb_constraints() WHERE table_name = 'folder' AND constraint_text LIKE '%kind%'")
+    assert(sql.len() > 0)
+    ro text = sql[0]
+    // Bound one by one rather than put in a list: a list literal of BARE VARIANTS
+    // gives codegen a `nova_unit` it cannot iterate. Third shape of the same
+    // bare-variant family tonight (registry 221.1 #393 is its nearest home).
+    ro single = Single
+    ro parent = Parent
+    ro empty = Empty
+    ro missing = Missing
+    assert(text.contains(single.to_str()))
+    assert(text.contains(parent.to_str()))
+    assert(text.contains(empty.to_str()))
+    assert(text.contains(missing.to_str()))
+}
+
+test "config_history.source carries the four values of 01.2 §3.2" {
+    ro sql = column_of("SELECT constraint_text FROM duckdb_constraints() WHERE table_name = 'config_history'")
+    assert(sql.len() > 0)
+    mut found = false
+    for text in sql {
+        if text.contains("ui") && text.contains("widget") && text.contains("file")
+            && text.contains("migration") { found = true }
+    }
+    assert(found)
+}
+
+// ── the three refusals the card names ────────────────────────────────────────
+
+// All four use ONE table and ONE row shape, differing in a single field. `account`
+// has no foreign keys, and it carries a TINYINT, a TIMESTAMPTZ and the e-mail — so
+// three refusals need no graph of parent rows to exist first.
+
+test "a string does not go into a TIMESTAMPTZ column" {
+    assert(refused("INSERT INTO account (id, created_at, updated_at, created_by, updated_by, email, color_slot, first_seen_at, last_seen_at) VALUES ('0192f0a1-7c3d-7000-8000-000000000001', now(), now(), '0192f0a1-7c3d-7000-8000-0000000000ff', '0192f0a1-7c3d-7000-8000-0000000000ff', 'work@example.org', 1, 'not a moment', now())"))
+}
+
+test "200 does not go into a TINYINT column" {
+    // `account.color_slot` is TINYINT: the type itself stops at 127, before any CHECK
+    // has to have an opinion.
+    assert(refused("INSERT INTO account (id, created_at, updated_at, created_by, updated_by, email, color_slot, first_seen_at, last_seen_at) VALUES ('0192f0a1-7c3d-7000-8000-000000000002', now(), now(), '0192f0a1-7c3d-7000-8000-0000000000ff', '0192f0a1-7c3d-7000-8000-0000000000ff', 'work@example.org', 200, now(), now())"))
+}
+
+test "an e-mail with a capital letter is refused" {
+    // 01.2 §3.6: the normalisation lives in a CHECK, so a row that skipped
+    // `normalise_email` cannot enter. Without it the same person appears twice.
+    assert(refused("INSERT INTO account (id, created_at, updated_at, created_by, updated_by, email, color_slot, first_seen_at, last_seen_at) VALUES ('0192f0a1-7c3d-7000-8000-000000000003', now(), now(), '0192f0a1-7c3d-7000-8000-0000000000ff', '0192f0a1-7c3d-7000-8000-0000000000ff', 'Work@Example.org', 1, now(), now())"))
+}
+
+test "a complete, lower-case row IS accepted -- the control" {
+    // IT ALREADY EARNED ITS KEEP. The three refusals above were passing because the
+    // INSERT omitted `color_slot`, which is NOT NULL — every row was refused, and for
+    // a reason that had nothing to do with the CHECK being tested. This control is
+    // the only thing that said so.
+    assert(!refused("INSERT INTO account (id, created_at, updated_at, created_by, updated_by, email, color_slot, first_seen_at, last_seen_at) VALUES ('0192f0a1-7c3d-7000-8000-000000000004', now(), now(), '0192f0a1-7c3d-7000-8000-0000000000ff', '0192f0a1-7c3d-7000-8000-0000000000ff', 'work@example.org', 1, now(), now())"))
+}
