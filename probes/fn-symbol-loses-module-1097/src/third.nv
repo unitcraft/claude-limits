@@ -1,0 +1,28 @@
+// The third sibling, and the one difference this step adds: `parse_ask` here takes
+// TWO arguments. In claude-limits exactly one of the four `parse_ask` functions has a
+// different signature, and the emitted C gave it an argument-type suffix
+// (`..._parse_ask__NovaValue_ServerRequest_NovaValue_Disclosure`) while the other
+// three collapsed onto a single symbol. This asks whether the presence of that
+// overload is what breaks the rest.
+
+module probe_fn_symbol_loses_module_1097.third
+
+export type Ask enum
+    | Deep
+    | Shallow
+
+export fn parse_ask(raw str, depth int) -> Ask {
+    if depth > 1 { return Deep }
+    Shallow
+}
+
+export fn describe(x Ask) -> str =>
+    match x {
+        Deep => "third:deep"
+        Shallow => "third:shallow"
+    }
+
+/// The only public door: `parse_ask` is called HERE and never imported by anyone.
+/// This is the shape every handler module of claude-limits has -- its `run` calls its
+/// own helper, and the outside world sees only the factory.
+export fn run() -> str => describe(parse_ask("x", 2))

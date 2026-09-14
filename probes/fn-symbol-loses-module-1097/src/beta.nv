@@ -1,0 +1,24 @@
+// Same failing SHAPE as left/right/third, with one difference: the return type here
+// is `Qk`, a name no other module uses. Two of these three share a signature; the
+// third is the overload; none is imported by name.
+
+module probe_fn_symbol_loses_module_1097.beta
+
+export type Qk enum
+    | Three
+    | Four
+
+export fn parse_ask(raw str) -> Qk {
+    if raw == "three" { return Three }
+    Four
+}
+
+export fn Qk @to_str() -> str =>
+    match @ {
+        Three => "beta:three"
+        Four => "beta:four"
+    }
+
+fn describe(x Qk) -> str => x.to_str()
+
+export fn run() -> str => describe(parse_ask("three"))

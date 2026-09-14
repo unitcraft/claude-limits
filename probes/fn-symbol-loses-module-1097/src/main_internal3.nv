@@ -1,0 +1,16 @@
+// THREE modules, all internal, ALL THE SAME SIGNATURE -- no overload anywhere.
+//
+// Builds  -> the overload is required, and the count is not the cause.
+// Fails   -> three same-named functions are enough, overload irrelevant.
+
+module probe_fn_symbol_loses_module_1097.main_internal3
+
+import probe_fn_symbol_loses_module_1097.left.{run as run_left}
+import probe_fn_symbol_loses_module_1097.right.{run as run_right}
+import probe_fn_symbol_loses_module_1097.fourth.{run as run_fourth}
+
+fn main() Io -> () {
+    print(run_left())
+    print(run_right())
+    print(run_fourth())
+}

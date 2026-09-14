@@ -1,0 +1,20 @@
+// The failing shape with DISTINCT return type names: `Pk`, `Qk`, `Rk`.
+//
+// Two share a signature, the third is an overload, none is imported by name -- exactly
+// the combination that failed as left+right+third. The only change is that no type
+// name is shared.
+//
+// Fails  -> the return type name is NOT the axis; row 1097 needs correcting.
+// Builds -> the shared type name is part of the cause after all.
+
+module probe_fn_symbol_loses_module_1097.main_distinct
+
+import probe_fn_symbol_loses_module_1097.alpha.{run as run_a}
+import probe_fn_symbol_loses_module_1097.beta.{run as run_b}
+import probe_fn_symbol_loses_module_1097.gamma.{run as run_g}
+
+fn main() Io -> () {
+    print(run_a())
+    print(run_b())
+    print(run_g())
+}

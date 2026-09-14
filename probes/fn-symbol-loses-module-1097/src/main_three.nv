@@ -1,0 +1,19 @@
+// THREE modules: two with `parse_ask(str) -> Ask`, one with `parse_ask(str, int) -> Ask`.
+// All three type names are `Ask`; all three function names are `parse_ask`.
+//
+//   ../../nova.sh build src/main_three.nv
+//
+// If this fails where `main.nv` (two modules, one signature) succeeded, the overload
+// is implicated and the axis needs the word "overload" in it.
+
+module probe_fn_symbol_loses_module_1097.main_three
+
+import probe_fn_symbol_loses_module_1097.left.{parse_ask as parse_left, describe as describe_left}
+import probe_fn_symbol_loses_module_1097.right.{parse_ask as parse_right, describe as describe_right}
+import probe_fn_symbol_loses_module_1097.third.{parse_ask as parse_third, describe as describe_third}
+
+fn main() Io -> () {
+    print(describe_left(parse_left("now")))
+    print(describe_right(parse_right("yes")))
+    print(describe_third(parse_third("x", 2)))
+}

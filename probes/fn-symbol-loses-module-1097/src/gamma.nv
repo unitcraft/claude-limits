@@ -1,0 +1,24 @@
+// Same failing SHAPE as left/right/third, with one difference: the return type here
+// is `Rk`, a name no other module uses. Two of these three share a signature; the
+// third is the overload; none is imported by name.
+
+module probe_fn_symbol_loses_module_1097.gamma
+
+export type Rk enum
+    | Five
+    | Six
+
+export fn parse_ask(raw str, n int) -> Rk {
+    if n > 1 { return Five }
+    Six
+}
+
+export fn Rk @to_str() -> str =>
+    match @ {
+        Five => "gamma:five"
+        Six => "gamma:six"
+    }
+
+fn describe(x Rk) -> str => x.to_str()
+
+export fn run() -> str => describe(parse_ask("x", 2))

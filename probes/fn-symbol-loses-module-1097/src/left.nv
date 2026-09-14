@@ -16,3 +16,8 @@ export fn describe(x Ask) -> str =>
         Now => "left:now"
         Later => "left:later"
     }
+
+/// The only public door: `parse_ask` is called HERE and never imported by anyone.
+/// This is the shape every handler module of claude-limits has -- its `run` calls its
+/// own helper, and the outside world sees only the factory.
+export fn run() -> str => describe(parse_ask("now"))

@@ -1,0 +1,21 @@
+// THE SMALLEST FAILING CASE, if the bisect is right: TWO modules, whose `parse_ask`
+// differ in SIGNATURE, and neither is imported by name.
+//
+// The four runs that led here, each one difference from the last:
+//   main.nv           2 modules, same signature, imported by name  -> built
+//   main_three.nv     3 modules, one overload,   imported by name  -> built
+//   main_internal3.nv 3 modules, same signature, internal          -> built
+//   main_internal.nv  3 modules, one overload,   internal          -> FAILED
+//
+// So both are needed: an overload AND no by-name import. This asks whether two
+// modules suffice once both hold.
+
+module probe_fn_symbol_loses_module_1097.main_minimal
+
+import probe_fn_symbol_loses_module_1097.left.{run as run_left}
+import probe_fn_symbol_loses_module_1097.third.{run as run_third}
+
+fn main() Io -> () {
+    print(run_left())
+    print(run_third())
+}

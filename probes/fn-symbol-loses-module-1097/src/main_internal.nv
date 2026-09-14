@@ -1,0 +1,21 @@
+// NOBODY IMPORTS `parse_ask`. Each module calls its own inside its own `run`, and
+// main imports only `run` -- exactly the shape of claude-limits, where `app.nv`
+// imports the eight `*_handler` factories and never the helpers underneath them.
+//
+//   ../../nova.sh build src/main_internal.nv
+//
+// If this fails where `main.nv`, `main_three.nv` and `main_control.nv` all built, then
+// the axis is not "the return type name is shared" but something about a function that
+// is reached only transitively.
+
+module probe_fn_symbol_loses_module_1097.main_internal
+
+import probe_fn_symbol_loses_module_1097.left.{run as run_left}
+import probe_fn_symbol_loses_module_1097.right.{run as run_right}
+import probe_fn_symbol_loses_module_1097.third.{run as run_third}
+
+fn main() Io -> () {
+    print(run_left())
+    print(run_right())
+    print(run_third())
+}

@@ -1,0 +1,13 @@
+// THE MINIMUM: two modules, nobody imports `parse_ask`.
+//
+// Same as main_internal.nv minus the third module, to find the smallest failing case.
+
+module probe_fn_symbol_loses_module_1097.main_internal2
+
+import probe_fn_symbol_loses_module_1097.left.{run as run_left}
+import probe_fn_symbol_loses_module_1097.right.{run as run_right}
+
+fn main() Io -> () {
+    print(run_left())
+    print(run_right())
+}

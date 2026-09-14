@@ -1,0 +1,23 @@
+// The fourth sibling, with the SAME signature as left and right -- no overload.
+//
+// Three same-signature modules, all internal, decide whether the count alone breaks
+// it or whether an overload has to be present.
+
+module probe_fn_symbol_loses_module_1097.fourth
+
+export type Ask enum
+    | Up
+    | Down
+
+export fn parse_ask(raw str) -> Ask {
+    if raw == "up" { return Up }
+    Down
+}
+
+export fn describe(x Ask) -> str =>
+    match x {
+        Up => "fourth:up"
+        Down => "fourth:down"
+    }
+
+export fn run() -> str => describe(parse_ask("up"))

@@ -33,6 +33,8 @@ import claude_limits.server.handlers.config.{ConfigSource, config_get_handler, c
 import claude_limits.server.handlers.folders.{ProbeSource, probe_handler}
 import claude_limits.server.handlers.token.{TokenSource, token_handler}
 import claude_limits.server.handlers.exporter.{ExportSource, export_handler}
+import claude_limits.server.static.{with_page}
+import claude_limits.server.routes.{not_found_handler}
 
 /// Everything the API reads, in one record.
 ///
@@ -110,10 +112,23 @@ export fn not_yet_mounted() -> []str => [
     "/api/session/token",
 ]
 
-/// The router for the first release.
+/// The router for the first release: the API, and the page under everything else.
 ///
-/// Static files are NOT here yet: `GET /` and `GET /assets/{*path}` need
-/// `embed_dir`/`static_handler`, which is the next increment of T2.27. Until then a
-/// request for the page gets the router's own 404 -- visible, and not mistaken for a
-/// page that failed to render.
-export fn api_router(s Sources) -> Result[Router, HttpError] => build(api_routes(s))
+/// THE PAGE HALF WAS ALREADY WRITTEN. `static.nv` has carried `site()`, `serve()`,
+/// `page_or_api_404()` and `with_page()` since T2.19, with ten tests of its own --
+/// and nothing called it, for exactly the reason nothing assembled this table: both
+/// halves were proven alone and never introduced. Checking before building is what
+/// turned a day of work into one line.
+///
+/// ORDER MATTERS AND `static.nv` SAYS SO IN ITS OWN WORDS: `with_page` is called
+/// AFTER `build()`, because the API's own 404 handler is what it forks against. A
+/// request under `/api/` keeps the API's problem+json refusal; everything else gets
+/// the page, which is what lets the browser deep-link to `/#stats` without the server
+/// knowing about it.
+export fn api_router(s Sources) -> Result[Router, HttpError] {
+    // `mut` from the start, not `ro` then coerced: `with_page` INSTALLS a fallback
+    // into the router, so the local is mutable by its own semantics (D176 offers
+    // .clone() as an escape -- it would be a copy nobody needs).
+    mut r = build(api_routes(s))?
+    with_page(r, not_found_handler())
+}
