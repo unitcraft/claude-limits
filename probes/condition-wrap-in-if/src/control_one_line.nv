@@ -1,0 +1,9 @@
+// THE CONTROL: the same condition on one line. If this fails, nothing below is about
+// wrapping, and the whole reading is wrong.
+
+module probe_condition_wrap.control_one_line
+
+export fn ok(a int, b int) -> bool {
+    if a > 0 && b > 0 { return true }
+    false
+}

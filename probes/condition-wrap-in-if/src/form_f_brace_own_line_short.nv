@@ -1,0 +1,13 @@
+// FORM F is THE CONTROL FOR D, and it decides whether D is a defect at all: the brace
+// on its own line with NO wrapping. If F fails too, then a brace on its own line is
+// simply not the language, D is not about wrapping, and the claim is withdrawn whole.
+
+module probe_condition_wrap.form_f_brace_own_line_short
+
+export fn ok(a int) -> bool {
+    if a > 0
+    {
+        return true
+    }
+    false
+}

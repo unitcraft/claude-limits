@@ -1,0 +1,12 @@
+// FORM E: the same wrap in a `while`, in case the tolerance is attached to `if` alone.
+
+module probe_condition_wrap.form_e_while
+
+export fn ok(a int) -> int {
+    mut i = 0
+    while i < a &&
+        i < 100 {
+        i += 1
+    }
+    i
+}

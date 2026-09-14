@@ -1,0 +1,11 @@
+// FORM A: the operator stays at the END of the first line — exactly what
+// `spec/syntax.ru.md` rule 1 says is ignored. IF THIS FAILS, IT IS A DEFECT and the
+// registry row is justified: the compiler is narrower than the normative text.
+
+module probe_condition_wrap.form_a_trailing_op
+
+export fn ok(a int, b int) -> bool {
+    if a > 0 &&
+        b > 0 { return true }
+    false
+}

@@ -1,0 +1,14 @@
+# Probe: may the condition of an `if` wrap onto a second line?
+#
+# The spec answers part of it (`spec/syntax.ru.md:142-155`, D49): a newline after a
+# dangling binary operator is ignored; an operator at the START of a line is rejected
+# on purpose. So only form A can be a defect at all — the others are here to prove
+# that the measurement is about wrapping and not about my typing.
+
+[lib]
+src = "src"
+
+[package]
+name = "probe_condition_wrap"
+version = "0.0.0"
+description = "Probe: newline inside an `if` condition"

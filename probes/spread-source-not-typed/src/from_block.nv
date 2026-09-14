@@ -1,0 +1,14 @@
+// FORM 3: the source is a BLOCK. No callee to resolve at the spread site at all.
+// Passing here while 1 and 2 fail would pin the class exactly.
+
+module probe_spread_source_not_typed.from_block
+
+import probe_spread_source_not_typed.shape.{Shape, make}
+
+export fn spread_from_block() -> Shape {
+    { ...{ ro tmp = make(); tmp }, size: 9 }
+}
+
+fn main() Io -> () {
+    print("from_block: ${spread_from_block().size}")
+}

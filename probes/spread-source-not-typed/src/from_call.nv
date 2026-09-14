@@ -1,0 +1,14 @@
+// FORM 1: the source is a free function CALL. This is the carrier measured in
+// claude-limits T2.4: `cannot determine type for spread`.
+
+module probe_spread_source_not_typed.from_call
+
+import probe_spread_source_not_typed.shape.{Shape, make}
+
+export fn spread_from_call() -> Shape {
+    { ...make(), size: 9 }
+}
+
+fn main() Io -> () {
+    print("from_call: ${spread_from_call().size}")
+}

@@ -1,0 +1,14 @@
+# Probe: `{ ...<source>, field: value }` when the source's type is not readable from
+# the expression itself.
+#
+# Found in claude-limits T2.4, where `{ ...tick(), email: "…" }` gave
+# `codegen error: cannot determine type for spread`. `nova check` passes; codegen does
+# not. Three forms here, one per file, so the class can be told from its first carrier.
+
+[lib]
+src = "src"
+
+[package]
+name = "probe_spread_source_not_typed"
+version = "0.0.0"
+description = "Probe: spread from a source whose type needs the callee resolved"

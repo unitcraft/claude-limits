@@ -1,0 +1,15 @@
+// FORM 2: the source is a METHOD call. If it fails too, the class is about
+// resolving the callee, not about free functions.
+
+module probe_spread_source_not_typed.from_method
+
+import probe_spread_source_not_typed.shape.{Shape, make}
+
+export fn spread_from_method() -> Shape {
+    ro base = make()
+    { ...base.grown(), size: 9 }
+}
+
+fn main() Io -> () {
+    print("from_method: ${spread_from_method().size}")
+}

@@ -1,0 +1,12 @@
+// FORM B: the operator at the START of the second line. THE SPEC REJECTS THIS
+// DELIBERATELY (D49, «Перенос оператора в начало строки — унарный/бинарный конфликт»).
+// A failure here is the language working, not a defect — and if this is the form I hit
+// in T2.4, there is no row to file.
+
+module probe_condition_wrap.form_b_leading_op
+
+export fn ok(a int, b int) -> bool {
+    if a > 0
+        && b > 0 { return true }
+    false
+}

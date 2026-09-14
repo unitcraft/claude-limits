@@ -1,0 +1,16 @@
+// The record every form spreads from, and a few ways to obtain one.
+
+module probe_spread_source_not_typed.shape
+
+export type Shape {
+    ro name str
+    ro size int
+}
+
+export fn Shape.of(name str, size int) -> Shape => { name, size }
+
+/// A free function returning it — the FIRST carrier, from claude-limits T2.4.
+export fn make() -> Shape => Shape.of("made", 1)
+
+/// A method returning it — the integrator's second form.
+export fn Shape @grown() -> Shape => Shape.of(@name, @size + 1)

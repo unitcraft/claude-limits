@@ -1,0 +1,15 @@
+// THE CONTROL, and the strong kind: the source is a plain BINDING, so no callee
+// needs resolving. If this fails, the defect is not about the source at all.
+
+module probe_spread_source_not_typed.from_binding
+
+import probe_spread_source_not_typed.shape.{Shape, make}
+
+export fn spread_from_binding() -> Shape {
+    ro base = make()
+    { ...base, size: 9 }
+}
+
+fn main() Io -> () {
+    print("from_binding: ${spread_from_binding().size}")
+}

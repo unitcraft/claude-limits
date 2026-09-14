@@ -1,0 +1,14 @@
+// FORM D: the condition wraps AND the opening brace sits on its own line. Added after
+// A, B and C all passed: whatever I hit in T2.4, it was not plain wrapping, so the
+// probe has to widen or the claim has to be withdrawn.
+
+module probe_condition_wrap.form_d_brace_own_line
+
+export fn ok(a int, b int) -> bool {
+    if a > 0 &&
+        b > 0
+    {
+        return true
+    }
+    false
+}

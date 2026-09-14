@@ -1,0 +1,11 @@
+// FORM C: wrapped INSIDE parentheses — rule 2, «внутри открытых () [] {}». This is
+// the canonical way to write a long condition, so if A turns out to be a defect, this
+// is the workaround the registry row must name.
+
+module probe_condition_wrap.form_c_parens
+
+export fn ok(a int, b int) -> bool {
+    if (a > 0
+        && b > 0) { return true }
+    false
+}
