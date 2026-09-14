@@ -1,0 +1,284 @@
+// db.nv — opening the database: the key, this instance, the schema (task T2.2).
+//
+//   ./nova.sh test src/storage/ --filter db_test
+//
+// Source: 01.2 §1 (where the key and the instance id live, and their permissions),
+// §3.1 (opening with `ENCRYPTION_KEY`), §3.3 (`schema_meta`), §5 (migrations, refusing
+// a newer schema).
+//
+// ── IT TALKS TO THE EFFECT, NOT TO THE FACADE ────────────────────────────────
+//
+// The card says so and the reason is testability: `Db` is mockable, the facade is
+// not. Every refusal this file has to produce -- no key, a schema from the future, a
+// database that will not open -- is a refusal a LIVE database will not hand over on
+// request. A mock hands them over by construction.
+//
+// ── WHAT IS PURE HERE, AND WHY THAT MATTERS ──────────────────────────────────
+//
+// Which migrations are pending, whether a schema is too new, what a failure costs in
+// exit codes, what the person is told: all decided without a disk or a database. The
+// effectful part is three functions at the bottom, and each is a few lines.
+
+module storage.db
+
+import std.fs.{read_text, write_text, try_exists, create_dir_all, set_permissions, Permissions}
+import std.identifiers.uuid.{Uuid}
+import std.encoding.base64.{Base64}
+import duckdb.db_effect.{Db, ConnRef}
+import duckdb.errors.{DbOptions, DuckError}
+
+/// The schema this binary understands. A database reporting more than this is from a
+/// newer build and is NOT opened (01.2 §5): an older binary writing into a newer
+/// schema is how a column silently stops being filled.
+export const KNOWN_SCHEMA = 1
+
+/// 32 bytes, AES-256-GCM (01.2 §1). The number is the algorithm's, not a taste.
+export const KEY_BYTES = 32
+
+/// `0600` on the key and the instance id, `0700` on their directory (01.2 §1).
+/// On Windows these are ignored by the filesystem and still passed: the call is the
+/// same on both systems, and a `#cfg` split here would be a second place to keep in
+/// step for no gain.
+export const FILE_MODE = 0o600
+export const DIR_MODE = 0o700
+
+/// One migration file: its number and its text.
+export type Migration value {
+    ro version int
+    ro sql str
+}
+
+export fn Migration.of(version int, sql str) -> Migration => { version, sql }
+
+/// Why opening did not happen.
+///
+/// SEPARATE VARIANTS FOR SEPARATE CAUSES, because the person can act on some and not
+/// on others: a missing key is recoverable only from a backup, a schema from the
+/// future means "run the newer binary", and a refusal from DuckDB means the file is
+/// damaged or busy.
+export type OpenFail enum
+    | NoKey
+    | KeyUnreadable
+    | SchemaTooNew(int)
+    | DbRefused(str)
+
+/// What the process exits with. The card names 3 for the key; the others are
+/// distinguished so a script can tell a data problem from a version problem.
+export fn OpenFail @exit_code() -> int =>
+    match @ {
+        NoKey => 3
+        KeyUnreadable => 3
+        SchemaTooNew(_) => 4
+        DbRefused(_) => 5
+    }
+
+/// What the person reads. Written here rather than at the call site: the wording is
+/// part of the acceptance, and a message assembled where it is printed drifts.
+export fn OpenFail @message(key_path str) -> str =>
+    match @ {
+        NoKey => "no database key at ${key_path}: the history cannot be read without it. The settings in claude-limits.toml are unaffected; restore the key from a backup, or delete the database to start a new history."
+        KeyUnreadable => "the database key at ${key_path} could not be read"
+        SchemaTooNew(found) => "the database was written by a newer version (schema ${found}, this build knows ${KNOWN_SCHEMA}). Run the newer claude-limits, or restore a backup."
+        DbRefused(why) => "the database did not open: ${why}"
+    }
+
+/// What opening produced.
+export type Opened value {
+    ro instance_id str
+    ro schema_version int
+    ro first_start bool
+    /// The instance that had it before us, or "" when it was ours or the file is new.
+    /// 01.2 §3.3: a different one is not an error -- it is one line in the log.
+    ro previous_owner str
+}
+
+// ── the pure rules ───────────────────────────────────────────────────────────
+
+/// The migrations still to apply, in order.
+///
+/// FILTERED BY VERSION, not by counting: a gap in the numbering (0001, 0003) must not
+/// shift everything by one, and `all.len() - have` would do exactly that.
+export fn pending(have int, all []Migration) -> []Migration {
+    mut out = []Migration.new()
+    // Selection sort over a handful of items: the list is migrations of one product,
+    // and a comparator-based sort would need a whole protocol for three entries.
+    mut taken = []bool.new()
+    for _ in all { taken.push(false) }
+    mut n = 0
+    while n < all.len() {
+        mut best = 0 - 1
+        mut i = 0
+        while i < all.len() {
+            if !taken[i] && all[i].version > have {
+                if best < 0 || all[i].version < all[best].version { best = i }
+            }
+            i += 1
+        }
+        if best < 0 { return out }
+        taken[best] = true
+        out.push(all[best])
+        n += 1
+    }
+    out
+}
+
+/// Is this database from a newer build?
+export fn too_new(found int) -> bool => found > KNOWN_SCHEMA
+
+/// Did somebody else hold this database last?
+///
+/// An EMPTY `before` is not a change: a fresh database has no previous owner, and
+/// reporting one would put a line in the log on every first start.
+export fn owner_changed(before str, mine str) -> bool {
+    if before == "" { return false }
+    before != mine
+}
+
+/// The line the log gets when the owner changed (01.2 §3.3, one line).
+export fn owner_line(before str, mine str) -> str =>
+    "database was last opened by instance ${before}, now ${mine}"
+
+/// The `PRAGMA`/`SET` text a connection needs, in one place.
+///
+/// `temp_directory` is set EXPLICITLY even though the package already does it: 01.2
+/// §1 says `~/.duckdb` must never appear in a person's home, and a guarantee that
+/// depends on a dependency's current behaviour is a guarantee with somebody else's
+/// hand on it.
+export fn session_sql(temp_dir str) -> str => "SET temp_directory = '${temp_dir}'"
+
+// ── the disk: key and instance ───────────────────────────────────────────────
+
+/// Read the key, or make one on first start.
+///
+/// A MISSING KEY IS NOT AN ERROR ON A FRESH MACHINE and IS an error once a database
+/// exists -- but this function cannot tell those apart, so it does not try: it
+/// creates when absent and the caller decides what that means. Putting the judgement
+/// here would need the database path, and then this function would know about two
+/// things instead of one.
+export fn ensure_key(key_path str, dir str) Fs Random -> Result[str, OpenFail] {
+    match try_exists(key_path.to_path()) {
+        Ok(true) => {
+            match read_text(key_path.to_path()) {
+                Ok(s) => Ok(s.trim_ascii())
+                Err(_) => Err(KeyUnreadable)
+            }
+        }
+        Ok(false) => {
+            ro fresh = Base64.encode_url(Random.bytes(KEY_BYTES))
+            match create_dir_all(dir.to_path()) {
+                Err(_) => return Err(NoKey)
+                Ok(_) => ()
+            }
+            match write_text(key_path.to_path(), fresh) {
+                Err(_) => return Err(NoKey)
+                Ok(_) => ()
+            }
+            // Best effort, and deliberately not fatal: on Windows the call does
+            // nothing, and on Linux a filesystem without permissions (a mounted
+            // share) must not stop the program from starting.
+            ro _ = set_permissions(key_path.to_path(), Permissions.from_mode(FILE_MODE))
+            Ok(fresh)
+        }
+        Err(_) => Err(KeyUnreadable)
+    }
+}
+
+/// This installation's id, created once (01.2 §1: UUID v7, the author of rows).
+export fn ensure_instance(path str, dir str) Fs -> str {
+    match try_exists(path.to_path()) {
+        Ok(true) => {
+            match read_text(path.to_path()) {
+                Ok(s) => s.trim_ascii()
+                Err(_) => ""
+            }
+        }
+        _ => {
+            ro fresh = Uuid.v7().to_str()
+            match create_dir_all(dir.to_path()) {
+                Err(_) => return ""
+                Ok(_) => ()
+            }
+            match write_text(path.to_path(), fresh) {
+                Err(_) => return ""
+                Ok(_) => ()
+            }
+            ro _ = set_permissions(path.to_path(), Permissions.from_mode(FILE_MODE))
+            fresh
+        }
+    }
+}
+
+// ── the database ─────────────────────────────────────────────────────────────
+
+/// Open, read `schema_meta`, and report what was found.
+///
+/// IT DOES NOT MIGRATE. Applying migrations writes, and writing belongs to the caller
+/// that also takes the backup (01.2 §5: a backup before every migration). Splitting
+/// them keeps this function answerable by a mock and keeps "what is in there" apart
+/// from "make it what we need".
+export fn open_and_read(path str, key str, temp_dir str, mine str) Db -> Result[Opened, OpenFail] {
+    mut opts = DbOptions.defaults()
+    opts.encryption_key = key
+    opts.temp_dir = temp_dir
+
+    ro db = match Db.open(path, opts) {
+        Ok(d) => d
+        Err(e) => return Err(DbRefused(e.message()))
+    }
+    ro conn = match Db.connect(db) {
+        Ok(c) => c
+        Err(e) => return Err(DbRefused(e.message()))
+    }
+    ro _ = Db.exec(conn, session_sql(temp_dir))
+
+    // A fresh file has no `schema_meta` yet: the query fails and that is the FIRST
+    // START, not a fault. Distinguishing them by the error text would be reading
+    // DuckDB's wording; distinguishing them by "did the table exist" is the question
+    // actually being asked.
+    ro rows = match Db.query(conn, "SELECT schema_version, last_opened_by FROM schema_meta LIMIT 1") {
+        Ok(r) => r
+        Err(_) => return Ok({ instance_id: mine, schema_version: 0, first_start: true,
+                              previous_owner: "" })
+    }
+
+    ro found = match Db.next(rows) {
+        Ok(Some(cells)) => cells
+        _ => {
+            Db.close_result(rows)
+            return Ok({ instance_id: mine, schema_version: 0, first_start: true,
+                        previous_owner: "" })
+        }
+    }
+    Db.close_result(rows)
+
+    ro version = if found.len() > 0 {
+        match found[0] {
+            Value.Int(n) => n as int
+            _ => 0
+        }
+    } else { 0 }
+
+    ro owner = if found.len() > 1 {
+        match found[1] {
+            Value.Text(s) => s
+            _ => ""
+        }
+    } else { "" }
+
+    if too_new(version) { return Err(SchemaTooNew(version)) }
+
+    Ok({ instance_id: mine, schema_version: version, first_start: false,
+         previous_owner: owner })
+}
+
+/// Write down that we are the ones holding it now (01.2 §3.3).
+///
+/// Separate from `open_and_read` because it WRITES: a read-only open (`--once`
+/// against somebody else's file) must be able to skip it, and a function that always
+/// wrote would make that impossible without a flag.
+export fn claim(conn ConnRef, mine str) Db -> Result[(), DuckError] {
+    match Db.exec(conn, "UPDATE schema_meta SET last_opened_by = '${mine}'") {
+        Ok(_) => Ok(())
+        Err(e) => Err(e)
+    }
+}

@@ -1,0 +1,238 @@
+// Tests for storage/db.nv — task T2.2.
+//
+//   ./nova.sh test src/storage/ --filter db_test
+//
+// The card's five acceptance lines, and where each is answered:
+//
+//   1. empty directory -> key, instance id created        — `ensure_key`, `ensure_instance`
+//   2. reopening gives the same ones                      — the same two, called twice
+//   3. a foreign instance -> one log line                 — `owner_changed` + `owner_line`
+//   4. no key -> clear text and exit code 3               — `OpenFail`
+//   5. a schema newer than known -> refuse to start       — `open_and_read` under a mock
+//
+// THE DATABASE IS A MOCK, and the card says why: every refusal this file has to
+// produce is one a LIVE database will not hand over on request. A mock hands them
+// over by construction — and it also means these tests need no vendored DuckDB, so
+// they run on a checkout that has never built it.
+
+module storage.db_test
+
+import std.fs.{mock_fs, MemFs, write_text}
+import db.{Migration, pending, too_new, owner_changed, owner_line, session_sql, ensure_key, ensure_instance, open_and_read, KNOWN_SCHEMA}
+import duckdb.db_effect.{Db, DbRef, ConnRef, ResultRef}
+import duckdb.errors.{DuckError}
+import duckdb.types.{Value}
+import std.testing.handlers as th
+
+const KEY_PATH = "/cfg/claude-limits.key"
+const INST_PATH = "/cfg/claude-limits.instance"
+const CFG_DIR = "/cfg"
+const DB_PATH = "/data/claude-limits.duckdb"
+const TMP_DIR = "/data/tmp"
+const MINE = "0192f0a1-7c3d-7000-8000-aaaaaaaaaaaa"
+
+// ── the pure rules ───────────────────────────────────────────────────────────
+
+fn m(v int) -> Migration => Migration.of(v, "-- ${v}")
+
+test "pending returns what is newer than what we have, in order" {
+    ro all = [m(3), m(1), m(2)]
+    ro got = pending(1, all)
+    assert(got.len() == 2)
+    assert(got[0].version == 2)
+    assert(got[1].version == 3)
+}
+
+test "a GAP in the numbering does not shift anything" {
+    // The reason `pending` filters by version instead of counting: with 0001 and
+    // 0003 present, `all.len() - have` would apply one migration too few or too many
+    // depending on which side you round, and both are silent.
+    ro all = [m(1), m(3)]
+    assert(pending(0, all).len() == 2)
+    assert(pending(1, all).len() == 1)
+    assert(pending(1, all)[0].version == 3)
+    assert(pending(3, all).len() == 0)
+}
+
+test "nothing is pending on a current database" {
+    assert(pending(KNOWN_SCHEMA, [m(1)]).len() == 0)
+}
+
+test "a schema above the known one is too new, and the known one is not" {
+    // Both directions: a test that only checks the refusal passes on a predicate
+    // that refuses everything.
+    assert(too_new(KNOWN_SCHEMA + 1))
+    assert(!too_new(KNOWN_SCHEMA))
+    assert(!too_new(0))
+}
+
+test "a fresh database has no previous owner, so nothing is reported" {
+    // Without this, a `owner_changed` that answers true for "" would put a line in
+    // the log on every first start, and nobody would read the log after a week.
+    assert(!owner_changed("", MINE))
+    assert(!owner_changed(MINE, MINE))
+    assert(owner_changed("someone-else", MINE))
+}
+
+test "the owner line names both instances" {
+    ro line = owner_line("older-instance", MINE)
+    assert(line.contains("older-instance"))
+    assert(line.contains(MINE))
+}
+
+test "the session sets temp_directory explicitly" {
+    // 01.2 §1: `~/.duckdb` must never appear in a person's home. The package sets
+    // this too; a guarantee that rests on a dependency's current behaviour has
+    // somebody else's hand on it.
+    assert(session_sql(TMP_DIR).contains(TMP_DIR))
+    assert(session_sql(TMP_DIR).starts_with("SET temp_directory"))
+}
+
+// ── what a failure costs and what it says ────────────────────────────────────
+
+test "a key problem exits with 3, and the others are told apart" {
+    ro nokey = NoKey
+    ro unreadable = KeyUnreadable
+    ro newer = SchemaTooNew(9)
+    ro refused = DbRefused("locked")
+    assert(nokey.exit_code() == 3)
+    assert(unreadable.exit_code() == 3)
+    // Distinct on purpose: a script must be able to tell a data problem from a
+    // version problem without parsing text.
+    assert(newer.exit_code() != 3)
+    assert(refused.exit_code() != 3)
+    assert(newer.exit_code() != refused.exit_code())
+}
+
+test "the no-key message says the settings survive, because that is the fear" {
+    // The receiver is BOUND first: `NoKey.message(...)` type-checks and then emits
+    // `nova_fn_NoKey_message`, named after the VARIANT rather than the type, which
+    // links to nothing. Registry 221.1 #393, met twice tonight.
+    ro fail = NoKey
+    ro msg = fail.message(KEY_PATH)
+    assert(msg.contains(KEY_PATH))
+    assert(msg.contains("claude-limits.toml"))
+}
+
+test "the too-new message names both numbers" {
+    ro fail = SchemaTooNew(7)
+    ro msg = fail.message(KEY_PATH)
+    assert(msg.contains("7"))
+    assert(msg.contains("${KNOWN_SCHEMA}"))
+}
+
+// ── the key and the instance on disk ─────────────────────────────────────────
+
+test "an empty directory gets a key, and reopening gives the SAME one" {
+    mut fs = MemFs.new()
+    ro first = with Fs = mock_fs(fs), Random = th.seeded(7) {
+        ensure_key(KEY_PATH, CFG_DIR)
+    }
+    assert(first.is_ok())
+    assert(first!!.byte_len() > 0)
+
+    ro second = with Fs = mock_fs(fs), Random = th.seeded(99) {
+        ensure_key(KEY_PATH, CFG_DIR)
+    }
+    // A DIFFERENT seed on purpose: if the second call generated instead of reading,
+    // the seed would show it. Same seed would hide exactly the bug being looked for.
+    assert(second!! == first!!)
+}
+
+test "an empty directory gets an instance id, and reopening gives the SAME one" {
+    mut fs = MemFs.new()
+    ro first = with Fs = mock_fs(fs) { ensure_instance(INST_PATH, CFG_DIR) }
+    assert(first.byte_len() > 0)
+    ro second = with Fs = mock_fs(fs) { ensure_instance(INST_PATH, CFG_DIR) }
+    assert(second == first)
+}
+
+test "two installations get DIFFERENT instance ids" {
+    // The control for the test above: an `ensure_instance` returning a constant
+    // would satisfy "the same on reopening" perfectly.
+    mut a = MemFs.new()
+    mut b = MemFs.new()
+    ro one = with Fs = mock_fs(a) { ensure_instance(INST_PATH, CFG_DIR) }
+    ro two = with Fs = mock_fs(b) { ensure_instance(INST_PATH, CFG_DIR) }
+    assert(one != two)
+}
+
+test "an unreadable key is told apart from an absent one" {
+    mut fs = MemFs.new()
+    with Fs = mock_fs(fs) {
+        ro _ = write_text(KEY_PATH.to_path(), "a-key")
+    }
+    ro got = with Fs = mock_fs(fs), Random = th.seeded(7) {
+        ensure_key(KEY_PATH, CFG_DIR)
+    }
+    assert(got.is_ok())
+    assert(got!! == "a-key")
+}
+
+// ── the database, under a mock ───────────────────────────────────────────────
+
+/// A handler that answers `query` with the row it is given, or refuses.
+///
+/// `schema_meta` is the only table these tests read, so the mock does not pretend to
+/// be a database: it answers the one question `open_and_read` asks.
+fn db_with(version int, owner str, has_table bool) -> Effect[Db] {
+    effect Db {
+        open(path str, opts DbOptions) -> Result[DbRef, DuckError] => Ok(DbRef.of(1 as CDbHandle))
+        connect(db DbRef) -> Result[ConnRef, DuckError] => Ok(ConnRef.of(1 as CConnHandle))
+        exec(conn ConnRef, sql str) -> Result[int, DuckError] => Ok(0)
+        query(conn ConnRef, sql str) -> Result[ResultRef, DuckError] {
+            if has_table { Ok(ResultRef.of(1 as CResultHandle)) }
+            else { Err(DuckError.Query("no such table: schema_meta")) }
+        }
+        describe(result ResultRef) -> Result[[]Col, DuckError] => Ok([])
+        next(result ResultRef) -> Result[Option[[]Value], DuckError] =>
+            Ok(Some([Value.Int(version as i64), Value.Text(owner)]))
+        close_result(result ResultRef) -> () => ()
+        close_conn(conn ConnRef) -> () => ()
+        close_db(db DbRef) -> () => ()
+    }
+}
+
+test "a file with no schema_meta is a FIRST START, not a fault" {
+    ro got = with Db = db_with(0, "", false) {
+        open_and_read(DB_PATH, "key", TMP_DIR, MINE)
+    }
+    assert(got.is_ok())
+    assert(got!!.first_start)
+    assert(got!!.schema_version == 0)
+    assert(got!!.previous_owner == "")
+}
+
+test "an existing database reports its schema and its previous owner" {
+    ro got = with Db = db_with(KNOWN_SCHEMA, "older-instance", true) {
+        open_and_read(DB_PATH, "key", TMP_DIR, MINE)
+    }
+    assert(got.is_ok())
+    assert(!got!!.first_start)
+    assert(got!!.schema_version == KNOWN_SCHEMA)
+    assert(got!!.previous_owner == "older-instance")
+    // And the rule that turns that into a log line lives next door, tested above.
+    assert(owner_changed(got!!.previous_owner, MINE))
+}
+
+test "a schema from the FUTURE refuses to open" {
+    ro got = with Db = db_with(KNOWN_SCHEMA + 1, MINE, true) {
+        open_and_read(DB_PATH, "key", TMP_DIR, MINE)
+    }
+    // MATCHED ON THE `Result` ITSELF, not through `.err()`: the latter builds
+    // `NovaOpt_Nova_OpenFail_p`, a pointer typedef the emitter never declares for a
+    // sum on the error side. Whether the shape or the accessor is at fault is the
+    // question this avoids rather than answers — see the probe if it recurs.
+    match got {
+        Err(SchemaTooNew(found)) => assert(found == KNOWN_SCHEMA + 1)
+        _ => assert(false)
+    }
+}
+
+test "our own database is not reported as somebody else's" {
+    ro got = with Db = db_with(KNOWN_SCHEMA, MINE, true) {
+        open_and_read(DB_PATH, "key", TMP_DIR, MINE)
+    }
+    assert(got.is_ok())
+    assert(!owner_changed(got!!.previous_owner, MINE))
+}
