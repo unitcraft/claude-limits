@@ -51,6 +51,9 @@ fn with_store[T](start Snapshot, body fn(Store) -> T) -> T {
     supervised {
         spawn {
             ro got = body(Store.new(pair.tx))
+            // The harness's own result channel: if it is closed the test body has
+            // already ended, and `run` below answers a missing value with its default.
+            // nova:allow W_RESULT_DISCARDED -- see above
             ro _ = back.tx.send(got)
             // Closing ends the loop, which lets the supervised scope finish. Without it
             // `run` waits in `recv` forever -- a hang, not a failure.
@@ -78,8 +81,11 @@ test "request/reply answers: an empty store gives an empty snapshot" {
 
 test "a merge is visible to the next reader, and only one row per account" {
     ro snap = with_store(Snapshot.empty(), fn(s Store) -> Snapshot {
-        s.merge(AccountSlot.new("a@b.c", "ok", 1000, 3))
-        s.merge(AccountSlot.new("a@b.c", "ok", 2000, 4))
+        // Delivery is asserted, not assumed: `merge` awaits no reply, so a store
+        // that had already gone would swallow both readings and every assertion
+        // below would still pass on the snapshot this test built itself.
+        assert(s.merge(AccountSlot.new("a@b.c", "ok", 1000, 3)))
+        assert(s.merge(AccountSlot.new("a@b.c", "ok", 2000, 4)))
         s.snapshot()
     })
     // Two readings of ONE account are one row -- appending would grow the page by a

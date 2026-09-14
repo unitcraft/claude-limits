@@ -121,14 +121,19 @@ export fn run(rx ChanRx[Envelope], start Snapshot) -> () {
             Some(env) => {
                 // Unwrap the envelope. [M-chan-envelope-workaround]
                 match env.req {
+                    // nova:allow W_RESULT_DISCARDED -- the asker is gone; there is nothing to do and nobody to tell
                     Request.GetSnapshot(reply) => { ro _ = reply.send(snap) }
                     Request.Merge(slot) => { merge(snap, slot) }
+                    // nova:allow W_RESULT_DISCARDED -- the asker is gone; there is nothing to do and nobody to tell
                     Request.Subscribe(reply) => { ro _ = reply.send(subscribe(reg)) }
                     Request.Unsubscribe(id) => { unsubscribe(reg, id) }
                     Request.Publish(name, data, reply) => {
+                        // nova:allow W_RESULT_DISCARDED -- the asker is gone; there is nothing to do and nobody to tell
                         ro _ = reply.send(publish(reg, name, data))
                     }
+                    // nova:allow W_RESULT_DISCARDED -- the asker is gone; there is nothing to do and nobody to tell
                     Request.Since(after, reply) => { ro _ = reply.send(Events.new(since(reg, after))) }
+                    // nova:allow W_RESULT_DISCARDED -- the asker is gone; there is nothing to do and nobody to tell
                     Request.Missed(after, reply) => { ro _ = reply.send(missed(reg, after)) }
                 }
             }
@@ -144,6 +149,7 @@ export fn run(rx ChanRx[Envelope], start Snapshot) -> () {
 /// The snapshot as it stands.
 export fn Store @snapshot() -> Snapshot {
     ro pair = Chan[Snapshot].new(1)
+    // nova:allow W_RESULT_DISCARDED -- a closed channel surfaces as `None` from the `recv` below, which has its own answer
     ro _ = @tx.send(Envelope.new(Request.GetSnapshot(pair.tx)))
     match pair.rx.recv() {
         Some(s) => s
@@ -154,14 +160,17 @@ export fn Store @snapshot() -> Snapshot {
     }
 }
 
-/// Fold one account's reading in. Returns nothing and waits for nothing.
-export fn Store @merge(slot AccountSlot) -> () {
-    ro _ = @tx.send(Envelope.new(Request.Merge(slot)))
+/// Fold one account's reading in. Waits for nothing, but SAYS whether it was
+/// delivered: this door awaits no reply, so a closed channel would otherwise drop
+/// a poller's measurement with nobody the wiser. `false` means the store is gone.
+export fn Store @merge(slot AccountSlot) -> bool {
+    @tx.send(Envelope.new(Request.Merge(slot)))
 }
 
 /// Register a subscriber, and get its id.
 export fn Store @subscribe() -> int {
     ro pair = Chan[int].new(1)
+    // nova:allow W_RESULT_DISCARDED -- a failed send surfaces as `None` below, and 0 is the documented answer for it
     ro _ = @tx.send(Envelope.new(Request.Subscribe(pair.tx)))
     match pair.rx.recv() {
         Some(id) => id
@@ -173,13 +182,16 @@ export fn Store @subscribe() -> int {
     }
 }
 
-export fn Store @unsubscribe(id int) -> () {
-    ro _ = @tx.send(Envelope.new(Request.Unsubscribe(id)))
+/// `false` means the store is gone, so the subscription died with it -- which is
+/// the same outcome the caller wanted, but it should learn it rather than assume.
+export fn Store @unsubscribe(id int) -> bool {
+    @tx.send(Envelope.new(Request.Unsubscribe(id)))
 }
 
 /// Publish, and get the event with its assigned id.
 export fn Store @publish(name str, data str) -> Option[Event] {
     ro pair = Chan[Event].new(1)
+    // nova:allow W_RESULT_DISCARDED -- `recv` below returns `None` on a failed send, which is this door's whole answer
     ro _ = @tx.send(Envelope.new(Request.Publish(name, data, pair.tx)))
     pair.rx.recv()
 }
@@ -187,6 +199,7 @@ export fn Store @publish(name str, data str) -> Option[Event] {
 /// Everything after `id`.
 export fn Store @since(after int) -> []Event {
     ro pair = Chan[Events].new(1)
+    // nova:allow W_RESULT_DISCARDED -- a failed send surfaces as `None` below, answered with an empty list
     ro _ = @tx.send(Envelope.new(Request.Since(after, pair.tx)))
     match pair.rx.recv() {
         Some(box) => box.items
@@ -197,6 +210,7 @@ export fn Store @since(after int) -> []Event {
 /// Has `after` fallen off the ring?
 export fn Store @missed(after int) -> bool {
     ro pair = Chan[bool].new(1)
+    // nova:allow W_RESULT_DISCARDED -- a failed send surfaces as `None` below, answered with `true` on purpose
     ro _ = @tx.send(Envelope.new(Request.Missed(after, pair.tx)))
     match pair.rx.recv() {
         Some(v) => v
