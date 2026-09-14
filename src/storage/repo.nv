@@ -225,3 +225,155 @@ export fn plan_sql(t Tick, ids Ids) -> []str {
     out.push(insert_poll_sql(t, ids.poll, ids.account))
     out
 }
+
+// ── occupancy: who sat in a directory, and when (01.2 §3.7) ──────────────────
+//
+// THE RULE IS A COMPARISON, not a timer. At every discovery the directory's e-mail
+// and token state are read; if the PAIR differs from the open row, that row is closed
+// and a new one opened. `ok -> expired` counts, which is what draws the grey tail on
+// the occupancy bar (01.1 §7.3) — a person who walked away from a login sees where it
+// went stale rather than a gap.
+
+/// What a discovery found for one directory.
+export type Seen value {
+    ro login_dir_id str
+    ro account_id str        // "" when there is no login, or the account was forgotten
+    ro token_state str       // the DATABASE's vocabulary — see `db_token_state`
+}
+
+export fn Seen.of(login_dir_id str, account_id str, token_state str) -> Seen =>
+    { login_dir_id, account_id, token_state }
+
+/// The row currently open for that directory, if there is one.
+export type OpenRow value {
+    ro id str
+    ro account_id str
+    ro token_state str
+}
+
+export fn OpenRow.of(id str, account_id str, token_state str) -> OpenRow =>
+    { id, account_id, token_state }
+
+/// What to do about it.
+export type OccupancyStep enum
+    | Unchanged
+    | OpenFirst
+    | CloseAndOpen(str)      // the id of the row to close
+
+export fn OccupancyStep @to_str() -> str =>
+    match @ {
+        Unchanged => "unchanged"
+        OpenFirst => "open-first"
+        CloseAndOpen(_) => "close-and-open"
+    }
+
+/// 01.2 §3.7: «если пара `(account_id, token_state)` отличается от открытой записи —
+/// открытая закрывается, открывается новая».
+///
+/// BOTH HALVES OF THE PAIR MATTER, and the spec names the second explicitly because
+/// it is the one people forget: the account can stay the same while the token goes
+/// stale, and that IS a new period.
+export fn occupancy_step(open Option[OpenRow], seen Seen) -> OccupancyStep {
+    match open {
+        None => OpenFirst
+        Some(row) => {
+            if row.account_id == seen.account_id && row.token_state == seen.token_state {
+                Unchanged
+            } else {
+                CloseAndOpen(row.id)
+            }
+        }
+    }
+}
+
+/// The two statements of a transition, in order: close, then open.
+///
+/// ONE TRANSACTION IS THE CALLER'S JOB and the invariant depends on it — 01.2 §3.7
+/// says «закрытие и открытие — в одной транзакции», because between them there are
+/// either two open rows or none, and both break the query the acceptance runs.
+export fn occupancy_sql(t Tick, seen Seen, new_id str, close_id str) -> []str {
+    ro at = moment(t.at_ms)
+    mut out = []str.new()
+    if close_id != "" {
+        out.push("UPDATE occupancy SET ended_at = ${at}, updated_at = ${at}, updated_by = ${quote(t.instance)} WHERE id = ${quote(close_id)}")
+    }
+    out.push("INSERT INTO occupancy (id, created_at, updated_at, created_by, updated_by, login_dir_id, account_id, token_state, started_at, ended_at) VALUES (${quote(new_id)}, ${at}, ${at}, ${quote(t.instance)}, ${quote(t.instance)}, ${quote(seen.login_dir_id)}, ${opt(seen.account_id)}, ${quote(seen.token_state)}, ${at}, NULL)")
+    out
+}
+
+/// The query the acceptance runs: it must come back EMPTY.
+///
+/// Kept here rather than typed into a test, because the invariant belongs to this
+/// layer and a test that spells its own query can drift from what the code promises.
+export fn two_open_sql() -> str =>
+    "SELECT login_dir_id FROM occupancy WHERE ended_at IS NULL GROUP BY 1 HAVING count(*) > 1"
+
+// ── the two vocabularies of `token_state` (open question 5) ──────────────────
+
+/// The code's `TokenState` in the database's words.
+///
+/// THEY ARE TWO VOCABULARIES FOR TWO MOMENTS, and this function is the whole of my
+/// reading — the owner has not ruled, and question 5 of 01.5 stays open.
+///
+///   `login.TokenState` answers "what does the credentials file say", computed with
+///   no request at all: `ok`, `stale`, `no_token`.
+///   `occupancy.token_state` records what was true of the directory: `ok`, `expired`,
+///   `rejected`, `none`.
+///
+/// `rejected` has no counterpart here ON PURPOSE: it means the endpoint answered 401
+/// to a live-looking token, which the FILE cannot know. It is written by whoever
+/// polls, not by whoever reads the directory — so a mapping that invented a value for
+/// it would be claiming knowledge the caller does not have.
+export fn db_token_state(file_state str) -> str {
+    if file_state == "ok" { return "ok" }
+    if file_state == "stale" { return "expired" }
+    if file_state == "no_token" { return "none" }
+    // An unknown word is NOT silently passed through: the column's CHECK would refuse
+    // it and the whole tick would roll back, which is a large price for a typo. `none`
+    // is the honest answer to "we cannot say".
+    "none"
+}
+
+// ── lock periods (01.2 §3.12) ────────────────────────────────────────────────
+
+/// Why a window is locked, or that it is not.
+export type LockStep enum
+    | NoChange
+    | OpenLock(str)          // the reason: `server` or `percent_100`
+    | CloseLock
+
+export fn LockStep @to_str() -> str =>
+    match @ {
+        NoChange => "no-change"
+        OpenLock(_) => "open"
+        CloseLock => "close"
+    }
+
+/// 01.2 §3.12: a period opens on the server's `locked_reason` (`server`) or on
+/// `percent = 100` with no reason (`percent_100`), and closes at the first reading
+/// without a lock.
+///
+/// THE SERVER'S WORD WINS when both are true: a 100 % that the endpoint also
+/// explained is the endpoint's fact, and `sample.locked_reason` keeps its text. The
+/// design treats a bare 100 % as a red plate of its own, which is why the second
+/// reason exists at all.
+export fn lock_step(period_open bool, percent int, locked bool, locked_reason str) -> LockStep {
+    ro should_be_locked = locked || percent >= 100
+    if should_be_locked {
+        if period_open { return NoChange }
+        if locked_reason != "" { return OpenLock("server") }
+        return OpenLock("percent_100")
+    }
+    if period_open { return CloseLock }
+    NoChange
+}
+
+export fn lock_open_sql(t Tick, id str, window_id str, cycle_id str, reason str) -> str {
+    ro at = moment(t.at_ms)
+    "INSERT INTO lock_period (id, created_at, updated_at, created_by, updated_by, window_id, cycle_id, started_at, ended_at, reason) VALUES (${quote(id)}, ${at}, ${at}, ${quote(t.instance)}, ${quote(t.instance)}, ${quote(window_id)}, ${quote(cycle_id)}, ${at}, NULL, ${quote(reason)})"
+}
+
+export fn lock_close_sql(t Tick, id str) -> str {
+    ro at = moment(t.at_ms)
+    "UPDATE lock_period SET ended_at = ${at}, updated_at = ${at}, updated_by = ${quote(t.instance)} WHERE id = ${quote(id)}"
+}

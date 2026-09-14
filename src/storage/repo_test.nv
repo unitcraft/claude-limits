@@ -17,7 +17,7 @@
 
 module storage.repo_test
 
-import repo.{Tick, WindowRow, Ids, quote, opt, moment, plan_sql, write_tick, upsert_account_sql}
+import repo.{Tick, WindowRow, Ids, quote, opt, moment, plan_sql, write_tick, upsert_account_sql, Seen, OpenRow, OccupancyStep, occupancy_step, occupancy_sql, two_open_sql, db_token_state, LockStep, lock_step, lock_open_sql, lock_close_sql}
 import duckdb.db_effect.{Db, DbRef, ConnRef, ResultRef}
 import duckdb.errors.{DuckError}
 
@@ -288,4 +288,154 @@ test "the facts refuse to change on a repeat, and the references touch only last
             assert(!sql.contains("first_seen_at = excluded"))
         }
     }
+}
+
+// ── occupancy transitions (task T2.5, 01.2 §3.7) ────────────────────────────
+
+fn seen(account str, state str) -> Seen => Seen.of("dir-1", account, state)
+fn open_row(account str, state str) -> OpenRow => OpenRow.of("occ-1", account, state)
+
+test "nothing open yet means open the first row" {
+    assert(occupancy_step(None, seen("acc-1", "ok")).to_str() == "open-first")
+}
+
+test "the same pair changes nothing" {
+    ro step = occupancy_step(Some(open_row("acc-1", "ok")), seen("acc-1", "ok"))
+    assert(step.to_str() == "unchanged")
+}
+
+test "a changed e-mail closes the old row and opens a new one" {
+    // The card's own line. The directory did not move; the person in it did.
+    ro step = occupancy_step(Some(open_row("acc-1", "ok")), seen("acc-2", "ok"))
+    assert(step.to_str() == "close-and-open")
+    match step {
+        CloseAndOpen(id) => assert(id == "occ-1")
+        _ => assert(false)
+    }
+}
+
+test "ok -> expired is a NEW record, with the account unchanged" {
+    // 01.2 §3.7 names this case explicitly, because it is the one people fold into
+    // "nothing changed": the account is the same, only the token went stale. It is
+    // what draws the grey tail on the occupancy bar (01.1 §7.3).
+    ro step = occupancy_step(Some(open_row("acc-1", "ok")), seen("acc-1", "expired"))
+    assert(step.to_str() == "close-and-open")
+}
+
+test "a directory that lost its login closes the row too" {
+    ro step = occupancy_step(Some(open_row("acc-1", "ok")), seen("", "none"))
+    assert(step.to_str() == "close-and-open")
+}
+
+test "a transition writes the close BEFORE the open" {
+    // 01.2 §3.7: «закрытие и открытие — в одной транзакции». Between them there are
+    // either two open rows or none, and both break the invariant the acceptance
+    // query checks.
+    ro sqls = occupancy_sql(tick(), seen("acc-2", "ok"), "occ-2", "occ-1")
+    assert(sqls.len() == 2)
+    assert(sqls[0].contains("UPDATE occupancy SET ended_at"))
+    assert(sqls[0].contains("'occ-1'"))
+    assert(sqls[1].contains("INSERT INTO occupancy"))
+    assert(sqls[1].contains("ended_at) VALUES"))
+}
+
+test "the first row of a directory has nothing to close" {
+    ro sqls = occupancy_sql(tick(), seen("acc-1", "ok"), "occ-1", "")
+    assert(sqls.len() == 1)
+    assert(sqls[0].contains("INSERT INTO occupancy"))
+}
+
+test "a directory with no login writes NULL, not an empty string" {
+    // 01.2 §3.7: `account_id` NULL means "no login, or the account was forgotten".
+    // An empty string would be a different claim, and the column is a UUID anyway.
+    ro sqls = occupancy_sql(tick(), seen("", "none"), "occ-2", "")
+    assert(sqls[0].contains("NULL"))
+}
+
+test "the two-open query is the one the acceptance runs" {
+    // Kept in the code rather than typed into this test: an invariant whose query
+    // lives only in a test can drift from what the writing layer promises.
+    ro q = two_open_sql()
+    assert(q.contains("ended_at IS NULL"))
+    assert(q.contains("count(*) > 1"))
+}
+
+// ── the two vocabularies of token_state (open question 5) ───────────────────
+
+test "the file's words map onto the column's words" {
+    assert(db_token_state("ok") == "ok")
+    assert(db_token_state("stale") == "expired")
+    assert(db_token_state("no_token") == "none")
+}
+
+test "every mapped value is one the column accepts" {
+    // The point of the mapping: `login.TokenState` produces `stale` and `no_token`,
+    // and the CHECK on `occupancy.token_state` refuses both. Writing them raw would
+    // roll back the whole tick at the first directory that is not `ok`.
+    for file_state in ["ok", "stale", "no_token", "something-new"] {
+        ro mapped = db_token_state(file_state)
+        ro allowed = mapped == "ok" || mapped == "expired" || mapped == "rejected" || mapped == "none"
+        assert(allowed)
+    }
+}
+
+test "an unknown word becomes `none`, not itself" {
+    // Passing it through would be refused by the CHECK and cost the whole tick --
+    // a large price for a typo. `none` is the honest answer to "we cannot say".
+    assert(db_token_state("whatever") == "none")
+}
+
+// ── lock periods (01.2 §3.12) ───────────────────────────────────────────────
+
+test "the card's own sequence 0,100,100,0 gives exactly ONE period" {
+    // Read as a run: no period, then open at the first 100, nothing at the second,
+    // then close at the 0.
+    assert(lock_step(false, 0, false, "").to_str() == "no-change")
+    assert(lock_step(false, 100, false, "").to_str() == "open")
+    assert(lock_step(true, 100, false, "").to_str() == "no-change")
+    assert(lock_step(true, 0, false, "").to_str() == "close")
+}
+
+test "a bare 100 per cent opens a `percent_100` period" {
+    match lock_step(false, 100, false, "") {
+        OpenLock(reason) => assert(reason == "percent_100")
+        _ => assert(false)
+    }
+}
+
+test "the server's reason wins over the bare percentage" {
+    // The card's line: «`locked_reason` сервера → `server`». Both conditions are true
+    // at once here, and the endpoint's own explanation is the fact.
+    match lock_step(false, 100, true, "usage limit reached") {
+        OpenLock(reason) => assert(reason == "server")
+        _ => assert(false)
+    }
+}
+
+test "a lock below 100 per cent still opens -- the server may lock at any level" {
+    match lock_step(false, 40, true, "account suspended") {
+        OpenLock(reason) => assert(reason == "server")
+        _ => assert(false)
+    }
+}
+
+test "an unlocked reading with no open period changes nothing -- the control" {
+    // Without it, every assertion above is equally true of a `lock_step` that opens
+    // on everything.
+    assert(lock_step(false, 40, false, "").to_str() == "no-change")
+}
+
+test "closing names the period, opening names the window and the cycle" {
+    ro open_sql = lock_open_sql(tick(), "lock-1", "id-w1", "id-c1", "percent_100")
+    assert(open_sql.contains("INSERT INTO lock_period"))
+    assert(open_sql.contains("'id-w1'"))
+    assert(open_sql.contains("'id-c1'"))
+    assert(open_sql.contains("'percent_100'"))
+    // The free text stays in `sample.locked_reason` (01.2 §3.12) and must not appear
+    // here: two homes for one sentence drift apart on the first edit.
+    assert(!open_sql.contains("usage limit"))
+
+    ro close = lock_close_sql(tick(), "lock-1")
+    assert(close.contains("UPDATE lock_period SET ended_at"))
+    assert(close.contains("'lock-1'"))
 }
