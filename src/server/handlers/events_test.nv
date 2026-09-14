@@ -97,23 +97,23 @@ test "an event carries id, name and data, and ends with a blank line" {
     // Polaris's own `sse_event` writes no `id:` line. Section 3.4 puts a monotonic
     // id on every event precisely so a client can come back with `Last-Event-ID`;
     // an event without one cannot be resumed from.
-    assert(frame(Event.of(7, "snapshot", "{}")) == "id: 7\nevent: snapshot\ndata: {}\n\n")
-    assert(frame(Event.of(1, "ping", "{\"at\":\"x\"}")) == "id: 1\nevent: ping\ndata: {\"at\":\"x\"}\n\n")
+    assert(frame(Event.new(7, "snapshot", "{}")) == "id: 7\nevent: snapshot\ndata: {}\n\n")
+    assert(frame(Event.new(1, "ping", "{\"at\":\"x\"}")) == "id: 1\nevent: ping\ndata: {\"at\":\"x\"}\n\n")
 }
 
 test "a payload with a newline becomes several data lines" {
     // A raw newline would end the event early and the client would parse the rest
     // as a new one. A `notice` quoting a settings-file error is the first payload
     // that will have one.
-    ro f = frame(Event.of(3, "notice", "line one\nline two"))
+    ro f = frame(Event.new(3, "notice", "line one\nline two"))
     assert(f == "id: 3\nevent: notice\ndata: line one\ndata: line two\n\n")
 }
 
 test "the frames of the loop have the same shape as the frames of a replay" {
     // `bye` and `ping` go out through this file so the loop cannot invent a second
     // spelling of an event.
-    assert(frame(Event.of(9, "bye", "{\"reason\":\"shutdown\"}")).starts_with("id: 9\nevent: bye\n"))
-    assert(frames([Event.of(1, "a", "x"), Event.of(2, "b", "y")]) == "id: 1\nevent: a\ndata: x\n\nid: 2\nevent: b\ndata: y\n\n")
+    assert(frame(Event.new(9, "bye", "{\"reason\":\"shutdown\"}")).starts_with("id: 9\nevent: bye\n"))
+    assert(frames([Event.new(1, "a", "x"), Event.new(2, "b", "y")]) == "id: 1\nevent: a\ndata: x\n\nid: 2\nevent: b\ndata: y\n\n")
     assert(frames([]) == "")
 }
 
@@ -213,7 +213,7 @@ test "events published after the opening follow it, in order" {
     // What the running loop will push; here a finite list, which is what makes the
     // wire comparable at all.
     with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
-        ro tail = [Event.of(11, "snapshot", SNAP), Event.of(12, "ping", "{\"at\":\"x\"}")]
+        ro tail = [Event.new(11, "snapshot", SNAP), Event.new(12, "ping", "{\"at\":\"x\"}")]
         ro b = body_of(serve(with_events(10), tail, req_last("10")))
         assert(count_of(b, "event: ") == 3)
         assert(b.contains("id: 11\nevent: snapshot"))

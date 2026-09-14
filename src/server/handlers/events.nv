@@ -127,7 +127,7 @@ export fn opening(reg Registry, last_event_id str) -> Opening {
 export fn opening_bytes(op Opening, next_id int, snapshot_body str) -> str {
     match op {
         Opening.Replay(evs) => frames(evs)
-        Opening.Fresh => frame(Event.of(next_id, "snapshot", snapshot_body))
+        Opening.Fresh => frame(Event.new(next_id, "snapshot", snapshot_body))
         Opening.Refused(_) => ""
     }
 }

@@ -49,9 +49,9 @@ fn every_error() -> []ApiError => [
     ApiError.precondition_failed(),
     ApiError.body_too_large(),
     ApiError.unsupported_media_type(),
-    ApiError.invalid_config([FieldError.of("a", "c", "m")]),
-    ApiError.extra_forbidden([FieldError.of("a", "c", "m")]),
-    ApiError.invalid_request([FieldError.of("a", "c", "m")]),
+    ApiError.invalid_config([FieldError.new("a", "c", "m")]),
+    ApiError.extra_forbidden([FieldError.new("a", "c", "m")]),
+    ApiError.invalid_request([FieldError.new("a", "c", "m")]),
     ApiError.precondition_required(),
     ApiError.too_soon(60), ApiError.too_many_auth_failures(30),
     ApiError.store_busy(), ApiError.too_many_subscribers(), ApiError.starting(),
@@ -99,7 +99,7 @@ test "a 422 without errors[] is NOT well formed" {
     // The page renders each message beside its field; a 422 with an empty list is a
     // refusal nobody can act on.
     assert(!well_formed(ApiError.invalid_config([])))
-    assert(well_formed(ApiError.invalid_config([FieldError.of("poll.interval_sec", "less_than_min", "minimum is 60 s")])))
+    assert(well_formed(ApiError.invalid_config([FieldError.new("poll.interval_sec", "less_than_min", "minimum is 60 s")])))
 }
 
 test "a 429 or a 503 without Retry-After is NOT well formed" {
@@ -161,8 +161,8 @@ test "retry_after is a number in the body, not text inside detail" {
 
 test "field errors are rendered, all of them, in order, with their own code" {
     ro e = ApiError.invalid_config([
-        FieldError.of("poll.interval_sec", "less_than_min", "minimum is 60 s"),
-        FieldError.of("thresholds.critical", "out_of_order", "critical must be above warning"),
+        FieldError.new("poll.interval_sec", "less_than_min", "minimum is 60 s"),
+        FieldError.new("thresholds.critical", "out_of_order", "critical must be above warning"),
     ])
     ro body = to_json(e, "req-2", "/api/config")
     assert(body.contains("\"errors\":["))

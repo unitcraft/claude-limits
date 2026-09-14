@@ -46,12 +46,12 @@ export type Usage value {
     from_fallback bool      // true when `limits[]` was absent or empty
 }
 
-fn Usage.of(windows []Window, outcome PollOutcome, from_fallback bool) -> Usage =>
+fn Usage.new(windows []Window, outcome PollOutcome, from_fallback bool) -> Usage =>
     { windows, outcome, from_fallback }
 
 /// Nothing was read. `NoWindows` and not `BadJson`: there was no body to fail on, and
 /// calling a transport failure a parse failure would send a reader looking at the JSON.
-export fn Usage.empty() -> Usage => Usage.of([], NoWindows, false)
+export fn Usage.empty() -> Usage => Usage.new([], NoWindows, false)
 
 fn str_field(obj JsonValue, key str) -> str =>
     match obj.object() {
@@ -165,7 +165,7 @@ fn window_of(item JsonValue, root JsonValue) -> Window {
             reason = named_lock(root, "seven_day")
         }
     }
-    Window.of(kind, model, num_field(item, "percent"),
+    Window.new(kind, model, num_field(item, "percent"),
               moment_ms(str_field(item, "resets_at")), reason)
 }
 
@@ -194,7 +194,7 @@ fn named_window(root JsonValue, key str, kind str) -> Option[Window] {
             }
         }
     }
-    Some(Window.of(kind, "", pct, moment_ms(str_field(node, "resets_at")),
+    Some(Window.new(kind, "", pct, moment_ms(str_field(node, "resets_at")),
                    str_field(node, "locked_reason")))
 }
 
@@ -207,11 +207,11 @@ fn named_window(root JsonValue, key str, kind str) -> Option[Window] {
 export fn parse(body str) -> Usage {
     ro root = match Json.parse(body) {
         Ok(v) => v
-        Err(_) => return Usage.of([], BadJson, false)
+        Err(_) => return Usage.new([], BadJson, false)
     }
     ro fields = match root.object() {
         Some(f) => f
-        None => return Usage.of([], BadJson, false)
+        None => return Usage.new([], BadJson, false)
     }
 
     mut out []Window = []
@@ -224,7 +224,7 @@ export fn parse(body str) -> Usage {
         }
         None => {}
     }
-    if out.len() > 0 { return Usage.of(out, Parsed, false) }
+    if out.len() > 0 { return Usage.new(out, Parsed, false) }
 
     // Fallback: the two named windows.
     mut fb []Window = []
@@ -236,9 +236,9 @@ export fn parse(body str) -> Usage {
         Some(w) => fb.push(w)
         None => {}
     }
-    if fb.len() > 0 { return Usage.of(fb, Parsed, true) }
+    if fb.len() > 0 { return Usage.new(fb, Parsed, true) }
 
-    Usage.of([], NoWindows, false)
+    Usage.new([], NoWindows, false)
 }
 
 /// When to poll again after a 429 (plan 01 §0).

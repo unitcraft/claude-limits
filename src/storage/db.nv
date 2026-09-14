@@ -48,7 +48,7 @@ export type Migration value {
     ro sql str
 }
 
-export fn Migration.of(version int, sql str) -> Migration => { version, sql }
+export fn Migration.new(version int, sql str) -> Migration => { version, sql }
 
 /// Why opening did not happen.
 ///

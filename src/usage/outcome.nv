@@ -43,7 +43,7 @@ export type Outcome value {
     ro body_usable bool     // true only when the body is worth parsing
 }
 
-export fn Outcome.of(state AccountState, message str, retry_after_sec int,
+export fn Outcome.new(state AccountState, message str, retry_after_sec int,
                      body_usable bool) -> Outcome =>
     { state, message, retry_after_sec, body_usable }
 
@@ -58,14 +58,14 @@ export fn of_status(status int, retry_after_sec int) -> Outcome {
     // gives one, our floor when it does not.
     if status == 429 {
         ro wait = if retry_after_sec > 0 { retry_after_sec } else { POLL_FLOOR_SEC }
-        return Outcome.of(AccountState.Unknown, "", wait, false)
+        return Outcome.new(AccountState.Unknown, "", wait, false)
     }
 
     if status == 401 {
         // The account keeps its place; the next cycle must NOT come sooner than the
         // floor. A rejected token retried in a loop is how one 401 becomes a 429 for
         // the whole machine -- the fixture says so, and it is not hypothetical here.
-        return Outcome.of(AccountState.Error, error_401_message(), POLL_FLOOR_SEC,
+        return Outcome.new(AccountState.Error, error_401_message(), POLL_FLOOR_SEC,
                           false)
     }
 
@@ -73,24 +73,24 @@ export fn of_status(status int, retry_after_sec int) -> Outcome {
         // NEVER `error`, and this is a rule rather than a preference: the fault is the
         // server's and the person has nothing to fix. Showing it as a broken account
         // asks them to act on something they cannot touch.
-        return Outcome.of(AccountState.Unknown, "", POLL_FLOOR_SEC, false)
+        return Outcome.new(AccountState.Unknown, "", POLL_FLOOR_SEC, false)
     }
 
     if status == 200 {
-        return Outcome.of(AccountState.Ok, "", POLL_FLOOR_SEC, true)
+        return Outcome.new(AccountState.Ok, "", POLL_FLOOR_SEC, true)
     }
 
     // Anything else -- 3xx, 4xx that is not 401, a status we have never seen. Unknown
     // rather than error: we do not know what happened, and saying `error` would claim
     // we did.
-    return Outcome.of(AccountState.Unknown, "", POLL_FLOOR_SEC, false)
+    return Outcome.new(AccountState.Unknown, "", POLL_FLOOR_SEC, false)
 }
 
 /// The reply arrived and the body would not parse (01.1 §3.2: `error`, "невалидный
 /// JSON"). Separate from `of_status` because it is decided AFTER parsing, and folding
 /// it in would make `of_status` take an argument it cannot have yet.
 export fn bad_body() -> Outcome =>
-    Outcome.of(AccountState.Error, error_parse_message(), POLL_FLOOR_SEC, false)
+    Outcome.new(AccountState.Error, error_parse_message(), POLL_FLOOR_SEC, false)
 
 /// The request never reached anyone -- connection refused, DNS, TLS.
 ///
@@ -98,4 +98,4 @@ export fn bad_body() -> Outcome =>
 /// the page (`network_badge`) and is not built here: this module decides the state, and
 /// two places composing the same sentence drift apart on the first edit.
 export fn transport_failed() -> Outcome =>
-    Outcome.of(AccountState.Unknown, "", POLL_FLOOR_SEC, false)
+    Outcome.new(AccountState.Unknown, "", POLL_FLOOR_SEC, false)

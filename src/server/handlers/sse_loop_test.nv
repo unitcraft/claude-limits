@@ -16,7 +16,7 @@ module handlers.sse_loop_test
 import sse_loop.{Tick, next_action, silence_after, bytes_of, PING_AFTER_MS}
 import claude_limits.model.store.{Event}
 
-fn an_event() -> Event => Event.of(7, "snapshot", "{}")
+fn an_event() -> Event => Event.new(7, "snapshot", "{}")
 
 fn is_ping(t Tick) -> bool => match t { Tick.Ping => true, _ => false }
 fn is_bye(t Tick) -> bool => match t { Tick.Bye => true, _ => false }

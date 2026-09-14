@@ -67,7 +67,7 @@ fn rate_limited() -> str =>
     reply("HTTP/1.1 429 Too Many Requests", "Retry-After: 120", "slow down")
 
 fn acct() -> Account =>
-    Account.of("a@example.com", "api.example.com", 443, true, "/v1/usage", "secret-token")
+    Account.new("a@example.com", "api.example.com", 443, true, "/v1/usage", "secret-token")
 
 /// Runs `body` with both effects spied on. One helper, so no test can forget one of
 /// the two counters and then assert about the one it has.
@@ -92,7 +92,7 @@ fn spied[T](mut s Spy, raw str, body fn() Http PollLog -> T) -> T =>
 test "a due account is asked exactly once" {
     mut s = Spy.new()
     ro (_, polled_now) = spied(s, ok_body(),
-        fn() Http PollLog -> (Poll, bool) => tick(acct(), TokenState.Ok, Poll.new(), Interval.of(60), 1000))
+        fn() Http PollLog -> (Poll, bool) => tick(acct(), TokenState.Ok, Poll.new(), Interval.new(60), 1000))
     assert(polled_now)
     assert(s.requests == 1)
 }
@@ -103,12 +103,12 @@ test "an account that is NOT due is not asked at all" {
     mut s = Spy.new()
     ro after = Poll.new()
     ro (p1, first) = spied(s, ok_body(),
-        fn() Http PollLog -> (Poll, bool) => tick(acct(), TokenState.Ok, after, Interval.of(60), 1000))
+        fn() Http PollLog -> (Poll, bool) => tick(acct(), TokenState.Ok, after, Interval.new(60), 1000))
     assert(first)
     assert(s.requests == 1)
     // One second later: the interval has not passed.
     ro (_, second) = spied(s, ok_body(),
-        fn() Http PollLog -> (Poll, bool) => tick(acct(), TokenState.Ok, p1, Interval.of(60), 2000))
+        fn() Http PollLog -> (Poll, bool) => tick(acct(), TokenState.Ok, p1, Interval.new(60), 2000))
     assert(!second)
     assert(s.requests == 1)
 }
@@ -118,9 +118,9 @@ test "a skipped tick leaves the schedule untouched" {
     // the rhythm would chase its own tail and the page would never update.
     mut s = Spy.new()
     ro (p1, _) = spied(s, ok_body(),
-        fn() Http PollLog -> (Poll, bool) => tick(acct(), TokenState.Ok, Poll.new(), Interval.of(60), 1000))
+        fn() Http PollLog -> (Poll, bool) => tick(acct(), TokenState.Ok, Poll.new(), Interval.new(60), 1000))
     ro (p2, ran) = spied(s, ok_body(),
-        fn() Http PollLog -> (Poll, bool) => tick(acct(), TokenState.Ok, p1, Interval.of(60), 2000))
+        fn() Http PollLog -> (Poll, bool) => tick(acct(), TokenState.Ok, p1, Interval.new(60), 2000))
     assert(!ran)
     assert(p2.last_poll_ms == p1.last_poll_ms)
     assert(p2.next_allowed_ms == p1.next_allowed_ms)
@@ -131,11 +131,11 @@ test "a skipped tick leaves the schedule untouched" {
 test "a 429 pushes the next poll out by the server's own number" {
     mut s = Spy.new()
     ro (p1, _) = spied(s, rate_limited(),
-        fn() Http PollLog -> (Poll, bool) => tick(acct(), TokenState.Ok, Poll.new(), Interval.of(60), 1000))
+        fn() Http PollLog -> (Poll, bool) => tick(acct(), TokenState.Ok, Poll.new(), Interval.new(60), 1000))
     // Retry-After: 120 -- so 119 seconds later is still too early, and it is too
     // early even though the 60 s interval has long passed.
-    assert(!due(p1, Interval.of(60), 1000 + 119 * 1000))
-    assert(due(p1, Interval.of(60), 1000 + 120 * 1000))
+    assert(!due(p1, Interval.new(60), 1000 + 119 * 1000))
+    assert(due(p1, Interval.new(60), 1000 + 120 * 1000))
 }
 
 test "a 429 with no Retry-After still waits the floor" {
@@ -144,9 +144,9 @@ test "a 429 with no Retry-After still waits the floor" {
     mut s = Spy.new()
     ro raw = reply("HTTP/1.1 429 Too Many Requests", "", "slow down")
     ro (p1, _) = spied(s, raw,
-        fn() Http PollLog -> (Poll, bool) => tick(acct(), TokenState.Ok, Poll.new(), Interval.of(60), 1000))
-    assert(!due(p1, Interval.of(60), 1000 + 59 * 1000))
-    assert(due(p1, Interval.of(60), 1000 + POLL_FLOOR_SEC * 1000))
+        fn() Http PollLog -> (Poll, bool) => tick(acct(), TokenState.Ok, Poll.new(), Interval.new(60), 1000))
+    assert(!due(p1, Interval.new(60), 1000 + 59 * 1000))
+    assert(due(p1, Interval.new(60), 1000 + POLL_FLOOR_SEC * 1000))
 }
 
 test "the wait comes from the outcome, floor when it says nothing" {
@@ -160,7 +160,7 @@ test "the wait comes from the outcome, floor when it says nothing" {
 test "a refresh right after a poll is refused, and asks nothing" {
     mut s = Spy.new()
     ro (p1, _) = spied(s, ok_body(),
-        fn() Http PollLog -> (Poll, bool) => tick(acct(), TokenState.Ok, Poll.new(), Interval.of(60), 1000))
+        fn() Http PollLog -> (Poll, bool) => tick(acct(), TokenState.Ok, Poll.new(), Interval.new(60), 1000))
     assert(s.requests == 1)
     ro (p2, ran) = spied(s, ok_body(),
         fn() Http PollLog -> (Poll, bool) => refresh(acct(), TokenState.Ok, p1, 1000 + 30 * 1000))
@@ -174,7 +174,7 @@ test "a refresh right after a poll is refused, and asks nothing" {
 test "a refresh after the floor runs" {
     mut s = Spy.new()
     ro (p1, _) = spied(s, ok_body(),
-        fn() Http PollLog -> (Poll, bool) => tick(acct(), TokenState.Ok, Poll.new(), Interval.of(60), 1000))
+        fn() Http PollLog -> (Poll, bool) => tick(acct(), TokenState.Ok, Poll.new(), Interval.new(60), 1000))
     ro (_, ran) = spied(s, ok_body(),
         fn() Http PollLog -> (Poll, bool) => refresh(acct(), TokenState.Ok, p1, 1000 + POLL_FLOOR_SEC * 1000))
     assert(ran)
@@ -192,20 +192,20 @@ test "the very first refresh is allowed: nothing has been asked yet" {
 // ── the interval floor ───────────────────────────────────────────────────────
 
 test "interval_sec = 10 is raised to 60" {
-    assert(Interval.of(10).seconds == 60)
-    assert(Interval.of(10).seconds == POLL_FLOOR_SEC)
+    assert(Interval.new(10).seconds == 60)
+    assert(Interval.new(10).seconds == POLL_FLOOR_SEC)
     // And a configured value ABOVE the floor is left alone -- without this the test
     // would pass on an implementation that returns 60 unconditionally.
-    assert(Interval.of(300).seconds == 300)
+    assert(Interval.new(300).seconds == 300)
 }
 
 test "a floored interval really governs the rhythm, not just the number" {
     // The number could be right and unused. Ask the schedule.
     mut s = Spy.new()
     ro (p1, _) = spied(s, ok_body(),
-        fn() Http PollLog -> (Poll, bool) => tick(acct(), TokenState.Ok, Poll.new(), Interval.of(10), 0))
-    assert(!due(p1, Interval.of(10), 59 * 1000))
-    assert(due(p1, Interval.of(10), 60 * 1000))
+        fn() Http PollLog -> (Poll, bool) => tick(acct(), TokenState.Ok, Poll.new(), Interval.new(10), 0))
+    assert(!due(p1, Interval.new(10), 59 * 1000))
+    assert(due(p1, Interval.new(10), 60 * 1000))
 }
 
 // ── every outcome is written down ────────────────────────────────────────────
@@ -237,7 +237,7 @@ test "a malformed reply is written down as well" {
 test "one poll, one record: a tick never writes twice" {
     mut s = Spy.new()
     spied(s, ok_body(),
-        fn() Http PollLog -> (Poll, bool) => tick(acct(), TokenState.Ok, Poll.new(), Interval.of(60), 1000))
+        fn() Http PollLog -> (Poll, bool) => tick(acct(), TokenState.Ok, Poll.new(), Interval.new(60), 1000))
     assert(s.requests == 1)
     assert(s.records == 1)
 }
@@ -247,10 +247,10 @@ test "a refused tick writes NOTHING" {
     // record -- a refusal in the table would later read as a failed poll.
     mut s = Spy.new()
     ro (p1, _) = spied(s, ok_body(),
-        fn() Http PollLog -> (Poll, bool) => tick(acct(), TokenState.Ok, Poll.new(), Interval.of(60), 1000))
+        fn() Http PollLog -> (Poll, bool) => tick(acct(), TokenState.Ok, Poll.new(), Interval.new(60), 1000))
     assert(s.records == 1)
     ro (_, ran) = spied(s, ok_body(),
-        fn() Http PollLog -> (Poll, bool) => tick(acct(), TokenState.Ok, p1, Interval.of(60), 2000))
+        fn() Http PollLog -> (Poll, bool) => tick(acct(), TokenState.Ok, p1, Interval.new(60), 2000))
     assert(!ran)
     assert(s.records == 1)
 }
@@ -278,7 +278,7 @@ test "a stale token means the mock counts ZERO calls" {
     mut s = Spy.new()
     ro (p, ran) = spied(s, ok_body(),
         fn() Http PollLog -> (Poll, bool) =>
-            tick(acct(), TokenState.Stale, Poll.new(), Interval.of(60), 1000))
+            tick(acct(), TokenState.Stale, Poll.new(), Interval.new(60), 1000))
     assert(!ran)
     assert(s.requests == 0)
     // And nothing is recorded either: `poll` holds what the endpoint said, and the
@@ -293,7 +293,7 @@ test "an account with no token at all is not tried" {
     mut s = Spy.new()
     ro (_, ran) = spied(s, ok_body(),
         fn() Http PollLog -> (Poll, bool) =>
-            tick(acct(), TokenState.NoToken, Poll.new(), Interval.of(60), 1000))
+            tick(acct(), TokenState.NoToken, Poll.new(), Interval.new(60), 1000))
     assert(!ran)
     assert(s.requests == 0)
 }
@@ -313,7 +313,7 @@ test "a healthy token IS tried -- the control" {
     mut s = Spy.new()
     ro (_, ran) = spied(s, ok_body(),
         fn() Http PollLog -> (Poll, bool) =>
-            tick(acct(), TokenState.Ok, Poll.new(), Interval.of(60), 1000))
+            tick(acct(), TokenState.Ok, Poll.new(), Interval.new(60), 1000))
     assert(ran)
     assert(s.requests == 1)
 }

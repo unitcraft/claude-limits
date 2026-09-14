@@ -56,7 +56,7 @@ export type Entry value {
     content str
 }
 
-export fn Entry.of(location str, content str) -> Entry => { location, content }
+export fn Entry.new(location str, content str) -> Entry => { location, content }
 
 /// What installing or removing actually did.
 ///
@@ -135,8 +135,8 @@ export fn desktop_text(exe str) -> str {
 /// function has to be testable on a machine that is neither.
 export fn entry_for(p Platform, exe str, home str) -> Entry =>
     match p {
-        Windows => Entry.of(NAME, command_line(exe))
-        Linux => Entry.of("${home}/.config/autostart/${NAME}.desktop", desktop_text(exe))
+        Windows => Entry.new(NAME, command_line(exe))
+        Linux => Entry.new("${home}/.config/autostart/${NAME}.desktop", desktop_text(exe))
     }
 
 /// The registry key the Windows record sits under. Per-user (`HKCU`), never

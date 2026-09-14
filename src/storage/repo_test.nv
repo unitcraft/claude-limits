@@ -24,7 +24,7 @@ import duckdb.errors.{DuckError}
 const INSTANCE = "0192f0a1-7c3d-7000-8000-aaaaaaaaaaaa"
 
 fn win(kind str, model str, percent int) -> WindowRow =>
-    WindowRow.of(kind, model, percent, false, "", "normal", 1757000000000, 1757018000000)
+    WindowRow.new(kind, model, percent, false, "", "normal", 1757000000000, 1757018000000)
 
 fn tick() -> Tick => {
     instance: INSTANCE,
@@ -53,7 +53,7 @@ fn tick_with_email(e str) -> Tick => {
 }
 
 fn ids() -> Ids =>
-    Ids.of("id-account", "id-poll", ["id-w1", "id-w2"], ["id-c1", "id-c2"],
+    Ids.new("id-account", "id-poll", ["id-w1", "id-w2"], ["id-c1", "id-c2"],
            ["id-s1", "id-s2"])
 
 /// What the handler saw, and what it should refuse.
@@ -292,8 +292,8 @@ test "the facts refuse to change on a repeat, and the references touch only last
 
 // ── occupancy transitions (task T2.5, 01.2 §3.7) ────────────────────────────
 
-fn seen(account str, state str) -> Seen => Seen.of("dir-1", account, state)
-fn open_row(account str, state str) -> OpenRow => OpenRow.of("occ-1", account, state)
+fn seen(account str, state str) -> Seen => Seen.new("dir-1", account, state)
+fn open_row(account str, state str) -> OpenRow => OpenRow.new("occ-1", account, state)
 
 test "nothing open yet means open the first row" {
     assert(occupancy_step(None, seen("acc-1", "ok")).to_str() == "open-first")

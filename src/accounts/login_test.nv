@@ -85,7 +85,11 @@ test "a directory with no credentials yields no token and says so" {
 // ── the token never appears ──────────────────────────────────────────────────
 
 test "Debug of a token shows nothing of the token" {
-    ro t = Secret.of("sk-ant-fixture-SECRET")
+    // `consume`, not `ro`: D180. This line stood as `ro t = Secret.of(...)` from
+    // 2026-09-08 and compiled, because the obligation check is skipped for a static
+    // named anything but `new` -- found by the T2.28 rename, isolated in
+    // `probes/consume-check-keys-on-name/`. The test was wrong AND green.
+    consume t = Secret.new("sk-ant-fixture-SECRET")
     ro shown = "${t:?}"
     assert(shown == "Secret(hidden)")
     assert(!shown.contains("sk-ant"))
@@ -102,6 +106,11 @@ test "Debug of a token shows nothing of the token" {
         if ch.is_ascii_digit() { has_digit = true }
     }
     assert(!has_digit)
+    // D133 wants it consumed before scope exit, and consuming it HERE earns its
+    // keep: the only door out gives back exactly what went in, which is the other
+    // half of the promise -- hiding it from Debug would be worthless if
+    // `into_secret` returned something else.
+    assert(t.into_secret() == "sk-ant-fixture-SECRET")
 }
 
 // THE ACCEPTANCE ITEM "the Debug output of an account carries no token" HAS NO TEST
@@ -120,7 +129,7 @@ test "Debug of a token shows nothing of the token" {
 // ── token state ──────────────────────────────────────────────────────────────
 
 fn sample_login(email str, name str, expires int) -> Login =>
-    Login.of("/fx/${name}", name, email, "Tech Center", expires, true)
+    Login.new("/fx/${name}", name, email, "Tech Center", expires, true)
 
 test "an expired expiresAt is stale" {
     assert(state_of(sample_login("a@x", "a", PAST), NOW_MS).to_str() == "stale")
@@ -134,12 +143,12 @@ test "a token expiring within the guard window is already stale" {
 }
 
 test "no token is its own state, not stale" {
-    ro none = Login.of("/fx/c", "c", "a@x", "", 0, false)
+    ro none = Login.new("/fx/c", "c", "a@x", "", 0, false)
     assert(state_of(none, NOW_MS).to_str() == "no_token")
 }
 
 test "an unknown expiry is not a reason to refuse" {
-    ro unknown = Login.of("/fx/d", "d", "a@x", "", 0, true)
+    ro unknown = Login.new("/fx/d", "d", "a@x", "", 0, true)
     assert(state_of(unknown, NOW_MS).to_str() == "ok")
 }
 
@@ -179,7 +188,7 @@ test "an account is only as healthy as its WORST directory" {
 test "the earliest expiry wins, and an unknown one does not win" {
     ro accounts = group([
         sample_login("main@example.com", "late", LATER),
-        Login.of("/fx/x", "unknown", "main@example.com", "", 0, true),
+        Login.new("/fx/x", "unknown", "main@example.com", "", 0, true),
         sample_login("main@example.com", "early", LATER - 5_000_000),
     ], NOW_MS)
     assert(accounts[0].expires_at_ms == LATER - 5_000_000)
@@ -187,7 +196,7 @@ test "the earliest expiry wins, and an unknown one does not win" {
 
 test "a login with no e-mail is dropped, not merged into a phantom account" {
     ro accounts = group([
-        Login.of("/fx/y", "nameless", "", "", 0, true),
+        Login.new("/fx/y", "nameless", "", "", 0, true),
         sample_login("a@example.com", "a", LATER),
     ], NOW_MS)
     assert(accounts.len() == 1)
@@ -196,8 +205,8 @@ test "a login with no e-mail is dropped, not merged into a phantom account" {
 
 test "an organisation name is taken from whichever directory has one" {
     ro accounts = group([
-        Login.of("/fx/p", "p", "a@example.com", "", LATER, true),
-        Login.of("/fx/q", "q", "a@example.com", "Tech Center", LATER, true),
+        Login.new("/fx/p", "p", "a@example.com", "", LATER, true),
+        Login.new("/fx/q", "q", "a@example.com", "Tech Center", LATER, true),
     ], NOW_MS)
     assert(accounts[0].org == "Tech Center")
 }

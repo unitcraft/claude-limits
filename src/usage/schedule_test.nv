@@ -20,34 +20,34 @@ const MIN = 60 * 1000
 test "a configured interval below the floor is RAISED, not refused and not honoured" {
     // The card's own wording: `interval_sec = 10` is raised to 60. Someone asking for
     // ten seconds is asking for a 429.
-    assert(Interval.of(10).seconds == POLL_FLOOR_SEC)
-    assert(Interval.of(1).seconds == POLL_FLOOR_SEC)
-    assert(Interval.of(59).seconds == POLL_FLOOR_SEC)
+    assert(Interval.new(10).seconds == POLL_FLOOR_SEC)
+    assert(Interval.new(1).seconds == POLL_FLOOR_SEC)
+    assert(Interval.new(59).seconds == POLL_FLOOR_SEC)
 }
 
 test "zero and negative land on the floor, not on 'as fast as possible'" {
     // A missing setting or a typo. Reading either as "no delay" is the one
     // interpretation that costs a rate limit.
-    assert(Interval.of(0).seconds == POLL_FLOOR_SEC)
-    assert(Interval.of(0 - 30).seconds == POLL_FLOOR_SEC)
+    assert(Interval.new(0).seconds == POLL_FLOOR_SEC)
+    assert(Interval.new(0 - 30).seconds == POLL_FLOOR_SEC)
 }
 
 test "an interval above the floor is left alone" {
     // The other direction: a floor that clamped everything would pass the tests above
     // and quietly ignore what the person asked for.
-    assert(Interval.of(300).seconds == 300)
-    assert(Interval.of(POLL_FLOOR_SEC + 1).seconds == POLL_FLOOR_SEC + 1)
+    assert(Interval.new(300).seconds == 300)
+    assert(Interval.new(POLL_FLOOR_SEC + 1).seconds == POLL_FLOOR_SEC + 1)
 }
 
 test "an account never polled is due at once" {
     // Otherwise the page shows nothing until a whole interval has gone by, and the
     // first thing a person sees after starting the app is emptiness.
-    assert(due(Poll.new(), Interval.of(300), 0))
-    assert(due(Poll.new(), Interval.of(300), 1_000_000))
+    assert(due(Poll.new(), Interval.new(300), 0))
+    assert(due(Poll.new(), Interval.new(300), 1_000_000))
 }
 
 test "one request per tick: not due a millisecond early, due exactly on time" {
-    ro iv = Interval.of(300)
+    ro iv = Interval.new(300)
     ro p = polled(Poll.new(), 1_000_000, POLL_FLOOR_SEC)
     // 300 s after the poll is the moment. Both sides of it.
     assert(!due(p, iv, 1_000_000 + 300 * 1000 - 1))
@@ -57,7 +57,7 @@ test "one request per tick: not due a millisecond early, due exactly on time" {
 test "after a 429 the wait is the server's, even past the interval" {
     // `Retry-After: 600` against a configured 60: the server wins. A scheduler taking
     // the interval alone would poll nine times inside the window it was told to wait.
-    ro iv = Interval.of(60)
+    ro iv = Interval.new(60)
     ro p = polled(Poll.new(), 0, 600)
     assert(!due(p, iv, 599 * 1000))
     assert(due(p, iv, 600 * 1000))
@@ -67,7 +67,7 @@ test "the interval still applies when the server asked for LESS" {
     // The other direction of the same rule, and the one a single test would miss: a
     // `Retry-After: 10` does not licence polling every ten seconds when the person
     // configured five minutes. `due` requires BOTH conditions.
-    ro iv = Interval.of(300)
+    ro iv = Interval.new(300)
     ro p = polled(Poll.new(), 0, 10)
     assert(!due(p, iv, 11 * 1000))          // the server's window has passed
     assert(!due(p, iv, 299 * 1000))         // the interval has not

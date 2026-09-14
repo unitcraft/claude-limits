@@ -93,7 +93,7 @@ export type Rect value {
     h int
 }
 
-export fn Rect.of(x int, y int, w int, h int) -> Rect => { x, y, w, h }
+export fn Rect.new(x int, y int, w int, h int) -> Rect => { x, y, w, h }
 
 /// The empty rectangle, which is how this file says "this element is not drawn".
 ///
@@ -159,7 +159,7 @@ export type Metrics value {
     forecast bool
 }
 
-export fn Metrics.of(width int, scale_pct int, time_strip bool, forecast bool) -> Metrics =>
+export fn Metrics.new(width int, scale_pct int, time_strip bool, forecast bool) -> Metrics =>
     { width, scale_pct, time_strip, forecast }
 
 /// The defaults a fresh install draws with: both strips on.
@@ -230,7 +230,7 @@ fn place_row(m Metrics, x int, y int, inner_w int, narrow bool) -> LimitRow {
     ro r2_h = scaled(RESET_LINE2_H, m.scale_pct)
     ro h = row_height(m)
 
-    ro name = Rect.of(x, y + (h - line_h) / 2, name_w, line_h)
+    ro name = Rect.new(x, y + (h - line_h) / 2, name_w, line_h)
 
     // In the narrow form the reset column leaves the row and the bar takes its
     // width; the percent stays to the right of the bar, which is the half of §1.3
@@ -241,31 +241,31 @@ fn place_row(m Metrics, x int, y int, inner_w int, narrow bool) -> LimitRow {
     } else {
         inner_w - name_w - pct_w - reset_w - gap * 3
     }
-    ro bar = Rect.of(bar_x, y + (h - bar_h) / 2, bar_w, bar_h)
+    ro bar = Rect.new(bar_x, y + (h - bar_h) / 2, bar_w, bar_h)
     ro time = if m.time_strip {
-        Rect.of(bar_x, bar.bottom() + stack_gap, bar_w, time_h)
+        Rect.new(bar_x, bar.bottom() + stack_gap, bar_w, time_h)
     } else {
         Rect.none()
     }
 
     ro pct_x = bar_x + bar_w + gap
-    ro percent = Rect.of(pct_x, y + (h - line_h) / 2, pct_w, line_h)
+    ro percent = Rect.new(pct_x, y + (h - line_h) / 2, pct_w, line_h)
 
     // Wide: the reset column sits right of the percent. Narrow: it starts under the
     // bar, on its own line, and the row is taller by exactly that line.
     ro reset = if narrow {
-        Rect.of(bar_x, y + h, inner_w - name_w - gap, r1_h)
+        Rect.new(bar_x, y + h, inner_w - name_w - gap, r1_h)
     } else {
-        Rect.of(pct_x + pct_w + gap, y + (h - r1_h - (if m.forecast { r2_h } else { 0 })) / 2, reset_w, r1_h)
+        Rect.new(pct_x + pct_w + gap, y + (h - r1_h - (if m.forecast { r2_h } else { 0 })) / 2, reset_w, r1_h)
     }
     ro forecast = if m.forecast {
-        Rect.of(reset.x, reset.bottom(), reset.w, r2_h)
+        Rect.new(reset.x, reset.bottom(), reset.w, r2_h)
     } else {
         Rect.none()
     }
 
     ro total_h = if narrow { h + r1_h + (if m.forecast { r2_h } else { 0 }) } else { h }
-    ro bounds = Rect.of(x, y, inner_w, total_h)
+    ro bounds = Rect.new(x, y, inner_w, total_h)
     { name, bar, time, percent, reset, forecast, bounds }
 }
 
@@ -289,14 +289,14 @@ export fn layout(m Metrics, rows_per_account []int) -> Layout {
     ro header_h = scaled(HEADER_H, m.scale_pct)
     ro footer_h = scaled(FOOTER_H, m.scale_pct)
 
-    ro header = Rect.of(pad, pad, inner_w, header_h)
+    ro header = Rect.new(pad, pad, inner_w, header_h)
     mut y = header.bottom() + block_gap
 
     mut blocks = []AccountBlock.new()
     mut a = 0
     while a < rows_per_account.len() {
         ro top = y
-        ro acc_header = Rect.of(pad, y, inner_w, acc_h)
+        ro acc_header = Rect.new(pad, y, inner_w, acc_h)
         y = acc_header.bottom()
 
         // THE GAP GOES BEFORE EACH ROW, not after. The other form -- add a gap per
@@ -315,13 +315,13 @@ export fn layout(m Metrics, rows_per_account []int) -> Layout {
             i += 1
         }
 
-        blocks.push({ header: acc_header, rows, bounds: Rect.of(pad, top, inner_w, y - top) })
+        blocks.push({ header: acc_header, rows, bounds: Rect.new(pad, top, inner_w, y - top) })
         y += block_gap
         a += 1
     }
 
     if rows_per_account.len() > 0 { y -= block_gap }
 
-    ro footer = Rect.of(pad, y + block_gap, inner_w, footer_h)
+    ro footer = Rect.new(pad, y + block_gap, inner_w, footer_h)
     { header, accounts: blocks, footer, width: m.width, height: footer.bottom() + pad, narrow }
 }

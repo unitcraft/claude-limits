@@ -68,9 +68,9 @@ export type Complaint value {
     ro code int
 }
 
-export fn Complaint.of(message str, code int) -> Complaint => { message, code }
+export fn Complaint.new(message str, code int) -> Complaint => { message, code }
 
-export fn Args.of(mode Mode, config str, offline str, parent str, dirs []str,
+export fn Args.new(mode Mode, config str, offline str, parent str, dirs []str,
                   color str, bar_style str) -> Args =>
     { mode, config, offline, parent, dirs, color, bar_style }
 
@@ -91,7 +91,7 @@ fn one_of(allowed str, value str) -> bool {
 /// A flag that needs a value got none. The message names the flag, because "missing
 /// argument" without it sends the reader to the manual.
 fn needs_value(flag str) -> Complaint =>
-    Complaint.of("${flag} needs a value", EXIT_CONFIG)
+    Complaint.new("${flag} needs a value", EXIT_CONFIG)
 
 /// Parse the argument vector, WITHOUT the program name.
 ///
@@ -138,7 +138,7 @@ export fn parse(argv []str) -> Result[Args, Complaint] {
             i = i + 1
             color = argv[i]
             if !one_of(COLORS, color) {
-                return Err(Complaint.of(
+                return Err(Complaint.new(
                     "--color takes auto, always or never, not '${color}'",
                     EXIT_CONFIG))
             }
@@ -147,17 +147,17 @@ export fn parse(argv []str) -> Result[Args, Complaint] {
             i = i + 1
             bar_style = argv[i]
             if !one_of(BAR_STYLES, bar_style) {
-                return Err(Complaint.of(
+                return Err(Complaint.new(
                     "--bar-style takes blocks or ascii, not '${bar_style}'",
                     EXIT_CONFIG))
             }
         } else if a.starts_with("-") {
-            return Err(Complaint.of("unknown option '${a}'", EXIT_CONFIG))
+            return Err(Complaint.new("unknown option '${a}'", EXIT_CONFIG))
         } else {
             dirs.push(a)
         }
         i = i + 1
     }
 
-    return Ok(Args.of(mode, config, offline, parent, dirs, color, bar_style))
+    return Ok(Args.new(mode, config, offline, parent, dirs, color, bar_style))
 }

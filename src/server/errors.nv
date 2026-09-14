@@ -69,7 +69,7 @@ export type FieldError value {
     message str
 }
 
-export fn FieldError.of(field str, code str, message str) -> FieldError => { field, code, message }
+export fn FieldError.new(field str, code str, message str) -> FieldError => { field, code, message }
 
 /// `urn:claude-limits:problem:method-not-allowed` from `method_not_allowed`.
 export fn type_uri(code str) -> str {
@@ -81,7 +81,7 @@ export fn type_uri(code str) -> str {
     sb.into_str()
 }
 
-fn ApiError.of(status int, code str, title str, detail str) -> ApiError =>
+fn ApiError.new(status int, code str, title str, detail str) -> ApiError =>
     { status, code, title, detail, retry_after: None, allow: "", fields: [] }
 
 // ── the table of §6, one constructor per row ─────────────────────────────────
@@ -92,37 +92,37 @@ fn ApiError.of(status int, code str, title str, detail str) -> ApiError =>
 // by code, so a new row cannot be added without one.
 
 export fn ApiError.invalid_body(detail str) -> ApiError =>
-    ApiError.of(400, "invalid_body", "Malformed body", detail)
+    ApiError.new(400, "invalid_body", "Malformed body", detail)
 export fn ApiError.invalid_parameter(detail str) -> ApiError =>
-    ApiError.of(400, "invalid_parameter", "Invalid parameter", detail)
+    ApiError.new(400, "invalid_parameter", "Invalid parameter", detail)
 export fn ApiError.range_too_large(detail str) -> ApiError =>
-    ApiError.of(400, "range_too_large", "Range too large", detail)
+    ApiError.new(400, "range_too_large", "Range too large", detail)
 export fn ApiError.unauthenticated() -> ApiError =>
-    ApiError.of(401, "unauthenticated", "Not authenticated", "")
+    ApiError.new(401, "unauthenticated", "Not authenticated", "")
 export fn ApiError.loopback_only() -> ApiError =>
-    ApiError.of(403, "loopback_only", "Local access only", "")
+    ApiError.new(403, "loopback_only", "Local access only", "")
 export fn ApiError.origin_required() -> ApiError =>
-    ApiError.of(403, "origin_required", "Origin required", "")
+    ApiError.new(403, "origin_required", "Origin required", "")
 export fn ApiError.not_found() -> ApiError =>
-    ApiError.of(404, "not_found", "Not found", "")
+    ApiError.new(404, "not_found", "Not found", "")
 export fn ApiError.account_not_found() -> ApiError =>
-    ApiError.of(404, "account_not_found", "Account not found", "")
+    ApiError.new(404, "account_not_found", "Account not found", "")
 export fn ApiError.account_stale() -> ApiError =>
-    ApiError.of(409, "account_stale", "Account changed", "")
+    ApiError.new(409, "account_stale", "Account changed", "")
 export fn ApiError.precondition_failed() -> ApiError =>
-    ApiError.of(412, "precondition_failed", "Precondition failed", "")
+    ApiError.new(412, "precondition_failed", "Precondition failed", "")
 export fn ApiError.body_too_large() -> ApiError =>
-    ApiError.of(413, "body_too_large", "Body too large", "")
+    ApiError.new(413, "body_too_large", "Body too large", "")
 export fn ApiError.unsupported_media_type() -> ApiError =>
-    ApiError.of(415, "unsupported_media_type", "Unsupported media type", "")
+    ApiError.new(415, "unsupported_media_type", "Unsupported media type", "")
 export fn ApiError.precondition_required() -> ApiError =>
-    ApiError.of(428, "precondition_required", "Precondition required", "")
+    ApiError.new(428, "precondition_required", "Precondition required", "")
 
 /// 405. The `Allow` list travels IN the refusal, not beside it: the header and the
 /// body are then written from one value, and a route that gains a method cannot
 /// end up advertising one set and rejecting another.
 export fn ApiError.method_not_allowed(allow str) -> ApiError {
-    mut e = ApiError.of(405, "method_not_allowed", "Method not allowed", "")
+    mut e = ApiError.new(405, "method_not_allowed", "Method not allowed", "")
     e.allow = allow
     e
 }
@@ -131,13 +131,13 @@ export fn ApiError.method_not_allowed(allow str) -> ApiError {
 // seconds are part of the constructor rather than something a call site may forget.
 
 export fn ApiError.too_soon(retry_after_sec int) -> ApiError {
-    mut e = ApiError.of(429, "too_soon", "Too soon", "")
+    mut e = ApiError.new(429, "too_soon", "Too soon", "")
     e.retry_after = Some(retry_after_sec)
     e
 }
 
 export fn ApiError.too_many_auth_failures(retry_after_sec int) -> ApiError {
-    mut e = ApiError.of(429, "too_many_auth_failures", "Too many failed attempts", "")
+    mut e = ApiError.new(429, "too_many_auth_failures", "Too many failed attempts", "")
     e.retry_after = Some(retry_after_sec)
     e
 }
@@ -145,14 +145,14 @@ export fn ApiError.too_many_auth_failures(retry_after_sec int) -> ApiError {
 /// 503 while the store fiber does not answer within five seconds (§4 fixes both the
 /// timeout and this number).
 export fn ApiError.store_busy() -> ApiError {
-    mut e = ApiError.of(503, "store_busy", "Store busy", "")
+    mut e = ApiError.new(503, "store_busy", "Store busy", "")
     e.retry_after = Some(5)
     e
 }
 
 /// 503 for the 33rd SSE subscriber; the thirty seconds are the T2.13 card's.
 export fn ApiError.too_many_subscribers() -> ApiError {
-    mut e = ApiError.of(503, "too_many_subscribers", "Too many subscribers", "")
+    mut e = ApiError.new(503, "too_many_subscribers", "Too many subscribers", "")
     e.retry_after = Some(30)
     e
 }
@@ -163,7 +163,7 @@ export fn ApiError.too_many_subscribers() -> ApiError {
 /// on every 503, §6 says this state lasts "первые секунды после старта", and a page
 /// that waits longer than the condition shows an empty widget for no reason.
 export fn ApiError.starting() -> ApiError {
-    mut e = ApiError.of(503, "starting", "Starting up", "")
+    mut e = ApiError.new(503, "starting", "Starting up", "")
     e.retry_after = Some(1)
     e
 }
@@ -177,12 +177,12 @@ export fn ApiError.starting() -> ApiError {
 // needs it has the `request_id` to find it by.
 
 export fn ApiError.internal() -> ApiError =>
-    ApiError.of(500, "internal", "Internal error", "")
+    ApiError.new(500, "internal", "Internal error", "")
 
 /// The settings file could not be written. The PATH — which carries the operating
 /// system user's name — goes to the log, never here.
 export fn ApiError.config_readonly() -> ApiError =>
-    ApiError.of(500, "config_readonly", "Settings file is read-only", "")
+    ApiError.new(500, "config_readonly", "Settings file is read-only", "")
 
 // ── the 422 family ───────────────────────────────────────────────────────────
 //
@@ -190,19 +190,19 @@ export fn ApiError.config_readonly() -> ApiError =>
 // refuses an empty one.
 
 export fn ApiError.invalid_config(fields []FieldError) -> ApiError {
-    mut e = ApiError.of(422, "invalid_config", "Invalid settings", "")
+    mut e = ApiError.new(422, "invalid_config", "Invalid settings", "")
     e.fields = fields
     e
 }
 
 export fn ApiError.extra_forbidden(fields []FieldError) -> ApiError {
-    mut e = ApiError.of(422, "extra_forbidden", "Unknown field", "")
+    mut e = ApiError.new(422, "extra_forbidden", "Unknown field", "")
     e.fields = fields
     e
 }
 
 export fn ApiError.invalid_request(fields []FieldError) -> ApiError {
-    mut e = ApiError.of(422, "invalid_request", "Invalid request", "")
+    mut e = ApiError.new(422, "invalid_request", "Invalid request", "")
     e.fields = fields
     e
 }

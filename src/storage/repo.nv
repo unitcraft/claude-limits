@@ -43,7 +43,7 @@ export type WindowRow value {
     ro resets_at_ms int
 }
 
-export fn WindowRow.of(kind str, model str, percent int, locked bool, locked_reason str,
+export fn WindowRow.new(kind str, model str, percent int, locked bool, locked_reason str,
                        server_severity str, starts_at_ms int, resets_at_ms int) -> WindowRow =>
     { kind, model, percent, locked, locked_reason, server_severity, starts_at_ms, resets_at_ms }
 
@@ -160,7 +160,7 @@ export type Ids value {
     ro samples []str
 }
 
-export fn Ids.of(account str, poll str, windows []str, cycles []str, samples []str) -> Ids =>
+export fn Ids.new(account str, poll str, windows []str, cycles []str, samples []str) -> Ids =>
     { account, poll, windows, cycles, samples }
 
 /// Write one tick, or write nothing at all.
@@ -241,7 +241,7 @@ export type Seen value {
     ro token_state str       // the DATABASE's vocabulary — see `db_token_state`
 }
 
-export fn Seen.of(login_dir_id str, account_id str, token_state str) -> Seen =>
+export fn Seen.new(login_dir_id str, account_id str, token_state str) -> Seen =>
     { login_dir_id, account_id, token_state }
 
 /// The row currently open for that directory, if there is one.
@@ -251,7 +251,7 @@ export type OpenRow value {
     ro token_state str
 }
 
-export fn OpenRow.of(id str, account_id str, token_state str) -> OpenRow =>
+export fn OpenRow.new(id str, account_id str, token_state str) -> OpenRow =>
     { id, account_id, token_state }
 
 /// What to do about it.

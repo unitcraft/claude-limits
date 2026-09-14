@@ -24,7 +24,7 @@ export type Event value {
     data str
 }
 
-export fn Event.of(id int, name str, data str) -> Event => { id, name, data }
+export fn Event.new(id int, name str, data str) -> Event => { id, name, data }
 
 /// A subscriber's place in the registry.
 export type Subscriber value {
@@ -113,7 +113,7 @@ export fn unsubscribe(mut reg Registry, id int) -> () {
 /// client that reconnects says where it stopped, and an id that had been handed out
 /// twice would silently skip whatever came between.
 export fn publish(mut reg Registry, name str, data str) -> Event {
-    ro ev = Event.of(reg.next_id, name, data)
+    ro ev = Event.new(reg.next_id, name, data)
     reg.next_id += 1
     reg.ring.push(ev)
     // The ring keeps the LAST hundred. A client gone longer than that cannot be
@@ -157,7 +157,7 @@ export type AccountSlot value {
     windows_count int
 }
 
-export fn AccountSlot.of(email str, state str, polled_at_ms int, windows_count int) -> AccountSlot =>
+export fn AccountSlot.new(email str, state str, polled_at_ms int, windows_count int) -> AccountSlot =>
     { email, state, polled_at_ms, windows_count }
 
 /// The snapshot the store owns.

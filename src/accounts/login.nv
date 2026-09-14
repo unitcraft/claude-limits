@@ -64,7 +64,7 @@ export fn Secret @debug(mut f Fmt) -> () {
     f.write("Secret(hidden)")
 }
 
-export fn Secret.of(secret str) -> Secret => { secret }
+export fn Secret.new(secret str) -> Secret => { secret }
 
 /// The only way out. Named so it is greppable: a review can find every place a token
 /// is unwrapped by searching for `into_secret`.
@@ -173,7 +173,7 @@ export fn raw_field_int(text str, key str) -> int {
 /// refused that cast outright — `int as char` is range-checked, `char.from(n)?`.
 export fn normalise_email(raw str) -> str => raw.trim_ascii().to_ascii_lower()
 
-export fn Login.of(dir str, name str, email str, org str, expires_at_ms int, has_token bool) -> Login =>
+export fn Login.new(dir str, name str, email str, org str, expires_at_ms int, has_token bool) -> Login =>
     { dir, name, email, org, expires_at_ms, has_token }
 
 /// Read a login directory's DESCRIPTION. No token, ever.
@@ -197,7 +197,7 @@ export fn read_login(dir str, name str, identity_path str, credentials_path str)
     ro expires = raw_field_int(creds, "expiresAt")
     ro has_token = raw_field_str(creds, "accessToken") != ""
 
-    Login.of(dir, name, email, org, expires, has_token)
+    Login.new(dir, name, email, org, expires, has_token)
 }
 
 /// The token itself, for the one caller that sends it.
@@ -208,7 +208,7 @@ export fn read_token(credentials_path str) Creds -> Option[Secret] {
     if credentials_path == "" { return None }
     ro secret = raw_field_str(Creds.read(credentials_path), "accessToken")
     if secret == "" { return None }
-    Some(Secret.of(secret))
+    Some(Secret.new(secret))
 }
 
 /// `ok` / `stale` / `no_token` at a given moment.

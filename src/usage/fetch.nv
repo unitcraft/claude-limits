@@ -47,7 +47,7 @@ export type Reply value {
     ro usage Usage
 }
 
-export fn Reply.of(outcome Outcome, usage Usage) -> Reply => { outcome, usage }
+export fn Reply.new(outcome Outcome, usage Usage) -> Reply => { outcome, usage }
 
 /// The request, serialised.
 ///
@@ -135,22 +135,22 @@ export fn retry_after_of(raw str) -> int {
 export fn fetch(host str, port int, secure bool, path str, token str) Http -> Reply {
     match Http.send(host, port, secure, request_for(host, path, token)) {
         // The request never arrived. `unknown`, and the last good reading stays.
-        Err(_) => Reply.of(transport_failed(), Usage.empty())
+        Err(_) => Reply.new(transport_failed(), Usage.empty())
         Ok(raw) => {
             ro status = status_of(raw)
             // A first line we cannot read is not an HTTP outcome at all.
-            if status == 0 { return Reply.of(transport_failed(), Usage.empty()) }
+            if status == 0 { return Reply.new(transport_failed(), Usage.empty()) }
 
             ro out = of_status(status, retry_after_of(raw))
-            if !out.body_usable { return Reply.of(out, Usage.empty()) }
+            if !out.body_usable { return Reply.new(out, Usage.empty()) }
 
             ro usage = parse(body_of(raw))
             // A 200 whose body will not parse is `error`, per 01.1 §3.2 -- see the
             // note in `outcome_test` about the fixture that says `unknown` instead.
             if usage.outcome == PollOutcome.BadJson {
-                return Reply.of(bad_body(), usage)
+                return Reply.new(bad_body(), usage)
             }
-            Reply.of(out, usage)
+            Reply.new(out, usage)
         }
     }
 }

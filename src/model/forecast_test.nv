@@ -86,7 +86,7 @@ test "the session window is clock-based, and says so" {
 // ── the schedule itself ──────────────────────────────────────────────────────
 
 fn mon_fri_9_19() -> Schedule =>
-    Schedule.of([true, true, true, true, true, false, false], 9 * 60, 19 * 60, 0)
+    Schedule.new([true, true, true, true, true, false, false], 9 * 60, 19 * 60, 0)
 
 test "a working day contributes its hours and nothing else" {
     // Monday 00:00 to Tuesday 00:00: ten working hours.
@@ -99,7 +99,7 @@ test "a weekend contributes nothing at off_hours_rate zero" {
 }
 
 test "off_hours_rate weights the minutes outside the schedule" {
-    ro half = Schedule.of([true, true, true, true, true, false, false], 9 * 60, 19 * 60, 50)
+    ro half = Schedule.new([true, true, true, true, true, false, false], 9 * 60, 19 * 60, 50)
     // A whole Saturday at half weight: 1440 minutes counted as 720.
     assert(effective_minutes(half, 5 * 1440, 6 * 1440) == 720)
 }

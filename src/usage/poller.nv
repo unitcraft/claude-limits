@@ -56,7 +56,7 @@ export type Account value {
     ro token str
 }
 
-export fn Account.of(email str, host str, port int, secure bool, path str,
+export fn Account.new(email str, host str, port int, secure bool, path str,
                      token str) -> Account =>
     { email, host, port, secure, path, token }
 

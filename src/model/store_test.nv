@@ -11,7 +11,7 @@ module model.store_test
 
 import store.{Registry, Event, Snapshot, AccountSlot, subscribe, unsubscribe, publish, since, missed, merge}
 
-fn slot(email str, state str, at int) -> AccountSlot => AccountSlot.of(email, state, at, 3)
+fn slot(email str, state str, at int) -> AccountSlot => AccountSlot.new(email, state, at, 3)
 
 // ── subscribers ──────────────────────────────────────────────────────────────
 

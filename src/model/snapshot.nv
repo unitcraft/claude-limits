@@ -53,7 +53,7 @@ export type Thresholds value {
     critical int
 }
 
-export fn Thresholds.of(warning int, critical int) -> Thresholds => { warning, critical }
+export fn Thresholds.new(warning int, critical int) -> Thresholds => { warning, critical }
 
 /// Severity of one window under those thresholds.
 ///

@@ -55,7 +55,7 @@ export type Sources value {
     exporter ExportSource
 }
 
-export fn Sources.of(health HealthSource, snapshot SnapshotSource, refresh RefreshSource,
+export fn Sources.new(health HealthSource, snapshot SnapshotSource, refresh RefreshSource,
                      events EventsSource, config ConfigSource, probe ProbeSource,
                      token TokenSource, exporter ExportSource) -> Sources =>
     { health, snapshot, refresh, events, config, probe, token, exporter }

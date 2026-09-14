@@ -29,7 +29,7 @@ export type Schedule value {
     off_hours_rate int  // 0..100, the weight of a minute outside the schedule
 }
 
-export fn Schedule.of(days []bool, from_min int, to_min int, off_hours_rate int) -> Schedule =>
+export fn Schedule.new(days []bool, from_min int, to_min int, off_hours_rate int) -> Schedule =>
     { days, from_min, to_min, off_hours_rate }
 
 /// Round the clock, every day: the shape the acceptance uses for its second vector.

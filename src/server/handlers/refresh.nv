@@ -79,7 +79,7 @@ fn read_object(obj JsonObject) -> Ask {
                     // Every offending field in ONE response: a panel that shows one
                     // fault at a time makes a person save four times to learn four
                     // things.
-                    extra.push(FieldError.of(k, "unknown_field", "unknown field '${k}'"))
+                    extra.push(FieldError.new(k, "unknown_field", "unknown field '${k}'"))
                 } else {
                     match v.str() {
                         Some(s) => { wanted = s }
@@ -91,7 +91,7 @@ fn read_object(obj JsonObject) -> Ask {
     }
     if extra.len() > 0 { return Ask.Bad(ApiError.extra_forbidden(extra)) }
     if wrong_type {
-        return Ask.Bad(ApiError.invalid_request([FieldError.of(ONLY_FIELD, "not_a_string", "account_id must be a string")]))
+        return Ask.Bad(ApiError.invalid_request([FieldError.new(ONLY_FIELD, "not_a_string", "account_id must be a string")]))
     }
     if wanted == "" { return Ask.All }
     Ask.One(wanted)

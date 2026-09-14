@@ -25,9 +25,9 @@ type Flags value { ro items []bool }
 
 // Constructors, because an anonymous record literal is refused by codegen -- the same
 // reason `discover.nv` gives for `LoginDir.of` and `Folder.of`.
-fn Ids.of(items []int) -> Ids => { items }
-fn Evts.of(items []Event) -> Evts => { items }
-fn Flags.of(items []bool) -> Flags => { items }
+fn Ids.new(items []int) -> Ids => { items }
+fn Evts.new(items []Event) -> Evts => { items }
+fn Flags.new(items []bool) -> Flags => { items }
 
 // Runs the store in its own fiber, hands `body` its address, then closes the channel so
 // the loop ends and the supervised scope can finish.
@@ -50,7 +50,7 @@ fn with_store[T](start Snapshot, body fn(Store) -> T) -> T {
     // see. Same discipline as the store itself.
     supervised {
         spawn {
-            ro got = body(Store.of(pair.tx))
+            ro got = body(Store.new(pair.tx))
             ro _ = back.tx.send(got)
             // Closing ends the loop, which lets the supervised scope finish. Without it
             // `run` waits in `recv` forever -- a hang, not a failure.
@@ -78,8 +78,8 @@ test "request/reply answers: an empty store gives an empty snapshot" {
 
 test "a merge is visible to the next reader, and only one row per account" {
     ro snap = with_store(Snapshot.empty(), fn(s Store) -> Snapshot {
-        s.merge(AccountSlot.of("a@b.c", "ok", 1000, 3))
-        s.merge(AccountSlot.of("a@b.c", "ok", 2000, 4))
+        s.merge(AccountSlot.new("a@b.c", "ok", 1000, 3))
+        s.merge(AccountSlot.new("a@b.c", "ok", 2000, 4))
         s.snapshot()
     })
     // Two readings of ONE account are one row -- appending would grow the page by a
@@ -94,7 +94,7 @@ test "a restored snapshot arrives restored, and its accounts survive the replay"
     // is NOT marked restored") is the test above, and both are needed: a `restored`
     // that is always true would pass one and fail the other.
     mut start = Snapshot.empty()
-    start.accounts.push(AccountSlot.of("kept@example.com", "ok", 500, 2))
+    start.accounts.push(AccountSlot.new("kept@example.com", "ok", 500, 2))
     start.fetched_at_ms = 500
     start.restored = true
 
@@ -115,7 +115,7 @@ test "subscribers get monotonic ids from the fiber, and the 33rd is refused" {
             got.push(s.subscribe())
             i = i + 1
         }
-        Ids.of(got)
+        Ids.new(got)
     })
     ro ids = box.items
     assert(ids.len() == 33)
@@ -137,7 +137,7 @@ test "publish assigns an id and `since` returns what came after it" {
         assert(first.is_some())
         ro _ = s.publish("snapshot", "{\"n\":2}")
         ro _ = s.publish("snapshot", "{\"n\":3}")
-        Evts.of(s.since(first!!.id))
+        Evts.new(s.since(first!!.id))
     })
     ro evts = box.items
     // Everything AFTER the first, not including it.
@@ -155,7 +155,7 @@ test "a cursor that has fallen off the ring is reported as missed" {
         out.push(s.missed(e!!.id))
         // ...and one from before the ring began has.
         out.push(s.missed(0 - 500))
-        Flags.of(out)
+        Flags.new(out)
     })
     ro answers = box.items
     assert(!answers[0])

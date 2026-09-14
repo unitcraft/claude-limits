@@ -15,7 +15,7 @@ module accounts.group
 // and every test of it was green.
 import claude_limits.accounts.login.{Login, GroupedAccount, TokenState, state_of}
 
-fn GroupedAccount.of(email str, org str, dirs []str, state TokenState, expires_at_ms int) -> GroupedAccount =>
+fn GroupedAccount.new(email str, org str, dirs []str, state TokenState, expires_at_ms int) -> GroupedAccount =>
     { email, org, dirs, state, expires_at_ms }
 
 fn index_of(accounts []GroupedAccount, email str) -> int {
@@ -58,7 +58,7 @@ export fn group(logins []Login, now_ms int) -> []GroupedAccount {
         ro st = state_of(l, now_ms)
         ro at = index_of(out, l.email)
         if at < 0 {
-            out.push(GroupedAccount.of(l.email, l.org, [l.name], st, l.expires_at_ms))
+            out.push(GroupedAccount.new(l.email, l.org, [l.name], st, l.expires_at_ms))
             continue
         }
 

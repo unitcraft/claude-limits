@@ -33,5 +33,5 @@ export type Window value {
     locked_reason str   // "" when not locked
 }
 
-export fn Window.of(kind str, model str, percent int, resets_at_ms int, locked_reason str) -> Window =>
+export fn Window.new(kind str, model str, percent int, resets_at_ms int, locked_reason str) -> Window =>
     { kind, model, percent, resets_at_ms, locked_reason }

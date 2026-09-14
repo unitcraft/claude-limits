@@ -59,7 +59,7 @@ export type Ask enum
 export fn parse_ask(raw str) -> Ask {
     ro text = raw.trim_ascii()
     if text == "" {
-        return Ask.Bad(ApiError.invalid_request([FieldError.of(ONLY_FIELD, "required", "a path is required")]))
+        return Ask.Bad(ApiError.invalid_request([FieldError.new(ONLY_FIELD, "required", "a path is required")]))
     }
     match Json.parse(text) {
         Err(_) => Ask.Bad(ApiError.invalid_body("body is not JSON"))
@@ -75,7 +75,7 @@ export fn parse_ask(raw str) -> Ask {
                         None => break
                         Some((k, val)) => {
                             if k != ONLY_FIELD {
-                                extra.push(FieldError.of(k, "unknown_field", "unknown field '${k}'"))
+                                extra.push(FieldError.new(k, "unknown_field", "unknown field '${k}'"))
                             } else {
                                 match val.str() {
                                     Some(s) => { path = s }
@@ -87,10 +87,10 @@ export fn parse_ask(raw str) -> Ask {
                 }
                 if extra.len() > 0 { return Ask.Bad(ApiError.extra_forbidden(extra)) }
                 if wrong {
-                    return Ask.Bad(ApiError.invalid_request([FieldError.of(ONLY_FIELD, "not_a_string", "path must be a string")]))
+                    return Ask.Bad(ApiError.invalid_request([FieldError.new(ONLY_FIELD, "not_a_string", "path must be a string")]))
                 }
                 if path.trim_ascii() == "" {
-                    return Ask.Bad(ApiError.invalid_request([FieldError.of(ONLY_FIELD, "required", "a path is required")]))
+                    return Ask.Bad(ApiError.invalid_request([FieldError.new(ONLY_FIELD, "required", "a path is required")]))
                 }
                 Ask.Path(path)
             }

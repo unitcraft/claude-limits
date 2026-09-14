@@ -28,20 +28,20 @@ fn at(iso str) -> Timestamp =>
 // Saturday 2026-09-05 19:47 UTC — the moment the artboards are drawn at.
 fn now() -> Timestamp => at("2026-09-05T19:47:00Z")
 
-fn win(kind str, percent int) -> Window => Window.of(kind, "", percent, 0, "")
+fn win(kind str, percent int) -> Window => Window.new(kind, "", percent, 0, "")
 
 // ── severity follows OUR thresholds ──────────────────────────────────────────
 
 test "the acceptance case: with warning = 50, 61 percent is warning" {
-    ro th = Thresholds.of(50, 90)
+    ro th = Thresholds.new(50, 90)
     assert(severity_of(win("session", 61), th).to_str() == "warning")
     // ... and under the default thresholds the same 61 % is normal. The number did
     // not change; the person's setting did.
-    assert(severity_of(win("session", 61), Thresholds.of(70, 90)).to_str() == "normal")
+    assert(severity_of(win("session", 61), Thresholds.new(70, 90)).to_str() == "normal")
 }
 
 test "the boundary is inclusive at both ends" {
-    ro th = Thresholds.of(70, 90)
+    ro th = Thresholds.new(70, 90)
     assert(severity_of(win("session", 69), th).to_str() == "normal")
     assert(severity_of(win("session", 70), th).to_str() == "warning")
     assert(severity_of(win("session", 89), th).to_str() == "warning")
@@ -49,8 +49,8 @@ test "the boundary is inclusive at both ends" {
 }
 
 test "a locked window is critical at ANY percent" {
-    ro th = Thresholds.of(70, 90)
-    ro w = Window.of("session", "", 40, 0, "session_limit")
+    ro th = Thresholds.new(70, 90)
+    ro w = Window.new("session", "", 40, 0, "session_limit")
     // Colouring it green because 40 is a small number hides the only thing that
     // matters about this account.
     assert(severity_of(w, th).to_str() == "critical")
@@ -58,7 +58,7 @@ test "a locked window is critical at ANY percent" {
 
 test "at_100 and locked are different questions" {
     ro full = win("session", 100)
-    ro lock = Window.of("weekly_all", "", 40, 0, "server")
+    ro lock = Window.new("weekly_all", "", 40, 0, "server")
     assert(at_100([full]))
     assert(!locked([full]))
     assert(!at_100([lock]))
@@ -66,7 +66,7 @@ test "at_100 and locked are different questions" {
 }
 
 test "worst takes the worst window, not the first or the last" {
-    ro th = Thresholds.of(70, 90)
+    ro th = Thresholds.new(70, 90)
     assert(worst([win("session", 5), win("weekly_all", 95), win("weekly_scoped", 10)], th).to_str() == "critical")
     assert(worst([win("session", 5), win("weekly_all", 75)], th).to_str() == "warning")
     assert(worst([win("session", 5)], th).to_str() == "normal")

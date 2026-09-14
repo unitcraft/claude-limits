@@ -93,8 +93,8 @@ test "the forecast line sits under the reset line, same width" {
 // ── what the toggles remove (01.1 §5.2, §5.3) ────────────────────────────────
 
 test "with the time strip off the strip is not drawn and the row is shorter" {
-    ro on = Metrics.of(WIDE, 100, true, true)
-    ro off = Metrics.of(WIDE, 100, false, true)
+    ro on = Metrics.new(WIDE, 100, true, true)
+    ro off = Metrics.new(WIDE, 100, false, true)
     ro a = layout(on, [3]).accounts[0].rows[0]
     ro b = layout(off, [3]).accounts[0].rows[0]
     assert(a.time.is_drawn())
@@ -103,17 +103,17 @@ test "with the time strip off the strip is not drawn and the row is shorter" {
 }
 
 test "with the forecast off there is no second reset line" {
-    ro off = Metrics.of(WIDE, 100, true, false)
+    ro off = Metrics.new(WIDE, 100, true, false)
     ro r = layout(off, [3]).accounts[0].rows[0]
     assert(!r.forecast.is_drawn())
     assert(r.reset.is_drawn())
 }
 
 test "a row with neither strip is the bare line height" {
-    ro bare = Metrics.of(WIDE, 100, false, false)
+    ro bare = Metrics.new(WIDE, 100, false, false)
     assert(row_height(bare) == LINE_H)
     // With both, the tallest stack wins and it is the reset column's two lines.
-    ro full = Metrics.of(WIDE, 100, true, true)
+    ro full = Metrics.new(WIDE, 100, true, true)
     assert(row_height(full) == RESET_LINE1_H + RESET_LINE2_H)
 }
 
@@ -305,13 +305,13 @@ test "narrow rows still stack without overlapping" {
 
 test "an empty rect is not drawn and a real one is" {
     assert(!Rect.none().is_drawn())
-    assert(Rect.of(0, 0, 10, 0).is_drawn() == false)
-    assert(Rect.of(0, 0, 0, 10).is_drawn() == false)
-    assert(Rect.of(1, 2, 3, 4).is_drawn())
+    assert(Rect.new(0, 0, 10, 0).is_drawn() == false)
+    assert(Rect.new(0, 0, 0, 10).is_drawn() == false)
+    assert(Rect.new(1, 2, 3, 4).is_drawn())
 }
 
 test "right and bottom are the far edges" {
-    ro r = Rect.of(10, 20, 30, 40)
+    ro r = Rect.new(10, 20, 30, 40)
     assert(r.right() == 40)
     assert(r.bottom() == 60)
 }

@@ -33,7 +33,7 @@ const MINE = "0192f0a1-7c3d-7000-8000-aaaaaaaaaaaa"
 
 // ── the pure rules ───────────────────────────────────────────────────────────
 
-fn m(v int) -> Migration => Migration.of(v, "-- ${v}")
+fn m(v int) -> Migration => Migration.new(v, "-- ${v}")
 
 test "pending returns what is newer than what we have, in order" {
     ro all = [m(3), m(1), m(2)]

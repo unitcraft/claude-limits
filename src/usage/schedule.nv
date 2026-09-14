@@ -37,7 +37,7 @@ export type Interval value {
 /// Raise anything below the floor to the floor. A zero or a negative -- a missing
 /// setting, a typo -- lands on the floor too, rather than meaning "as fast as
 /// possible", which is the reading that costs a 429.
-export fn Interval.of(configured_sec int) -> Interval {
+export fn Interval.new(configured_sec int) -> Interval {
     if configured_sec < POLL_FLOOR_SEC { return { seconds: POLL_FLOOR_SEC } }
     return { seconds: configured_sec }
 }

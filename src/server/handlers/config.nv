@@ -192,10 +192,10 @@ export fn render_state(st ConfigState) -> str {
 
 const CODE_UNKNOWN = "unknown_field"
 
-fn unknown(path str) -> FieldError => FieldError.of(path, CODE_UNKNOWN, "unknown setting '${path}'")
+fn unknown(path str) -> FieldError => FieldError.new(path, CODE_UNKNOWN, "unknown setting '${path}'")
 
 fn wrong_type(path str, want str) -> FieldError =>
-    FieldError.of(path, "wrong_type", "'${path}' must be ${want}")
+    FieldError.new(path, "wrong_type", "'${path}' must be ${want}")
 
 /// The envelope for a list of field errors, chosen by their CAUSES.
 ///
@@ -499,7 +499,7 @@ fn merge_folders(mut c Config, v JsonValue, mut errs []FieldError) -> () {
                             }
                             None => {
                                 if o.contains("id") {
-                                    errs.push(FieldError.of("folders[${i}].id", "not_supported", "a folder by id needs the database, which is not built yet -- name it by path"))
+                                    errs.push(FieldError.new("folders[${i}].id", "not_supported", "a folder by id needs the database, which is not built yet -- name it by path"))
                                 } else {
                                     errs.push(wrong_type("folders[${i}]", "an object with 'path' or 'id'"))
                                 }
@@ -572,7 +572,7 @@ export fn apply(current Config, body JsonObject) -> Merge {
 /// Validation errors as `errors[]` entries.
 export fn as_field_errors(errs []ConfigError) -> []FieldError {
     mut out = []FieldError.new()
-    for e in errs { out.push(FieldError.of(e.field, e.code, e.message)) }
+    for e in errs { out.push(FieldError.new(e.field, e.code, e.message)) }
     out
 }
 

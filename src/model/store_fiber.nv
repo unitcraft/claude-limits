@@ -68,7 +68,7 @@ export type Envelope value {
     ro req Request
 }
 
-export fn Envelope.of(req Request) -> Envelope => { req }
+export fn Envelope.new(req Request) -> Envelope => { req }
 
 /// A list of events, boxed for the same reason as `Envelope`: a channel cannot carry a
 /// VECTOR either. The axis turned out to be pointer representation, not sums -- vectors
@@ -78,14 +78,14 @@ export type Events value {
     ro items []Event
 }
 
-export fn Events.of(items []Event) -> Events => { items }
+export fn Events.new(items []Event) -> Events => { items }
 
 /// The address of a running store. Cheap to copy; every holder talks to one fiber.
 export type Store value {
     ro tx ChanTx[Envelope]
 }
 
-export fn Store.of(tx ChanTx[Envelope]) -> Store => { tx }
+export fn Store.new(tx ChanTx[Envelope]) -> Store => { tx }
 
 /// The loop. Runs until the request channel closes.
 ///
@@ -128,7 +128,7 @@ export fn run(rx ChanRx[Envelope], start Snapshot) -> () {
                     Request.Publish(name, data, reply) => {
                         ro _ = reply.send(publish(reg, name, data))
                     }
-                    Request.Since(after, reply) => { ro _ = reply.send(Events.of(since(reg, after))) }
+                    Request.Since(after, reply) => { ro _ = reply.send(Events.new(since(reg, after))) }
                     Request.Missed(after, reply) => { ro _ = reply.send(missed(reg, after)) }
                 }
             }
@@ -144,7 +144,7 @@ export fn run(rx ChanRx[Envelope], start Snapshot) -> () {
 /// The snapshot as it stands.
 export fn Store @snapshot() -> Snapshot {
     ro pair = Chan[Snapshot].new(1)
-    ro _ = @tx.send(Envelope.of(Request.GetSnapshot(pair.tx)))
+    ro _ = @tx.send(Envelope.new(Request.GetSnapshot(pair.tx)))
     match pair.rx.recv() {
         Some(s) => s
         // The fiber is gone. An empty snapshot is the honest answer: we know nothing,
@@ -156,13 +156,13 @@ export fn Store @snapshot() -> Snapshot {
 
 /// Fold one account's reading in. Returns nothing and waits for nothing.
 export fn Store @merge(slot AccountSlot) -> () {
-    ro _ = @tx.send(Envelope.of(Request.Merge(slot)))
+    ro _ = @tx.send(Envelope.new(Request.Merge(slot)))
 }
 
 /// Register a subscriber, and get its id.
 export fn Store @subscribe() -> int {
     ro pair = Chan[int].new(1)
-    ro _ = @tx.send(Envelope.of(Request.Subscribe(pair.tx)))
+    ro _ = @tx.send(Envelope.new(Request.Subscribe(pair.tx)))
     match pair.rx.recv() {
         Some(id) => id
         // ZERO, AND IT IS DISTINCT FROM -1 ON PURPOSE. `subscribe` answers -1 when the
@@ -174,20 +174,20 @@ export fn Store @subscribe() -> int {
 }
 
 export fn Store @unsubscribe(id int) -> () {
-    ro _ = @tx.send(Envelope.of(Request.Unsubscribe(id)))
+    ro _ = @tx.send(Envelope.new(Request.Unsubscribe(id)))
 }
 
 /// Publish, and get the event with its assigned id.
 export fn Store @publish(name str, data str) -> Option[Event] {
     ro pair = Chan[Event].new(1)
-    ro _ = @tx.send(Envelope.of(Request.Publish(name, data, pair.tx)))
+    ro _ = @tx.send(Envelope.new(Request.Publish(name, data, pair.tx)))
     pair.rx.recv()
 }
 
 /// Everything after `id`.
 export fn Store @since(after int) -> []Event {
     ro pair = Chan[Events].new(1)
-    ro _ = @tx.send(Envelope.of(Request.Since(after, pair.tx)))
+    ro _ = @tx.send(Envelope.new(Request.Since(after, pair.tx)))
     match pair.rx.recv() {
         Some(box) => box.items
         None => []
@@ -197,7 +197,7 @@ export fn Store @since(after int) -> []Event {
 /// Has `after` fallen off the ring?
 export fn Store @missed(after int) -> bool {
     ro pair = Chan[bool].new(1)
-    ro _ = @tx.send(Envelope.of(Request.Missed(after, pair.tx)))
+    ro _ = @tx.send(Envelope.new(Request.Missed(after, pair.tx)))
     match pair.rx.recv() {
         Some(v) => v
         // Unknown. `true` and not `false`: a caller that cannot reach the store should
