@@ -15,9 +15,13 @@
 # nova-http v0.1.3, nova-polaris v0.1.7, nova-tls v0.1.8 — recorded for provenance
 # only; `nova.lock.toml` is what actually fixes the build.
 #
-# `duckdb` (plan 01.4) and `sdl` (plan 01 Ф.3) are NOT here yet: those packages do
-# not exist, and a manifest naming a missing dependency breaks every build. They
-# arrive with the tasks that create them.
+# `duckdb` (plan 01.4) ARRIVED 2026-09-14: `nova-duckdb v0.1.0` is tagged on all three
+# mirrors (tag object c10268eb -> commit 6e328d8), and a package is pulled BY TAG, so
+# until tonight naming it here would have broken every build. It is below.
+#
+# `sdl` (plan 01 Ф.3) stays absent, and now for a stronger reason than "the package
+# does not exist": the owner took the widget out of the MVP (plan 01, decision 13).
+# The package exists with its spike verdict; nothing in the first release pulls it.
 
 [lib]
 src = "src"
@@ -53,3 +57,7 @@ path = "src/claude_limits.nv"
 http = { git = "https://github.com/nv-lang/nova-http", version = "0.1" }
 polaris = { git = "https://github.com/nv-lang/nova-polaris", version = "0.1" }
 tls = { git = "https://github.com/nv-lang/nova-tls", version = "0.1" }
+# Storage (plan 01.4, tasks T2.2-T2.7). Pulled by version, which means BY TAG: the
+# resolver takes the newest matching tag, so a fix sitting on the package's `main` is
+# invisible here until it is tagged.
+duckdb = { git = "https://github.com/nv-lang/nova-duckdb", version = "0.1" }

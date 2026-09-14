@@ -39,3 +39,8 @@ docs/design/**/claude-limits-browser-page.html
 # command assumes this directory is already ignored -- it was not, so the first handoff
 # ever written showed up as untracked dirt in the tree it was meant to leave clean.
 docs/.sessions/
+
+# D420 local development override: names a machine-specific path, so it is
+# never committed. Here it points `duckdb` at the sibling working copy, whose
+# `native/lib` is built; the tag itself carries source only.
+nova.override.toml
