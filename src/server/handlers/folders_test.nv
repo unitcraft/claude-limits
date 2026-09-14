@@ -18,7 +18,7 @@ import folders.{KnownLogin, ProbeState, Ask, parse_ask, probe_handler}
 fn wire_str(wire []u8) -> str => unsafe { wire.to_str_unchecked() }
 
 fn post(body str) -> []u8 =>
-    "POST /api/folders/probe HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: ${body.byte_len()}\r\n\r\n${body}".bytes()
+    "POST /api/folders/probe HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: ${body.byte_len()}\r\n\r\n${body}"
 
 fn status_of(s str) -> str {
     match s.find("\r\n") { Some(i) => s[..i], None => s }

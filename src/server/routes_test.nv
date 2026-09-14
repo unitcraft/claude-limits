@@ -21,13 +21,13 @@ import routes.{Ctx, HttpMethod, on, route, route_q, build, allow_header, API_VER
 
 fn wire_str(wire []u8) -> str => unsafe { wire.to_str_unchecked() }
 
-fn req(method str, path str) -> []u8 => "${method} ${path} HTTP/1.1\r\nHost: x\r\n\r\n".bytes()
+fn req(method str, path str) -> []u8 => "${method} ${path} HTTP/1.1\r\nHost: x\r\n\r\n"
 
 fn req_h(method str, path str, hname str, hval str) -> []u8 =>
-    "${method} ${path} HTTP/1.1\r\nHost: x\r\n${hname}: ${hval}\r\n\r\n".bytes()
+    "${method} ${path} HTTP/1.1\r\nHost: x\r\n${hname}: ${hval}\r\n\r\n"
 
 fn req_body(method str, path str, ctype str, body str) -> []u8 =>
-    "${method} ${path} HTTP/1.1\r\nHost: x\r\nContent-Type: ${ctype}\r\nContent-Length: ${body.byte_len()}\r\n\r\n${body}".bytes()
+    "${method} ${path} HTTP/1.1\r\nHost: x\r\nContent-Type: ${ctype}\r\nContent-Length: ${body.byte_len()}\r\n\r\n${body}"
 
 fn status_of(wire []u8) -> str {
     ro s = wire_str(wire)
@@ -78,7 +78,7 @@ fn has_header(wire []u8, name str) -> bool {
 // handler, so a handler that answers `{}` is the right handler here.
 
 fn ok_json(ctx Ctx) -> ServerResponse =>
-    ServerResponse.bytes(200, "application/json; charset=utf-8", "{}".bytes())
+    ServerResponse.bytes(200, "application/json; charset=utf-8", "{}")
 
 fn app() -> Router {
     build([
@@ -94,7 +94,7 @@ fn serve(raw []u8) Time Random -> []u8 => serve_once(app(), raw)
 fn big_body(n int) -> str {
     consume sb = StringBuilder.new()
     sb.append_repeat("x", n)
-    sb.into_str()
+    sb
 }
 
 // ── the closed list of query parameters ──────────────────────────────────────

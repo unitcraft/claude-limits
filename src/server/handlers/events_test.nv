@@ -21,10 +21,10 @@ import events.{EventsState, Opening, frame, frames, last_seen, opening, opening_
 
 fn wire_str(wire []u8) -> str => unsafe { wire.to_str_unchecked() }
 
-fn req() -> []u8 => "GET /api/events HTTP/1.1\r\nHost: x\r\n\r\n".bytes()
+fn req() -> []u8 => "GET /api/events HTTP/1.1\r\nHost: x\r\n\r\n"
 
 fn req_last(id str) -> []u8 =>
-    "GET /api/events HTTP/1.1\r\nHost: x\r\nLast-Event-ID: ${id}\r\n\r\n".bytes()
+    "GET /api/events HTTP/1.1\r\nHost: x\r\nLast-Event-ID: ${id}\r\n\r\n"
 
 fn status_of(wire []u8) -> str {
     ro s = wire_str(wire)

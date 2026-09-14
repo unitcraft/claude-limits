@@ -20,10 +20,10 @@ import claude_limits.server.etag.{etag_of}
 
 fn wire_str(wire []u8) -> str => unsafe { wire.to_str_unchecked() }
 
-fn req(method str, target str) -> []u8 => "${method} ${target} HTTP/1.1\r\nHost: x\r\n\r\n".bytes()
+fn req(method str, target str) -> []u8 => "${method} ${target} HTTP/1.1\r\nHost: x\r\n\r\n"
 
 fn req_h(method str, target str, hname str, hval str) -> []u8 =>
-    "${method} ${target} HTTP/1.1\r\nHost: x\r\n${hname}: ${hval}\r\n\r\n".bytes()
+    "${method} ${target} HTTP/1.1\r\nHost: x\r\n${hname}: ${hval}\r\n\r\n"
 
 fn status_of(wire []u8) -> str {
     ro s = wire_str(wire)

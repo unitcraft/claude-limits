@@ -30,7 +30,7 @@ export fn etag_of(parts []str) -> str {
     mut st = Fnv64.new()
     for p in parts {
         st.update(p.bytes())
-        st.update("/".bytes())
+        st.update("/")
     }
     ro h = st.finalize()
     ro digits = "0123456789abcdef"
@@ -43,5 +43,5 @@ export fn etag_of(parts []str) -> str {
         shift -= 4
     }
     sb.append("\"")
-    sb.into_str()
+    sb
 }

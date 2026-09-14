@@ -39,7 +39,7 @@ fn hex4(cp int) -> str {
         sb.append(digits[nib..nib + 1])
         shift -= 4
     }
-    sb.into_str()
+    sb
 }
 
 /// Escape a string for the inside of a JSON string literal (RFC 8259 §7).
@@ -72,7 +72,7 @@ export fn escape(s str) -> str {
             sb.append(c)
         }
     }
-    sb.into_str()
+    sb
 }
 
 /// A quoted, escaped JSON string.
@@ -129,7 +129,7 @@ export fn object(fields []str) -> str {
         first = false
     }
     sb.append("}")
-    sb.into_str()
+    sb
 }
 
 /// `"name":0.79` from 79. Two digits after the point, always both.
@@ -182,7 +182,7 @@ fn decimal(n int, digits int) -> str {
         pad = pad / 10
     }
     sb.append(frac)
-    sb.into_str()
+    sb
 }
 
 /// `[a,b,c]` from already-serialised items. An empty list gives `[]`, which is
@@ -197,7 +197,7 @@ export fn array(items []str) -> str {
         first = false
     }
     sb.append("]")
-    sb.into_str()
+    sb
 }
 
 /// `["a","b"]` from plain strings — the common case of `array` over `quote`.

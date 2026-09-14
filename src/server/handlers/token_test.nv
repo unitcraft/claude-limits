@@ -16,9 +16,9 @@ fn wire_str(wire []u8) -> str => unsafe { wire.to_str_unchecked() }
 
 fn post(if_match str, body str) -> []u8 {
     if if_match == "" {
-        return "POST /api/config/token HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: ${body.byte_len()}\r\n\r\n${body}".bytes()
+        return "POST /api/config/token HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: ${body.byte_len()}\r\n\r\n${body}"
     }
-    "POST /api/config/token HTTP/1.1\r\nHost: x\r\nIf-Match: ${if_match}\r\nContent-Type: application/json\r\nContent-Length: ${body.byte_len()}\r\n\r\n${body}".bytes()
+    "POST /api/config/token HTTP/1.1\r\nHost: x\r\nIf-Match: ${if_match}\r\nContent-Type: application/json\r\nContent-Length: ${body.byte_len()}\r\n\r\n${body}"
 }
 
 fn status_of(s str) -> str {

@@ -17,7 +17,7 @@ import claude_limits.server.routes.{Ctx}
 
 fn wire_str(wire []u8) -> str => unsafe { wire.to_str_unchecked() }
 
-fn get(path str) -> []u8 => "GET ${path} HTTP/1.1\r\nHost: x\r\n\r\n".bytes()
+fn get(path str) -> []u8 => "GET ${path} HTTP/1.1\r\nHost: x\r\n\r\n"
 
 fn status_of(s str) -> str {
     match s.find("\r\n") { Some(i) => s[..i], None => s }
@@ -47,7 +47,7 @@ fn has_header(s str, name str) -> bool =>
     "\r\n${head_of(s)}".to_ascii_lower().contains("\r\n${name.to_ascii_lower()}:")
 
 fn ok_json(ctx Ctx) -> ServerResponse =>
-    ServerResponse.bytes(200, "application/json; charset=utf-8", "{}".bytes())
+    ServerResponse.bytes(200, "application/json; charset=utf-8", "{}")
 
 fn app() -> Router {
     mut r = build([route("/api/snapshot", [on(HttpMethod.Get, ok_json)])])!!

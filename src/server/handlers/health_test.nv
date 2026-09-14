@@ -15,7 +15,7 @@ import health.{HealthState, render_health, health_handler}
 
 fn wire_str(wire []u8) -> str => unsafe { wire.to_str_unchecked() }
 
-fn req() -> []u8 => "GET /api/health HTTP/1.1\r\nHost: x\r\n\r\n".bytes()
+fn req() -> []u8 => "GET /api/health HTTP/1.1\r\nHost: x\r\n\r\n"
 
 fn status_of(wire []u8) -> str {
     ro s = wire_str(wire)

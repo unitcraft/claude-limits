@@ -56,14 +56,14 @@ export fn frame(e Event) -> str {
         sb.append("\n")
     }
     sb.append("\n")
-    sb.into_str()
+    sb
 }
 
 /// Every event of a burst, in order.
 export fn frames(events []Event) -> str {
     consume sb = StringBuilder.new()
     for e in events { sb.append(frame(e)) }
-    sb.into_str()
+    sb
 }
 
 // ── what a connecting client gets ────────────────────────────────────────────

@@ -15,15 +15,15 @@ import config.{ConfigState, FolderView, LoginDirView, AccountFound, apply, tag_o
 fn wire_str(wire []u8) -> str => unsafe { wire.to_str_unchecked() }
 
 fn get_req(hname str, hval str) -> []u8 {
-    if hname == "" { return "GET /api/config HTTP/1.1\r\nHost: x\r\n\r\n".bytes() }
-    "GET /api/config HTTP/1.1\r\nHost: x\r\n${hname}: ${hval}\r\n\r\n".bytes()
+    if hname == "" { return "GET /api/config HTTP/1.1\r\nHost: x\r\n\r\n" }
+    "GET /api/config HTTP/1.1\r\nHost: x\r\n${hname}: ${hval}\r\n\r\n"
 }
 
 fn put_req(if_match str, body str) -> []u8 {
     if if_match == "" {
-        return "PUT /api/config HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: ${body.byte_len()}\r\n\r\n${body}".bytes()
+        return "PUT /api/config HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: ${body.byte_len()}\r\n\r\n${body}"
     }
-    "PUT /api/config HTTP/1.1\r\nHost: x\r\nIf-Match: ${if_match}\r\nContent-Type: application/json\r\nContent-Length: ${body.byte_len()}\r\n\r\n${body}".bytes()
+    "PUT /api/config HTTP/1.1\r\nHost: x\r\nIf-Match: ${if_match}\r\nContent-Type: application/json\r\nContent-Length: ${body.byte_len()}\r\n\r\n${body}"
 }
 
 fn status_of(wire []u8) -> str {

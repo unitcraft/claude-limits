@@ -94,7 +94,7 @@ export fn csv_field(v str) -> str {
         if c == '"' { sb.append("\"\"") } else { sb.append(c) }
     }
     sb.append("\"")
-    sb.into_str()
+    sb
 }
 
 fn bool_str(b bool) -> str => if b { "true" } else { "false" }
@@ -123,7 +123,7 @@ export fn to_csv(rows []Row, unmasked bool) -> str {
         sb.append(csv_field(r.resets_at))
         sb.append("\r\n")
     }
-    sb.into_str()
+    sb
 }
 
 /// `claude-limits-2026-08-07..2026-09-06.csv` (§3.11).
@@ -262,7 +262,7 @@ fn rows_to_json(rows []Row, unmasked bool) -> str {
         first = false
     }
     sb.append("]}")
-    sb.into_str()
+    sb
 }
 
 // ── the handler ──────────────────────────────────────────────────────────────

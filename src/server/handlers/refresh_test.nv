@@ -18,9 +18,9 @@ import refresh.{RefreshTarget, RefreshState, Ask, RefreshDecision, parse_ask, de
 fn wire_str(wire []u8) -> str => unsafe { wire.to_str_unchecked() }
 
 fn post(body str) -> []u8 =>
-    "POST /api/snapshot/refresh HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: ${body.byte_len()}\r\n\r\n${body}".bytes()
+    "POST /api/snapshot/refresh HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: ${body.byte_len()}\r\n\r\n${body}"
 
-fn post_bare() -> []u8 => "POST /api/snapshot/refresh HTTP/1.1\r\nHost: x\r\n\r\n".bytes()
+fn post_bare() -> []u8 => "POST /api/snapshot/refresh HTTP/1.1\r\nHost: x\r\n\r\n"
 
 fn status_of(wire []u8) -> str {
     ro s = wire_str(wire)

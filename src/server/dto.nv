@@ -85,7 +85,7 @@ fn join_commas(items []str) -> str {
         sb.append(it)
         first = false
     }
-    sb.into_str()
+    sb
 }
 
 /// A machine value and its caption, as TWO fields.

@@ -78,7 +78,7 @@ export fn type_uri(code str) -> str {
     for ch in code.chars() {
         if ch == '_' { sb.append('-') } else { sb.append(ch) }
     }
-    sb.into_str()
+    sb
 }
 
 fn ApiError.new(status int, code str, title str, detail str) -> ApiError =>
