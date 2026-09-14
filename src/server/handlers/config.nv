@@ -645,7 +645,7 @@ fn problem_with_current(e ApiError, request_id str, instance str, current str) -
     ro base = to_json(e, request_id, instance)
     // The base body always ends in `}`; the extension goes before it rather than
     // through a second serialiser, so there is one spelling of a problem body.
-    "${base[0..base.byte_len() - 1]},${field_raw("current", current)}}"
+    "${base[..base.byte_len() - 1]},${field_raw("current", current)}}"
 }
 
 fn run_put(src ConfigSource, ctx Ctx) -> ServerResponse {
@@ -701,7 +701,7 @@ fn accepted(before ConfigState, after Config) -> ServerResponse {
         field_bool("listener_reopened", moved),
         field_str_or_null("new_base_url", if moved { base_url(after) } else { "" }),
     ])
-    ro body = "${base[0..base.byte_len() - 1]},${field_raw("applied", applied)}}"
+    ro body = "${base[..base.byte_len() - 1]},${field_raw("applied", applied)}}"
     json_ok(200, body, tag)
 }
 

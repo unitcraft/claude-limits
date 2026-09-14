@@ -21,11 +21,11 @@ fn post(body str) -> []u8 =>
     "POST /api/folders/probe HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: ${body.byte_len()}\r\n\r\n${body}".bytes()
 
 fn status_of(s str) -> str {
-    match s.find("\r\n") { Some(i) => s[0..i], None => s }
+    match s.find("\r\n") { Some(i) => s[..i], None => s }
 }
 
 fn body_of(s str) -> str {
-    match s.find("\r\n\r\n") { Some(i) => s[i + 4..s.byte_len()], None => "" }
+    match s.find("\r\n\r\n") { Some(i) => s[i + 4..], None => "" }
 }
 
 // ── the fixture tree ─────────────────────────────────────────────────────────

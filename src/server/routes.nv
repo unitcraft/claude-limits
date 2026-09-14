@@ -147,14 +147,14 @@ export fn route_q(path str, endpoints []Endpoint, query []str) -> Route =>
 /// key one the route knows at all.
 export fn unknown_query_key(target str, allowed []str) -> Option[str] {
     ro q = match target.find("?") {
-        Some(i) => target[i + 1..target.byte_len()]
+        Some(i) => target[i + 1..]
         None    => ""
     }
     if q == "" { return None }
     for part in q.split("&") {
         if part == "" { continue }
         ro k = match part.find("=") {
-            Some(i) => part[0..i]
+            Some(i) => part[..i]
             None    => part
         }
         mut known = false

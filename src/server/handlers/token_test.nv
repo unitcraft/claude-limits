@@ -22,15 +22,15 @@ fn post(if_match str, body str) -> []u8 {
 }
 
 fn status_of(s str) -> str {
-    match s.find("\r\n") { Some(i) => s[0..i], None => s }
+    match s.find("\r\n") { Some(i) => s[..i], None => s }
 }
 
 fn body_of(s str) -> str {
-    match s.find("\r\n\r\n") { Some(i) => s[i + 4..s.byte_len()], None => "" }
+    match s.find("\r\n\r\n") { Some(i) => s[i + 4..], None => "" }
 }
 
 fn head_of(s str) -> str {
-    match s.find("\r\n\r\n") { Some(i) => s[0..i], None => s }
+    match s.find("\r\n\r\n") { Some(i) => s[..i], None => s }
 }
 
 fn hdr(s str, name str) -> str {
@@ -38,8 +38,8 @@ fn hdr(s str, name str) -> str {
     ro needle = "\r\n${name.to_ascii_lower()}: "
     match padded.to_ascii_lower().find(needle) {
         Some(i) => {
-            ro rest = padded[i + needle.byte_len()..padded.byte_len()]
-            match rest.find("\r\n") { Some(j) => rest[0..j], None => rest }
+            ro rest = padded[i + needle.byte_len()..]
+            match rest.find("\r\n") { Some(j) => rest[..j], None => rest }
         }
         None => ""
     }

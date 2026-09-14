@@ -50,7 +50,7 @@ const ONLY_PARAM = "include_hidden"
 fn query_pairs(req ServerRequest) -> [](str, str) {
     ro target = req.target()
     ro q = match target.find("?") {
-        Some(i) => target[i + 1..target.byte_len()]
+        Some(i) => target[i + 1..]
         None    => ""
     }
     mut out = [](str, str).new()
@@ -58,7 +58,7 @@ fn query_pairs(req ServerRequest) -> [](str, str) {
     for part in q.split("&") {
         if part == "" { continue }
         match part.find("=") {
-            Some(i) => out.push((part[0..i], part[i + 1..part.byte_len()]))
+            Some(i) => out.push((part[..i], part[i + 1..]))
             None    => out.push((part, ""))
         }
     }

@@ -65,8 +65,8 @@ export fn mask_email(e str) -> str {
     match e.find("@") {
         None => if e == "" { "" } else { "***" }
         Some(i) => {
-            if i == 0 { return "***${e[i..e.byte_len()]}" }
-            "${e[0..1]}***${e[i..e.byte_len()]}"
+            if i == 0 { return "***${e[i..]}" }
+            "${e[..1]}***${e[i..]}"
         }
     }
 }
@@ -135,7 +135,7 @@ export fn filename(from_day str, to_day str, ext str) -> str =>
 fn query_pairs(req ServerRequest) -> [](str, str) {
     ro target = req.target()
     ro q = match target.find("?") {
-        Some(i) => target[i + 1..target.byte_len()]
+        Some(i) => target[i + 1..]
         None    => ""
     }
     mut out = [](str, str).new()
@@ -143,7 +143,7 @@ fn query_pairs(req ServerRequest) -> [](str, str) {
     for part in q.split("&") {
         if part == "" { continue }
         match part.find("=") {
-            Some(i) => out.push((part[0..i], part[i + 1..part.byte_len()]))
+            Some(i) => out.push((part[..i], part[i + 1..]))
             None    => out.push((part, ""))
         }
     }

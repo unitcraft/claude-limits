@@ -19,12 +19,12 @@ fn req() -> []u8 => "GET /api/health HTTP/1.1\r\nHost: x\r\n\r\n".bytes()
 
 fn status_of(wire []u8) -> str {
     ro s = wire_str(wire)
-    match s.find("\r\n") { Some(i) => s[0..i], None => s }
+    match s.find("\r\n") { Some(i) => s[..i], None => s }
 }
 
 fn body_of(wire []u8) -> str {
     ro s = wire_str(wire)
-    match s.find("\r\n\r\n") { Some(i) => s[i + 4..s.byte_len()], None => "" }
+    match s.find("\r\n\r\n") { Some(i) => s[i + 4..], None => "" }
 }
 
 const CONFIG_PATH = "C:\\Users\\evgeniy\\AppData\\Roaming\\claude-limits\\claude-limits.toml"

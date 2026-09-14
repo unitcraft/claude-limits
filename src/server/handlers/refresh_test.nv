@@ -24,17 +24,17 @@ fn post_bare() -> []u8 => "POST /api/snapshot/refresh HTTP/1.1\r\nHost: x\r\n\r\
 
 fn status_of(wire []u8) -> str {
     ro s = wire_str(wire)
-    match s.find("\r\n") { Some(i) => s[0..i], None => s }
+    match s.find("\r\n") { Some(i) => s[..i], None => s }
 }
 
 fn head_of(wire []u8) -> str {
     ro s = wire_str(wire)
-    match s.find("\r\n\r\n") { Some(i) => s[0..i], None => s }
+    match s.find("\r\n\r\n") { Some(i) => s[..i], None => s }
 }
 
 fn body_of(wire []u8) -> str {
     ro s = wire_str(wire)
-    match s.find("\r\n\r\n") { Some(i) => s[i + 4..s.byte_len()], None => "" }
+    match s.find("\r\n\r\n") { Some(i) => s[i + 4..], None => "" }
 }
 
 fn hdr(wire []u8, name str) -> str {
@@ -42,8 +42,8 @@ fn hdr(wire []u8, name str) -> str {
     ro needle = "\r\n${name.to_ascii_lower()}: "
     match padded.to_ascii_lower().find(needle) {
         Some(i) => {
-            ro rest = padded[i + needle.byte_len()..padded.byte_len()]
-            match rest.find("\r\n") { Some(j) => rest[0..j], None => rest }
+            ro rest = padded[i + needle.byte_len()..]
+            match rest.find("\r\n") { Some(j) => rest[..j], None => rest }
         }
         None => ""
     }
