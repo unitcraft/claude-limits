@@ -44,3 +44,12 @@ docs/.sessions/
 # never committed. Here it points `duckdb` at the sibling working copy, whose
 # `native/lib` is built; the tag itself carries source only.
 nova.override.toml
+
+# A credentials file has no business in this working copy, and until 2026-09-16
+# nothing stopped one being committed. What produced the first stray was a probe
+# stub writing four bytes of `{}` -- the harmless version of an accident whose
+# other versions are not: a leaked token is leaked forever, no later commit
+# removes it, and the secret has to be rotated.
+.credentials.json
+**/.credentials.json
+
