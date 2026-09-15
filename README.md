@@ -75,16 +75,40 @@ key and does not apply to a subscription login.
 
 `accessToken` lives for hours. Claude Code refreshes it while a session runs
 and rewrites `.credentials.json`. The tool therefore re-reads the file before
-every request and never caches a token. An expired token with no Claude Code
-session to refresh it is shown as a stale login and is not sent at all (the
-server would answer 401, then 429 to the whole machine). The tool never
-refreshes a token itself: `refreshToken` is Claude Code's, and stays untouched.
+every request and never caches a token. An expired token is never sent (the
+server would answer 401, then 429 to the whole machine).
+
+**The tool still never refreshes a token itself: `refreshToken` is Claude
+Code's, and stays untouched.** What it does instead, since 2026-09-16, is start
+Claude Code under that config directory and ask it for one tiny answer -- and
+Claude Code rewrites its own credentials. The distinction is the design, not a
+formality: a second writer of that file would race the first one.
+
+The verdict is the file's mtime, not an exit code. A run that succeeded on a
+token which was still valid rewrites nothing, and is reported as `unchanged`
+rather than as a refresh.
+
+A refresh costs one small request on that account's own limits, so:
+
+- only logins that BLOCK a reading are renewed (`refresh_all_expired = true`
+  takes the other choice);
+- one directory is retried at most once an hour (`refresh_cooldown_sec`), because
+  a revoked login fails forever and would otherwise cost a request every cycle;
+- `--offline` renews nothing: that mode promises no request leaves the machine;
+- `auto_refresh = false` in the config, or `--no-auto-refresh`, turns it off and
+  brings back the old behaviour -- report the stale login and leave it alone.
+
+By hand: `python scripts/refresh_token.py <dir>` or `--all`
+(`scriptsefresh-token.ps1` is a wrapper over it).
 
 ## Rules
 
 - A token leaves the machine only towards `api.anthropic.com`. It is never
   logged, never displayed, never written anywhere.
-- Read-only: the tool never writes into Claude Code's directories.
+- The tool never writes into Claude Code's directories ITSELF. Auto-refresh is
+  not an exception to that: it starts Claude Code, which writes its own files.
+  The tool reads one thing from `.credentials.json` besides the token it sends --
+  the file's mtime, to tell a refresh from a no-op.
 - The local HTTP server listens on `127.0.0.1` only unless you bind it to the
   network on purpose, and then only with an access token: the page shows
   e-mails and organisation names. Tokens never appear in any response.

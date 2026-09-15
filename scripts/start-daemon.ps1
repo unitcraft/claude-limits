@@ -21,6 +21,13 @@
 .PARAMETER Color
   Colour output: "auto" (default), "always" or "never".
 
+.PARAMETER NoAutoRefresh
+  Do not renew an expired login, just report it. The daemon renews one by
+  starting Claude Code under it (owner's decision 2026-09-16), and that costs a
+  small request on THAT account's own limits -- so a run that must spend nothing
+  but its own readings turns this on. The same switch lives in the config as
+  `auto_refresh = false`; this flag wins over it.
+
 .PARAMETER Detached
   Run hidden in the background, logging to files.
 
@@ -29,6 +36,7 @@
   .\scripts\start-daemon.ps1 -Interval 60
   .\scripts\start-daemon.ps1 -BarStyle ascii
   .\scripts\start-daemon.ps1 -Detached
+  .\scripts\start-daemon.ps1 -NoAutoRefresh
 #>
 param(
     [string]$Config,
@@ -37,6 +45,7 @@ param(
     [string]$BarStyle,
     [ValidateSet("auto", "always", "never")]
     [string]$Color,
+    [switch]$NoAutoRefresh,
     [switch]$Detached
 )
 
@@ -53,6 +62,7 @@ if ($Config)   { $argList += @("--config", $Config) }
 if ($Interval) { $argList += @("--interval", "$Interval") }
 if ($BarStyle) { $argList += @("--bar-style", $BarStyle) }
 if ($Color)    { $argList += @("--color", $Color) }
+if ($NoAutoRefresh) { $argList += "--no-auto-refresh" }
 
 if ($Detached) {
     $log = Join-Path $root "claude-limits.log"

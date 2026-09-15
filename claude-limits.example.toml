@@ -21,3 +21,31 @@ accounts_parent = "C:/accounts"
 # backslashes literal in TOML:
 #   '\\wsl.localhost\<distro>\home\<user>\.claude'
 accounts = ["~/.claude"]
+
+# ---------------------------------------------------------------- refresh --
+# An expired login is renewed by starting Claude Code under it, which rewrites
+# its own .credentials.json -- the tool never writes that file itself. Owner's
+# decision 2026-09-16: the daemon does this, instead of printing advice for a
+# human to follow.
+#
+# IT COSTS ONE SMALL REQUEST on that account's own limits, which is the resource
+# this tool exists to watch, so every knob below is about spending less of it.
+
+# false -> report an expired login and renew nothing (--no-auto-refresh).
+auto_refresh = true
+
+# true -> renew EVERY expired directory. Default false: only the ones that block
+# a reading. An account that still reports numbers through another directory is
+# left alone -- silencing a parenthetical note is not worth a request.
+refresh_all_expired = false
+
+# The throwaway request. Cheapest model that can answer "ok".
+refresh_model = "claude-haiku-4-5-20251001"
+
+# Limit per directory. A `claude` that hangs is killed and reported.
+refresh_timeout_sec = 120
+
+# Floor between two attempts on ONE directory. A login that cannot be renewed --
+# revoked, logged out -- would otherwise cost a request every single cycle.
+refresh_cooldown_sec = 3600
+

@@ -40,13 +40,14 @@ from datetime import datetime, timezone
 import pathlib
 from pathlib import Path
 
+import refresh_token   # peer module, same directory
+
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 BETA_HEADER = "oauth-2025-04-20"
 DEFAULT_INTERVAL = 300
 MIN_INTERVAL = 60
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG = REPO_ROOT / "claude-limits.toml"
-
 
 # ---------------------------------------------------------------- accounts --
 
@@ -132,10 +133,14 @@ def accounts_of(dirs):
             continue
         key = (login["email"] or str(cfg_dir)).lower()
         g = groups.setdefault(key, {"email": login["email"], "org": login["org"],
-                                    "dirs": [], "expired_dirs": [], "token": None})
+                                    "dirs": [], "expired_dirs": [], "expired_paths": [],
+                                    "token": None})
         g["dirs"].append(short_name(cfg_dir))
         if login["expired"]:
             g["expired_dirs"].append(short_name(cfg_dir))
+            # The path as well as the name: `short_name` is for reading, and the
+            # refresher needs a directory it can actually start Claude Code in.
+            g["expired_paths"].append(cfg_dir)
         elif g["token"] is None:
             g["token"] = login["token"]
     for g in groups.values():
@@ -331,13 +336,24 @@ def offline_usage(acc, offline_dir):
     raise FileNotFoundError(f"no fixture for {email or acc['label']} in {d}")
 
 
-def snapshot(dirs, paint, bar_style, offline_dir=None):
+def snapshot(dirs, paint, bar_style, offline_dir=None, refresher=None):
     """Prints every account found in dirs. Returns (accounts_found, seconds_to_back_off).
 
     With `offline_dir` set, no request leaves the machine: replies come from the
     recorded fixtures, and an expired token is still skipped so the two modes agree
-    on which accounts are reportable."""
+    on which accounts are reportable.
+
+    With `refresher` set, an expired login is renewed BEFORE the report rather
+    than merely complained about, and the accounts are re-read so the numbers
+    appear in THIS cycle instead of the next one. Offline excludes it: that mode
+    promises no request leaves the machine, and a refresh is a request."""
     accounts = accounts_of(dirs)
+    if refresher is not None and not offline_dir:
+        targets = refresher.targets(accounts)
+        if targets:
+            print("")
+            refresher.run(targets, print)
+            accounts = accounts_of(dirs)   # a renewed login is live NOW
     backoff = 0
     for acc in accounts:
         expired_note = (f"  ({', '.join(acc['expired_dirs'])}: token expired on disk)"
@@ -346,7 +362,14 @@ def snapshot(dirs, paint, bar_style, offline_dir=None):
             # No request with a dead token: the server answers 401, then 429 on
             # repeats. Only Claude Code refreshes it (README, Token lifetime).
             print("\n" + paint.dead(acc["label"]))
-            print("  token expired on disk: start Claude Code under this directory to refresh it")
+            if refresher is None or offline_dir:
+                print("  token expired on disk: start Claude Code under this directory to refresh it")
+            else:
+                # Auto-refresh ran above and the token is still dead, so saying
+                # "start Claude Code" would be advice the reader has just watched
+                # fail. What is left is a login that needs a human.
+                print(f"  token expired on disk and auto-refresh did not renew it: "
+                      f"log in again under {', '.join(acc['expired_dirs'])}")
             continue
         if offline_dir:
             try:
@@ -413,10 +436,38 @@ def parse_args(argv):
     p.add_argument("--offline", metavar="DIR",
                    help="read recorded replies from DIR instead of calling the endpoint "
                         "(fixtures/usage); makes the differential deterministic and free")
+    p.add_argument("--no-auto-refresh", action="store_true",
+                   help="do not renew an expired login; just report it (also 'auto_refresh' in the config). "
+                        "A refresh costs one small request on that account's own limits")
+    p.add_argument("--refresh-all-expired", action="store_true",
+                   help="renew every expired directory, not only the ones that block a reading "
+                        "(also 'refresh_all_expired' in the config)")
+    p.add_argument("--refresh-model", metavar="ID",
+                   help=f"model for the throwaway refresh request (default: {refresh_token.DEFAULT_MODEL})")
+    p.add_argument("--refresh-timeout", type=int, metavar="SEC",
+                   help=f"limit per refresh (default: {refresh_token.DEFAULT_TIMEOUT})")
+    p.add_argument("--refresh-cooldown", type=int, metavar="SEC",
+                   help=f"floor between two attempts on ONE directory (default: {refresh_token.DEFAULT_COOLDOWN}); "
+                        "a login that cannot be renewed would otherwise cost a request every cycle")
     p.add_argument("--bar-style", choices=["blocks", "ascii"],
                    help="progress bar glyphs: ascii [####....] (default) or blocks [████░░░░] "
                         "for fonts that have the block glyphs; also 'bar_style' in the config")
     return p.parse_args(argv)
+
+
+def refresher_of(args, config):
+    """The auto-refresher, or None when it is switched off.
+
+    The flag wins over the config, and the config over the default, so a daemon
+    can be started once with `--no-auto-refresh` without editing anything."""
+    if args.no_auto_refresh or not config.get("auto_refresh", True):
+        return None
+    return refresh_token.Refresher(
+        model=args.refresh_model or config.get("refresh_model") or refresh_token.DEFAULT_MODEL,
+        timeout=args.refresh_timeout or config.get("refresh_timeout_sec") or refresh_token.DEFAULT_TIMEOUT,
+        cooldown=args.refresh_cooldown or config.get("refresh_cooldown_sec") or refresh_token.DEFAULT_COOLDOWN,
+        all_expired=args.refresh_all_expired or bool(config.get("refresh_all_expired")),
+    )
 
 
 def bar_style_of(args, config):
@@ -438,8 +489,10 @@ def main(argv):
     paint = Paint(colours_enabled(args.color))
     # An organisation name outside the console code page must never crash the daemon.
     sys.stdout.reconfigure(errors="replace")
+    refresher = refresher_of(args, config)
     if not args.daemon:
-        found, _ = snapshot(dirs_from(args, config), paint, bar_style_of(args, config), args.offline)
+        found, _ = snapshot(dirs_from(args, config), paint, bar_style_of(args, config),
+                            args.offline, refresher)
         return 0 if found else 1
 
     interval = interval_of(args, config)
@@ -449,7 +502,8 @@ def main(argv):
             config = load_config(args.config)          # edits apply without a restart
             interval = interval_of(args, config, quiet=True)
             print(f"\n=== {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ===")
-            _, backoff = snapshot(dirs_from(args, config), paint, bar_style_of(args, config), args.offline)
+            _, backoff = snapshot(dirs_from(args, config), paint, bar_style_of(args, config),
+                                  args.offline, refresher)
             wait = max(interval, backoff)
             if wait > interval:
                 print(f"\nbacking off: next snapshot in {wait} s")
