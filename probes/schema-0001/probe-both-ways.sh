@@ -4,11 +4,15 @@
 # The subject here is the SQL file, not Nova code — which is the point: a schema test
 # that only ever sees one schema proves nothing about its own sensitivity.
 set -uo pipefail
-cd <repos>/claude-limits || exit 2
+# The repository root is DERIVED, not written down: this file is public, and a
+# hard-coded path both leaks the author's disk layout and breaks on every other
+# machine. `$0` is inside `probes/<name>/`, so the root is two levels up.
+R="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$R" || exit 2
 
 SRC=migrations/0001_init.sql
-BAK='<repos>/claude-limits/.probe-schema.bak'
-W='<repos>/claude-limits/migrations/0001_init.sql'
+BAK="$R/.probe-schema.bak"
+W="$R/migrations/0001_init.sql"
 cp "$SRC" "$BAK" || exit 2
 
 run() {
@@ -68,5 +72,5 @@ cp "$BAK" "$SRC"
 
 rm -f "$BAK"
 echo "C restored (expect PASS):                             $(run)"
-git -C <repos>/claude-limits status --porcelain -- migrations/
+git -C "$R" status --porcelain -- migrations/
 echo "(end)"

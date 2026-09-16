@@ -5,11 +5,15 @@
 # mutation that ABORTS rather than printing a verdict when it fails to apply, and a
 # runner that REFUSES when it could not measure instead of reporting a failure.
 set -uo pipefail
-cd <repos>/claude-limits || exit 2
+# The repository root is DERIVED, not written down: this file is public, and a
+# hard-coded path both leaks the author's disk layout and breaks on every other
+# machine. `$0` is inside `probes/<name>/`, so the root is two levels up.
+R="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$R" || exit 2
 
 SRC=src/storage/db.nv
-BAK='<repos>/claude-limits/.probe-db.bak'
-W='<repos>/claude-limits/src/storage/db.nv'
+BAK="$R/.probe-db.bak"
+W="$R/src/storage/db.nv"
 cp "$SRC" "$BAK" || exit 2
 
 run() {
@@ -70,5 +74,5 @@ cp "$BAK" "$SRC"
 
 rm -f "$BAK"
 echo "C restored (expect PASS):                           $(run)"
-git -C <repos>/claude-limits status --porcelain -- src/storage/
+git -C "$R" status --porcelain -- src/storage/
 echo "(end)"

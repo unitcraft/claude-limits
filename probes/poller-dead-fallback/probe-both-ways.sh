@@ -10,14 +10,18 @@
 # what judges, not just the poller filter -- a mutation in `outcome.nv` must be
 # allowed to redden `outcome_test` too.
 set -uo pipefail
-cd <repos>/claude-limits || exit 2
+# The repository root is DERIVED, not written down: this file is public, and a
+# hard-coded path both leaks the author's disk layout and breaks on every other
+# machine. `$0` is inside `probes/<name>/`, so the root is two levels up.
+R="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$R" || exit 2
 
 P_SRC=src/usage/poller.nv
 O_SRC=src/usage/outcome.nv
-P_BAK='<repos>/claude-limits/.probe-poller.bak'
-O_BAK='<repos>/claude-limits/.probe-outcome.bak'
-P_W='<repos>/claude-limits/src/usage/poller.nv'
-O_W='<repos>/claude-limits/src/usage/outcome.nv'
+P_BAK="$R/.probe-poller.bak"
+O_BAK="$R/.probe-outcome.bak"
+P_W="$R/src/usage/poller.nv"
+O_W="$R/src/usage/outcome.nv"
 cp "$P_SRC" "$P_BAK" || exit 2
 cp "$O_SRC" "$O_BAK" || exit 2
 
@@ -77,5 +81,5 @@ cp "$O_BAK" "$O_SRC"
 restore
 rm -f "$P_BAK" "$O_BAK"
 echo "C restored (expect PASS):                      $(run)"
-git -C <repos>/claude-limits status --porcelain -- src/usage/
+git -C "$R" status --porcelain -- src/usage/
 echo "(end)"

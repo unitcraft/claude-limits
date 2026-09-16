@@ -11,7 +11,7 @@ answer; IT rewrites the file.
 Two kinds of directory, dispatched by the path, because the refresh must happen
 inside the system that owns the login:
 
-    Windows   C:\\accounts\\<name>, %USERPROFILE%\\.claude
+    Windows   <accounts parent>\<name>, %USERPROFILE%\.claude
               -> `claude` on this machine with CLAUDE_CONFIG_DIR set.
     WSL       \\\\wsl.localhost\\<distro>\\home\\<user>\\.claude  (also \\\\wsl$\\...)
               -> `claude` INSIDE that distro, as that user. Reaching the file

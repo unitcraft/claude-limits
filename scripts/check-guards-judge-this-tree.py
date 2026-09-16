@@ -4,7 +4,7 @@
     python scripts/check-guards-judge-this-tree.py
 
 WHY. Two checkers named this machine's repository by absolute path --
-`pathlib.Path(r"<repos>\\claude-limits")` -- so wherever they ran, they
+`pathlib.Path(r"<repo root>")` -- so wherever they ran, they
 read that copy. Run from a worktree, a CI checkout or a colleague's clone, they would
 report on a tree nobody asked about: a fault under test passes, and a fault in the
 untested copy reddens a run that has nothing to do with it.

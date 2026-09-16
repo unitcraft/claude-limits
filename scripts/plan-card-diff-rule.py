@@ -7,11 +7,14 @@ differences.
 """
 import importlib.util
 import io
+import os
 import re
 import sys
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-SRC = r"<repos>\claude-limits\scripts\plan-card-status.py"
+# Beside this file, not at a path typed out by hand: the absolute one named
+# the author's disk in a public repository, and broke on any other.
+SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "plan-card-status.py")
 
 spec = importlib.util.spec_from_file_location("pcs", SRC)
 pcs = importlib.util.module_from_spec(spec)

@@ -6,11 +6,15 @@
 # verdict; and the runner is asked to REFUSE when it could not measure, because a peer
 # rebuilding nova-cli once made this shape print six failures against a clean tree.
 set -uo pipefail
-cd <repos>/claude-limits || exit 2
+# The repository root is DERIVED, not written down: this file is public, and a
+# hard-coded path both leaks the author's disk layout and breaks on every other
+# machine. `$0` is inside `probes/<name>/`, so the root is two levels up.
+R="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$R" || exit 2
 
 SRC=src/storage/config_file.nv
-BAK='<repos>/claude-limits/.probe-cfgfile.bak'
-W='<repos>/claude-limits/src/storage/config_file.nv'
+BAK="$R/.probe-cfgfile.bak"
+W="$R/src/storage/config_file.nv"
 cp "$SRC" "$BAK" || exit 2
 
 run() {
@@ -84,5 +88,5 @@ cp "$BAK" "$SRC"
 
 rm -f "$BAK"
 echo "C restored (expect PASS):                         $(run)"
-git -C <repos>/claude-limits status --porcelain -- src/storage/
+git -C "$R" status --porcelain -- src/storage/
 echo "(end)"
