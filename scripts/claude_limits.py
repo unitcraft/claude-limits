@@ -1179,7 +1179,7 @@ def parse_args(argv):
     p.add_argument("--refresh-all-expired", action="store_true",
                    help="renew every expired directory, not only the ones that block a reading "
                         "(also 'refresh_all_expired' in the config)")
-    p.add_argument("--refresh-model", metavar="ID",
+    p.add_argument("--refresh-claude-model", metavar="ID",
                    help=f"model for the Claude throwaway refresh request only (default: "
                         f"{refresh_token.DEFAULT_MODEL}); Kimi renews by an OAuth grant and "
                         f"spends no quota, so no model applies")
@@ -1202,7 +1202,7 @@ def refresher_of(args, config):
     if args.no_auto_refresh or not config.get("auto_refresh", True):
         return None
     return refresh_token.Refresher(
-        model=args.refresh_model or config.get("refresh_model") or refresh_token.DEFAULT_MODEL,
+        model=args.refresh_claude_model or config.get("refresh_claude_model") or refresh_token.DEFAULT_MODEL,
         timeout=args.refresh_timeout or config.get("refresh_timeout_sec") or refresh_token.DEFAULT_TIMEOUT,
         cooldown=args.refresh_cooldown or config.get("refresh_cooldown_sec") or refresh_token.DEFAULT_COOLDOWN,
         all_expired=args.refresh_all_expired or bool(config.get("refresh_all_expired")),

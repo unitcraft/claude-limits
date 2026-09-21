@@ -62,7 +62,7 @@ refresh_all_expired = false
 # rewrite its own token and the request spends that account's quota, so the
 # model is the cheapest one that can answer "ok". Kimi renews by an OAuth
 # token grant against auth.kimi.com -- no model, no quota spent.
-refresh_model = "claude-haiku-4-5-20251001"
+refresh_claude_model = "claude-haiku-4-5-20251001"
 
 # Limit per directory. A `claude` that hangs is killed and reported.
 refresh_timeout_sec = 120
