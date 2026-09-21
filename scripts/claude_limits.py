@@ -570,17 +570,18 @@ def print_limit_row(kind, pct, sev, reset_label, fr, paint, bar_style):
     """One limit row; `fr` is a forecast tuple or None. The ghost shade of the
     bar runs from percent to percent_at_reset (spec 01.1 §2.2); the second
     line under the bar is the forecast per spec §2.4."""
-    ghost, suffix = None, ""
+    ghost, ghost_sev, suffix = None, None, ""
     if fr is not None:
         if fr[0] > pct:
             ghost = fr[0]
+            ghost_sev = severity_of(None, min(fr[0], 100))   # the landing, not the now
         # a zero row projecting zero is noise, not information; any other
         # flat forecast still prints its "-> N% at reset" per spec §2.7
         if fr[0] != pct or pct:
             suffix = "\n" + " " * 24 + forecast_suffix(fr, paint)
     pct_s = "-" if pct is None else f"{pct:>3.0f}%"
     sev_label = sev if sev in ("normal", "warning", "critical") else severity_of(sev, pct)
-    print(f"  {kind:<22} {bar_of(pct, sev, bar_style, paint, ghost)} {pct_s:>4}  "
+    print(f"  {kind:<22} {bar_of(pct, sev, bar_style, paint, ghost, ghost_sev)} {pct_s:>4}  "
           f"{sev_label:<8} resets {reset_label}" + suffix)
 
 
@@ -904,11 +905,13 @@ def severity_of(sev, pct):
 BAR_GLYPHS = {"blocks": ("█", "░", "▒"), "ascii": ("#", ".", ":")}
 
 
-def bar_of(pct, sev, style, paint, ghost=None):
+def bar_of(pct, sev, style, paint, ghost=None, ghost_sev=None):
     """A 30-cell bar between brackets. 'blocks' -> [████░░░░], 'ascii' -> [####....].
     Filled part coloured green/yellow/red by severity, empty part dim.
-    `ghost` (a larger percent) extends the bar with the shade glyph -- the
-    hatched forecast from the spec 01.1 §2.2, same colour."""
+    `ghost` (a larger percent) extends the bar with the shade glyph; the ghost
+    keeps its own severity colour (ghost_sev) -- by the PROJECTED percent, so
+    the bar shows not only where usage is but where it lands and how bad that
+    is (spec 01.1 §2.2, owner word 2026-09-22)."""
     full, empty, shade = BAR_GLYPHS.get(style, BAR_GLYPHS["blocks"])
     if pct is None:
         return "[" + paint.empty(empty * BAR_WIDTH) + "]"
@@ -917,7 +920,8 @@ def bar_of(pct, sev, style, paint, ghost=None):
     ghost_end = min(max(ghost_end, filled), BAR_WIDTH)
     color = severity_of(sev, pct)
     fill = paint.fill(full * filled, color) if filled else ""
-    shade_s = paint.fill(shade * (ghost_end - filled), color) if ghost_end > filled else ""
+    shade_color = severity_of(ghost_sev, ghost) if ghost_sev else color
+    shade_s = paint.fill(shade * (ghost_end - filled), shade_color) if ghost_end > filled else ""
     return "[" + fill + shade_s + paint.empty(empty * (BAR_WIDTH - ghost_end)) + "]"
 
 
