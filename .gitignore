@@ -24,6 +24,7 @@ build/
 # local configuration and logs (they name accounts; never committed)
 claude-limits.toml
 claude-limits-history.json
+claude-limits-history-*.json
 *.local.*
 *.log
 

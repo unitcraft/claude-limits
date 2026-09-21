@@ -61,6 +61,7 @@ reported with advice to start Kimi Code under that profile.
 import argparse
 import json
 import os
+import shutil
 import sys
 import time
 import urllib.error
@@ -622,6 +623,7 @@ def iso_epoch(iso):
 # ----------------------------------------------------------------- forecast --
 
 HISTORY_DAYS = 7          # retention; the forecast needs at most 3 working days
+HISTORY_BACKUPS_KEPT = 7  # daily copies kept alongside the live file
 HISTORY_MIN_SPAN = 1800   # < 30 min of history -> forecast unavailable (spec 01.1 §2.7)
 
 WORK_DAY_NAMES = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
@@ -667,6 +669,28 @@ def save_history(path, history, now):
     tmp = Path(path).with_name(Path(path).name + ".tmp")
     tmp.write_text(json.dumps(history, ensure_ascii=False, indent=1), encoding="utf-8")
     os.replace(tmp, path)
+
+
+def backup_history(path, now):
+    """A backup, not a rotation: the live file stays, and once a day it is
+    copied to history-YYYYMMDD.json next to it, keeping the newest
+    HISTORY_BACKUPS_KEPT copies. The history prunes itself to 7 days on every
+    write, so a week of daily copies is a full backup horizon at a constant
+    size -- the data never grows without bound."""
+    path = Path(path)
+    if not path.is_file():
+        return
+    stamp = datetime.fromtimestamp(now, timezone.utc).strftime("%Y%m%d")
+    dest = path.with_name(f"{path.stem}-{stamp}{path.suffix}")
+    if dest.exists():
+        return                                  # today's copy already taken
+    shutil.copy2(path, dest)
+    backups = sorted(path.parent.glob(f"{path.stem}-????????{path.suffix}"))
+    for old in backups[:-HISTORY_BACKUPS_KEPT]:
+        try:
+            old.unlink()
+        except OSError:
+            pass
 
 
 def forecast_config_of(config):
@@ -1112,6 +1136,7 @@ def snapshot(dirs, paint, bar_style, offline_dir=None, refresher=None, kimi_refr
         else:
             seen_signatures[tuple(sig)] = login["label"]
     if history is not None and history_path and not offline_dir:
+        backup_history(history_path, now)
         save_history(history_path, history, now)
     if not accounts and not kimi_found:
         print("\nno Claude Code or Kimi Code logins found in:",
