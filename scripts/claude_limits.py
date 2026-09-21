@@ -718,13 +718,18 @@ def work_between(sched, t0, t1, calendar=False):
 
 
 def kind_class_of(kind):
-    """Which forecast window a row belongs to; monthly rows have none (the
-    spec's rate window covers session and weekly only)."""
+    """Which forecast window a row belongs to. The spec 01.1 §2.7 names
+    session and weekly; the reference extends the same formula to monthly
+    (recorded in 01.1 §2.7 as a 2026-09-21 amendment): rate over
+    rate_window_days, extrapolated over the remaining ~30 days -- a rough
+    but honest \"will the month last\" reading."""
     k = kind.lower()
     if k.startswith(("session", "5h", "five_hour")):
         return "session"
     if k.startswith(("weekly", "7d", "seven_day")):
         return "weekly"
+    if k.startswith(("month", "30d", "limit_month")):
+        return "monthly"
     return None
 
 
@@ -750,7 +755,7 @@ def forecast_of(history, series, kind_class, pct, reset_epoch, now, sched):
                       if isinstance(s, list) and len(s) == 2), key=lambda s: s[0])
     samples = [s for s in samples if s[0] <= now]
     calendar = kind_class == "session"
-    window = 5 * 3600 if calendar else 7 * 86400
+    window = {"session": 5 * 3600, "weekly": 7 * 86400}.get(kind_class, 30 * 86400)
     limit_start = reset_epoch - window
     rate_start = max(now - (3600 if calendar else sched["rate_window_days"] * 86400), limit_start)
     reset_based = limit_start > rate_start
