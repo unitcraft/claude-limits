@@ -561,7 +561,7 @@ def forecast_suffix(fr, paint):
         return head
     when = datetime.fromtimestamp(runs_out).astimezone()
     today = datetime.now().astimezone().date()
-    day = "" if when.date() == today else when.strftime("%a ")
+    day = "" if when.date() == today else when.strftime("%Y-%m-%d ")
     tail = paint.fill(f"ends {day}~{when:%H:%M} ({duration_of(runs_out - time.time())})", "warning")
     return head + ", " + tail
 
