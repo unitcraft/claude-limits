@@ -747,11 +747,11 @@ def kind_class_of(kind):
 def record_sample(history, series, kind, pct, now):
     """One series per LIMIT ROW (weekly_all and weekly_scoped:Fable are different
     quotas and must not mix); the window class only picks the forecast mode.
-    The timestamp is written human-readable on purpose: this file is opened
-    by eyes more often than by code."""
+    The timestamp is UTC ISO 8601 with Z per docs/conventions/database.md §1 --
+    the file is opened by eyes, and one zone keeps moments from drifting."""
     if kind_class_of(kind) is None or pct is None:
         return
-    mark = datetime.fromtimestamp(now).astimezone().strftime("%Y-%m-%d %H:%M:%S")
+    mark = datetime.fromtimestamp(now, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     history.setdefault(f"{series}|{kind}", []).append([mark, round(float(pct), 4)])
 
 
