@@ -552,14 +552,17 @@ def remaining(iso):
 
 def forecast_suffix(fr, paint):
     """Строка 2 из спеки 01.1 §2.4: «→ 31% at reset» (dim) when the limit
-    lasts, «ends Tue ~12:30 (2d 17h)» (amber) when it runs out first."""
+    lasts; «→ 104% at reset, ends Tue ~12:30 (2d 17h)» when it does not --
+    the overshoot percent plus the moment and time until exhaustion (amber)."""
     pct_at_reset, runs_out, rate_h, span_min = fr
+    head = paint.empty(f"→ {pct_at_reset:.0f}% at reset")
     if runs_out is None:
-        return paint.empty(f"→ {pct_at_reset:.0f}% at reset")
+        return head
     when = datetime.fromtimestamp(runs_out).astimezone()
     today = datetime.now().astimezone().date()
     day = "" if when.date() == today else when.strftime("%a ")
-    return paint.fill(f"ends {day}~{when:%H:%M} ({duration_of(runs_out - time.time())})", "warning")
+    tail = paint.fill(f"ends {day}~{when:%H:%M} ({duration_of(runs_out - time.time())})", "warning")
+    return head + ", " + tail
 
 
 def print_limit_row(kind, pct, sev, reset_label, fr, paint, bar_style):
@@ -570,7 +573,10 @@ def print_limit_row(kind, pct, sev, reset_label, fr, paint, bar_style):
     if fr is not None:
         if fr[0] > pct:
             ghost = fr[0]
-        suffix = "\n" + " " * 24 + forecast_suffix(fr, paint)
+        # a zero row projecting zero is noise, not information; any other
+        # flat forecast still prints its "-> N% at reset" per spec §2.7
+        if fr[0] != pct or pct:
+            suffix = "\n" + " " * 24 + forecast_suffix(fr, paint)
     pct_s = "-" if pct is None else f"{pct:>3.0f}%"
     sev_label = sev if sev in ("normal", "warning", "critical") else severity_of(sev, pct)
     print(f"  {kind:<22} {bar_of(pct, sev, bar_style, paint, ghost)} {pct_s:>4}  "
