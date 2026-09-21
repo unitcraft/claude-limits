@@ -816,7 +816,13 @@ def forecast_of(history, series, kind_class, pct, reset_epoch, now, sched):
         return None
     used = float(pct) - float(base_pct)
     work = work_between(sched, inside[0][0], now, calendar)
-    rate = used / work if work > 0 else 0.0
+    if work <= 0:
+        # The whole sample window sits outside the working schedule (a fresh
+        # history recorded in the evening): usage per WORKING minute is
+        # undefined, and reporting a flat "-> N% at reset" would be a made-up
+        # answer. Unavailable beats wrong.
+        return None
+    rate = used / work
     if rate <= 0:
         return (float(pct), None, rate * 60, span / 60)
     remaining_work = work_between(sched, now, reset_epoch, calendar)
