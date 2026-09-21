@@ -78,11 +78,18 @@ and rewrites `.credentials.json`. The tool therefore re-reads the file before
 every request and never caches a token. An expired token is never sent (the
 server would answer 401, then 429 to the whole machine).
 
-**The tool still never refreshes a token itself: `refreshToken` is Claude
+**The tool still never refreshes a Claude token itself: `refreshToken` is Claude
 Code's, and stays untouched.** What it does instead, since 2026-09-16, is start
 Claude Code under that config directory and ask it for one tiny answer -- and
 Claude Code rewrites its own credentials. The distinction is the design, not a
 formality: a second writer of that file would race the first one.
+
+Kimi Code is the deliberate exception: its CLI is not necessarily installed
+where this tool runs (unlike `claude`, which the refresher requires), so an
+expired Kimi login is renewed by calling the OAuth `refresh_token` grant
+(`auth.kimi.com/api/oauth/token`) directly and rewriting the credentials file
+atomically (tmp + rename, the same discipline the Kimi CLI uses). Only when
+`auto_refresh` is on; `--no-auto-refresh` covers both kinds.
 
 The verdict is the file's mtime, not an exit code. A run that succeeded on a
 token which was still valid rewrites nothing, and is reported as `unchanged`
@@ -126,12 +133,16 @@ it names your logins); copy `claude-limits.example.toml` and edit:
 
 ```toml
 interval_sec = 300
-accounts_parent = "C:/accounts"   # every child dir holding a login
-accounts = ["~/.claude"]                           # individual dirs
+accounts = [{ dir = "~/.claude", kind = "claude" },                 # individual dirs
+            { dir = "D:/accounts", kind = "claude", children = true }, # every child dir
+            { dir = "~/.kimi-code", kind = "kimi" }]               # a Kimi Code home
 ```
 
-Without a config file the tool falls back to `~/.claude` and `CLAUDE_CONFIG_DIR`.
-Directories on the command line override the config. Python 3.11+.
+`kind` is mandatory: `claude` looks for `.credentials.json`, `kimi` for
+`credentials/*.json`, `auto` accepts either. Without a config file the tool
+falls back to `~/.claude`, `CLAUDE_CONFIG_DIR` and `~/.kimi-code`
+(`KIMI_CODE_HOME`). Directories on the command line override the config
+(implicit `auto`). Python 3.11+.
 
 Every limit row carries a progress bar, `[████░░░░]`, the filled part
 coloured green, yellow or red by severity. The whole account header line is

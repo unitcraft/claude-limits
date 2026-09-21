@@ -217,7 +217,7 @@ def main(argv=None):
         import claude_limits as cl
         cfg = cl.load_config(args.config or cl.DEFAULT_CONFIG)
         ns = types.SimpleNamespace(parent=None, dirs=None)
-        dirs += [str(d) for d in cl.dirs_from(ns, cfg)]
+        dirs += [str(d) for d, _kind in cl.dirs_from(ns, cfg)]
     if not dirs:
         ap.error("name a directory, or ask for --all. Nothing is refreshed by default: "
                  "each refresh spends a request on that account's own limits")

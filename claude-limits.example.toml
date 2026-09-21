@@ -11,16 +11,33 @@ interval_sec = 300
 # "ascii" here.
 bar_style = "blocks"
 
-# Every child directory of this folder that holds .credentials.json is a login.
-# This is the multi-account layout: one CLAUDE_CONFIG_DIR per child.
-accounts_parent = "C:/accounts"
-
 # Individual login directories. "~" expands to the home directory.
-# The default Claude Code login lives in ~/.claude (its .claude.json sits beside it).
+# The default Claude Code login lives in ~/.claude (its .claude.json sits
+# beside it); the default Kimi Code home is ~/.kimi-code (or $KIMI_CODE_HOME).
 # A login inside WSL is reachable through its UNC path; single quotes keep the
 # backslashes literal in TOML:
-#   '\\wsl.localhost\<distro>\home\<user>\.claude'
-accounts = ["~/.claude"]
+#   { dir = '\\wsl.localhost\<distro>\home\<user>\.claude', kind = "claude" }
+# Every entry MUST be a table with an explicit kind: "claude" looks for
+# .credentials.json, "kimi" for credentials/*.json, "auto" accepts either.
+# children = true takes every child directory of dir -- the multi-account
+# layout, one CLAUDE_CONFIG_DIR (or Kimi Code home) per child:
+#   { dir = "D:/accounts", kind = "claude", children = true }
+accounts = [
+    { dir = "~/.claude", kind = "claude" },
+    { dir = "~/.kimi-code", kind = "kimi" },
+    { dir = "D:/accounts", kind = "claude", children = true },
+]
+
+# Прогноз (spec 01.1 §5.3/§2.7): «призрак» бара показывает, сколько процентов
+# будет к моменту сброса при текущем расходе; вторая строка под баром — исход.
+# Сессия (5 ч) считается по календарному времени, недельная — по рабочим часам.
+[forecast]
+enabled = true
+work_days = ["mon", "tue", "wed", "thu", "fri"]
+work_from = "09:00"
+work_to = "19:00"
+off_hours_rate = 0
+rate_window_days = 3
 
 # ---------------------------------------------------------------- refresh --
 # An expired login is renewed by starting Claude Code under it, which rewrites
