@@ -633,6 +633,17 @@ def history_path_of(config_path):
     return Path(config_path).with_name("claude-limits-history.json")
 
 
+def sample_epoch(mark):
+    """A sample's timestamp as epoch seconds: int/float (the old format) or a
+    human-readable local ISO string (the format written since 2026-09-21)."""
+    if isinstance(mark, (int, float)):
+        return float(mark)
+    try:
+        return datetime.fromisoformat(str(mark)).timestamp()
+    except ValueError:
+        return None
+
+
 def load_history(path):
     try:
         data = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -647,14 +658,14 @@ def save_history(path, history, now):
     cutoff = now - HISTORY_DAYS * 86400
     for key in list(history):
         pts = [p for p in history[key]
-               if isinstance(p, list) and len(p) == 2 and isinstance(p[0], (int, float))
-               and cutoff <= p[0] <= now]
+               if isinstance(p, list) and len(p) == 2 and isinstance(sample_epoch(p[0]), float)
+               and cutoff <= sample_epoch(p[0]) <= now]
         if pts:
             history[key] = pts
         else:
             del history[key]
     tmp = Path(path).with_name(Path(path).name + ".tmp")
-    tmp.write_text(json.dumps(history), encoding="utf-8")
+    tmp.write_text(json.dumps(history, ensure_ascii=False, indent=1), encoding="utf-8")
     os.replace(tmp, path)
 
 
@@ -735,10 +746,13 @@ def kind_class_of(kind):
 
 def record_sample(history, series, kind, pct, now):
     """One series per LIMIT ROW (weekly_all and weekly_scoped:Fable are different
-    quotas and must not mix); the window class only picks the forecast mode."""
+    quotas and must not mix); the window class only picks the forecast mode.
+    The timestamp is written human-readable on purpose: this file is opened
+    by eyes more often than by code."""
     if kind_class_of(kind) is None or pct is None:
         return
-    history.setdefault(f"{series}|{kind}", []).append([int(now), round(float(pct), 4)])
+    mark = datetime.fromtimestamp(now).astimezone().strftime("%Y-%m-%d %H:%M:%S")
+    history.setdefault(f"{series}|{kind}", []).append([mark, round(float(pct), 4)])
 
 
 def forecast_of(history, series, kind_class, pct, reset_epoch, now, sched):
@@ -751,8 +765,13 @@ def forecast_of(history, series, kind_class, pct, reset_epoch, now, sched):
     past, no samples, or less than 30 minutes of history."""
     if reset_epoch is None or reset_epoch <= now or pct is None:
         return None
-    samples = sorted((s for s in history.get(series) or []
-                      if isinstance(s, list) and len(s) == 2), key=lambda s: s[0])
+    samples = []
+    for s in history.get(series) or []:
+        if isinstance(s, list) and len(s) == 2:
+            ts = sample_epoch(s[0])
+            if ts is not None:
+                samples.append((ts, s[1]))
+    samples = sorted(samples)
     samples = [s for s in samples if s[0] <= now]
     calendar = kind_class == "session"
     window = {"session": 5 * 3600, "weekly": 7 * 86400}.get(kind_class, 30 * 86400)
