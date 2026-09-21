@@ -32,6 +32,8 @@ accounts = [
 # будет к моменту сброса при текущем расходе; вторая строка под баром — исход.
 # working_hours = true считает неделю и месяц по рабочему графику ниже;
 # по умолчанию выключено — все окна считаются по календарю, как сессия.
+# warning/critical — пороги ЦВЕТА ПРИЗРАКА (проекции), свои и мягче заливки:
+# 80/95 по умолчанию — тень не кричит «жёлтый» задолго до реальной беды.
 [forecast]
 enabled = true
 working_hours = false
@@ -40,6 +42,8 @@ work_from = "09:00"
 work_to = "19:00"
 off_hours_rate = 0
 rate_window_days = 3
+warning = 80
+critical = 95
 
 # ---------------------------------------------------------------- refresh --
 # An expired login is renewed by starting Claude Code under it, which rewrites

@@ -566,15 +566,16 @@ def forecast_suffix(fr, paint):
     return head + ", " + tail
 
 
-def print_limit_row(kind, pct, sev, reset_label, fr, paint, bar_style):
+def print_limit_row(kind, pct, sev, reset_label, fr, paint, bar_style, ghost_thresholds=(80, 95)):
     """One limit row; `fr` is a forecast tuple or None. The ghost shade of the
-    bar runs from percent to percent_at_reset (spec 01.1 §2.2); the second
-    line under the bar is the forecast per spec §2.4."""
+    bar runs from percent to percent_at_reset (spec 01.1 §2.2) and takes the
+    ghost thresholds' colour (its own [forecast] warning/critical, not the
+    fill's 70/90); the second line under the bar is the forecast per spec §2.4."""
     ghost, ghost_sev, suffix = None, None, ""
     if fr is not None:
         if fr[0] > pct:
             ghost = fr[0]
-            ghost_sev = severity_of(None, min(fr[0], 100))   # the landing, not the now
+            ghost_sev = ghost_severity_of(min(fr[0], 100), *ghost_thresholds)
         # a zero row projecting zero is noise, not information; any other
         # flat forecast still prints its "-> N% at reset" per spec §2.7
         if fr[0] != pct or pct:
@@ -694,9 +695,17 @@ def backup_history(path, now):
             pass
 
 
+def ghost_severity_of(pct, warning, critical):
+    """The ghost's own thresholds, configurable via [forecast] warning/critical
+    (default 80/95, owner word 2026-09-22): a projection below `warning` stays
+    green -- the fill's stricter 70/90 is about NOW, the ghost is about LATER."""
+    return "critical" if pct >= critical else "warning" if pct >= warning else "normal"
+
+
 def forecast_config_of(config):
-    """[forecast] table per spec 01.1 §5.3: enabled, work_days, work_from,
-    work_to, off_hours_rate. Defaults match the spec."""
+    """[forecast] table per spec 01.1 §5.3: enabled, working_hours, work_days,
+    work_from, work_to, off_hours_rate, rate_window_days, warning, critical.
+    Defaults match the spec."""
     raw = config.get("forecast")
     if not isinstance(raw, dict):
         raw = {}
@@ -709,6 +718,16 @@ def forecast_config_of(config):
             return int(h) * 60 + int(m)
         except (ValueError, TypeError):
             return default
+    def threshold(key, default):
+        try:
+            v = int(raw.get(key, default))
+            return v if 0 < v <= 100 else default
+        except (TypeError, ValueError):
+            return default
+    warning = threshold("warning", 80)
+    critical = threshold("critical", 95)
+    if warning >= critical:
+        warning, critical = 80, 95
     try:
         off = min(max(int(raw.get("off_hours_rate", 0)), 0), 100)
     except (TypeError, ValueError):
@@ -727,6 +746,8 @@ def forecast_config_of(config):
         # the schedule is optional and OFF by default (owner 2026-09-21):
         # without it every minute weighs 1 and windows count calendar time
         "working_hours": bool(raw.get("working_hours", False)),
+        "warning": warning,
+        "critical": critical,
     }
 
 
@@ -1071,7 +1092,8 @@ def snapshot(dirs, paint, bar_style, offline_dir=None, refresher=None, kimi_refr
             cls = kind_class_of(kind)
             fr = (forecast_of(history, f"{series}|{kind}", cls, pct, reset_epoch, now, sched)
                   if history is not None and sched and sched["enabled"] and cls else None)
-            print_limit_row(kind, pct, sev, reset, fr, paint, bar_style)
+            print_limit_row(kind, pct, sev, reset, fr, paint, bar_style,
+                          (sched["warning"], sched["critical"]) if sched else (80, 95))
             sig.append((kind, round(pct, 1) if pct is not None else None,
                         int(reset_epoch // 60) if reset_epoch else None))
         note = signature_note(tuple(sig), seen_signatures)
@@ -1139,7 +1161,8 @@ def snapshot(dirs, paint, bar_style, offline_dir=None, refresher=None, kimi_refr
             cls = kind_class_of(kind)
             fr = (forecast_of(history, f"{series}|{kind}", cls, pct, reset_epoch, now, sched)
                   if history is not None and sched and sched["enabled"] and cls else None)
-            print_limit_row(kind, pct, sev, reset, fr, paint, bar_style)
+            print_limit_row(kind, pct, sev, reset, fr, paint, bar_style,
+                          (sched["warning"], sched["critical"]) if sched else (80, 95))
             sig.append((kind, round(pct, 1) if pct is not None else None,
                         int(reset_epoch // 60) if reset_epoch else None))
         extra = kimi_extra_usage_line(usage)
