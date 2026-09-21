@@ -85,6 +85,7 @@ DEFAULT_CONFIG = REPO_ROOT / "claude-limits.toml"
 
 KIMI_LIMIT_NAMES = [("limit_5h", "5h limit"), ("limit_7d", "weekly limit"),
                     ("limit_month_total", "month limit"), ("limit_month_code", "month limit (code)")]
+DEFAULT_THRESHOLDS = (70, 90)   # the fill's: configurable via [thresholds]
 
 # ---------------------------------------------------------------- accounts --
 
@@ -566,11 +567,12 @@ def forecast_suffix(fr, paint):
     return head + ", " + tail
 
 
-def print_limit_row(kind, pct, sev, reset_label, fr, paint, bar_style, ghost_thresholds=(80, 95)):
+def print_limit_row(kind, pct, sev, reset_label, fr, paint, bar_style,
+                    ghost_thresholds=(80, 95), thresholds=DEFAULT_THRESHOLDS):
     """One limit row; `fr` is a forecast tuple or None. The ghost shade of the
     bar runs from percent to percent_at_reset (spec 01.1 §2.2) and takes the
     ghost thresholds' colour (its own [forecast] warning/critical, not the
-    fill's 70/90); the second line under the bar is the forecast per spec §2.4."""
+    fill's); the second line under the bar is the forecast per spec §2.4."""
     ghost, ghost_sev, suffix = None, None, ""
     if fr is not None:
         if fr[0] > pct:
@@ -581,8 +583,8 @@ def print_limit_row(kind, pct, sev, reset_label, fr, paint, bar_style, ghost_thr
         if fr[0] != pct or pct:
             suffix = "\n" + " " * 24 + forecast_suffix(fr, paint)
     pct_s = "-" if pct is None else f"{pct:>3.0f}%"
-    sev_label = sev if sev in ("normal", "warning", "critical") else severity_of(sev, pct)
-    print(f"  {kind:<22} {bar_of(pct, sev, bar_style, paint, ghost, ghost_sev)} {pct_s:>4}  "
+    sev_label = sev if sev in ("normal", "warning", "critical") else severity_of(sev, pct, thresholds)
+    print(f"  {kind:<22} {bar_of(pct, sev, bar_style, paint, ghost, ghost_sev, thresholds)} {pct_s:>4}  "
           f"{sev_label:<8} resets {reset_label}" + suffix)
 
 
@@ -914,21 +916,40 @@ class Paint:
 BAR_WIDTH = 30
 
 
-def severity_of(sev, pct):
-    """The server's word when it gives one; otherwise derived from the percent."""
+def severity_of(sev, pct, thresholds=DEFAULT_THRESHOLDS):
+    """The server's word when it gives one; otherwise derived from the percent
+    by [thresholds] warning/critical (default 70/90, the product's keys)."""
     if sev in ("normal", "warning", "critical"):
         return sev
     if pct is None:
         return "normal"
-    return "critical" if pct >= 90 else "warning" if pct >= 70 else "normal"
+    warning, critical = thresholds
+    return "critical" if pct >= critical else "warning" if pct >= warning else "normal"
+
+
+def thresholds_of(config):
+    """[thresholds] warning/critical for the FILL's colour; invalid pairs and
+    missing sections fall back to 70/90."""
+    raw = config.get("thresholds")
+    if not isinstance(raw, dict):
+        return DEFAULT_THRESHOLDS
+    def num(key, default):
+        try:
+            v = int(raw.get(key, default))
+            return v if 0 < v <= 100 else default
+        except (TypeError, ValueError):
+            return default
+    warning, critical = num("warning", 70), num("critical", 90)
+    return (warning, critical) if warning < critical else DEFAULT_THRESHOLDS
 
 
 BAR_GLYPHS = {"blocks": ("█", "░", "▒"), "ascii": ("#", ".", ":")}
 
 
-def bar_of(pct, sev, style, paint, ghost=None, ghost_sev=None):
+def bar_of(pct, sev, style, paint, ghost=None, ghost_sev=None, thresholds=DEFAULT_THRESHOLDS):
     """A 30-cell bar between brackets. 'blocks' -> [████░░░░], 'ascii' -> [####....].
-    Filled part coloured green/yellow/red by severity, empty part dim.
+    Filled part coloured green/yellow/red by severity (the [thresholds]
+    warning/critical), empty part dim.
     `ghost` (a larger percent) extends the bar with the shade glyph; the ghost
     keeps its own severity colour (ghost_sev) -- by the PROJECTED percent, so
     the bar shows not only where usage is but where it lands and how bad that
@@ -939,9 +960,9 @@ def bar_of(pct, sev, style, paint, ghost=None, ghost_sev=None):
     filled = round(min(max(pct, 0), 100) / 100 * BAR_WIDTH)
     ghost_end = round(min(max(ghost, 0), 100) / 100 * BAR_WIDTH) if ghost is not None else filled
     ghost_end = min(max(ghost_end, filled), BAR_WIDTH)
-    color = severity_of(sev, pct)
+    color = severity_of(sev, pct, thresholds)
     fill = paint.fill(full * filled, color) if filled else ""
-    shade_color = severity_of(ghost_sev, ghost) if ghost_sev else color
+    shade_color = severity_of(ghost_sev, ghost, thresholds) if ghost_sev else color
     shade_s = paint.fill(shade * (ghost_end - filled), shade_color) if ghost_end > filled else ""
     return "[" + fill + shade_s + paint.empty(empty * (BAR_WIDTH - ghost_end)) + "]"
 
@@ -994,7 +1015,7 @@ def signature_note(sig, seen):
 
 
 def snapshot(dirs, paint, bar_style, offline_dir=None, refresher=None, kimi_refresher=None,
-             history=None, history_path=None, sched=None):
+             history=None, history_path=None, sched=None, thresholds=DEFAULT_THRESHOLDS):
     """Prints every account found in dirs. Returns (accounts_found, seconds_to_back_off).
 
     With `offline_dir` set, no request leaves the machine: replies come from the
@@ -1093,7 +1114,8 @@ def snapshot(dirs, paint, bar_style, offline_dir=None, refresher=None, kimi_refr
             fr = (forecast_of(history, f"{series}|{kind}", cls, pct, reset_epoch, now, sched)
                   if history is not None and sched and sched["enabled"] and cls else None)
             print_limit_row(kind, pct, sev, reset, fr, paint, bar_style,
-                          (sched["warning"], sched["critical"]) if sched else (80, 95))
+                          (sched["warning"], sched["critical"]) if sched else (80, 95),
+                          thresholds=thresholds)
             sig.append((kind, round(pct, 1) if pct is not None else None,
                         int(reset_epoch // 60) if reset_epoch else None))
         note = signature_note(tuple(sig), seen_signatures)
@@ -1162,7 +1184,8 @@ def snapshot(dirs, paint, bar_style, offline_dir=None, refresher=None, kimi_refr
             fr = (forecast_of(history, f"{series}|{kind}", cls, pct, reset_epoch, now, sched)
                   if history is not None and sched and sched["enabled"] and cls else None)
             print_limit_row(kind, pct, sev, reset, fr, paint, bar_style,
-                          (sched["warning"], sched["critical"]) if sched else (80, 95))
+                          (sched["warning"], sched["critical"]) if sched else (80, 95),
+                          thresholds=thresholds)
             sig.append((kind, round(pct, 1) if pct is not None else None,
                         int(reset_epoch // 60) if reset_epoch else None))
         extra = kimi_extra_usage_line(usage)
@@ -1276,7 +1299,8 @@ def main(argv):
         history = {} if args.offline else load_history(hist_path)
         found, _ = snapshot(dirs_from(args, config), paint, bar_style_of(args, config),
                             args.offline, refresher, kimi_refresher,
-                            history=history, history_path=hist_path, sched=sched)
+                            history=history, history_path=hist_path, sched=sched,
+                            thresholds=thresholds_of(config))
         return 0 if found else 1
 
     interval = interval_of(args, config)
@@ -1290,7 +1314,8 @@ def main(argv):
             history = {} if args.offline else load_history(hist_path)
             _, backoff = snapshot(dirs_from(args, config), paint, bar_style_of(args, config),
                                   args.offline, refresher, kimi_refresher,
-                                  history=history, history_path=hist_path, sched=sched)
+                                  history=history, history_path=hist_path, sched=sched,
+                                  thresholds=thresholds_of(config))
             wait = max(interval, backoff)
             if wait > interval:
                 print(f"\nbacking off: next snapshot in {wait} s")

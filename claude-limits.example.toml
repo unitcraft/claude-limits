@@ -5,6 +5,12 @@
 # Seconds between snapshots in --daemon mode.
 interval_sec = 300
 
+# Пороги цвета ЗАЛИВКИ бара (текущего процента): желтый и красный.
+# Призрак прогноза использует свои пороги в [forecast] ниже.
+[thresholds]
+warning = 70
+critical = 90
+
 # Progress bar glyphs: "blocks" -> [████░░░░] (default), "ascii" -> [####....]
 # If the block bar shows empty, the terminal font has no block glyphs: turn off
 # terminal GPU acceleration or pick a font with them (see the README), or set
