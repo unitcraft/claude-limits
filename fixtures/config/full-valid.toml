@@ -17,6 +17,7 @@ critical = 90
 
 [forecast]
 enabled = true
+working_hours = false
 work_days = ["mon","tue","wed","thu","fri"]
 work_from = "09:00"
 work_to = "19:00"

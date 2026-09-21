@@ -723,6 +723,9 @@ def forecast_config_of(config):
         "to_min": hhmm(raw.get("work_to", "19:00"), 19 * 60),
         "off": off / 100,
         "rate_window_days": rate_window_days,
+        # the schedule is optional and OFF by default (owner 2026-09-21):
+        # without it every minute weighs 1 and windows count calendar time
+        "working_hours": bool(raw.get("working_hours", False)),
     }
 
 
@@ -740,10 +743,11 @@ def schedule_weight(sched, epoch):
 
 def work_between(sched, t0, t1, calendar=False):
     """Weighted minutes between two epochs per the working schedule; plain
-    calendar minutes for session windows."""
+    calendar minutes when `calendar` (session windows) or the schedule is
+    switched off ([forecast] working_hours = false, the default)."""
     if t1 <= t0:
         return 0.0
-    if calendar:
+    if calendar or not sched.get("working_hours"):
         return (t1 - t0) / 60
     total, t = 0.0, t0
     while t < t1:
@@ -830,8 +834,9 @@ def forecast_of(history, series, kind_class, pct, reset_epoch, now, sched):
     runs_out = None
     if percent_at_reset >= 100:
         acc, t = 0.0, now
+        plain = calendar or not sched.get("working_hours")
         while t < reset_epoch:
-            acc += rate * (1.0 if calendar else schedule_weight(sched, t))
+            acc += rate * (1.0 if plain else schedule_weight(sched, t))
             if float(pct) + acc >= 100:
                 runs_out = t
                 break
