@@ -101,13 +101,6 @@ fn wants_hidden(req ServerRequest) -> bool {
 
 // ── order and hiding ─────────────────────────────────────────────────────────
 
-fn contains(list []str, s str) -> bool {
-    for x in list {
-        if x == s { return true }
-    }
-    false
-}
-
 /// Rank of a limit kind for the within-account order of §3.3.
 fn kind_rank(kind str) -> int {
     if kind == "session" { return 0 }
@@ -125,12 +118,12 @@ export fn arrange(v SnapshotView, order []str, hidden []str, include_hidden bool
     mut kept = []AccountView.new()
     for e in order {
         for a in v.accounts {
-            if a.email == e && (include_hidden || !contains(hidden, a.email)) { kept.push(a) }
+            if a.email == e && (include_hidden || !hidden.contains(a.email)) { kept.push(a) }
         }
     }
     for a in v.accounts {
-        if contains(order, a.email) { continue }
-        if include_hidden || !contains(hidden, a.email) { kept.push(a) }
+        if order.contains(a.email) { continue }
+        if include_hidden || !hidden.contains(a.email) { kept.push(a) }
     }
 
     // Limits follow their accounts, and inside an account: session, weekly_all,

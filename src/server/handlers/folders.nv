@@ -98,13 +98,6 @@ export fn parse_ask(raw str) -> Ask {
     }
 }
 
-fn contains(list []str, s str) -> bool {
-    for x in list {
-        if x == s { return true }
-    }
-    false
-}
-
 /// Other directories holding the same login (§3.9's `same_login_as`).
 ///
 /// By E-MAIL and not by path: the same account signed in under two directory names
@@ -150,7 +143,7 @@ export fn render_probe(st ProbeState, resolved str, f Folder) Creds -> str {
         field_str("kind", f.kind.to_str()),
         field_raw("login_dirs", array(logins)),
         field_str_or_null("problem", f.problem),
-        field_bool("already_listed", contains(st.listed, resolved)),
+        field_bool("already_listed", st.listed.contains(resolved)),
     ])
 }
 

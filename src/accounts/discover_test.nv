@@ -54,13 +54,6 @@ fn files_present() -> []str => [
     "/fx/two-dirs-one-account/same-email-b/.credentials.json",
 ]
 
-fn contains(list []str, want str) -> bool {
-    for x in list {
-        if x == want { return true }
-    }
-    false
-}
-
 /// Entry NAMES directly under `path`.
 fn children_of(path str) -> []str {
     mut out []str = []
@@ -83,8 +76,8 @@ fn children_of(path str) -> []str {
 fn fake_dirs[T](body fn() Dirs -> T) -> T =>
     with Dirs = effect Dirs {
         list(path) -> []str { children_of(path) }
-        exists(path) -> bool { contains(dirs_present(), path) || contains(files_present(), path) }
-        is_dir(path) -> bool { contains(dirs_present(), path) }
+        exists(path) -> bool { dirs_present().contains(path) || files_present().contains(path) }
+        is_dir(path) -> bool { dirs_present().contains(path) }
     } {
         body()
     }
