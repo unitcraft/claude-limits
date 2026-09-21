@@ -493,7 +493,7 @@ claude-limits/
 │                             `Log`-эффекте Polaris и возврате строк, а не на печати
 │   ├── version.nv            строка версии, чистый модуль (T0.0); тест рядом  — чистое
 ├── accounts/                 обнаружение каталогов Claude Code и Kimi Code, чтение файлов
-│   ├── discover.nv           default dir, CLAUDE_CONFIG_DIR, KIMI_CODE_HOME, список, children/**, UNC-пути WSL (Fs, Os)
+│   ├── discover.nv           default dir, CLAUDE_CONFIG_DIR, KIMI_CODE_HOME, список, children = true, UNC-пути WSL (Fs, Os)
 │   ├── login.nv              Login { email, org, dir, token, expires_at }            (Fs)
 │   ├── kimi.nv               дом Kimi Code: credentials/*.json -> логин { name, token, refresh,
 │   │                         expires_at }; refresh grant + атомарная запись + правила гонки ротации (Http, Fs)
