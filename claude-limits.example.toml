@@ -58,7 +58,10 @@ auto_refresh = true
 # left alone -- silencing a parenthetical note is not worth a request.
 refresh_all_expired = false
 
-# The throwaway request. Cheapest model that can answer "ok".
+# The throwaway request, CLAUDE REFRESHES ONLY: Claude Code is started to
+# rewrite its own token and the request spends that account's quota, so the
+# model is the cheapest one that can answer "ok". Kimi renews by an OAuth
+# token grant against auth.kimi.com -- no model, no quota spent.
 refresh_model = "claude-haiku-4-5-20251001"
 
 # Limit per directory. A `claude` that hangs is killed and reported.

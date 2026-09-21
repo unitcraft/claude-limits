@@ -1180,7 +1180,9 @@ def parse_args(argv):
                    help="renew every expired directory, not only the ones that block a reading "
                         "(also 'refresh_all_expired' in the config)")
     p.add_argument("--refresh-model", metavar="ID",
-                   help=f"model for the throwaway refresh request (default: {refresh_token.DEFAULT_MODEL})")
+                   help=f"model for the Claude throwaway refresh request only (default: "
+                        f"{refresh_token.DEFAULT_MODEL}); Kimi renews by an OAuth grant and "
+                        f"spends no quota, so no model applies")
     p.add_argument("--refresh-timeout", type=int, metavar="SEC",
                    help=f"limit per refresh (default: {refresh_token.DEFAULT_TIMEOUT})")
     p.add_argument("--refresh-cooldown", type=int, metavar="SEC",
