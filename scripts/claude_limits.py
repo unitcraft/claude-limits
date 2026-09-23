@@ -142,7 +142,7 @@ def short_name(cfg_dir):
 
 
 def read_login(cfg_dir):
-    """One directory -> dict(dir, email, org, token, expired), or None without a login."""
+    """One directory -> dict(dir, email, name, org, token, expired), or None without a login."""
     creds_file = cfg_dir / ".credentials.json"
     if not creds_file.is_file():
         return None
@@ -150,15 +150,16 @@ def read_login(cfg_dir):
     token = creds.get("accessToken")
     if not token:
         return None
-    email = org = None
+    email = name = org = None
     ident = identity_file(cfg_dir)
     if ident.is_file():
         acc = json.loads(ident.read_text(encoding="utf-8")).get("oauthAccount") or {}
-        email, org = acc.get("emailAddress"), acc.get("organizationName")
+        email, name, org = acc.get("emailAddress"), acc.get("fullName"), acc.get("organizationName")
     expires_ms = creds.get("expiresAt") or 0
     return {
         "dir": cfg_dir,
         "email": email,
+        "name": name,
         "org": org,
         "token": token,
         "expired": expires_ms / 1000 < datetime.now(timezone.utc).timestamp(),
@@ -173,7 +174,7 @@ def accounts_of(dirs):
         if login is None:
             continue
         key = (login["email"] or str(cfg_dir)).lower()
-        g = groups.setdefault(key, {"email": login["email"], "org": login["org"],
+        g = groups.setdefault(key, {"email": login["email"], "name": login["name"], "org": login["org"],
                                     "dirs": [], "expired_dirs": [], "expired_paths": [],
                                     "token": None})
         g["dirs"].append(short_name(cfg_dir))
@@ -186,6 +187,11 @@ def accounts_of(dirs):
             g["token"] = login["token"]
     for g in groups.values():
         who = f"{g['email']} ({g['org'] or '-'})" if g["email"] else "unknown account"
+        if g["name"]:
+            # the provider may re-bind identities to pools (seen 2026-09-23:
+            # a niceaiservice directory answering Mohamed Benali) -- the name
+            # makes the mismatch visible right in the label
+            who = f"{g['email']} ({g['name']}, {g['org'] or '-'})"
         g["label"] = f"{who}  [{', '.join(g['dirs'])}]"
     return list(groups.values())
 
