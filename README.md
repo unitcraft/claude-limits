@@ -28,7 +28,7 @@ A Claude Code login is a config directory with two files:
 
 | file | what is read | notes |
 |---|---|---|
-| `.claude.json` | `oauthAccount.emailAddress`, `oauthAccount.organizationName` | identity, shown as the row label |
+| `.claude.json` | `oauthAccount.emailAddress`, `displayName`, `organizationName`, `profileFetchedAt` | identity, shown as the row label; inside the dir and beside it — the freshest profile wins, so a re-logged directory is not labelled by its stale identity |
 | `.credentials.json` | `claudeAiOauth.accessToken`, `expiresAt`, `subscriptionType`, `rateLimitTier` | `expiresAt` is milliseconds since the epoch |
 
 Two layouts exist:

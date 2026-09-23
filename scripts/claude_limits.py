@@ -22,8 +22,9 @@ accepts either -- and a directory may hold one of each. `kind` is mandatory:
 a bare path in the config is an error, so the choice is never guessed.
 
 A directory counts as a login when it holds .credentials.json with a token.
-The identity file .claude.json is looked up inside the directory first and
-beside it second (the default layout keeps it beside ~/.claude).
+The identity file .claude.json is looked up inside the directory and beside
+it; when both exist, the FRESHEST profile wins (see identity_file for why
+position alone labels a directory with a stale identity).
 
 Several directories may hold the same account (same e-mail). They are shown
 as ONE group with every directory in the label, and the server is asked once
@@ -90,9 +91,25 @@ DEFAULT_THRESHOLDS = (70, 90)   # the fill's: configurable via [thresholds]
 # ---------------------------------------------------------------- accounts --
 
 def identity_file(cfg_dir):
-    """`.claude.json` inside the dir, else beside it (default layout of ~/.claude)."""
-    inside = cfg_dir / ".claude.json"
-    return inside if inside.is_file() else cfg_dir.parent / ".claude.json"
+    """`.claude.json` inside the dir and beside it, the FRESHEST first.
+
+    Both can exist when a config dir was re-logged under a different account:
+    the file Claude Code wrote last (latest `profileFetchedAt`) is the one its
+    current token belongs to -- picking by position alone labels the directory
+    with a stale identity (seen 2026-09-23: a wsl dir holding Sofia García's
+    file inside and Mohamed Benali's fresher file beside; the token followed
+    the fresher one)."""
+    cands = []
+    for p in (cfg_dir / ".claude.json", cfg_dir.parent / ".claude.json"):
+        if not p.is_file():
+            continue
+        try:
+            acc = json.loads(p.read_text(encoding="utf-8")).get("oauthAccount") or {}
+        except (json.JSONDecodeError, OSError):
+            continue
+        cands.append((acc.get("profileFetchedAt") or 0, p, acc))
+    cands.sort(key=lambda c: -c[0])
+    return cands
 
 
 def env_dirs():
@@ -151,10 +168,10 @@ def read_login(cfg_dir):
     if not token:
         return None
     email = name = org = None
-    ident = identity_file(cfg_dir)
-    if ident.is_file():
-        acc = json.loads(ident.read_text(encoding="utf-8")).get("oauthAccount") or {}
-        email, name, org = acc.get("emailAddress"), acc.get("fullName"), acc.get("organizationName")
+    candidates = identity_file(cfg_dir)
+    if candidates:
+        _fetched, _path, acc = candidates[0]
+        email, name, org = acc.get("emailAddress"), acc.get("fullName") or acc.get("displayName"), acc.get("organizationName")
     expires_ms = creds.get("expiresAt") or 0
     return {
         "dir": cfg_dir,
