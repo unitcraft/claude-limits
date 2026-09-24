@@ -585,6 +585,11 @@ def forecast_suffix(fr, paint):
         return head
     when = datetime.fromtimestamp(runs_out).astimezone()
     today = datetime.now().astimezone().date()
+    if runs_out <= time.time():
+        # the projection says exhaustion has ALREADY happened: no tilde, no
+        # "time until" -- those are for the future; the moment is a fact
+        day = "" if when.date() == today else when.strftime("%Y-%m-%d ")
+        return head + ", " + paint.fill(f"ends {day}{when:%H:%M} (now)", "warning")
     day = "" if when.date() == today else when.strftime("%Y-%m-%d ")
     tail = paint.fill(f"ends {day}~{when:%H:%M} ({duration_of(runs_out - time.time())})", "warning")
     return head + ", " + tail
