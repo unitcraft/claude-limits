@@ -611,6 +611,20 @@ def print_limit_row(kind, pct, sev, reset_label, fr, paint, bar_style,
           f"{sev_label:<8} resets {reset_label}" + suffix)
 
 
+def print_stale_rows(stored, paint, bar_style):
+    """The last good snapshot, dimmed, with its age -- shown when this cycle's
+    request failed (429, network). Spec 01.1 §3.3: unknown shows the last good
+    data, not nothing."""
+    when, rows = stored
+    age = duration_of(time.time() - when)
+    stamp = datetime.fromtimestamp(when).strftime("%H:%M:%S")
+    print(f"  last good data {stamp} ({age} ago):")
+    for kind, pct, sev_label, reset_label in rows:
+        pct_s = "-" if pct is None else f"{pct:>3.0f}%"
+        bar = bar_of(pct, None, bar_style, Paint(False))
+        print("  " + paint.empty(f"{kind:<22} {bar} {pct_s:>4}  {sev_label:<8} resets {reset_label}"))
+
+
 def local_time(iso):
     if not iso:
         return "-"
@@ -1038,7 +1052,8 @@ def signature_note(sig, seen):
 
 
 def snapshot(dirs, paint, bar_style, offline_dir=None, refresher=None, kimi_refresher=None,
-             history=None, history_path=None, sched=None, thresholds=DEFAULT_THRESHOLDS):
+             history=None, history_path=None, sched=None, thresholds=DEFAULT_THRESHOLDS,
+             last_good=None):
     """Prints every account found in dirs. Returns (accounts_found, seconds_to_back_off).
 
     With `offline_dir` set, no request leaves the machine: replies come from the
@@ -1059,7 +1074,13 @@ def snapshot(dirs, paint, bar_style, offline_dir=None, refresher=None, kimi_refr
     Live cycles also fingerprint every account's rows (kind, percent, reset
     minute). Two accounts reporting the IDENTICAL quota state -- same rows,
     same percents, same reset minutes -- are one pool behind two logins
-    (org-level quota): the later one gets a note naming the first."""
+    (org-level quota): the later one gets a note naming the first.
+
+    `last_good` is the caller's dict series -> (epoch, rows) of the newest
+    successful reading per account. On 429/network failure the stale rows are
+    printed DIMMED with their age instead of nothing -- spec 01.1 §3.3's
+    «unknown shows the last good snapshot» -- so a rate-limit storm does not
+    blank the screen; the dict is updated in place on every success."""
     now = time.time()
     claude_dirs = [d for d, kind in dirs if kind in ("auto", "claude")]
     kimi_dirs = [d for d, kind in dirs if kind in ("auto", "kimi")]
@@ -1075,6 +1096,7 @@ def snapshot(dirs, paint, bar_style, offline_dir=None, refresher=None, kimi_refr
     for acc in accounts:
         expired_note = (f"  ({', '.join(acc['expired_dirs'])}: token expired on disk)"
                         if acc["expired_dirs"] and acc["token"] else None)
+        series = "claude:" + (acc["email"] or acc["label"])
         if acc["token"] is None:
             # No request with a dead token: the server answers 401, then 429 on
             # repeats. Only Claude Code refreshes it (README, Token lifetime).
@@ -1118,17 +1140,21 @@ def snapshot(dirs, paint, bar_style, offline_dir=None, refresher=None, kimi_refr
             if expired_note:
                 print(expired_note)
             print("  " + msg)
+            if last_good is not None and series in last_good:
+                print_stale_rows(last_good[series], paint, bar_style)
             continue
         except OSError as e:
             print("\n" + paint.unknown(acc["label"]))
             if expired_note:
                 print(expired_note)
             print(f"  network error: {e}")
+            if last_good is not None and series in last_good:
+                print_stale_rows(last_good[series], paint, bar_style)
             continue
         print("\n" + paint.live(acc["label"]))
         if expired_note:
             print(expired_note)
-        series = "claude:" + (acc["email"] or acc["label"])
+        good_rows = []
         sig = []
         for kind, pct, sev, reset, reset_epoch in rows_of(usage):
             if history is not None:
@@ -1139,8 +1165,12 @@ def snapshot(dirs, paint, bar_style, offline_dir=None, refresher=None, kimi_refr
             print_limit_row(kind, pct, sev, reset, fr, paint, bar_style,
                           (sched["warning"], sched["critical"]) if sched else (80, 95),
                           thresholds=thresholds)
+            sev_label = sev if sev in ("normal", "warning", "critical") else severity_of(sev, pct, thresholds)
+            good_rows.append((kind, pct, sev_label, reset))
             sig.append((kind, round(pct, 1) if pct is not None else None,
                         int(reset_epoch // 60) if reset_epoch else None))
+        if last_good is not None:
+            last_good[series] = (now, good_rows)
         note = signature_note(tuple(sig), seen_signatures)
         if note:
             print("  " + note)
@@ -1192,13 +1222,18 @@ def snapshot(dirs, paint, bar_style, offline_dir=None, refresher=None, kimi_refr
                 head, msg = paint.unknown(login["label"]), f"HTTP {e.code}: {body[:160]}"
             print("\n" + head)
             print("  " + msg)
+            if last_good is not None and f"kimi:{login['name']}" in last_good:
+                print_stale_rows(last_good[f"kimi:{login['name']}"], paint, bar_style)
             continue
         except OSError as e:
             print("\n" + paint.unknown(login["label"]))
             print(f"  network error: {e}")
+            if last_good is not None and f"kimi:{login['name']}" in last_good:
+                print_stale_rows(last_good[f"kimi:{login['name']}"], paint, bar_style)
             continue
         print("\n" + paint.live(login["label"]))
         series = "kimi:" + login["name"]
+        good_rows = []
         sig = []
         for kind, pct, sev, reset, reset_epoch in kimi_rows_of(usage):
             if history is not None:
@@ -1209,8 +1244,11 @@ def snapshot(dirs, paint, bar_style, offline_dir=None, refresher=None, kimi_refr
             print_limit_row(kind, pct, sev, reset, fr, paint, bar_style,
                           (sched["warning"], sched["critical"]) if sched else (80, 95),
                           thresholds=thresholds)
+            good_rows.append((kind, pct, severity_of(sev, pct, thresholds), reset))
             sig.append((kind, round(pct, 1) if pct is not None else None,
                         int(reset_epoch // 60) if reset_epoch else None))
+        if last_good is not None:
+            last_good[series] = (now, good_rows)
         extra = kimi_extra_usage_line(usage)
         if extra:
             print(f"  {extra}")
@@ -1317,13 +1355,14 @@ def main(argv):
     refresher = refresher_of(args, config)
     kimi_refresher = kimi_refresher_of(args, config)
     hist_path = history_path_of(args.config)
-    if not args.daemon:
-        sched = None if args.offline else forecast_config_of(config)
+    last_good = {}                                   # survives across daemon cycles:
+    if not args.daemon:                              # the last reading per account,
+        sched = None if args.offline else forecast_config_of(config)   # shown dimmed on 429
         history = {} if args.offline else load_history(hist_path)
         found, _ = snapshot(dirs_from(args, config), paint, bar_style_of(args, config),
                             args.offline, refresher, kimi_refresher,
                             history=history, history_path=hist_path, sched=sched,
-                            thresholds=thresholds_of(config))
+                            thresholds=thresholds_of(config), last_good=last_good)
         return 0 if found else 1
 
     interval = interval_of(args, config)
@@ -1338,7 +1377,7 @@ def main(argv):
             _, backoff = snapshot(dirs_from(args, config), paint, bar_style_of(args, config),
                                   args.offline, refresher, kimi_refresher,
                                   history=history, history_path=hist_path, sched=sched,
-                                  thresholds=thresholds_of(config))
+                                  thresholds=thresholds_of(config), last_good=last_good)
             wait = max(interval, backoff)
             if wait > interval:
                 print(f"\nbacking off: next snapshot in {wait} s")
