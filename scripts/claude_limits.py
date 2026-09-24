@@ -1041,6 +1041,25 @@ def offline_usage(acc, offline_dir):
     raise FileNotFoundError(f"no fixture for {email or acc['label']} in {d}")
 
 
+def last_good_from_history(history, thresholds=DEFAULT_THRESHOLDS):
+    """Seed the stale-display from the measurement history: the newest sample
+    of each series becomes that account's last good row (resets_at is not
+    recorded in history, so the reset column shows '-'). Lets a restarted
+    daemon keep showing yesterday's numbers through a 429 storm."""
+    rows = {}
+    for key, pts in (history or {}).items():
+        if not pts:
+            continue
+        series, _sep, kind = key.rpartition("|")
+        ts = sample_epoch(pts[-1][0])
+        if not series or ts is None:
+            continue
+        stamp, acc = rows.setdefault(series, [0, []])
+        rows[series][0] = max(stamp, ts)
+        acc.append((kind, pts[-1][1], severity_of(None, pts[-1][1], thresholds), "-"))
+    return {series: (stamp, acc) for series, (stamp, acc) in rows.items()}
+
+
 def signature_note(sig, seen):
     """If an identical quota fingerprint was already reported by another live
     account this cycle, name it: same numbers, same reset minutes = one pool
@@ -1359,10 +1378,13 @@ def main(argv):
     if not args.daemon:                              # the last reading per account,
         sched = None if args.offline else forecast_config_of(config)   # shown dimmed on 429
         history = {} if args.offline else load_history(hist_path)
+        thr = thresholds_of(config)
+        for series, stored in last_good_from_history(history, thr).items():
+            last_good.setdefault(series, stored)
         found, _ = snapshot(dirs_from(args, config), paint, bar_style_of(args, config),
                             args.offline, refresher, kimi_refresher,
                             history=history, history_path=hist_path, sched=sched,
-                            thresholds=thresholds_of(config), last_good=last_good)
+                            thresholds=thr, last_good=last_good)
         return 0 if found else 1
 
     interval = interval_of(args, config)
@@ -1374,10 +1396,13 @@ def main(argv):
             print(f"\n=== {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ===")
             sched = None if args.offline else forecast_config_of(config)
             history = {} if args.offline else load_history(hist_path)
+            thr = thresholds_of(config)
+            for series, stored in last_good_from_history(history, thr).items():
+                last_good.setdefault(series, stored)   # seed missing series from history
             _, backoff = snapshot(dirs_from(args, config), paint, bar_style_of(args, config),
                                   args.offline, refresher, kimi_refresher,
                                   history=history, history_path=hist_path, sched=sched,
-                                  thresholds=thresholds_of(config), last_good=last_good)
+                                  thresholds=thr, last_good=last_good)
             wait = max(interval, backoff)
             if wait > interval:
                 print(f"\nbacking off: next snapshot in {wait} s")
