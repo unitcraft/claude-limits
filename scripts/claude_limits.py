@@ -1072,7 +1072,7 @@ def signature_note(sig, seen):
 
 def snapshot(dirs, paint, bar_style, offline_dir=None, refresher=None, kimi_refresher=None,
              history=None, history_path=None, sched=None, thresholds=DEFAULT_THRESHOLDS,
-             last_good=None):
+             last_good=None, next_try=None):
     """Prints every account found in dirs. Returns (accounts_found, seconds_to_back_off).
 
     With `offline_dir` set, no request leaves the machine: replies come from the
@@ -1099,7 +1099,14 @@ def snapshot(dirs, paint, bar_style, offline_dir=None, refresher=None, kimi_refr
     successful reading per account. On 429/network failure the stale rows are
     printed DIMMED with their age instead of nothing -- spec 01.1 §3.3's
     «unknown shows the last good snapshot» -- so a rate-limit storm does not
-    blank the screen; the dict is updated in place on every success."""
+    blank the screen; the dict is updated in place on every success.
+
+    `next_try` is the caller's dict series -> epoch of the earliest next
+    allowed request. The server throttles per ACCOUNT, so one throttled login
+    must not stretch the daemon's whole cycle: gating is per account and the
+    loop keeps its interval for the healthy ones. A fresh 429 sets the gate
+    from Retry-After; while gated, the account is skipped (stale rows shown)
+    without a request."""
     now = time.time()
     claude_dirs = [d for d, kind in dirs if kind in ("auto", "claude")]
     kimi_dirs = [d for d, kind in dirs if kind in ("auto", "kimi")]
@@ -1107,6 +1114,13 @@ def snapshot(dirs, paint, bar_style, offline_dir=None, refresher=None, kimi_refr
     seen_signatures = {}
     if refresher is not None and not offline_dir:
         targets = refresher.targets(accounts)
+        if next_try is not None:
+            # refreshing spawns Claude Code, whose own calls land in the same
+            # throttled pool: during a 429 gate the spawn only feeds the storm
+            targets = [t for a in accounts
+                       for t in ([t for t in targets if t in (a.get("expired_paths") or [])]
+                                 if now >= next_try.get("claude:" + (a["email"] or a["label"]), 0)
+                                 else [])]
         if targets:
             print("")
             refresher.run(targets, print)
@@ -1142,12 +1156,23 @@ def snapshot(dirs, paint, bar_style, offline_dir=None, refresher=None, kimi_refr
             for kind, pct, sev, reset, _reset_epoch in rows_of(usage):
                 print_limit_row(kind, pct, sev, reset, None, paint, bar_style)
             continue
+        if next_try is not None and now < next_try.get(series, 0):
+            left = int(next_try[series] - now)
+            print("\n" + paint.unknown(acc["label"]))
+            if expired_note:
+                print(expired_note)
+            print(f"  still throttled by the server; next try in {left // 60} min {left % 60} s")
+            if last_good is not None and series in last_good:
+                print_stale_rows(last_good[series], paint, bar_style)
+            continue
         try:
             usage = fetch_usage(acc["token"])
         except urllib.error.HTTPError as e:
             if e.code == 429:
                 wait = retry_after_of(e)
                 backoff = max(backoff, wait or MIN_INTERVAL)
+                if next_try is not None:
+                    next_try[series] = now + (wait or MIN_INTERVAL)
                 asked = f"server asks to wait {wait} s" if wait else "no Retry-After given"
                 head, msg = paint.unknown(acc["label"]), f"HTTP 429: too many requests from this machine; {asked}"
             elif e.code == 401:
@@ -1226,12 +1251,21 @@ def snapshot(dirs, paint, bar_style, offline_dir=None, refresher=None, kimi_refr
             if extra:
                 print(f"  {extra}")
             continue
+        if next_try is not None and now < next_try.get(f"kimi:{login['name']}", 0):
+            left = int(next_try[f"kimi:{login['name']}"] - now)
+            print("\n" + paint.unknown(login["label"]))
+            print(f"  still throttled by the server; next try in {left // 60} min {left % 60} s")
+            if last_good is not None and f"kimi:{login['name']}" in last_good:
+                print_stale_rows(last_good[f"kimi:{login['name']}"], paint, bar_style)
+            continue
         try:
             usage = fetch_kimi_usage(login["token"])
         except urllib.error.HTTPError as e:
             if e.code == 429:
                 wait = retry_after_of(e)
                 kimi_backoff = max(kimi_backoff, wait or MIN_INTERVAL)
+                if next_try is not None:
+                    next_try[f"kimi:{login['name']}"] = now + (wait or MIN_INTERVAL)
                 asked = f"server asks to wait {wait} s" if wait else "no Retry-After given"
                 head, msg = paint.unknown(login["label"]), f"HTTP 429: too many requests; {asked}"
             elif e.code == 401:
@@ -1282,7 +1316,11 @@ def snapshot(dirs, paint, bar_style, offline_dir=None, refresher=None, kimi_refr
     if not accounts and not kimi_found:
         print("\nno Claude Code or Kimi Code logins found in:",
               ", ".join(str(d) for d, _ in dirs))
-    return len(accounts) + kimi_found, max(backoff, kimi_backoff)
+    # With per-account gating the throttled login sleeps in next_try, not in
+    # the loop's interval -- a fresh 429 no longer stretches everyone else's
+    # cycle. Without gating (one-shot), the server-asked backoff is returned.
+    return len(accounts) + kimi_found, (0 if next_try is not None
+                                        else max(backoff, kimi_backoff))
 
 
 def parse_args(argv):
@@ -1375,6 +1413,7 @@ def main(argv):
     kimi_refresher = kimi_refresher_of(args, config)
     hist_path = history_path_of(args.config)
     last_good = {}                                   # survives across daemon cycles:
+    next_try = {}                                    # per-account server gates:
     if not args.daemon:                              # the last reading per account,
         sched = None if args.offline else forecast_config_of(config)   # shown dimmed on 429
         history = {} if args.offline else load_history(hist_path)
@@ -1384,7 +1423,7 @@ def main(argv):
         found, _ = snapshot(dirs_from(args, config), paint, bar_style_of(args, config),
                             args.offline, refresher, kimi_refresher,
                             history=history, history_path=hist_path, sched=sched,
-                            thresholds=thr, last_good=last_good)
+                            thresholds=thr, last_good=last_good, next_try=next_try)
         return 0 if found else 1
 
     interval = interval_of(args, config)
@@ -1402,7 +1441,7 @@ def main(argv):
             _, backoff = snapshot(dirs_from(args, config), paint, bar_style_of(args, config),
                                   args.offline, refresher, kimi_refresher,
                                   history=history, history_path=hist_path, sched=sched,
-                                  thresholds=thr, last_good=last_good)
+                                  thresholds=thr, last_good=last_good, next_try=next_try)
             wait = max(interval, backoff)
             if wait > interval:
                 print(f"\nbacking off: next snapshot in {wait} s")
