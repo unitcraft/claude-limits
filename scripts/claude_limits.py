@@ -443,6 +443,13 @@ def kimi_rows_of(usage):
         entry = usages.get(key)
         if not isinstance(entry, dict) or not isinstance(entry.get("used_ratio"), (int, float)):
             continue
+        if key == "limit_month_code" and float(entry["used_ratio"]) == 0:
+            # the server reports 0 here even when the whole monthly quota was
+            # spent through Kimi Code (seen 2026-09-28: total 46 %, code 0 %,
+            # the user never touches the web) -- the field is not populated,
+            # like limit_5h.used_ratio before it. A permanently-zero row is
+            # noise, not information.
+            continue
         pct = float(entry["used_ratio"]) * 100
         yield name, pct, None, local_time(entry.get("reset_time")), iso_epoch(entry.get("reset_time"))
 
