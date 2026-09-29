@@ -22,9 +22,10 @@ accepts either -- and a directory may hold one of each. `kind` is mandatory:
 a bare path in the config is an error, so the choice is never guessed.
 
 A directory counts as a login when it holds .credentials.json with a token.
-The identity file .claude.json is looked up inside the directory and beside
-it; when both exist, the FRESHEST profile wins (see identity_file for why
-position alone labels a directory with a stale identity).
+The identity file .claude.json is looked up by LAYOUT: a dir named .claude
+(default) keeps its identity beside it, any other name (CLAUDE_CONFIG_DIR)
+inside; the other file is only a fallback. This ignores identity files that
+belong to nested logins living in subdirectories (see identity_file).
 
 Several directories may hold the same account (same e-mail). They are shown
 as ONE group with every directory in the label, and the server is asked once
@@ -91,24 +92,31 @@ DEFAULT_THRESHOLDS = (70, 90)   # the fill's: configurable via [thresholds]
 # ---------------------------------------------------------------- accounts --
 
 def identity_file(cfg_dir):
-    """`.claude.json` inside the dir and beside it, the FRESHEST first.
+    """`.claude.json` candidates for the directory, in the order Claude Code
+    itself writes them.
 
-    Both can exist when a config dir was re-logged under a different account:
-    the file Claude Code wrote last (latest `profileFetchedAt`) is the one its
-    current token belongs to -- picking by position alone labels the directory
-    with a stale identity (seen 2026-09-23: a wsl dir holding Sofia García's
-    file inside and Mohamed Benali's fresher file beside; the token followed
-    the fresher one)."""
+    Layout decides: a config dir named `.claude` is the DEFAULT layout -- its
+    identity lives BESIDE it (`~/.claude.json`); any other name is a
+    CLAUDE_CONFIG_DIR layout -- identity INSIDE. This is not pedantry: a
+    nested login (`~/.claude/<sub>` with its own credentials) writes its
+    profile to `~/.claude/.claude.json`, and reading "inside first" or
+    "freshest wins" picks the NESTED login's identity for the parent
+    directory (seen 2026-09-29: a wsl dir labelled mgts029 while its own
+    token answered as ai-account24 -- the mgts029 profile belonged to a
+    subdir session, refreshed constantly). Fall back to the other file when
+    the layout-preferred one has no oauthAccount; freshest breaks the tie."""
+    inside, beside = cfg_dir / ".claude.json", cfg_dir.parent / ".claude.json"
+    ordered = (beside, inside) if cfg_dir.name == ".claude" else (inside, beside)
     cands = []
-    for p in (cfg_dir / ".claude.json", cfg_dir.parent / ".claude.json"):
+    for p in ordered:
         if not p.is_file():
             continue
         try:
             acc = json.loads(p.read_text(encoding="utf-8")).get("oauthAccount") or {}
         except (json.JSONDecodeError, OSError):
             continue
-        cands.append((acc.get("profileFetchedAt") or 0, p, acc))
-    cands.sort(key=lambda c: -c[0])
+        if acc.get("emailAddress") or acc.get("accountUuid"):
+            cands.append((acc.get("profileFetchedAt") or 0, p, acc))
     return cands
 
 
