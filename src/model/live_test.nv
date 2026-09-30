@@ -1,0 +1,151 @@
+// Tests for live.nv -- known accounts to the body of `GET /api/snapshot`.
+//
+//   ./nova.sh test src/model/ --filter live_test
+//
+// Every rule of 01.3 §3.3 this file joins is checked on BOTH sides: rows present and
+// absent, the order as written and shuffled, a worst row that wins and one that must
+// not. Helper names avoid the module names of the unit (registry 221.1 #1400).
+
+module model.live_test
+
+import std.time.civil.{TimeZone}
+import claude_limits.window.{Window}
+import claude_limits.model.snapshot.{AccountState, Thresholds}
+import claude_limits.server.dto.{DirView, SnapshotView}
+import live.{Known, view_of, in_row_order}
+
+// 2026-09-30 09:00:00 UTC.
+const NOW_MS = 1790758800000
+const HOUR_MS = 3600000
+
+fn same(label str, want str, got str) -> bool {
+    if want == got { return true }
+    panic("${label}: want ${want}, got ${got}")
+}
+
+fn th() -> Thresholds => Thresholds.new(70, 90)
+
+fn dirs_of(name str) -> []DirView => [DirView { id: "d-${name}", path: "C:/accounts/${name}", name }]
+
+fn acct(id str, state AccountState, message str, windows []Window) -> Known =>
+    Known.new(id, "${id}@example.org", "Example Inc", dirs_of(id), state, message, NOW_MS - 60000, NOW_MS + 240000, windows)
+
+fn body_of(known []Known) -> SnapshotView => view_of(known, th(), NOW_MS, NOW_MS + 240000, "+00:00", TimeZone.Utc)
+
+fn two_windows() -> []Window => [
+    Window.new("weekly_all", "", 74, NOW_MS + 50 * HOUR_MS, ""),
+    Window.new("session", "", 9, NOW_MS + HOUR_MS, ""),
+]
+
+test "rows inside an account: session, all 7d, then scoped by model name" {
+    ro shuffled = [
+        Window.new("weekly_scoped", "Opus", 10, 0, ""),
+        Window.new("session", "", 20, 0, ""),
+        Window.new("weekly_scoped", "Fable", 30, 0, ""),
+        Window.new("weekly_all", "", 40, 0, ""),
+    ]
+    ro got = in_row_order(shuffled)
+    assert(same("0", "session", got[0].kind))
+    assert(same("1", "weekly_all", got[1].kind))
+    assert(same("2", "Fable", got[2].model))
+    assert(same("3", "Opus", got[3].model))
+}
+
+test "an ok account: its rows, labelled, with severity from OUR thresholds" {
+    ro v = body_of([acct("a1", AccountState.Ok, "", two_windows())])
+    assert(v.accounts.len() == 1)
+    assert(same("state", "ok", v.accounts[0].state))
+    assert(v.limits.len() == 2)
+    assert(same("first row", "session 5h", v.limits[0].label))
+    assert(same("second row", "all 7d", v.limits[1].label))
+    assert(same("9%", "normal", v.limits[0].severity))
+    assert(same("74%", "warning", v.limits[1].severity))
+    assert(same("row owner", "a1", v.limits[1].account_id))
+}
+
+test "time on a row: seconds left, the share elapsed, the caption, the instant" {
+    ro v = body_of([acct("a1", AccountState.Ok, "", two_windows())])
+    ro s = v.limits[0]
+    assert(s.seconds_left == 3600)
+    assert(s.window_sec == 18000)
+    // (18000 - 3600) / 18000 = 0.80, in hundredths.
+    assert(s.elapsed_share_hundredths == 80)
+    assert(same("caption", "10:00 (1h 00m)", s.reset_label))
+    assert(same("resets_at", "2026-09-30T10:00:00Z", s.resets_at))
+    assert(same("fetched_at", "2026-09-30T09:00:00Z", v.fetched_at))
+}
+
+test "stale and error accounts are listed, with their message, and carry NO rows" {
+    ro v = body_of([
+        acct("s1", AccountState.Stale, "token expired 5 Sep 18:02 · start Claude Code under this login", two_windows()),
+        acct("e1", AccountState.Error, "token rejected (401) · start Claude Code under this login", two_windows()),
+    ])
+    assert(v.accounts.len() == 2)
+    assert(same("stale", "stale", v.accounts[0].state))
+    assert(v.accounts[0].message.starts_with("token expired"))
+    assert(v.limits.len() == 0)
+    // And they paint nothing: locked / at_100 are about rows that are shown.
+    assert(!v.accounts[1].at_100)
+}
+
+test "an unknown account keeps its last good rows, dimmed by the page" {
+    ro v = body_of([acct("u1", AccountState.Unknown, "429 · retry 19:49 · data 19:41", two_windows())])
+    assert(v.limits.len() == 2)
+    assert(same("state", "unknown", v.accounts[0].state))
+}
+
+test "a lock is critical at any percent; plain 100 is at_100 and not locked" {
+    ro v = body_of([
+        acct("l1", AccountState.Ok, "", [Window.new("session", "", 40, NOW_MS + HOUR_MS, "rate_limited")]),
+        acct("f1", AccountState.Ok, "", [Window.new("session", "", 100, NOW_MS + HOUR_MS, "")]),
+    ])
+    assert(same("locked row", "critical", v.limits[0].severity))
+    assert(v.accounts[0].locked)
+    assert(!v.accounts[0].at_100)
+    assert(v.accounts[1].at_100)
+    assert(!v.accounts[1].locked)
+}
+
+test "worst: the highest severity wins, then the highest percent" {
+    ro v = body_of([
+        acct("a1", AccountState.Ok, "", [Window.new("weekly_all", "", 75, 0, "")]),
+        acct("a2", AccountState.Ok, "", [Window.new("session", "", 95, 0, ""), Window.new("weekly_all", "", 92, 0, "")]),
+        acct("a3", AccountState.Ok, "", [Window.new("weekly_all", "", 99, 0, "")]),
+    ])
+    match v.worst {
+        Some(w) => {
+            assert(same("account", "a3", w.account_id))
+            assert(w.percent == 99)
+            assert(same("severity", "critical", w.severity))
+        }
+        None => panic("no worst row")
+    }
+}
+
+test "worst: a lock at 40% outranks 85% -- severity first, percent only breaks ties" {
+    // Where the two orders DISAGREE. In the test above the most severe row is also the
+    // fullest, and a worst-by-percent passes it just as well (reverse probe 2026-09-30).
+    ro v = body_of([
+        acct("p1", AccountState.Ok, "", [Window.new("weekly_all", "", 85, 0, "")]),
+        acct("k1", AccountState.Ok, "", [Window.new("session", "", 40, 0, "rate_limited")]),
+    ])
+    match v.worst {
+        Some(w) => assert(same("account", "k1", w.account_id))
+        None => panic("no worst row")
+    }
+}
+
+test "worst: nothing shown, nothing worst -- a stale account does not count" {
+    ro v = body_of([acct("s1", AccountState.Stale, "x", [Window.new("session", "", 100, 0, "")])])
+    match v.worst {
+        None => assert(true)
+        Some(w) => panic("worst from a hidden row: ${w.account_id}")
+    }
+}
+
+test "never polled: polled_at is null, not the epoch" {
+    ro k = Known.new("n1", "n1@example.org", "", dirs_of("n1"), AccountState.Stale, "x", 0, 0, [])
+    ro v = body_of([k])
+    assert(same("polled_at", "", v.accounts[0].polled_at))
+    assert(same("next_poll_at", "", v.accounts[0].next_poll_at))
+}
