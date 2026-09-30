@@ -1,0 +1,146 @@
+"""Smoke test of `claude-limits --serve` (plan 01.5, T2.26 -- the part that exists).
+
+Raises the BUILT binary on a free port against a fixture made on the spot, and asks
+it what a person and a browser would ask. No network, no real credentials: the
+fixture's token expired in 1970, so the account is `stale` and the endpoint is never
+called -- a smoke test that needed the owner's token would be a smoke test nobody
+else can run.
+
+Checks, one line each:
+  health       GET /api/health is 200 and says "ok": true
+  page         GET / is 200 text/html
+  snapshot     GET /api/snapshot lists the fixture's one account as `stale`,
+               with the 01.1 text and no rows
+  busy port    a second copy on the same port exits 1 and says "address already in use"
+  lan          `allow_lan = true` refuses the start with exit 2 and names the field
+
+Exit codes:
+  0  every check passed
+  1  a check failed -- the finding this script exists for
+  2  could not run (no binary). NEVER 0: an unbuilt binary must not read as a pass.
+
+Usage:
+  ./scripts/smoke-server.sh [path/to/claude-limits.exe]
+"""
+
+import json
+import os
+import shutil
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.request
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+
+
+def free_port():
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def get(url, timeout=5):
+    """(status, content_type, body) -- or (0, "", error text) when nothing answered."""
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as r:
+            return r.status, r.headers.get("Content-Type", ""), r.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        return e.code, e.headers.get("Content-Type", ""), e.read().decode("utf-8", "replace")
+    except Exception as e:  # noqa: BLE001 -- any failure to answer is the same finding
+        return 0, "", str(e)
+
+
+def write(path, text):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        f.write(text)
+
+
+def fixture(tmp, port):
+    """One login in the CLAUDE_CONFIG_DIR layout, token long expired; two settings files."""
+    login = os.path.join(tmp, "acc", "work")
+    write(os.path.join(login, ".claude.json"),
+          '{"oauthAccount":{"emailAddress":"smoke@example.org","organizationName":"Example Inc"}}')
+    write(os.path.join(login, ".credentials.json"),
+          '{"claudeAiOauth":{"accessToken":"sk-ant-smoke-FIXTURE","expiresAt":1000}}')
+    folder = os.path.join(tmp, "acc").replace("\\", "/")
+    ok = os.path.join(tmp, "ok.toml")
+    write(ok, f'[[folders]]\npath = "{folder}"\n\n[server]\nport = {port}\n')
+    lan = os.path.join(tmp, "lan.toml")
+    write(lan, f"[server]\nport = {port}\nallow_lan = true\n")
+    return ok, lan
+
+
+def main(argv):
+    exe = argv[1] if len(argv) > 1 else os.path.join(ROOT, "target", "claude-limits.exe")
+    if not os.path.exists(exe):
+        alt = os.path.join(ROOT, "target", "claude-limits")
+        exe = alt if os.path.exists(alt) else exe
+    if not os.path.exists(exe):
+        print(f"CANNOT RUN: no binary at {exe} -- build it first (./nova.sh build src/claude_limits.nv -o target/claude-limits.exe)")
+        return 2
+
+    tmp = tempfile.mkdtemp(prefix="claude-limits-smoke-")
+    port = free_port()
+    ok_cfg, lan_cfg = fixture(tmp, port)
+    base = f"http://127.0.0.1:{port}"
+    results = []
+
+    def check(name, passed, detail=""):
+        results.append(passed)
+        print(("PASS" if passed else "FAIL") + f": {name}" + (f" -- {detail}" if detail and not passed else ""))
+
+    server = subprocess.Popen([exe, "--serve", "--config", ok_cfg],
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        status = 0
+        deadline = time.time() + 60
+        while time.time() < deadline:
+            status, _, body = get(base + "/api/health", timeout=2)
+            if status:
+                break
+            if server.poll() is not None:
+                break
+            time.sleep(0.5)
+
+        status, _, body = get(base + "/api/health")
+        check("health", status == 200 and '"ok":true' in body, f"{status} {body[:120]}")
+
+        status, ctype, _ = get(base + "/")
+        check("page", status == 200 and ctype.startswith("text/html"), f"{status} {ctype}")
+
+        status, _, body = get(base + "/api/snapshot")
+        try:
+            snap = json.loads(body)
+            accounts = snap.get("accounts", [])
+            one = accounts[0] if len(accounts) == 1 else {}
+            fine = (status == 200 and len(accounts) == 1 and one.get("state") == "stale"
+                    and (one.get("message") or "").startswith("token expired")
+                    and len(snap.get("limits", [])) == 0)
+            check("snapshot", fine, f"{status} {body[:200]}")
+        except ValueError:
+            check("snapshot", False, f"{status} not JSON: {body[:120]}")
+
+        second = subprocess.run([exe, "--serve", "--config", ok_cfg], capture_output=True, text=True, timeout=60)
+        check("busy port", second.returncode == 1 and "address already in use" in second.stdout,
+              f"exit {second.returncode}: {second.stdout.strip()[:160]}")
+    finally:
+        server.kill()
+        server.wait(timeout=10)
+
+    lan = subprocess.run([exe, "--serve", "--config", lan_cfg], capture_output=True, text=True, timeout=60)
+    check("lan", lan.returncode == 2 and "server.allow_lan" in lan.stdout,
+          f"exit {lan.returncode}: {lan.stdout.strip()[:160]}")
+
+    shutil.rmtree(tmp, ignore_errors=True)
+    passed = sum(1 for r in results if r)
+    print(f"smoke: {passed} of {len(results)} passed")
+    return 0 if passed == len(results) else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
