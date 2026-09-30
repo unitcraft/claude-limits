@@ -30,6 +30,7 @@ module storage.repo
 
 import duckdb.db_effect.{Db, ConnRef}
 import duckdb.errors.{DuckError}
+import claude_limits.accounts.login.{normalise_email}
 
 /// One window's reading inside a tick.
 export type WindowRow value {
@@ -385,4 +386,117 @@ export fn lock_open_sql(t Tick, id str, window_id str, cycle_id str, reason str)
 export fn lock_close_sql(t Tick, id str) -> str {
     ro at = moment(t.at_ms)
     "UPDATE lock_period SET ended_at = ${at}, updated_at = ${at}, updated_by = ${quote(t.instance)} WHERE id = ${quote(id)}"
+}
+
+// ── forget (task T2.7, 01.2 §3.15) ──────────────────────────────────────────
+
+fn regex_special(ch char) -> bool =>
+    ch == '\\' || ch == '.' || ch == '^' || ch == '$' || ch == '|' || ch == '?' ||
+    ch == '*' || ch == '+' || ch == '(' || ch == ')' || ch == '[' || ch == ']' ||
+    ch == '{' || ch == '}'
+
+/// A regular expression that matches `s` literally: `a+b@x.org` is an ordinary
+/// address, and unescaped its `+` and `.` would match other text -- or miss this one.
+export fn regex_literal(s str) -> str {
+    mut out = ""
+    for ch in s.chars() {
+        if regex_special(ch) { out = "${out}\\${ch}" } else { out = "${out}${ch}" }
+    }
+    out
+}
+
+/// The TRANSACTIONS of `forget`, each a list of statements, in order (01.2 §3.15).
+///
+/// NOT ONE TRANSACTION, and the engine decides that, not taste. Measured 2026-09-30 on
+/// DuckDB 1.5.5: a row cannot be deleted while the rows that referenced it were deleted
+/// IN THE SAME TRANSACTION -- "is still referenced by a foreign key", the limitation its
+/// documentation names. §3.15 as first written (every DELETE between one BEGIN and one
+/// COMMIT) failed on the first cycle it reached. So:
+///
+///   1. the account is MARKED -- `deleted_at` (the column exists for exactly this, per
+///      its comment in the schema), the folder history unlinked, the settings history
+///      cleaned. From here on the account is gone for every reader that honours
+///      `deleted_at`, and the part a person reads -- the address in the history -- is
+///      gone for everyone;
+///   2..5. one level of references per transaction, children before parents, the
+///      account itself last.
+///
+/// Interrupted anywhere, the account row is still there under the same address, so
+/// running `forget` again finds it and finishes: every step is idempotent.
+///
+/// The history is rewritten CASE-INSENSITIVELY. The table holds the address lowered,
+/// but `config_history.toml` is the text of a file a person may have edited by hand,
+/// and a variant spelled `Work@Example.org` that survives is personal data left behind
+/// by the one command whose whole job is to leave none.
+export fn forget_steps(account_id str, email str, instance str, now_ms int) -> [][]str {
+    ro id = quote(account_id)
+    ro now = moment(now_ms)
+    ro by = quote(instance)
+    ro of_windows = "window_id IN (SELECT id FROM limit_window WHERE account_id = ${id})"
+    ro pattern = quote(regex_literal(normalise_email(email)))
+    [
+        [
+            "UPDATE account SET deleted_at = ${now}, updated_at = ${now}, updated_by = ${by} WHERE id = ${id} AND deleted_at IS NULL",
+            // The folder's history stays; it just no longer says whose it was.
+            "UPDATE occupancy SET account_id = NULL, updated_at = ${now}, updated_by = ${by} WHERE account_id = ${id}",
+            "UPDATE config_history SET toml = regexp_replace(toml, ${pattern}, '***', 'gi'), updated_at = ${now}, updated_by = ${by} WHERE regexp_matches(toml, ${pattern}, 'i')",
+        ],
+        [
+            "DELETE FROM daily_rollup WHERE ${of_windows}",
+            "DELETE FROM lock_period WHERE ${of_windows}",
+            "DELETE FROM sample WHERE ${of_windows}",
+        ],
+        ["DELETE FROM window_cycle WHERE ${of_windows}"],
+        [
+            "DELETE FROM limit_window WHERE account_id = ${id}",
+            "DELETE FROM poll WHERE account_id = ${id}",
+        ],
+        ["DELETE FROM account WHERE id = ${id}"],
+    ]
+}
+
+/// What `forget` did.
+export type Forgot enum
+    /// The account with this id is gone, with everything that named it.
+    | Forgotten(str)
+    /// No account has this address; nothing was touched.
+    | NoSuchAccount
+
+/// Forget one account: the transactions of `forget_steps`, then `CHECKPOINT`
+/// (01.2 §3.15, §5). A failed step rolls back ITSELF; the steps before it stay, and a
+/// second run finishes the job (see `forget_steps`).
+export fn forget(conn ConnRef, email str, instance str, now_ms int) Db -> Result[Forgot, DuckError] {
+    ro rows = Db.query(conn, "SELECT id::VARCHAR FROM account WHERE email = ${quote(normalise_email(email))}")?
+    ro first = Db.next(rows)
+    Db.close_result(rows)
+    ro id = match first? {
+        Some(cells) => match cells[0] {
+            Value.Text(s) => s
+            _ => return Err(DuckError.Type("account.id did not come back as text"))
+        }
+        None => return Ok(Forgot.NoSuchAccount)
+    }
+
+    for step in forget_steps(id, email, instance, now_ms) {
+        Db.exec(conn, "BEGIN TRANSACTION")?
+        for stmt in step {
+            match Db.exec(conn, stmt) {
+                Ok(_) => ()
+                Err(e) => {
+                    ro _ = Db.exec(conn, "ROLLBACK")
+                    return Err(e)
+                }
+            }
+        }
+        match Db.exec(conn, "COMMIT") {
+            Ok(_) => ()
+            Err(e) => {
+                ro _ = Db.exec(conn, "ROLLBACK")
+                return Err(e)
+            }
+        }
+    }
+    // Deleted rows leave the file only when their blocks are rewritten.
+    ro _ = Db.exec(conn, "CHECKPOINT")
+    Ok(Forgot.Forgotten(id))
 }

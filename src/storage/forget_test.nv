@@ -1,0 +1,250 @@
+// forget (01.2 §3.15, §8 п. 9) against a LIVE database on disk.
+//
+//   ./nova.sh test src/storage/ --filter forget_test
+//
+// Every line of the acceptance is a question only the database and its FILE answer:
+// does DuckDB let the deletes through in this order inside one transaction, and is
+// the address still somewhere in the bytes afterwards.
+
+module storage.forget_test
+
+import std.fs.{real_fs, read, read_text, create_dir_all, remove_dir_all, try_exists}
+import std.os.{real_os, temp_dir}
+import duckdb.{Database, DbOptions}
+import duckdb.db_effect.{Db}
+import duckdb.db_real.{with_real_db}
+import claude_limits.storage.repo.{Tick, WindowRow, Ids, plan_sql, forget, forget_steps, regex_literal}
+import claude_limits.storage.backup.{take_backup, backup_name, write_copy, fresh_path, swap_in_fresh}
+
+const INST = "01900000-0000-7000-8000-000000000001"
+const NOW_MS = 1790758800000
+const GONE = "work@example.org"
+const KEPT = "home@example.org"
+const FOLD = "01900000-0000-7000-8000-0000000000f1"
+const DIR = "01900000-0000-7000-8000-0000000000d1"
+
+fn same(label str, want str, got str) -> bool {
+    if want == got { return true }
+    panic("${label}: want ${want}, got ${got}")
+}
+
+// ── pure ────────────────────────────────────────────────────────────────────
+
+test "an address is matched literally, whatever it contains" {
+    assert(regex_literal("a+b@x.org") == "a\\+b@x\\.org")
+    assert(regex_literal("(x)[y]{z}|^$?*\\") == "\\(x\\)\\[y\\]\\{z\\}\\|\\^\\$\\?\\*\\\\")
+}
+
+test "the steps: mark first, then one level of references per transaction, the account last" {
+    ro s = forget_steps("A", "Work@Example.org", INST, NOW_MS)
+    assert(s.len() == 5)
+    // Step 1 is everything a reader sees: the mark, the unlinking, the history.
+    assert(s[0][0].starts_with("UPDATE account SET deleted_at = "))
+    assert(s[0][1].starts_with("UPDATE occupancy SET account_id = NULL"))
+    assert(s[0][2].contains("regexp_replace(toml, 'work@example\\.org', '***', 'gi')"))
+    // Children and parents never share a transaction (see `forget_steps`).
+    assert(s[1][2].starts_with("DELETE FROM sample"))
+    assert(s[2][0].starts_with("DELETE FROM window_cycle"))
+    assert(s[3][0].starts_with("DELETE FROM limit_window"))
+    assert(s[4].len() == 1)
+    assert(s[4][0] == "DELETE FROM account WHERE id = 'A'")
+}
+
+// ── live ────────────────────────────────────────────────────────────────────
+
+fn scratch(name str) Io -> str {
+    ro base = with Os = real_os() { temp_dir().display().replace("\\", "/") }
+    ro dir = "${base}/claude-limits-forget-test-${name}"
+    with Fs = real_fs() {
+        ro _ = remove_dir_all(dir.to_path())
+        ro _ = create_dir_all(dir.to_path())
+    }
+    dir
+}
+
+fn migration() Io -> str =>
+    with Fs = real_fs() {
+        read_text("migrations/0001_init.sql".to_path()) ?? ""
+    }
+
+fn win(kind str, percent int) -> WindowRow =>
+    WindowRow.new(kind, "", percent, false, "", "", 1757340000000, 1757358000000)
+
+fn tick(email str, at_ms int) -> Tick => {
+    instance: INST, at_ms, email, org: "Tech Center", outcome: "ok", http_status: 200,
+    retry_after_sec: 0, latency_ms: 120, error: "",
+    windows: [win("session", 74), win("weekly_all", 41)],
+}
+
+/// Distinct ids per tick: `n` is the tick's number, `a` the account's two hex digits.
+fn ids(n int, a str) -> Ids {
+    ro p = "01900000-0000-7000-8000-000000${n}"
+    Ids.new("01900000-0000-7000-8000-0000000000${a}", "${p}01", ["${p}11", "${p}12"], ["${p}21", "${p}22"], ["${p}31", "${p}32"])
+}
+
+fn fixture() Io -> []str {
+    ro t0 = "TIMESTAMPTZ '2026-09-01 00:00:00+00'"
+    ro svc = "${t0}, ${t0}, '${INST}', '${INST}'"
+    mut all = [migration()]
+    for s in plan_sql(tick(GONE, 1757347622000), ids(1000, "a1")) { all.push(s) }
+    for s in plan_sql(tick(GONE, 1757347922000), ids(2000, "a1")) { all.push(s) }
+    for s in plan_sql(tick(KEPT, 1757348222000), ids(3000, "a2")) { all.push(s) }
+    all.push("INSERT INTO folder (id, created_at, updated_at, created_by, updated_by, path, kind, source, first_seen_at, last_seen_at) VALUES ('${FOLD}', ${svc}, 'C:/Users/me/accounts', 'parent', 'config', ${t0}, ${t0})")
+    all.push("INSERT INTO login_dir (id, created_at, updated_at, created_by, updated_by, folder_id, path, name, layout, first_seen_at, last_seen_at) VALUES ('${DIR}', ${svc}, '${FOLD}', 'C:/Users/me/accounts/work', 'work', 'config_dir', ${t0}, ${t0})")
+    all.push("INSERT INTO occupancy (id, created_at, updated_at, created_by, updated_by, login_dir_id, account_id, token_state, started_at) VALUES (uuidv7(), ${svc}, '${DIR}', '01900000-0000-7000-8000-0000000000a1', 'ok', ${t0})")
+    // Window and cycle of the first tick's session window: `ids(1000, …)` + "11" / "21".
+    all.push("INSERT INTO lock_period (id, created_at, updated_at, created_by, updated_by, window_id, cycle_id, started_at, ended_at, reason) VALUES (uuidv7(), ${svc}, '01900000-0000-7000-8000-000000100011', '01900000-0000-7000-8000-000000100021', ${t0}, NULL, 'server')")
+    all.push("INSERT INTO daily_rollup (id, created_at, updated_at, created_by, updated_by, window_id, day_on, samples, peak_percent, avg_percent, locked_sec, resets) VALUES (uuidv7(), ${svc}, '01900000-0000-7000-8000-000000100011', DATE '2026-08-31', 12, 90, 50.5, 0, 1)")
+    // The history holds the address spelled as a person would, twice, and the other one.
+    all.push("INSERT INTO config_history (id, created_at, updated_at, created_by, updated_by, source, toml) VALUES (uuidv7(), ${svc}, 'ui', 'accounts_order = [\"Work@Example.org\", \"${KEPT}\"]'), (uuidv7(), ${svc}, 'file', 'accounts_order = [\"${GONE}\"]')")
+    all
+}
+
+/// Run `setup`, then answer each query (first cell as text), or the refusal.
+fn on_file(path str, setup []str, queries []str) Io -> []str {
+    mut out = []str.new()
+    with Fail[DuckError] = |e| { out.push("REFUSED ${e.message()}") } {
+        consume db = Database.open(path, DbOptions.defaults())!! {
+            consume con = db.connect()!! {
+                for s in setup { ro _ = con.exec(s)!! }
+                for q in queries {
+                    consume r = con.query(q)!! {
+                        match r.value(0, 0)!! {
+                            Value.Text(s) => out.push(s)
+                            _ => out.push("<non-text>")
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Forget `email` through the effect, then (optionally) take a backup into `bk`.
+///
+/// The constants go through locals: a module `const` read inside a lambda does not
+/// build -- codegen writes its bare name into C (`use of undeclared identifier`), in
+/// any lambda form and type (probes/const-in-lambda-undeclared/, 2026-09-30).
+fn forget_on(path str, email str, bk str, compact bool) Io -> str {
+    ro inst = INST
+    ro now_ms = NOW_MS
+    with_real_db(fn() Db -> str => {
+        with Fs = real_fs() {
+            match Db.open(path, DbOptions.defaults()) {
+                Err(e) => "OPEN ${e.message()}"
+                Ok(db) => match Db.connect(db) {
+                    Err(e) => {
+                        Db.close_db(db)
+                        "CONNECT ${e.message()}"
+                    }
+                    Ok(conn) => {
+                        ro r = forget(conn, email, inst, now_ms)
+                        mut note = ""
+                        if bk != "" {
+                            match take_backup(conn, bk, now_ms, 5, false) {
+                                Ok(_) => ()
+                                Err(e) => { note = "${note} / BACKUP ${e.message()}" }
+                            }
+                        }
+                        // The copy is the LAST thing done on the open database: see
+                        // `swap_in_fresh`, nothing may write after it.
+                        if compact {
+                            match write_copy(conn, fresh_path(path)) {
+                                Ok(_) => ()
+                                Err(e) => { note = "${note} / COPY ${e.message()}" }
+                            }
+                        }
+                        Db.close_conn(conn)
+                        Db.close_db(db)
+                        if compact && note == "" {
+                            match swap_in_fresh(path) {
+                                Ok(_) => ()
+                                Err(e) => { note = "${note} / SWAP ${e.message()}" }
+                            }
+                        }
+                        match r {
+                            Ok(Forgot.Forgotten(_)) => "forgotten${note}"
+                            Ok(Forgot.NoSuchAccount) => "no such account${note}"
+                            Err(e) => "FAIL ${e.message()}${note}"
+                        }
+                    }
+                }
+            }
+        }
+    })
+}
+
+fn bytes_contain(path str, needle str) Io -> bool =>
+    with Fs = real_fs() {
+        (read(path.to_path()) ?? []u8.new()).to_str_lossy().to_ascii_lower().contains(needle)
+    }
+
+test "forget goes through, and takes the account and everything that named it" {
+    ro dir = scratch("rows")
+    ro db = "${dir}/claude-limits.duckdb"
+    ro before = on_file(db, fixture(), ["SELECT count(*)::VARCHAR FROM account"])
+    assert(same("seeded", "2", before[0]))
+    assert(same("forget", "forgotten", forget_on(db, "  WORK@example.org ", "", false)))
+    ro a = on_file(db, [], [
+        "SELECT string_agg(email, ',')::VARCHAR FROM account",
+        "SELECT count(*)::VARCHAR FROM limit_window",
+        "SELECT count(*)::VARCHAR FROM sample",
+        "SELECT count(*)::VARCHAR FROM poll",
+        "SELECT count(*)::VARCHAR FROM lock_period",
+        "SELECT count(*)::VARCHAR FROM daily_rollup",
+        "SELECT count(*)::VARCHAR FROM occupancy WHERE account_id IS NULL",
+        "SELECT count(*)::VARCHAR FROM config_history WHERE regexp_matches(toml, 'work@example', 'i')",
+        "SELECT count(*)::VARCHAR FROM config_history WHERE contains(toml, '${KEPT}')",
+    ])
+    assert(same("accounts left", KEPT, a[0]))
+    assert(same("windows left", "2", a[1]))
+    assert(same("samples left", "2", a[2]))
+    assert(same("polls left", "1", a[3]))
+    assert(same("lock periods left", "0", a[4]))
+    assert(same("rollups left", "0", a[5]))
+    // The folder's history is kept; only whose it was is gone.
+    assert(same("occupancy kept, unnamed", "1", a[6]))
+    assert(same("history mentions", "0", a[7]))
+    assert(same("the other address untouched", "1", a[8]))
+}
+
+test "an unknown address touches nothing" {
+    ro dir = scratch("unknown")
+    ro db = "${dir}/claude-limits.duckdb"
+    ro _ = on_file(db, fixture(), [])
+    assert(same("forget", "no such account", forget_on(db, "nobody@example.org", "", false)))
+    ro a = on_file(db, [], ["SELECT count(*)::VARCHAR FROM account"])
+    assert(same("accounts", "2", a[0]))
+}
+
+test "KNOWN ENGINE FACT: deleted rows stay in the file's bytes until it is rewritten" {
+    // Why `forget` compacts at all. A TRIPWIRE: if DuckDB starts wiping freed blocks,
+    // this turns red and the compaction can be reconsidered.
+    ro dir = scratch("stays")
+    ro db = "${dir}/claude-limits.duckdb"
+    ro _ = on_file(db, fixture(), [])
+    // Control: the bytes carry the address before forget -- otherwise "still there"
+    // and "gone" below would both be about a file that never had it.
+    assert(bytes_contain(db, GONE))
+    assert(same("forget", "forgotten", forget_on(db, GONE, "", false)))
+    assert(same("rows", "0", on_file(db, [], ["SELECT count(*)::VARCHAR FROM account WHERE email = '${GONE}'"])[0]))
+    assert(bytes_contain(db, GONE))
+}
+
+test "after forget and compaction the address is in neither the file nor the fresh backup" {
+    ro dir = scratch("bytes")
+    ro db = "${dir}/claude-limits.duckdb"
+    ro _ = on_file(db, fixture(), [])
+    assert(bytes_contain(db, GONE))
+    assert(same("forget", "forgotten", forget_on(db, GONE, "${dir}/backup", true)))
+    assert(!bytes_contain("${dir}/backup/${backup_name(NOW_MS)}", GONE))
+    assert(!bytes_contain(db, GONE))
+    // What stays, stays: the other account is still in the bytes and in the rows.
+    assert(bytes_contain(db, KEPT))
+    ro a = on_file(db, [], ["SELECT count(*)::VARCHAR FROM sample", "SELECT string_agg(email, ',')::VARCHAR FROM account"])
+    assert(same("samples", "2", a[0]))
+    assert(same("accounts", KEPT, a[1]))
+    ro left = with Fs = real_fs() { try_exists("${db}.old".to_path()) ?? true }
+    assert(!left)
+}

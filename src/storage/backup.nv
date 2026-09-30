@@ -250,7 +250,18 @@ export fn take_backup(conn ConnRef, dir str, now_ms int, keep int, windows bool)
     if try_exists(final.to_path()).map_err(io)? { return Ok(name) }
 
     create_dir_all(dir.to_path()).map_err(io)?
-    ro part = "${final}${PART}"
+    write_copy(conn, final)?
+
+    for old in to_remove(list_names(dir), keep) {
+        remove_file(join(dir, old, windows).to_path()).map_err(io)?
+    }
+    Ok(name)
+}
+
+/// Write the whole open database into a NEW file at `target`, under `.part` until it
+/// is whole. The one copying mechanism: a backup uses it, and so does `compact`.
+export fn write_copy(conn ConnRef, target str) Db Fs -> Result[(), BackupFail] {
+    ro part = "${target}${PART}"
     // A `.part` left by a run that died is garbage by definition; absent is the usual
     // case, and that failure is the one to ignore.
     ro _ = remove_file(part.to_path())
@@ -271,12 +282,42 @@ export fn take_backup(conn ConnRef, dir str, now_ms int, keep int, windows bool)
             }
         }
     }
-    rename(part.to_path(), final.to_path()).map_err(io)?
+    rename(part.to_path(), target.to_path()).map_err(io)?
+    Ok(())
+}
 
-    for old in to_remove(list_names(dir), keep) {
-        remove_file(join(dir, old, windows).to_path()).map_err(io)?
-    }
-    Ok(name)
+// ── compaction: what `forget` needs to be physical ──────────────────────────
+//
+// Measured 2026-09-30: after `forget` deleted every row and CHECKPOINT ran, the
+// address was STILL in the bytes of the database file -- DuckDB frees blocks, it does
+// not wipe them, and a freed block keeps its old contents until it is reused. §3.15
+// says "физически", and §8 п. 9 searches the file. The only way to make a deletion
+// physical is a file without those blocks: the engine writes the live rows into a new
+// file (`write_copy`), and once the database is CLOSED the new file takes the old
+// one's place. Closing is the caller's -- the database handle is not this module's.
+
+/// Where the compacted copy is written while the database is still open.
+export fn fresh_path(db_path str) -> str => "${db_path}.fresh"
+
+/// With the database CLOSED: put the fresh copy in place of the old file and remove
+/// the old one, with its `.wal`.
+///
+/// The old file goes aside first and is deleted only after the fresh one is in place:
+/// a failure in between leaves a file that opens, never none.
+///
+/// NOTHING MAY WRITE between `write_copy` into `fresh_path` and the close: the copy is
+/// the database as of that moment, and a later write lives only in the file this
+/// function deletes.
+export fn swap_in_fresh(db_path str) Fs -> Result[(), BackupFail] {
+    ro fresh = fresh_path(db_path)
+    ro old = "${db_path}.old"
+    ro _ = remove_file(old.to_path())
+    rename(db_path.to_path(), old.to_path()).map_err(io)?
+    rename(fresh.to_path(), db_path.to_path()).map_err(io)?
+    remove_file(old.to_path()).map_err(io)?
+    ro wal = "${db_path}.wal"
+    if try_exists(wal.to_path()).map_err(io)? { remove_file(wal.to_path()).map_err(io)? }
+    Ok(())
 }
 
 /// What a restore did.
