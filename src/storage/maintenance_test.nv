@@ -1,0 +1,283 @@
+// Tests for storage/maintenance.nv -- task T2.6, rollups, retention, anonymisation.
+//
+//   ./nova.sh test src/storage/ --filter maintenance_test
+//
+// A LIVE DATABASE, as in schema_test and for the same reason: "what is a day in
+// Europe/Moscow", "what is the max of the deleted samples" and "did the path change"
+// are questions a mock answers with whatever it was told.
+//
+// THE FIXTURE IS BUILT IN SQL, not read from `fixtures/history/35d`: 840 hourly
+// samples written out as a file would be a file nobody can check by eye, while one
+// `generate_series` states exactly what the data is. It covers 35 WHOLE local days,
+// 2026-08-26 .. 2026-09-29 in Europe/Moscow, and the pass runs at 2026-09-30 12:00
+// local -- so with `keep_days = 30` the first kept day is 2026-08-31, thirty days stay
+// raw and five are rolled up, which is §8 п. 7 exactly.
+
+module storage.maintenance_test
+
+import std.fs.{real_fs, read_text}
+import duckdb.{Database, DbOptions}
+import duckdb.types.{Value}
+import claude_limits.storage.maintenance.{Policy, retention_sql, anonymise_sql, zone_step, ZoneStep, set_zone_sql, zone_log_line}
+import claude_limits.storage.repo.{moment}
+
+const INST = "01900000-0000-7000-8000-000000000001"
+const ACC = "01900000-0000-7000-8000-0000000000a1"
+const WIN = "01900000-0000-7000-8000-0000000000b1"
+const FOLD_OLD = "01900000-0000-7000-8000-0000000000c1"
+const FOLD_NEW = "01900000-0000-7000-8000-0000000000c2"
+const DIR_OLD = "01900000-0000-7000-8000-0000000000d1"
+const DIR_NEW = "01900000-0000-7000-8000-0000000000d2"
+
+/// 2026-09-30 09:00 UTC = 12:00 in Europe/Moscow.
+const NOW_MS = 1790758800000
+
+fn policy() -> Policy => Policy.new(30, 400, 20, "Europe/Moscow")
+
+fn migration() Io -> str =>
+    with Fs = real_fs() {
+        read_text("migrations/0001_init.sql".to_path()) ?? ""
+    }
+
+/// Everything the pass needs to have something to do.
+fn fixture() -> []str {
+    ro t0 = "TIMESTAMPTZ '2026-08-01 00:00:00+03'"
+    ro svc = "${t0}, ${t0}, '${INST}', '${INST}'"
+    [
+        "SET TimeZone = 'Europe/Moscow'",
+        "INSERT INTO account (id, created_at, updated_at, created_by, updated_by, email, color_slot, first_seen_at, last_seen_at) VALUES ('${ACC}', ${svc}, 'main@example.com', 0, ${t0}, ${t0})",
+        "INSERT INTO limit_window (id, created_at, updated_at, created_by, updated_by, account_id, kind, model, first_seen_at, last_seen_at) VALUES ('${WIN}', ${svc}, '${ACC}', 'session', NULL, ${t0}, ${t0})",
+        // One reset a day at 10:00 local, 2026-08-26 .. 2026-09-29: `resets` is 1 on every day.
+        "INSERT INTO window_cycle SELECT uuidv7(), ${svc}, '${WIN}', r - INTERVAL 5 HOUR, r FROM generate_series(TIMESTAMPTZ '2026-08-26 10:00:00+03', TIMESTAMPTZ '2026-09-29 10:00:00+03', INTERVAL 1 DAY) AS s(r)",
+        // 840 hourly samples; the percent is a function of the hour so days differ.
+        "INSERT INTO sample (id, created_at, updated_at, created_by, updated_by, window_id, sampled_at, cycle_id, percent, locked) SELECT uuidv7(), ${svc}, '${WIN}', t, (SELECT min(id) FROM window_cycle), ((epoch(t)::BIGINT / 3600) % 101)::TINYINT, false FROM generate_series(TIMESTAMPTZ '2026-08-26 00:00:00+03', TIMESTAMPTZ '2026-09-29 23:00:00+03', INTERVAL 1 HOUR) AS s(t)",
+        // Locks: 2.5 h inside 2026-08-27; 2 h across midnight 08-28 -> 08-29.
+        "INSERT INTO lock_period (id, created_at, updated_at, created_by, updated_by, window_id, cycle_id, started_at, ended_at, reason) VALUES (uuidv7(), ${svc}, '${WIN}', (SELECT min(id) FROM window_cycle), TIMESTAMPTZ '2026-08-27 12:00:00+03', TIMESTAMPTZ '2026-08-27 14:30:00+03', 'server')",
+        "INSERT INTO lock_period (id, created_at, updated_at, created_by, updated_by, window_id, cycle_id, started_at, ended_at, reason) VALUES (uuidv7(), ${svc}, '${WIN}', (SELECT min(id) FROM window_cycle), TIMESTAMPTZ '2026-08-28 23:00:00+03', TIMESTAMPTZ '2026-08-29 01:00:00+03', 'percent_100')",
+        // One poll a day at 12:00 local.
+        "INSERT INTO poll (id, created_at, updated_at, created_by, updated_by, account_id, polled_at, outcome) SELECT uuidv7(), ${svc}, '${ACC}', t, 'ok' FROM generate_series(TIMESTAMPTZ '2026-08-26 12:00:00+03', TIMESTAMPTZ '2026-09-29 12:00:00+03', INTERVAL 1 DAY) AS s(t)",
+        // A folder and a login dir removed 500 days ago (past rollup_keep_days = 400), and
+        // a login dir removed 10 days ago (not yet).
+        "INSERT INTO folder (id, created_at, updated_at, deleted_at, deleted_reason, created_by, updated_by, path, kind, source, first_seen_at, last_seen_at) VALUES ('${FOLD_OLD}', ${t0}, ${t0}, TIMESTAMPTZ '2025-05-18 00:00:00+03', 'removed_from_config', '${INST}', '${INST}', 'C:/Users/me/old', 'parent', 'config', ${t0}, ${t0})",
+        "INSERT INTO folder (id, created_at, updated_at, created_by, updated_by, path, kind, source, first_seen_at, last_seen_at) VALUES ('${FOLD_NEW}', ${svc}, 'C:/Users/me/accounts', 'parent', 'config', ${t0}, ${t0})",
+        "INSERT INTO login_dir (id, created_at, updated_at, deleted_at, deleted_reason, created_by, updated_by, folder_id, path, name, layout, first_seen_at, last_seen_at) VALUES ('${DIR_OLD}', ${t0}, ${t0}, TIMESTAMPTZ '2025-05-18 00:00:00+03', 'removed_from_config', '${INST}', '${INST}', '${FOLD_OLD}', 'C:/Users/me/old/dev', 'dev', 'config_dir', ${t0}, ${t0})",
+        "INSERT INTO login_dir (id, created_at, updated_at, deleted_at, deleted_reason, created_by, updated_by, folder_id, path, name, layout, first_seen_at, last_seen_at) VALUES ('${DIR_NEW}', ${t0}, ${t0}, TIMESTAMPTZ '2026-09-20 00:00:00+03', 'not_found', '${INST}', '${INST}', '${FOLD_NEW}', 'C:/Users/me/accounts/nv-lang', 'nv-lang', 'config_dir', ${t0}, ${t0})",
+        // 25 saved settings versions; 20 are kept.
+        "INSERT INTO config_history (id, created_at, updated_at, created_by, updated_by, source, toml) SELECT uuidv7(), t, t, '${INST}', '${INST}', 'ui', 'v' || epoch(t)::BIGINT::VARCHAR FROM generate_series(TIMESTAMPTZ '2026-09-01 00:00:00+03', TIMESTAMPTZ '2026-09-01 00:24:00+03', INTERVAL 1 MINUTE) AS s(t)",
+        // The expected rollups, taken from the raw samples BEFORE the pass deletes them.
+        "CREATE TABLE expected AS SELECT (sampled_at AT TIME ZONE 'Europe/Moscow')::DATE AS day_on, max(percent) AS peak, count(*) AS n FROM sample WHERE (sampled_at AT TIME ZONE 'Europe/Moscow')::DATE < DATE '2026-08-31' GROUP BY 1",
+    ]
+}
+
+/// Open a database, apply the migration, run `setup`, then answer each query as text
+/// (first column of the first row; "<null>" for none).
+fn session(setup []str, queries []str) Io -> []str {
+    mut out = []str.new()
+    ro schema = migration()
+    mut last = "<nothing ran>"
+    with Fail[DuckError] = |e| { panic("DuckDB refused [${last}]: ${e.message()}") } {
+        consume db = Database.open_memory(DbOptions.defaults())!! {
+            consume con = db.connect()!! {
+                last = "migration"
+                ro _ = con.exec(schema)!!
+                for s in setup {
+                    last = s
+                    ro _ = con.exec(s)!!
+                }
+                for q in queries {
+                    last = q
+                    consume r = con.query(q)!! {
+                        if r.rows() == 0 {
+                            out.push("<none>")
+                        } else {
+                            match r.value(0, 0)!! {
+                                Value.Text(s) => out.push(s)
+                                Value.Null => out.push("<null>")
+                                _ => out.push("<non-text>")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Run `setup` and return DuckDB's refusal text, or "<accepted>" when it all went in.
+fn refusal(setup []str) Io -> str {
+    mut out = "<accepted>"
+    ro schema = migration()
+    with Fail[DuckError] = |e| { out = e.message() } {
+        consume db = Database.open_memory(DbOptions.defaults())!! {
+            consume con = db.connect()!! {
+                ro _ = con.exec(schema)!!
+                for s in setup { ro _ = con.exec(s)!! }
+            }
+        }
+    }
+    out
+}
+
+fn with_pass(extra []str) -> []str {
+    mut all = fixture()
+    for s in retention_sql(policy(), NOW_MS, INST) { all.push(s) }
+    for s in extra { all.push(s) }
+    all
+}
+
+fn same(label str, want str, got str) -> bool {
+    if want == got { return true }
+    panic("${label}: want ${want}, got ${got}")
+}
+
+// ── the acceptance of §8 п. 7 ───────────────────────────────────────────────
+
+test "the fixture is what the header says it is" {
+    ro a = session(fixture(), [
+        "SELECT count(*)::VARCHAR FROM sample",
+        "SELECT count(DISTINCT (sampled_at AT TIME ZONE 'Europe/Moscow')::DATE)::VARCHAR FROM sample",
+    ])
+    assert(same("samples", "840", a[0]))
+    assert(same("days", "35", a[1]))
+}
+
+test "after the pass: thirty days stay raw, five are rolled up" {
+    ro a = session(with_pass([]), [
+        "SELECT count(DISTINCT (sampled_at AT TIME ZONE 'Europe/Moscow')::DATE)::VARCHAR FROM sample",
+        "SELECT min((sampled_at AT TIME ZONE 'Europe/Moscow')::DATE)::VARCHAR FROM sample",
+        "SELECT count(*)::VARCHAR FROM daily_rollup",
+        "SELECT min(day_on)::VARCHAR || '..' || max(day_on)::VARCHAR FROM daily_rollup",
+    ])
+    assert(same("raw days", "30", a[0]))
+    assert(same("first raw day", "2026-08-31", a[1]))
+    assert(same("rollup days", "5", a[2]))
+    assert(same("rollup range", "2026-08-26..2026-08-30", a[3]))
+}
+
+test "peak_percent is the max of the deleted samples, day by day" {
+    ro a = session(with_pass([]), [
+        "SELECT count(*)::VARCHAR FROM daily_rollup r JOIN expected e ON e.day_on = r.day_on WHERE r.peak_percent = e.peak AND r.samples = e.n",
+        "SELECT count(*)::VARCHAR FROM expected",
+    ])
+    assert(same("days matching max and count", "5", a[0]))
+    assert(same("expected days", "5", a[1]))
+}
+
+test "locked_sec is the overlap of the lock periods with each day, midnight split" {
+    ro a = session(with_pass([]), [
+        "SELECT locked_sec::VARCHAR FROM daily_rollup WHERE day_on = DATE '2026-08-27'",
+        "SELECT locked_sec::VARCHAR FROM daily_rollup WHERE day_on = DATE '2026-08-28'",
+        "SELECT locked_sec::VARCHAR FROM daily_rollup WHERE day_on = DATE '2026-08-29'",
+        "SELECT locked_sec::VARCHAR FROM daily_rollup WHERE day_on = DATE '2026-08-26'",
+    ])
+    assert(same("2.5 h inside one day", "9000", a[0]))
+    assert(same("the hour before midnight", "3600", a[1]))
+    assert(same("the hour after midnight", "3600", a[2]))
+    assert(same("a day without a lock", "0", a[3]))
+}
+
+test "resets counts the cycles that reset on that local day" {
+    ro a = session(with_pass([]), [
+        "SELECT min(resets)::VARCHAR || '/' || max(resets)::VARCHAR FROM daily_rollup",
+    ])
+    assert(same("one reset a day", "1/1", a[0]))
+}
+
+test "polls, settings versions and rollup day follow the same pass" {
+    ro a = session(with_pass([]), [
+        "SELECT min((polled_at AT TIME ZONE 'Europe/Moscow')::DATE)::VARCHAR FROM poll",
+        "SELECT count(*)::VARCHAR FROM config_history",
+        "SELECT min(toml) FROM config_history",
+        "SELECT value FROM schema_meta WHERE key = 'last_rollup_day'",
+    ])
+    assert(same("first kept poll day", "2026-08-31", a[0]))
+    assert(same("versions kept", "20", a[1]))
+    // The five OLDEST went: v at 00:00..00:04 local; the oldest kept is 00:05.
+    assert(same("oldest kept version", "v1788210300", a[2]))
+    assert(same("last rolled day", "2026-08-30", a[3]))
+}
+
+test "the anonymisation statement is right where the engine allows it" {
+    // DIR_OLD is referenced by nothing, so DuckDB lets its indexed `path` change. The
+    // statement renames it, keeps its `name`, and leaves the recently removed dir alone.
+    ro a = session(with_pass([anonymise_sql(policy(), NOW_MS, INST)[0]]), [
+        "SELECT path FROM login_dir WHERE id = '${DIR_OLD}'",
+        "SELECT name FROM login_dir WHERE id = '${DIR_OLD}'",
+        "SELECT path FROM login_dir WHERE id = '${DIR_NEW}'",
+    ])
+    assert(same("old dir path", "deleted:${DIR_OLD}", a[0]))
+    assert(same("old dir name", "dev", a[1]))
+    assert(same("recent dir path", "C:/Users/me/accounts/nv-lang", a[2]))
+}
+
+test "KNOWN LIMIT: DuckDB refuses the rewrite on a row that is still referenced" {
+    // FOLD_OLD is referenced by DIR_OLD. This is why `anonymise_sql` is NOT part of the
+    // retention pass (see maintenance.nv's header): one refused statement would roll the
+    // whole pass back. A TRIPWIRE, not a wish -- if a DuckDB upgrade lifts the limit,
+    // this test turns red, and the open question about the schema can be closed.
+    ro err = refusal(with_pass([anonymise_sql(policy(), NOW_MS, INST)[1]]))
+    assert(err.contains("still referenced by a foreign key"))
+}
+
+test "twice in a row changes nothing (convention §11.5)" {
+    mut twice = with_pass([])
+    for s in retention_sql(policy(), NOW_MS, INST) { twice.push(s) }
+    ro a = session(twice, [
+        "SELECT count(*)::VARCHAR FROM daily_rollup",
+        "SELECT count(*)::VARCHAR FROM sample",
+        "SELECT count(*)::VARCHAR FROM daily_rollup r JOIN expected e ON e.day_on = r.day_on WHERE r.peak_percent = e.peak",
+    ])
+    assert(same("rollups", "5", a[0]))
+    assert(same("samples", "720", a[1]))
+    assert(same("still right", "5", a[2]))
+}
+
+// ── the zone ────────────────────────────────────────────────────────────────
+
+test "the zone step: same zone does nothing, a moved one is written and logged" {
+    assert(zone_step("Europe/Moscow", "Europe/Moscow") == ZoneStep.Same)
+    match zone_step("Europe/Moscow", "Asia/Tokyo") {
+        ZoneStep.Moved(a, b) => {
+            assert(a == "Europe/Moscow")
+            assert(b == "Asia/Tokyo")
+        }
+        ZoneStep.Same => assert(false)
+    }
+    ro a = session(with_pass([set_zone_sql("Asia/Tokyo")]), [
+        "SELECT value FROM schema_meta WHERE key = 'rollup_tz'",
+        "SELECT count(*)::VARCHAR FROM daily_rollup",
+    ])
+    assert(same("zone written", "Asia/Tokyo", a[0]))
+    assert(same("stored rollups untouched", "5", a[1]))
+    assert(zone_log_line("Europe/Moscow", "Asia/Tokyo", 5) == "rollup zone moved from Europe/Moscow to Asia/Tokyo; 5 stored daily rollup(s) stay in Europe/Moscow")
+}
+
+// ── the moment fix in repo.nv, measured where it matters ────────────────────
+
+test "a moment is the instant it names, whatever the session zone" {
+    // The defect: `make_timestamp` is zoneless, and the SESSION zone turned it into an
+    // instant -- three hours early on a Moscow machine. Two zones of opposite sign make
+    // the test independent of the machine it runs on.
+    //
+    // Through a TIMESTAMPTZ COLUMN, as every table stores it: `epoch` of the bare
+    // expression would not see the defect at all -- a zoneless TIMESTAMP's epoch ignores
+    // the session zone, and the shift happens only on the way into the column. The first
+    // version of this test asked the bare expression and stayed green with the defect
+    // restored; the reverse probe caught it.
+    ro store = [
+        "CREATE TABLE m (ts TIMESTAMPTZ)",
+        "INSERT INTO m VALUES (${moment(NOW_MS)})",
+    ]
+    ro q = "SELECT epoch(ts)::BIGINT::VARCHAR FROM m"
+    mut in_moscow = ["SET TimeZone = 'Europe/Moscow'"]
+    mut in_new_york = ["SET TimeZone = 'America/New_York'"]
+    for s in store {
+        in_moscow.push(s)
+        in_new_york.push(s)
+    }
+    ro moscow = session(in_moscow, [q])
+    ro new_york = session(in_new_york, [q])
+    assert(same("Moscow session", "1790758800", moscow[0]))
+    assert(same("New York session", "1790758800", new_york[0]))
+}

@@ -1,0 +1,181 @@
+// maintenance.nv -- rollups and retention (task T2.6, first half).
+//
+// ANONYMISATION IS HERE BUT NOT RUN, and that is a decision forced by the engine, not
+// a gap left open (measured 2026-09-30; pinned by maintenance_test's KNOWN LIMIT test):
+// DuckDB refuses to UPDATE an INDEXED column of a row another table references
+// ("key ... is still referenced by a foreign key in a different table"). `path` is
+// under UNIQUE on both `folder` and `login_dir`, and `login_dir` references `folder`,
+// `occupancy` references `login_dir` -- so the rewrite §5 asks for fails on exactly the
+// rows it is for. Inside the retention transaction one refused statement would roll
+// the whole pass back, and no day would ever be rolled up. `anonymise_sql` therefore
+// stands apart, and how the schema should change is a question to the owner.
+//
+//   ./nova.sh test src/storage/ --filter maintenance_test
+//
+// Source: 01.2 §3.13 (daily_rollup), §5 ("Ретенция"), §8 п. 7.
+//
+// ── SHAPE ───────────────────────────────────────────────────────────────────
+//
+// As in `repo.nv`: the statements are built by PURE functions and executed by one
+// function through the `Db` effect, inside one transaction. The SQL is checked against
+// a LIVE DuckDB in maintenance_test, because every acceptance line here is a question
+// only the database can answer (what a day is in a zone, what `max` a group has).
+//
+// ── THREE DECISIONS THE TEXT OF §5 LEAVES OPEN, AND HOW EACH WAS SETTLED ────
+//
+// 1. WHOLE DAYS, NOT `now - keep_days`. §5 writes `DELETE FROM sample WHERE sampled_at <
+//    now() - INTERVAL keep_days`, which cuts through the middle of a day. The day that
+//    is cut is then rolled up from ALL its samples before the delete -- and on the next
+//    pass rolled up AGAIN from the half that is left, and the `ON CONFLICT DO UPDATE`
+//    overwrites the right numbers with wrong ones. So the boundary is a calendar day in
+//    `rollup_tz`: days before `today - keep_days` are rolled up and deleted whole, and
+//    §8 п. 7 ("30 days of samples, 5 of rollups" from a 35-day fixture) holds exactly.
+//
+// 2. `locked_sec` FROM `lock_period`, not from samples. The column is a duration with
+//    its unit in the name (§3.13), and `lock_period` holds the exact intervals; counting
+//    locked samples would make the number depend on the poll interval. It is the
+//    overlap of every lock period of the window with the day, an open period counted
+//    up to the moment of the pass.
+//
+// 3. KEYS FROM `uuidv7()`. §8 п. 3 wants UUID v7 everywhere, and a rollup is written by
+//    one `INSERT ... SELECT` over groups the application never sees one by one. The
+//    vendored DuckDB (v1.5.5, measured 2026-09-30) has `uuidv7()`, so the key is made
+//    where the row is.
+//
+// The zone change of §3.13 ("rollups of days still held are recomputed, older ones
+// stay with a line in the log"): under decision 1 no rolled-up day still has samples,
+// so nothing stored CAN be recomputed -- the kept days are aggregated on the fly from
+// `rollup_tz` (§3.13) and follow the new zone the moment it is written. `zone_step`
+// therefore updates `rollup_tz` and reports how many stored rollups stay in the old
+// zone, which is the log line §3.13 asks for.
+
+module storage.maintenance
+
+import duckdb.db_effect.{Db, ConnRef}
+import duckdb.errors.{DuckError}
+import claude_limits.storage.repo.{quote, moment}
+
+/// The settings one pass obeys (01.2 §2.1 `[history]`), plus the zone of the days.
+export type Policy value {
+    ro keep_days int
+    ro rollup_keep_days int
+    ro config_versions_keep int
+    ro tz str
+}
+
+export fn Policy.new(keep_days int, rollup_keep_days int, config_versions_keep int, tz str) -> Policy =>
+    { keep_days, rollup_keep_days, config_versions_keep, tz }
+
+// ── expressions ─────────────────────────────────────────────────────────────
+
+/// The calendar day of a moment in the rollup zone.
+fn local_day(moment_sql str, tz str) -> str => "((${moment_sql}) AT TIME ZONE ${quote(tz)})::DATE"
+
+/// The first day that is KEPT raw: days before it are rolled up and deleted.
+fn first_kept_day(p Policy, now_ms int) -> str => "(${local_day(moment(now_ms), p.tz)} - ${p.keep_days})"
+
+/// Midnight of a local day, as a moment.
+fn day_start(day_sql str, tz str) -> str => "((${day_sql})::TIMESTAMP AT TIME ZONE ${quote(tz)})"
+
+// ── the statements ──────────────────────────────────────────────────────────
+
+/// Roll up every day that is leaving the raw window, from ALL its samples.
+///
+/// Idempotent: a second pass finds no samples for those days (they were deleted by
+/// the first), and a re-run before the delete overwrites a row with the same numbers.
+export fn rollup_sql(p Policy, now_ms int, instance str) -> str {
+    ro now = moment(now_ms)
+    ro inst = quote(instance)
+    ro start = day_start("g.day_on", p.tz)
+    ro end = day_start("g.day_on + 1", p.tz)
+    ro locked = "(SELECT coalesce(sum(greatest(0, epoch(least(coalesce(lp.ended_at, ${now}), ${end})) - epoch(greatest(lp.started_at, ${start})))), 0) FROM lock_period lp WHERE lp.window_id = g.window_id)::INTEGER"
+    ro resets = "(SELECT count(*) FROM window_cycle c WHERE c.window_id = g.window_id AND ${local_day("c.resets_at", p.tz)} = g.day_on)::INTEGER"
+    ro day = local_day("s.sampled_at", p.tz)
+    ro insert = "INSERT INTO daily_rollup (id, created_at, updated_at, created_by, updated_by, window_id, day_on, samples, peak_percent, avg_percent, locked_sec, resets)"
+    ro pick = "SELECT uuidv7(), ${now}, ${now}, ${inst}, ${inst}, g.window_id, g.day_on, g.n, g.peak, g.avg_p, ${locked}, ${resets}"
+    ro groups = "FROM (SELECT s.window_id AS window_id, ${day} AS day_on, count(*)::INTEGER AS n, max(s.percent) AS peak, round(avg(s.percent), 2) AS avg_p FROM sample s WHERE ${day} < ${first_kept_day(p, now_ms)} GROUP BY 1, 2) g"
+    ro upsert = "ON CONFLICT (window_id, day_on) DO UPDATE SET samples = excluded.samples, peak_percent = excluded.peak_percent, avg_percent = excluded.avg_percent, locked_sec = excluded.locked_sec, resets = excluded.resets, updated_at = excluded.updated_at, updated_by = excluded.updated_by"
+    "${insert} ${pick} ${groups} ${upsert}"
+}
+
+/// Every statement of one retention pass, in order -- PURE, so the order is asserted.
+///
+/// The rollup comes FIRST and the delete of the same days right after it, inside one
+/// transaction: a pass that died between them would otherwise lose a day's history.
+export fn retention_sql(p Policy, now_ms int, instance str) -> []str {
+    ro now = moment(now_ms)
+    ro inst = quote(instance)
+    ro kept = first_kept_day(p, now_ms)
+    ro today = local_day(now, p.tz)
+    [
+        rollup_sql(p, now_ms, instance),
+        "DELETE FROM sample WHERE ${local_day("sampled_at", p.tz)} < ${kept}",
+        "DELETE FROM poll WHERE ${local_day("polled_at", p.tz)} < ${kept}",
+        "DELETE FROM daily_rollup WHERE day_on < (${today} - ${p.rollup_keep_days})",
+        "DELETE FROM config_history WHERE id NOT IN (SELECT id FROM config_history ORDER BY created_at DESC LIMIT ${p.config_versions_keep})",
+        "INSERT INTO schema_meta VALUES ('last_rollup_day', (${kept} - 1)::VARCHAR) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+    ]
+}
+
+/// Anonymisation by age (01.2 §5, convention §13.6): a path removed longer ago than
+/// `rollup_keep_days` becomes `deleted:<id>`; the `name` stays for the history's
+/// captions. NOT part of `retention_sql` -- see the header: DuckDB refuses it on any
+/// row still referenced, which is every row it is meant for.
+export fn anonymise_sql(p Policy, now_ms int, instance str) -> []str {
+    ro now = moment(now_ms)
+    ro inst = quote(instance)
+    ro before = "(${now} - to_days(${p.rollup_keep_days}))"
+    [
+        "UPDATE login_dir SET path = 'deleted:' || id::VARCHAR, updated_at = ${now}, updated_by = ${inst} WHERE deleted_at IS NOT NULL AND deleted_at < ${before} AND path NOT LIKE 'deleted:%'",
+        "UPDATE folder SET path = 'deleted:' || id::VARCHAR, updated_at = ${now}, updated_by = ${inst} WHERE deleted_at IS NOT NULL AND deleted_at < ${before} AND path NOT LIKE 'deleted:%'",
+    ]
+}
+
+/// Run one pass: all of it, or none of it; then `CHECKPOINT` (§5).
+export fn run_retention(conn ConnRef, p Policy, now_ms int, instance str) Db -> Result[(), DuckError] {
+    match Db.exec(conn, "BEGIN TRANSACTION") {
+        Err(e) => return Err(e)
+        Ok(_) => ()
+    }
+    for stmt in retention_sql(p, now_ms, instance) {
+        match Db.exec(conn, stmt) {
+            Err(e) => {
+                // Best effort, as in `repo.write_tick`: a failed rollback means the
+                // connection is gone, and the original error is the one to report.
+                ro _ = Db.exec(conn, "ROLLBACK")
+                return Err(e)
+            }
+            Ok(_) => ()
+        }
+    }
+    match Db.exec(conn, "COMMIT") {
+        Err(e) => {
+            ro _ = Db.exec(conn, "ROLLBACK")
+            Err(e)
+        }
+        Ok(_) => {
+            ro _ = Db.exec(conn, "CHECKPOINT")
+            Ok(())
+        }
+    }
+}
+
+// ── the zone ────────────────────────────────────────────────────────────────
+
+/// What a start does about the rollup zone.
+export type ZoneStep enum
+    /// The machine's zone is the stored one: nothing to do.
+    | Same
+    /// Write the new zone; stored rollups stay in the old one (see the header).
+    | Moved(str, str)
+
+export fn zone_step(stored str, machine str) -> ZoneStep =>
+    if stored == machine { ZoneStep.Same } else { ZoneStep.Moved(stored, machine) }
+
+/// The statement that records the machine's zone.
+export fn set_zone_sql(tz str) -> str =>
+    "INSERT INTO schema_meta VALUES ('rollup_tz', ${quote(tz)}) ON CONFLICT (key) DO UPDATE SET value = excluded.value"
+
+/// The log line of a move: which zones, and how many stored rollups keep the old one.
+export fn zone_log_line(from str, to str, rollups_kept int) -> str =>
+    "rollup zone moved from ${from} to ${to}; ${rollups_kept} stored daily rollup(s) stay in ${from}"
