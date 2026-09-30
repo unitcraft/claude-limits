@@ -13,8 +13,8 @@
 module handlers.health
 
 import claude_limits.server.routes.{Ctx, ApiHandler, API_VERSION}
-import claude_limits.server.dto.{Disclosure, pii_path}
-import claude_limits.server.json.{field_str, field_str_or_null, field_int, field_bool, field_raw, object}
+import claude_limits.server.dto.{Disclosure, opt, shown_path}
+import std.encoding.serde.{json_encode, Serialize}
 import polaris.{ServerResponse}
 
 /// Everything `/api/health` reports, read fresh on every request.
@@ -65,62 +65,116 @@ export type HealthSource fn() -> HealthState
 /// matters: a client who may see the body must be able to tell "hidden from you"
 /// from "not set", which is what §0 means by an absent value being `null`.
 export fn render_health(st HealthState) -> str {
+    // serde refuses only integers past 2^53 and non-finite floats; this body holds
+    // neither. `{}` is still a body a probe can parse.
     match st.disclosure {
-        Disclosure.Anonymous => object([field_bool("ok", true), field_int("api_version", API_VERSION)])
-        _ => full_body(st)
+        Disclosure.Anonymous => json_encode(HealthShort{ ok: true, api_version: API_VERSION }) ?? "{}"
+        _ => json_encode(full_body(st)) ?? "{}"
     }
 }
 
-fn full_body(st HealthState) -> str {
+// ── the wire (T2.29), in wire order ───────────────────────────────────────────
+
+#impl(Serialize)
+type HealthShort value {
+    ro ok bool
+    ro api_version int
+}
+
+#impl(Serialize)
+type WireListen value {
+    ro bind str
+    ro port int
+    ro allow_lan bool
+    ro tls bool
+}
+
+#impl(Serialize)
+type WirePoll value {
+    ro interval_sec int
+    ro last_at Option[str]
+    ro next_at Option[str]
+}
+
+#impl(Serialize)
+type WireCounts value {
+    ro total int
+    ro ok int
+    ro stale int
+    ro unknown int
+    ro error int
+    ro hidden int
+}
+
+#impl(Serialize)
+type WireStorage value {
+    ro config_path Option[str]
+    ro db_path Option[str]
+    ro db_size_bytes int
+    ro schema_version int
+    ro history_days int
+    ro encrypted bool
+    ro key_store str
+}
+
+#impl(Serialize)
+type WireWidget value {
+    ro enabled bool
+    ro running bool
+}
+
+#impl(Serialize)
+type HealthFull value {
+    ro ok bool
+    ro api_version int
+    ro app_version Option[str]
+    ro started_at str
+    ro uptime_sec int
+    ro listen WireListen
+    ro poll WirePoll
+    ro sse_clients int
+    ro accounts WireCounts
+    ro login_dirs int
+    ro storage WireStorage
+    ro widget WireWidget
+    ro config_error Option[str]
+}
+
+fn full_body(st HealthState) -> HealthFull {
     ro lan = match st.disclosure {
         Disclosure.Lan => true
         _ => false
     }
-    // The build version is withheld from LAN by §3.2 in the same breath as the
-    // paths: it tells a stranger which published defects this binary still has.
-    ro app_version = if lan { "${"\"app_version\""}:null" } else { field_str("app_version", st.app_version) }
-    object([
-        field_bool("ok", true),
-        field_int("api_version", API_VERSION),
-        app_version,
-        field_str("started_at", st.started_at),
-        field_int("uptime_sec", st.uptime_sec),
-        field_raw("listen", object([
-            field_str("bind", st.bind),
-            field_int("port", st.port),
-            field_bool("allow_lan", st.allow_lan),
-            field_bool("tls", st.tls),
-        ])),
-        field_raw("poll", object([
-            field_int("interval_sec", st.poll_interval_sec),
-            field_str_or_null("last_at", st.poll_last_at),
-            field_str_or_null("next_at", st.poll_next_at),
-        ])),
-        field_int("sse_clients", st.sse_clients),
-        field_raw("accounts", object([
-            field_int("total", st.accounts_total),
-            field_int("ok", st.accounts_ok),
-            field_int("stale", st.accounts_stale),
-            field_int("unknown", st.accounts_unknown),
-            field_int("error", st.accounts_error),
-            field_int("hidden", st.accounts_hidden),
-        ])),
-        field_int("login_dirs", st.login_dirs),
-        field_raw("storage", object([
-            pii_path(st.disclosure, "config_path", st.config_path),
-            pii_path(st.disclosure, "db_path", st.db_path),
-            field_int("db_size_bytes", st.db_size_bytes),
-            field_int("schema_version", st.schema_version),
-            field_int("history_days", st.history_days),
-            field_bool("encrypted", st.encrypted),
-            field_str("key_store", st.key_store),
-        ])),
-        field_raw("widget", object([
-            field_bool("enabled", st.widget_enabled),
-            field_bool("running", st.widget_running),
-        ])),
-        field_str_or_null("config_error", st.config_error),
-    ])
+    {
+        ok: true,
+        api_version: API_VERSION,
+        // The build version is withheld from LAN by section 3.2 in the same breath
+        // as the paths: it tells a stranger which published defects this binary
+        // still has. On loopback it is written even when empty -- it was never a
+        // null-if-empty field. `Some` first: probes/serde-two-option-types.
+        app_version: if !lan { Some(st.app_version) } else { None },
+        started_at: st.started_at,
+        uptime_sec: st.uptime_sec,
+        listen: { bind: st.bind, port: st.port, allow_lan: st.allow_lan, tls: st.tls },
+        poll: { interval_sec: st.poll_interval_sec, last_at: opt(st.poll_last_at),
+                next_at: opt(st.poll_next_at) },
+        sse_clients: st.sse_clients,
+        accounts: { total: st.accounts_total, ok: st.accounts_ok, stale: st.accounts_stale,
+                    unknown: st.accounts_unknown, error: st.accounts_error,
+                    hidden: st.accounts_hidden },
+        login_dirs: st.login_dirs,
+        storage: {
+            config_path: shown_path(st.disclosure, st.config_path),
+            db_path: shown_path(st.disclosure, st.db_path),
+            db_size_bytes: st.db_size_bytes,
+            schema_version: st.schema_version,
+            history_days: st.history_days,
+            encrypted: st.encrypted,
+            key_store: st.key_store,
+        },
+        widget: { enabled: st.widget_enabled, running: st.widget_running },
+        config_error: opt(st.config_error),
+    }
 }
 
 // Hoisted and param-captured for the [M-16] reason named in `routes.nv`.

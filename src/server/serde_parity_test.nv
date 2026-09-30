@@ -13,6 +13,8 @@ import std.encoding.serde.{json_encode, Serialize, Serializer, SerError}
 import claude_limits.server.json.{field_str, field_str_or_null, field_int, field_bool, field_int_or_null, field_fixed2, field_raw, object, array, array_str}
 import claude_limits.server.errors.{ApiError, FieldError, to_json, type_uri}
 import claude_limits.server.dto.{Disclosure, pii_path, render_snapshot, SnapshotView, AccountView, DirView, LimitView, ForecastView, WorstView}
+import claude_limits.server.handlers.health.{HealthState, render_health}
+import claude_limits.server.routes.{API_VERSION}
 
 // ── problem+json: the retired hand writer, kept verbatim as the reference ──────
 
@@ -326,4 +328,95 @@ test "GET /api/snapshot: whole body, every disclosure level, against the referen
         n += 1
     }
     assert(n == 3)
+}
+
+// -- GET /api/health: the retired hand renderer, kept verbatim as the reference --
+
+fn ref_health(st HealthState) -> str {
+    match st.disclosure {
+        Disclosure.Anonymous => object([field_bool("ok", true), field_int("api_version", API_VERSION)])
+        _ => ref_health_full(st)
+    }
+}
+
+fn ref_health_full(st HealthState) -> str {
+    ro lan = match st.disclosure {
+        Disclosure.Lan => true
+        _ => false
+    }
+    ro app_version = if lan { "${"\"app_version\""}:null" } else { field_str("app_version", st.app_version) }
+    object([
+        field_bool("ok", true),
+        field_int("api_version", API_VERSION),
+        app_version,
+        field_str("started_at", st.started_at),
+        field_int("uptime_sec", st.uptime_sec),
+        field_raw("listen", object([
+            field_str("bind", st.bind),
+            field_int("port", st.port),
+            field_bool("allow_lan", st.allow_lan),
+            field_bool("tls", st.tls),
+        ])),
+        field_raw("poll", object([
+            field_int("interval_sec", st.poll_interval_sec),
+            field_str_or_null("last_at", st.poll_last_at),
+            field_str_or_null("next_at", st.poll_next_at),
+        ])),
+        field_int("sse_clients", st.sse_clients),
+        field_raw("accounts", object([
+            field_int("total", st.accounts_total),
+            field_int("ok", st.accounts_ok),
+            field_int("stale", st.accounts_stale),
+            field_int("unknown", st.accounts_unknown),
+            field_int("error", st.accounts_error),
+            field_int("hidden", st.accounts_hidden),
+        ])),
+        field_int("login_dirs", st.login_dirs),
+        field_raw("storage", object([
+            pii_path(st.disclosure, "config_path", st.config_path),
+            pii_path(st.disclosure, "db_path", st.db_path),
+            field_int("db_size_bytes", st.db_size_bytes),
+            field_int("schema_version", st.schema_version),
+            field_int("history_days", st.history_days),
+            field_bool("encrypted", st.encrypted),
+            field_str("key_store", st.key_store),
+        ])),
+        field_raw("widget", object([
+            field_bool("enabled", st.widget_enabled),
+            field_bool("running", st.widget_running),
+        ])),
+        field_str_or_null("config_error", st.config_error),
+    ])
+}
+
+fn health_at(d Disclosure, filled bool) -> HealthState => {
+    app_version: if filled { "0.1.0-dev" } else { "" },
+    started_at: "2026-09-06T18:00:00Z", uptime_sec: 600,
+    bind: "127.0.0.1", port: 7391, allow_lan: false, tls: false,
+    poll_interval_sec: 300,
+    poll_last_at: if filled { "2026-09-06T18:05:00Z" } else { "" },
+    poll_next_at: if filled { "2026-09-06T18:10:00Z" } else { "" },
+    sse_clients: 2,
+    accounts_total: 3, accounts_ok: 1, accounts_stale: 1, accounts_unknown: 0,
+    accounts_error: 1, accounts_hidden: 0, login_dirs: 4,
+    config_path: if filled { "C:\\Users\\me\\claude-limits.toml" } else { "" },
+    db_path: if filled { "C:\\Users\\me\\data\\\"db\".duckdb" } else { "" },
+    db_size_bytes: 1048576, schema_version: 1, history_days: 30,
+    encrypted: true, key_store: "file",
+    widget_enabled: false, widget_running: false,
+    config_error: if filled { "[poll] interval_sec must be a number\nline 3" } else { "" },
+    disclosure: d,
+}
+
+test "GET /api/health: whole body, every level, filled and empty, against the reference" {
+    ro levels []Disclosure = [Disclosure.Loopback, Disclosure.Lan, Disclosure.Anonymous]
+    mut n = 0
+    for d in levels {
+        for filled in [true, false] {
+            ro st = health_at(d, filled)
+            assert(show("health", ref_health(st), render_health(st)))
+            n += 1
+        }
+    }
+    assert(n == 6)
 }

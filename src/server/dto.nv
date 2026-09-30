@@ -245,11 +245,11 @@ export type SnapshotView value {
 
 /// "" is `null` on the wire (section 0). `Some` first on purpose -- see
 /// probes/serde-two-option-types.
-fn opt(s str) -> Option[str] => if s != "" { Some(s) } else { None }
+export fn opt(s str) -> Option[str] => if s != "" { Some(s) } else { None }
 
 /// A `pii-path` field: the value on loopback, `null` for everyone else, and `null`
 /// for an empty path whoever asks -- the same three answers `pii_path` gives.
-fn shown_path(d Disclosure, path str) -> Option[str] =>
+export fn shown_path(d Disclosure, path str) -> Option[str] =>
     match d {
         Disclosure.Loopback => opt(path)
         Disclosure.Lan => None
@@ -339,7 +339,7 @@ fn wire_account(d Disclosure, a AccountView) -> WireAccount {
 
 /// A named function, not a record literal inside the closure: there the codegen
 /// gave the literal the OUTER literal's type (WireSnapshot) and the C refused it --
-/// probes/record-literal-in-closure-takes-outer-type.
+/// registry 221.1 #1392, probes/record-literal-in-closure-takes-outer-type.
 fn wire_worst(x WorstView) -> WireWorst =>
     { account_id: x.account_id, kind: x.kind, percent: x.percent, severity: x.severity }
 

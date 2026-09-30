@@ -1,6 +1,6 @@
 # A record literal inside a closure takes the OUTER literal's type
 
-**Status: isolated (2026-09-30).** `check` passes, the C does not compile -- and
+**Status: isolated (2026-09-30); registry 221.1 #1392 (K2, kin of #1021), filed and re-measured by the integrator.** `check` passes, the C does not compile -- and
 the form that fails is the one the checker itself tells you to write.
 
 ## The case -- `src/gap.nv`
