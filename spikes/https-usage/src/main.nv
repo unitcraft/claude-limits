@@ -29,6 +29,7 @@
 module spike_https_usage.main
 
 import http.client.{HttpClient}
+import http.transport.{real_http}
 import std.encoding.json.{Json, JsonValue}
 import std.fs
 import std.os
@@ -152,7 +153,7 @@ fn print_limits(body str) Io -> bool {
     true
 }
 
-fn main() Http Fs Os Io -> () {
+fn spike_body() Http Fs Os Io -> () {
     ro argv = os.args()
     if argv.len() < 2 {
         println("usage: spike-https-usage <path-to-.credentials.json>")
@@ -222,4 +223,8 @@ fn main() Http Fs Os Io -> () {
         // of this error is the answer to the second half of the question.
         Err(e) => println("FAIL: the request did not complete: ${e}")
     }
+}
+
+fn main() Net Fs Os Io -> () {
+    with Http = real_http() { spike_body() }
 }

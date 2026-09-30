@@ -26,4 +26,6 @@ name = "spike-https-usage"
 path = "src/main.nv"
 
 [dependencies]
+tls = { git = "https://github.com/nv-lang/nova-tls", version = "0.1" }
+compress = { git = "https://github.com/nv-lang/nova-compress", version = "0.1" }
 http = { git = "https://github.com/nv-lang/nova-http", version = "0.1" }
