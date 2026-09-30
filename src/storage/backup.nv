@@ -1,0 +1,308 @@
+// backup.nv -- backups and bringing one back (task T2.6, second half).
+//
+//   ./nova.sh test src/storage/ --filter backup_test
+//
+// Source: 01.2 §1 (`backup/claude-limits-YYYYMMDD-HHMM.duckdb`, `backups_keep`), §5
+// ("Бэкап", "Целостность").
+//
+// ── THE COPY IS MADE BY THE ENGINE, NOT BY THE FILE SYSTEM ──────────────────
+//
+// §5 says "CHECKPOINT and a copy of the file". Measured 2026-09-30 on Windows: a file
+// DuckDB holds open cannot be copied at all -- `copy_file` fails with EBUSY (os error
+// 4082) straight after a CHECKPOINT. Closing the database for every backup would stop
+// the server. So the backup is written by DuckDB itself: ATTACH a new file, recreate
+// the schema in it, copy the rows, CHECKPOINT it, DETACH. What §5 wants from "a copy" survives: a
+// complete, self-contained database file -- and, once the key question is settled
+// (plan 01.5, question 8), it is attached with the same key and is the same kind of
+// ciphertext. Bringing a backup BACK is a plain file copy: by then the damaged
+// database is not open.
+//
+// ── NOT `COPY FROM DATABASE`, AND WHY THE ORDER IS `table_oid` ──────────────
+//
+// DuckDB has a statement for exactly this, and it does not survive our schema.
+// Measured 2026-09-30 on 1.5.5: `COPY FROM DATABASE` fills the tables in an order
+// that ignores the foreign keys, and the first backup of a database with one tick in
+// it failed -- "Violates foreign key constraint ... does not exist in the referenced
+// table". So the copy is spelled out: each table's own `CREATE` from the catalog
+// (constraints included), then views and indexes, then `INSERT ... SELECT` table by
+// table, all in CREATION order. A table can only reference one created before it, so
+// `table_oid` is a valid dependency order by construction.
+//
+// ── THE CONNECTION IS THE APPLICATION'S ─────────────────────────────────────
+//
+// The schema is created in the backup under `USE`, which moves the WHOLE connection.
+// Left there after a failure, every later query of the application would read and
+// write the backup file. Every exit -- the good one and each bad one -- therefore
+// goes back to `USE <source>` before it does anything else.
+//
+// ── A HALF-WRITTEN BACKUP MUST NEVER LOOK LIKE A BACKUP ─────────────────────
+//
+// The file is written under `<name>.part` and renamed only when DETACH has returned.
+// Otherwise a failure half-way leaves a file with the right name, the rotation counts
+// it as the newest good one, and the restore brings it back -- the one moment a backup
+// is needed is the moment it would fail. `is_backup_name` does not accept `.part`.
+//
+// ── NAMES ARE UTC ───────────────────────────────────────────────────────────
+//
+// The stamp is fixed-width UTC, so names sort in time order as plain strings, and
+// "which is newest" and "is a week up" are string comparisons with nothing parsed.
+// A local-time name repeats an hour at the autumn clock change, and the rotation
+// would then delete by a wrong order.
+
+module storage.backup
+
+import std.fs.{copy_file, rename, read_dir, remove_file, create_dir_all, try_exists}
+import std.time.civil.{Date}
+import duckdb.db_effect.{Db, ConnRef}
+import duckdb.errors.{DuckError}
+import claude_limits.storage.paths.{join, dir_of}
+import claude_limits.storage.repo.{quote}
+
+export const PREFIX = "claude-limits-"
+export const SUFFIX = ".duckdb"
+export const PART = ".part"
+export const DAY_MS = 86_400_000
+export const WEEK_MS = 7 * DAY_MS
+
+/// The alias the backup file is attached under while it is written.
+export const ALIAS = "nova_backup"
+
+/// Why a backup or a restore did not happen.
+export type BackupFail enum
+    | Engine(str)
+    | Io(str)
+
+export fn BackupFail @message() -> str =>
+    match @ {
+        Engine(m) => "the database refused the backup: ${m}"
+        Io(m) => "backup files: ${m}"
+    }
+
+// ── names ───────────────────────────────────────────────────────────────────
+
+fn two(n int) -> str => "${n}".pad_start(2, '0')
+
+/// `YYYYMMDD-HHMM` of a moment, in UTC.
+export fn stamp(ms int) -> str {
+    // Moments here are after 1970, so plain division is the floor.
+    ro day = ms / DAY_MS
+    ro d = Date.from_epoch_day(day as i64)
+    ro in_day = ms - day * DAY_MS
+    ro y = "${d.year()}".pad_start(4, '0')
+    "${y}${two(d.month().number())}${two(d.day() as int)}-${two(in_day / 3_600_000)}${two(in_day % 3_600_000 / 60_000)}"
+}
+
+export fn backup_name(ms int) -> str => "${PREFIX}${stamp(ms)}${SUFFIX}"
+
+/// Where the damaged file is moved aside (01.2 §5 "Целостность").
+export fn corrupt_name(ms int) -> str => "claude-limits.corrupt-${stamp(ms)}${SUFFIX}"
+
+/// Exactly `claude-limits-DDDDDDDD-DDDD.duckdb`. Anything else in the directory -- a
+/// `.part`, a file someone put there -- is not ours to count or to delete.
+export fn is_backup_name(name str) -> bool {
+    if !name.starts_with(PREFIX) || !name.ends_with(SUFFIX) { return false }
+    ro start = PREFIX.byte_len()
+    if name.byte_len() != start + 13 + SUFFIX.byte_len() { return false }
+    mut i = 0
+    for c in name.chars() {
+        ro at = i - start
+        if at >= 0 && at < 13 {
+            ro ok = if at == 8 { c == '-' } else { c >= '0' && c <= '9' }
+            if !ok { return false }
+        }
+        i += 1
+    }
+    true
+}
+
+/// Our backups, newest first.
+export fn newest_first(names []str) -> []str {
+    mut ours = []str.new()
+    for n in names {
+        if is_backup_name(n) { ours.push(n) }
+    }
+    ours.sort_by(fn(a str, b str) -> int => b.compare(a))
+    ours
+}
+
+/// The backups to delete so that `keep` remain -- the oldest ones.
+export fn to_remove(names []str, keep int) -> []str {
+    mut out = []str.new()
+    mut i = 0
+    for n in newest_first(names) {
+        if i >= keep { out.push(n) }
+        i += 1
+    }
+    out
+}
+
+/// Is the weekly backup due? Yes when there is none, or the newest is a week old.
+export fn weekly_due(names []str, now_ms int) -> bool {
+    ro all = newest_first(names)
+    if all.len() == 0 { return true }
+    all[0] <= backup_name(now_ms - WEEK_MS)
+}
+
+/// An identifier in double quotes, doubled inside.
+export fn ident(name str) -> str => "\"${name.replace("\"", "\"\"")}\""
+
+/// One table of the source: its name and its own `CREATE` statement.
+export type Table value {
+    ro name str
+    ro sql str
+}
+
+export fn Table.new(name str, sql str) -> Table => { name, sql }
+
+/// The source's tables, in creation order (see the header).
+export fn tables_sql(source str) -> str =>
+    "SELECT table_name, sql FROM duckdb_tables() WHERE database_name = ${quote(source)} AND schema_name = 'main' AND NOT temporary ORDER BY table_oid"
+
+/// The rest of the schema that has a `CREATE` of its own: views, then indexes.
+export fn others_sql(source str) -> str =>
+    "SELECT sql FROM (SELECT sql, 0 AS kind, view_oid AS oid FROM duckdb_views() WHERE database_name = ${quote(source)} AND schema_name = 'main' AND NOT internal AND NOT temporary UNION ALL SELECT sql, 1, index_oid FROM duckdb_indexes() WHERE database_name = ${quote(source)} AND schema_name = 'main' AND sql IS NOT NULL) ORDER BY kind, oid"
+
+/// How the connection gets back to the application's database.
+export fn back_sql(source str) -> str => "USE ${ident(source)}"
+
+/// The statements that write the source database into `target`.
+export fn backup_sql(source str, target str, tables []Table, others []str) -> []str {
+    mut out = ["ATTACH ${quote(target)} AS ${ALIAS}", "USE ${ALIAS}"]
+    for t in tables { out.push(t.sql) }
+    for o in others { out.push(o) }
+    out.push(back_sql(source))
+    out.push("BEGIN TRANSACTION")
+    for t in tables {
+        out.push("INSERT INTO ${ALIAS}.main.${ident(t.name)} SELECT * FROM ${ident(source)}.main.${ident(t.name)}")
+    }
+    out.push("COMMIT")
+    out.push("CHECKPOINT ${ALIAS}")
+    out.push("DETACH ${ALIAS}")
+    out
+}
+
+// ── the effectful part ──────────────────────────────────────────────────────
+
+fn io(e IoError) -> BackupFail => BackupFail.Io(e.to_str())
+fn engine(e DuckError) -> BackupFail => BackupFail.Engine(e.message())
+
+/// The names in the backup directory; none when it does not exist yet.
+export fn list_names(dir str) Fs -> []str {
+    mut out = []str.new()
+    ro entries = read_dir(dir.to_path()) ?? []DirEntry.new()
+    for e in entries {
+        match e.name.to_str() {
+            Some(s) => out.push(s)
+            None => ()
+        }
+    }
+    out
+}
+
+/// Every row of `sql`, each cell as text (`""` for anything that is not).
+fn text_rows(conn ConnRef, sql str) Db -> Result[[][]str, DuckError] {
+    ro rows = Db.query(conn, sql)?
+    mut out [][]str = []
+    loop {
+        match Db.next(rows) {
+            Err(e) => {
+                Db.close_result(rows)
+                return Err(e)
+            }
+            Ok(None) => break
+            Ok(Some(cells)) => {
+                mut row = []str.new()
+                for c in cells {
+                    match c {
+                        Value.Text(s) => row.push(s)
+                        _ => row.push("")
+                    }
+                }
+                out.push(row)
+            }
+        }
+    }
+    Db.close_result(rows)
+    Ok(out)
+}
+
+fn current_database(conn ConnRef) Db -> Result[str, DuckError] {
+    ro rows = text_rows(conn, "SELECT current_database()")?
+    if rows.len() == 0 || rows[0].len() == 0 { return Err(DuckError.Type("current_database() returned nothing")) }
+    Ok(rows[0][0])
+}
+
+fn statements_for(conn ConnRef, source str, part str) Db -> Result[[]str, DuckError] {
+    mut tables = []Table.new()
+    for r in text_rows(conn, tables_sql(source))? { tables.push(Table.new(r[0], r[1])) }
+    mut others = []str.new()
+    for r in text_rows(conn, others_sql(source))? { others.push(r[0]) }
+    Ok(backup_sql(source, part, tables, others))
+}
+
+/// Take one backup and prune to `keep` (01.2 §5). Returns the backup's name.
+///
+/// A second backup in the same minute is the file already there: the name has no
+/// finer grain, and a backup is a state, not an event.
+export fn take_backup(conn ConnRef, dir str, now_ms int, keep int, windows bool) Db Fs -> Result[str, BackupFail] {
+    ro name = backup_name(now_ms)
+    ro final = join(dir, name, windows)
+    if try_exists(final.to_path()).map_err(io)? { return Ok(name) }
+
+    create_dir_all(dir.to_path()).map_err(io)?
+    ro part = "${final}${PART}"
+    // A `.part` left by a run that died is garbage by definition; absent is the usual
+    // case, and that failure is the one to ignore.
+    ro _ = remove_file(part.to_path())
+
+    ro source = current_database(conn).map_err(engine)?
+    for stmt in statements_for(conn, source, part).map_err(engine)? {
+        match Db.exec(conn, stmt) {
+            Ok(_) => ()
+            Err(e) => {
+                // Best effort, in THIS order: out of a failed transaction, back to the
+                // application's database (see the header), and only then detach -- left
+                // attached, the alias would refuse every later backup.
+                ro _ = Db.exec(conn, "ROLLBACK")
+                ro _ = Db.exec(conn, back_sql(source))
+                ro _ = Db.exec(conn, "DETACH DATABASE IF EXISTS ${ALIAS}")
+                ro _ = remove_file(part.to_path())
+                return Err(engine(e))
+            }
+        }
+    }
+    rename(part.to_path(), final.to_path()).map_err(io)?
+
+    for old in to_remove(list_names(dir), keep) {
+        remove_file(join(dir, old, windows).to_path()).map_err(io)?
+    }
+    Ok(name)
+}
+
+/// What a restore did.
+export type Restored enum
+    /// The newest backup was copied into place.
+    | FromBackup(str)
+    /// There was none: the database starts empty; the settings live in TOML and are
+    /// untouched (01.2 §5).
+    | NoBackup
+
+/// The database would not open: move it (and its `.wal`) aside and bring back the
+/// newest backup (01.2 §5 "Целостность").
+///
+/// The `.wal` goes aside WITH the file. Left in place, DuckDB would replay the damaged
+/// database's log onto the restored one.
+export fn restore_latest(db_path str, dir str, now_ms int, windows bool) Fs -> Result[Restored, BackupFail] {
+    ro aside = join(dir_of(db_path, windows), corrupt_name(now_ms), windows)
+    ro wal = "${db_path}.wal"
+    if try_exists(db_path.to_path()).map_err(io)? {
+        rename(db_path.to_path(), aside.to_path()).map_err(io)?
+    }
+    if try_exists(wal.to_path()).map_err(io)? {
+        rename(wal.to_path(), "${aside}.wal".to_path()).map_err(io)?
+    }
+    ro all = newest_first(list_names(dir))
+    if all.len() == 0 { return Ok(Restored.NoBackup) }
+    ro _ = copy_file(join(dir, all[0], windows).to_path(), db_path.to_path()).map_err(io)?
+    Ok(Restored.FromBackup(all[0]))
+}

@@ -1,0 +1,338 @@
+// backup.nv: names, rotation, restore, and a live round trip through DuckDB.
+//
+//   ./nova.sh test src/storage/ --filter backup_test
+//
+// The live tests write into the system temp directory, each into its own
+// subdirectory that it empties first -- a test that inherits the last run's files
+// measures the last run.
+
+module storage.backup_test
+
+import std.fs.{mock_fs, MemFs, real_fs, read_text, write_text, try_exists, create_dir_all, remove_dir_all}
+import std.os.{real_os, temp_dir}
+import duckdb.{Database, DbOptions}
+import duckdb.db_effect.{Db}
+import duckdb.db_real.{with_real_db}
+import claude_limits.storage.backup.{stamp, backup_name, corrupt_name, is_backup_name, newest_first, to_remove, weekly_due, backup_sql, list_names, take_backup, restore_latest, Table, WEEK_MS}
+import claude_limits.storage.repo.{Tick, WindowRow, Ids, plan_sql}
+
+// 2026-09-30 12:00 in Moscow, 09:00 UTC.
+const NOW_MS = 1790758800000
+const MIN_MS = 60_000
+
+// ── names ───────────────────────────────────────────────────────────────────
+
+test "the stamp is UTC and fixed-width" {
+    assert(stamp(0) == "19700101-0000")
+    assert(stamp(NOW_MS) == "20260930-0900")
+    assert(stamp(NOW_MS + 59 * MIN_MS + 59_999) == "20260930-0959")
+    assert(backup_name(NOW_MS) == "claude-limits-20260930-0900.duckdb")
+    assert(corrupt_name(NOW_MS) == "claude-limits.corrupt-20260930-0900.duckdb")
+}
+
+test "only the exact shape counts as a backup" {
+    assert(is_backup_name(backup_name(NOW_MS)))
+    // A half-written one must never be counted, rotated or restored.
+    assert(!is_backup_name("${backup_name(NOW_MS)}.part"))
+    assert(!is_backup_name(corrupt_name(NOW_MS)))
+    assert(!is_backup_name("claude-limits-2026093-0900.duckdb"))
+    assert(!is_backup_name("claude-limits-20260930_0900.duckdb"))
+    assert(!is_backup_name("claude-limits-2026093a-0900.duckdb"))
+    assert(!is_backup_name("claude-limits.duckdb"))
+}
+
+fn seven() -> []str {
+    mut out = []str.new()
+    // Out of order on purpose, and with strangers in the directory.
+    for d in [3, 0, 6, 1, 5, 2, 4] { out.push(backup_name(NOW_MS - d * 86_400_000)) }
+    out.push("${backup_name(NOW_MS + MIN_MS)}.part")
+    out.push("notes.txt")
+    out
+}
+
+test "newest first, and the rotation drops the oldest" {
+    ro all = newest_first(seven())
+    assert(all.len() == 7)
+    assert(all[0] == backup_name(NOW_MS))
+    assert(all[6] == backup_name(NOW_MS - 6 * 86_400_000))
+    ro gone = to_remove(seven(), 5)
+    assert(gone.len() == 2)
+    assert(gone[0] == backup_name(NOW_MS - 5 * 86_400_000))
+    assert(gone[1] == backup_name(NOW_MS - 6 * 86_400_000))
+    assert(to_remove(seven(), 7).len() == 0)
+    assert(to_remove(seven(), 9).len() == 0)
+}
+
+test "the weekly backup is due when there is none, or the newest is a week old" {
+    assert(weekly_due(["notes.txt"], NOW_MS))
+    assert(!weekly_due([backup_name(NOW_MS - WEEK_MS + MIN_MS)], NOW_MS))
+    assert(weekly_due([backup_name(NOW_MS - WEEK_MS)], NOW_MS))
+    // A fresh `.part` is not a backup and does not postpone the weekly one.
+    assert(weekly_due(["${backup_name(NOW_MS)}.part"], NOW_MS))
+}
+
+test "the statements: schema first under USE, back to the source, rows in one transaction" {
+    ro s = backup_sql("my \"db\"", "C:/Users/o'hara/backup/x.duckdb.part",
+        [Table.new("folder", "CREATE TABLE folder(id UUID)"), Table.new("login_dir", "CREATE TABLE login_dir(id UUID)")],
+        ["CREATE VIEW v AS SELECT 1"])
+    ro want = [
+        "ATTACH 'C:/Users/o''hara/backup/x.duckdb.part' AS nova_backup",
+        "USE nova_backup",
+        "CREATE TABLE folder(id UUID)",
+        "CREATE TABLE login_dir(id UUID)",
+        "CREATE VIEW v AS SELECT 1",
+        "USE \"my \"\"db\"\"\"",
+        "BEGIN TRANSACTION",
+        "INSERT INTO nova_backup.main.\"folder\" SELECT * FROM \"my \"\"db\"\"\".main.\"folder\"",
+        "INSERT INTO nova_backup.main.\"login_dir\" SELECT * FROM \"my \"\"db\"\"\".main.\"login_dir\"",
+        "COMMIT",
+        "CHECKPOINT nova_backup",
+        "DETACH nova_backup",
+    ]
+    assert(same("count", "${want.len()}", "${s.len()}"))
+    mut i = 0
+    for w in want {
+        assert(same("statement ${i}", w, s[i]))
+        i += 1
+    }
+}
+
+// ── restore, on a file system in memory ─────────────────────────────────────
+
+const DB = "/data/claude-limits.duckdb"
+const BK = "/data/backup"
+
+fn put(path str, s str) Fs -> () {
+    ro _ = write_text(path.to_path(), s)
+}
+
+fn text(path str) Fs -> str => read_text(path.to_path()) ?? "<absent>"
+
+test "restore moves the damaged file and its log aside, and brings back the newest" {
+    mut fs = MemFs.new()
+    ro got = with Fs = mock_fs(fs) {
+        ro _ = create_dir_all(BK.to_path())
+        put(DB, "damaged")
+        put("${DB}.wal", "damaged log")
+        put("${BK}/${backup_name(NOW_MS - 86_400_000)}", "older")
+        put("${BK}/${backup_name(NOW_MS - 3_600_000)}", "newest")
+        // Newer than both, and half-written: must be passed over.
+        put("${BK}/${backup_name(NOW_MS)}.part", "half")
+        ro r = restore_latest(DB, BK, NOW_MS, false)
+        ro aside = "/data/${corrupt_name(NOW_MS)}"
+        [
+            match r { Ok(Restored.FromBackup(n)) => n, Ok(Restored.NoBackup) => "<none>", Err(e) => e.message() },
+            text(DB),
+            text("${DB}.wal"),
+            text(aside),
+            text("${aside}.wal"),
+            "${list_names(BK).len()}",
+        ]
+    }
+    assert(got[0] == backup_name(NOW_MS - 3_600_000))
+    assert(got[1] == "newest")
+    // Left in place, DuckDB would replay the damaged log onto the restored file.
+    assert(got[2] == "<absent>")
+    assert(got[3] == "damaged")
+    assert(got[4] == "damaged log")
+    // Copied, not moved: the backup is still a backup.
+    assert(got[5] == "3")
+}
+
+test "no backup: the damaged file still goes aside, and the answer says so" {
+    mut fs = MemFs.new()
+    ro got = with Fs = mock_fs(fs) {
+        put(DB, "damaged")
+        ro r = restore_latest(DB, BK, NOW_MS, false)
+        [
+            match r { Ok(Restored.NoBackup) => "none", Ok(Restored.FromBackup(n)) => n, Err(e) => e.message() },
+            "${try_exists(DB.to_path()) ?? true}",
+            text("/data/${corrupt_name(NOW_MS)}"),
+        ]
+    }
+    assert(got[0] == "none")
+    assert(got[1] == "false")
+    assert(got[2] == "damaged")
+}
+
+// ── live: DuckDB on disk ────────────────────────────────────────────────────
+
+fn scratch(name str) Io -> str {
+    ro base = with Os = real_os() { temp_dir().display().replace("\\", "/") }
+    ro dir = "${base}/claude-limits-backup-test-${name}"
+    with Fs = real_fs() {
+        ro _ = remove_dir_all(dir.to_path())
+        ro _ = create_dir_all(dir.to_path())
+    }
+    dir
+}
+
+fn migration() Io -> str =>
+    with Fs = real_fs() {
+        read_text("migrations/0001_init.sql".to_path()) ?? ""
+    }
+
+fn win(kind str, percent int) -> WindowRow =>
+    WindowRow.new(kind, "", percent, false, "", "", 1757340000000, 1757358000000)
+
+fn tick(at_ms int) -> Tick => {
+    instance: "01900000-0000-7000-8000-000000000001", at_ms, email: "work@example.org",
+    org: "Tech Center", outcome: "ok", http_status: 200, retry_after_sec: 0,
+    latency_ms: 120, error: "", windows: [win("session", 74), win("weekly_all", 41)],
+}
+
+fn ids(n int) -> Ids {
+    ro p = "01900000-0000-7000-8000-000000${n}"
+    Ids.new("01900000-0000-7000-8000-0000000000a1", "${p}01", ["${p}11", "${p}12"], ["${p}21", "${p}22"], ["${p}31", "${p}32"])
+}
+
+/// Run `sqls` against the file, then answer `q` (one text cell), or the refusal.
+fn on_file(path str, sqls []str, q str) Io -> str {
+    mut out = "<no answer>"
+    with Fail[DuckError] = |e| { out = "REFUSED ${e.message()}" } {
+        consume db = Database.open(path, DbOptions.defaults())!! {
+            consume con = db.connect()!! {
+                for s in sqls { ro _ = con.exec(s)!! }
+                if q != "" {
+                    consume r = con.query(q)!! {
+                        match r.value(0, 0)!! {
+                            Value.Text(s) => { out = s }
+                            _ => { out = "<non-text>" }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+fn two_ticks() Io -> []str {
+    mut all = [migration()]
+    for s in plan_sql(tick(1757347622000), ids(1000)) { all.push(s) }
+    for s in plan_sql(tick(1757347922000), ids(2000)) { all.push(s) }
+    all
+}
+
+/// Open the file through the effect, run `pre`, take one backup at `now_ms`, and ask
+/// the SAME connection which database it is on afterwards. Answers [result, database].
+fn backup_where(path str, dir str, now_ms int, keep int, pre []str) Io -> []str =>
+    with_real_db(fn() Db -> []str => {
+        with Fs = real_fs() {
+            match Db.open(path, DbOptions.defaults()) {
+                Err(e) => ["OPEN ${e.message()}", ""]
+                Ok(db) => match Db.connect(db) {
+                    Err(e) => {
+                        Db.close_db(db)
+                        ["CONNECT ${e.message()}", ""]
+                    }
+                    Ok(conn) => {
+                        for s in pre { ro _ = Db.exec(conn, s) }
+                        ro r = take_backup(conn, dir, now_ms, keep, false)
+                        mut on = "<unknown>"
+                        match Db.query(conn, "SELECT current_database()") {
+                            Ok(rows) => {
+                                match Db.next(rows) {
+                                    Ok(Some(cells)) => match cells[0] {
+                                        Value.Text(s) => { on = s }
+                                        _ => ()
+                                    }
+                                    _ => ()
+                                }
+                                Db.close_result(rows)
+                            }
+                            Err(e) => { on = "QUERY ${e.message()}" }
+                        }
+                        Db.close_conn(conn)
+                        Db.close_db(db)
+                        [match r { Ok(n) => n, Err(e) => "FAIL ${e.message()}" }, on]
+                    }
+                }
+            }
+        }
+    })
+
+fn backup_at(path str, dir str, now_ms int, keep int) Io -> str =>
+    backup_where(path, dir, now_ms, keep, [])[0]
+
+const SAMPLES = "SELECT count(*)::VARCHAR FROM sample"
+
+/// An equality that says what it got: a live failure is otherwise a bare line number.
+fn same(label str, want str, got str) -> bool {
+    if want == got { return true }
+    panic("${label}: want ${want}, got ${got}")
+}
+
+/// A copy of an existing sample, an hour later, under `id`, pointing at `window`.
+fn copy_of_a_sample(id str, window str) -> str =>
+    "INSERT INTO sample SELECT '${id}'::UUID, created_at, updated_at, created_by, updated_by, ${window}, sampled_at + INTERVAL 1 HOUR, cycle_id, percent, locked, locked_reason, server_severity, active FROM sample LIMIT 1"
+
+test "a backup of an open database is a whole database, foreign keys and all" {
+    ro dir = scratch("whole")
+    ro db = "${dir}/claude-limits.duckdb"
+    assert(same("seeded", "4", on_file(db, two_ticks(), SAMPLES)))
+    ro name = backup_at(db, "${dir}/backup", NOW_MS, 5)
+    assert(same("backup", backup_name(NOW_MS), name))
+    ro copy = "${dir}/backup/${name}"
+    assert(on_file(copy, [], SAMPLES) == "4")
+    assert(on_file(copy, [], "SELECT count(*)::VARCHAR FROM poll") == "2")
+    // The constraints came along, not only the rows. A PAIR, because "refused" alone
+    // is satisfied by any typo in the statement: the same copy of a real row goes in
+    // with its own window, and is refused -- by the foreign key -- with a window that
+    // does not exist.
+    assert(on_file(copy, [copy_of_a_sample("01900000-0000-7000-8000-00000000fff1", "window_id")], SAMPLES) == "5")
+    ro orphan = on_file(copy, [copy_of_a_sample("01900000-0000-7000-8000-00000000fff2", "'01900000-0000-7000-8000-00000000eeee'::UUID")], "")
+    assert(orphan.contains("foreign key"))
+    // Nothing half-written left behind.
+    ro names = with Fs = real_fs() { list_names("${dir}/backup") }
+    assert(names.len() == 1)
+}
+
+test "a damaged database is set aside and the backup brought back" {
+    ro dir = scratch("restore")
+    ro db = "${dir}/claude-limits.duckdb"
+    assert(same("seeded", "4", on_file(db, two_ticks(), SAMPLES)))
+    assert(same("backup", backup_name(NOW_MS), backup_at(db, "${dir}/backup", NOW_MS, 5)))
+    with Fs = real_fs() { put(db, "this is not a database any more") }
+    assert(on_file(db, [], SAMPLES).starts_with("REFUSED"))
+    ro r = with Fs = real_fs() { restore_latest(db, "${dir}/backup", NOW_MS + MIN_MS, false) }
+    match r {
+        Ok(Restored.FromBackup(n)) => assert(n == backup_name(NOW_MS))
+        _ => assert(false)
+    }
+    assert(on_file(db, [], SAMPLES) == "4")
+}
+
+test "backups_keep holds, and a second backup in the same minute is the same file" {
+    ro dir = scratch("keep")
+    ro db = "${dir}/claude-limits.duckdb"
+    assert(on_file(db, two_ticks(), SAMPLES) == "4")
+    for d in [6, 5, 4, 3, 2, 1, 0] {
+        assert(same("backup ${d}", backup_name(NOW_MS - d * 86_400_000), backup_at(db, "${dir}/backup", NOW_MS - d * 86_400_000, 5)))
+    }
+    assert(backup_at(db, "${dir}/backup", NOW_MS + 30_000, 5) == backup_name(NOW_MS))
+    ro left = with Fs = real_fs() { newest_first(list_names("${dir}/backup")) }
+    assert(left.len() == 5)
+    assert(left[0] == backup_name(NOW_MS))
+    assert(left[4] == backup_name(NOW_MS - 4 * 86_400_000))
+}
+
+test "a backup that fails half-way leaves the connection where the application had it" {
+    // A view over a macro: macros are not part of the copy, so the view's CREATE fails
+    // in the backup -- AFTER `USE nova_backup` has moved the connection. The failure
+    // path must bring it back, or every later query of the application goes to the
+    // half-written backup file.
+    ro dir = scratch("fails")
+    ro db = "${dir}/claude-limits.duckdb"
+    assert(same("seeded", "4", on_file(db, two_ticks(), SAMPLES)))
+    ro got = backup_where(db, "${dir}/backup", NOW_MS, 5,
+        ["CREATE MACRO twice(x) AS x * 2", "CREATE VIEW v_twice AS SELECT twice(1) AS n"])
+    assert(got[0].starts_with("FAIL"))
+    assert(same("connection after the failure", "claude-limits", got[1]))
+    ro left = with Fs = real_fs() { list_names("${dir}/backup") }
+    assert(same("files left", "0", "${left.len()}"))
+    // Detached, too: the next backup, with the view gone, goes through.
+    ro again = backup_where(db, "${dir}/backup", NOW_MS, 5, ["DROP VIEW v_twice"])
+    assert(same("next backup", backup_name(NOW_MS), again[0]))
+    assert(same("connection after success", "claude-limits", again[1]))
+}
