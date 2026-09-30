@@ -64,15 +64,17 @@ export type Disclosure enum Loopback | Lan | Anonymous
 // renderer that nests "for convenience" breaks a client that never asked for it.
 //
 // FRACTIONS ARE INTEGERS in these records — `elapsed_share_hundredths` is hundredths,
-// `rate_per_hour_milli` is thousandths. The wire still shows `0.79` and `2.300`
-// (`field_fixed2`/`field_fixed3`); what is avoided is a float travelling through
-// four layers and arriving as `0.7899999`.
+// `rate_per_hour_milli` is thousandths. The wire still shows `0.79` and `2.300`: the
+// integer becomes a fraction ONCE, where the wire record is built (`/ 100.0`,
+// `/ 1000.0`, since T2.29 serde); what is avoided is a float travelling through four
+// layers and arriving as `0.7899999`. `scripts/check-scale-suffixes.py` ties each
+// suffix to its divisor.
 
 /// One login directory of an account. `path` is class `pii-path`; `name` is not.
 export type DirView value { id str, path str, name str }
 
 /// One account row. Empty strings mean `null` on the wire, which is what §0 asks
-/// for an absent value — see `field_str_or_null`.
+/// for an absent value — `opt` turns "" into `None` where the wire record is built.
 export type AccountView value {
     id str
     email str
@@ -140,7 +142,8 @@ export type LimitView value {
     /// Hundredths of the window elapsed at `fetched_at`.
     ///
     /// RENAMED 2026-09-09, from `elapsed_share_bp`. `bp` means basis points, one
-    /// ten-thousandth; this value is hundredths, written through `field_fixed2`. The
+    /// ten-thousandth; this value is hundredths (then written through `field_fixed2`,
+    /// now divided by 100 where the wire record is built). The
     /// name was wrong by a factor of a hundred, and it was the only place carrying
     /// the scale -- the docstring said hundredths, the file header said hundredths,
     /// the writer said hundredths, and the name said otherwise to anyone who read the

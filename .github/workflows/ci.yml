@@ -7,7 +7,8 @@
 # is always red is read by nobody. It is added when the compiler learns C++.
 #
 # WHAT IS PINNED, AND WHY BY HAND:
-#   * nova at a commit, not `main`: the compiler moves several times a day, and a CI
+#   * nova at a FULL commit hash (a short one is read as a branch name by
+#     actions/checkout -- the first run failed on it), not `main`: the compiler moves several times a day, and a CI
 #     that goes red because somebody else merged is a CI people learn to ignore. Bump
 #     NOVA_REF deliberately, with a green local run on the new commit.
 #   * nova-duckdb at its tag: the package is pulled by tag, but the tag carries SOURCE,
@@ -26,7 +27,7 @@ on:
   workflow_dispatch:
 
 env:
-  NOVA_REF: 97ab70f5d
+  NOVA_REF: 97ab70f5d5734ab4ccc21db280d0665dc5e5b89d
   DUCKDB_TAG: v0.2.1
 
 jobs:

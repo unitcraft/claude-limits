@@ -54,7 +54,7 @@ export type Forecast value {
     percent_at_reset int
     runs_out_in_min int     // working minutes from `now`; -1 when it does not run out
     // HUNDREDTHS. The wire wants THOUSANDTHS: `server/dto.nv` declares
-    // `rate_per_hour_milli` and writes it with `field_fixed3`. Nothing converts
+    // `rate_per_hour_milli` and divides it by 1000.0 on the wire. Nothing converts
     // between the two yet -- the layer that joins model to DTO is not written, and
     // the snapshot handler fills the field from a stub. Multiply by 10 when it is:
     // both are `int` and both are called `rate_per_hour`, so a plain assignment
