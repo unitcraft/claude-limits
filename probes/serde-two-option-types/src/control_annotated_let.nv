@@ -1,0 +1,15 @@
+module probe_two_opt.control_annotated_let
+
+type Rec value {
+    ro d Option[str]
+}
+
+fn make(s str) -> Rec {
+    ro d Option[str] = if s == "" { None } else { Some(s) }
+    Rec{ d }
+}
+
+fn main() Io {
+    ro r = make("hi")
+    println(r.d ?? "<none>")
+}

@@ -1,0 +1,14 @@
+module probe_two_opt.control_some_first
+
+type Rec value {
+    ro d Option[str]
+}
+
+fn make(s str) -> Rec {
+    Rec{ d: if s != "" { Some(s) } else { None } }
+}
+
+fn main() Io {
+    ro r = make("hi")
+    println(r.d ?? "<none>")
+}

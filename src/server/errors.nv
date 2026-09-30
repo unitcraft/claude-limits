@@ -40,7 +40,7 @@ module server.errors
 // `src/server/handlers/json`. Isolated with controls in
 // `probes/module-reuse-breaks-sibling-import/`.
 import claude_limits.config.{ConfigError}
-import claude_limits.server.json.{field_str, field_str_or_null, field_int, field_int_or_null, field_raw, object, array}
+import std.encoding.serde.{json_encode, Serialize}
 
 /// One refusal. The shape of RFC 9457 problem+json as 01.3 §0 uses it.
 export type ApiError value {
@@ -64,6 +64,7 @@ export type ApiError value {
 /// One entry of `errors[]`. Three members, as §0's example has them: `field` is a
 /// dotted path into the body or a parameter name, `code` is what the page groups
 /// by, `message` is what a person reads.
+#impl(Serialize)
 export type FieldError value {
     field str
     code str
@@ -256,29 +257,47 @@ export fn well_formed(e ApiError) -> bool {
 /// is the specific rule and the always-a-list sentence is the general one, so the
 /// specific rule wins here; the choice is written down because it is a choice.
 ///
-/// Written through `json.nv` rather than interpolation: `detail` is built from text
-/// someone else wrote, and a quote in it would close the string early.
+/// Written by serde (T2.29), not assembled by hand: the wire shape is the type
+/// below, field order is declaration order, and escaping `detail` -- text someone
+/// else wrote -- is serde's job rather than a helper's.
 export fn to_json(e ApiError, request_id str, instance str) -> str {
-    mut fields = [
-        field_str("type", type_uri(e.code)),
-        field_str("title", e.title),
-        field_int("status", e.status),
-        field_str_or_null("detail", e.detail),
-        field_str("instance", instance),
-        field_str("code", e.code),
-        field_str("request_id", request_id),
-        field_int_or_null("retry_after", e.retry_after),
-    ]
-    if e.fields.len() > 0 {
-        mut items = []str.new()
-        for f in e.fields {
-            items.push(object([
-                field_str("field", f.field),
-                field_str("code", f.code),
-                field_str("message", f.message),
-            ]))
-        }
-        fields.push(field_raw("errors", array(items)))
+    ro p = Problem{
+        type_uri: type_uri(e.code),
+        title: e.title,
+        status: e.status,
+        // `Some` first ON PURPOSE: with `None` first the codegen typed this `if` as
+        // Option[int] and the C refused it (probes/serde-two-option-types, real-file
+        // reproduction only). `check` accepted both orders.
+        detail: if e.detail != "" { Some(e.detail) } else { None },
+        instance,
+        code: e.code,
+        request_id,
+        retry_after: e.retry_after,
+        errors: e.fields,
     }
-    object(fields)
+    // Unreachable in practice: serde refuses only integers past 2^53 and
+    // non-finite floats, and this body holds a status code and a few seconds.
+    // A refusal still gets a well-formed body rather than a panic in the ONE
+    // path whose whole job is to report failure.
+    json_encode(p) ?? FALLBACK_BODY
+}
+
+const FALLBACK_BODY = "{\"type\":\"urn:claude-limits:problem:internal\",\"title\":\"Internal error\",\"status\":500,\"detail\":null,\"instance\":\"\",\"code\":\"internal\",\"request_id\":\"\",\"retry_after\":null}"
+
+/// The problem+json body as it goes on the wire (01.3 section 0), in wire order.
+/// `errors` is present only when there are field errors: section 0 says `errors[]`
+/// belongs to validation failures (see above), hence the one conditional field.
+#impl(Serialize)
+type Problem value {
+    #serde(rename = "type")
+    ro type_uri str
+    ro title str
+    ro status int
+    ro detail Option[str]
+    ro instance str
+    ro code str
+    ro request_id str
+    ro retry_after Option[int]
+    #serde(skip_serializing_if = "is_empty")
+    ro errors []FieldError
 }

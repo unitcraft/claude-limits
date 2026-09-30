@@ -1,0 +1,25 @@
+module probe_two_opt.gap_after_int_fn
+
+type Src value {
+    ro retry Option[int]
+    ro detail str
+}
+
+type Rec value {
+    ro d Option[str]
+    ro n Option[int]
+}
+
+fn ok(e Src) -> bool {
+    if e.retry.is_none() { return false }
+    true
+}
+
+fn make(e Src) -> Rec {
+    Rec{ d: if e.detail == "" { None } else { Some(e.detail) }, n: e.retry }
+}
+
+fn main() Io {
+    ro s = Src{ retry: Some(3), detail: "hi" }
+    println("${ok(s)} ${make(s).d ?? "<none>"}")
+}

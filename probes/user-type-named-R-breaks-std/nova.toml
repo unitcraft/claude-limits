@@ -1,0 +1,9 @@
+# Probe: a user type named R breaks std code that has a generic parameter R
+
+[lib]
+src = "src"
+
+[package]
+name = "probe_named_r"
+version = "0.0.0"
+description = "Probe: user type R vs std fn[R]"

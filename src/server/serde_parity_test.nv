@@ -1,0 +1,153 @@
+// T2.29: does std serde write the SAME BYTES the hand writer wrote?
+//
+// The card's first acceptance line is "bodies before and after are byte-identical",
+// and the existing handler tests cannot measure it: they check FRAGMENTS
+// (`body.contains(...)`), so a reordered key or a changed spacing would stay green.
+// This file keeps the retired hand-written writers as REFERENCES and compares whole
+// bodies. A reference is deleted only together with the writer it guards -- never
+// before, or the comparison silently becomes serde against serde.
+
+module server.serde_parity_test
+
+import std.encoding.serde.{json_encode, Serialize, Serializer, SerError}
+import claude_limits.server.json.{field_str, field_str_or_null, field_int, field_bool, field_int_or_null, field_fixed2, field_raw, object, array, array_str}
+import claude_limits.server.errors.{ApiError, FieldError, to_json, type_uri}
+
+// ── problem+json: the retired hand writer, kept verbatim as the reference ──────
+
+fn reference_problem(e ApiError, request_id str, instance str) -> str {
+    mut fields = [
+        field_str("type", type_uri(e.code)),
+        field_str("title", e.title),
+        field_int("status", e.status),
+        field_str_or_null("detail", e.detail),
+        field_str("instance", instance),
+        field_str("code", e.code),
+        field_str("request_id", request_id),
+        field_int_or_null("retry_after", e.retry_after),
+    ]
+    if e.fields.len() > 0 {
+        mut items = []str.new()
+        for f in e.fields {
+            items.push(object([
+                field_str("field", f.field),
+                field_str("code", f.code),
+                field_str("message", f.message),
+            ]))
+        }
+        fields.push(field_raw("errors", array(items)))
+    }
+    object(fields)
+}
+
+fn every_refusal() -> []ApiError {
+    ro two = [
+        FieldError.new("poll.interval_sec", "less_than_min", "minimum is 60 s"),
+        FieldError.new("a \"quoted\"\\path", "code\n", "tab\there \u{1} é"),
+    ]
+    [
+        ApiError.invalid_body("expected \"poll\"\nand \\ more"),
+        ApiError.invalid_parameter("from"),
+        ApiError.range_too_large("400 days"),
+        ApiError.unauthenticated(),
+        ApiError.loopback_only(),
+        ApiError.origin_required(),
+        ApiError.not_found(),
+        ApiError.account_not_found(),
+        ApiError.account_stale(),
+        ApiError.precondition_failed(),
+        ApiError.body_too_large(),
+        ApiError.unsupported_media_type(),
+        ApiError.precondition_required(),
+        ApiError.method_not_allowed("GET, PUT"),
+        ApiError.too_soon(60),
+        ApiError.too_many_auth_failures(0),
+        ApiError.store_busy(),
+        ApiError.too_many_subscribers(),
+        ApiError.starting(),
+        ApiError.internal(),
+        ApiError.config_readonly(),
+        ApiError.invalid_config(two),
+        ApiError.extra_forbidden(two),
+        ApiError.invalid_request([]),
+    ]
+}
+
+test "problem+json: every refusal, byte for byte against the retired hand writer" {
+    mut n = 0
+    for e in every_refusal() {
+        ro rid = "req-${n}"
+        assert(show("problem ${e.code}", reference_problem(e, rid, "/api/x?q=\"1\""), to_json(e, rid, "/api/x?q=\"1\"")))
+        n += 1
+    }
+    assert(n == 24)   // the denominator: a list that silently shrank would pass
+}
+
+#impl(Serialize)
+type Plain value {
+    ro name str
+    ro count int
+    ro on bool
+    ro maybe Option[int]
+    ro tags []str
+}
+
+#impl(Serialize)
+type Rate value {
+    ro rate_per_hour f64
+}
+
+fn show(label str, hand str, serde str) -> bool {
+    if hand == serde { return true }
+    panic("${label} HAND=${hand} SERDE=${serde}")
+}
+
+test "plain fields: strings, ints, bools, null, a list" {
+    ro p = Plain{ name: "a \"q\" \\ \n \u{1} é", count: 300, on: true, maybe: None, tags: ["x", ""] }
+    ro hand = object([
+        field_str("name", p.name),
+        field_int("count", p.count),
+        field_bool("on", p.on),
+        field_int_or_null("maybe", p.maybe),
+        field_raw("tags", array_str(p.tags)),
+    ])
+    ro via = json_encode(p) ?? "<serde error>"
+    assert(show("plain", hand, via))
+}
+
+fn rate(milli int) -> str => json_encode(Rate{ rate_per_hour: (milli as f64) / 1000.0 }) ?? "<serde error>"
+
+test "fixed-precision numbers come out as the SHORTEST decimal, never float noise" {
+    // 01.3 section 0: shares are JSON numbers at 2-3 digits, and its own examples
+    // write 2.3 and 2.06 -- trailing zeros are the hand writer's, not the contract's.
+    assert(show("2.300", "{\"rate_per_hour\":2.3}", rate(2300)))
+    assert(show("2.060", "{\"rate_per_hour\":2.06}", rate(2060)))
+    assert(show("0.005", "{\"rate_per_hour\":0.005}", rate(5)))
+    assert(show("0.790", "{\"rate_per_hour\":0.79}", rate(790)))
+    assert(show("0.070", "{\"rate_per_hour\":0.07}", rate(70)))
+    assert(show("1.000", "{\"rate_per_hour\":1}", rate(1000)))
+    assert(show("123.450", "{\"rate_per_hour\":123.45}", rate(123450)))
+    assert(show("-0.790", "{\"rate_per_hour\":-0.79}", rate(0 - 790)))
+    assert(show("0.001", "{\"rate_per_hour\":0.001}", rate(1)))
+    assert(show("0.333", "{\"rate_per_hour\":0.333}", rate(333)))
+}
+
+// `rename_all` is refused on sums (E_SERDE_ATTRIBUTE_ON_SUM_UNSUPPORTED), so a
+// unit-only enum writes its wire name by hand -- one method, the name table
+// the hand writer already has.
+type Basis enum
+    | Clock
+    | WorkingHours
+
+fn Basis @serialize[S Serializer](mut s S) -> Result[(), SerError] =>
+    s.serialize_str(match @ { Clock => "clock", WorkingHours => "working_hours" })
+
+#impl(Serialize)
+type WithBasis value {
+    ro basis Basis
+}
+
+test "a unit-only enum: how does it land on the wire?" {
+    ro via = json_encode(WithBasis{ basis: WorkingHours }) ?? "<serde error>"
+    assert(show("enum", "{\"basis\":\"working_hours\"}", via))
+}

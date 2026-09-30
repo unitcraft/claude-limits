@@ -1,0 +1,14 @@
+module probe_two_opt.gap_none_first
+
+type Rec value {
+    ro d Option[str]
+}
+
+fn make(s str) -> Rec {
+    Rec{ d: if s == "" { None } else { Some(s) } }
+}
+
+fn main() Io {
+    ro r = make("hi")
+    println(r.d ?? "<none>")
+}

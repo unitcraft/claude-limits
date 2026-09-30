@@ -1,0 +1,17 @@
+module probe_two_opt.control_some_first_serde
+
+import std.encoding.serde.{json_encode, Serialize}
+
+#impl(Serialize)
+type Rec value {
+    ro d Option[str]
+    ro n Option[int]
+}
+
+fn make(s str) -> Rec {
+    Rec{ d: if s != "" { Some(s) } else { None }, n: None }
+}
+
+fn main() Io {
+    println(json_encode(make("hi")) ?? "<err>")
+}

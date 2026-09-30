@@ -1,0 +1,14 @@
+module probe_two_opt.gap_reversed
+
+import std.encoding.serde.{json_encode, Serialize}
+
+#impl(Serialize)
+type Rec value {
+    ro b Option[int]
+    ro a Option[str]
+}
+
+fn main() Io {
+    ro r = Rec{ a: Some("x"), b: None }
+    println(json_encode(r) ?? "<err>")
+}

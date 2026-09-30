@@ -1,0 +1,12 @@
+module probe_named_r.gap_plain_T
+
+type T value {
+    ro a int
+}
+
+fn main() Io {
+    ro r = T{ a: 1 }
+    mut v []int = []
+    v.push(r.a)
+    println("${v.len()}")
+}

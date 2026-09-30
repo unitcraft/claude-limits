@@ -1,0 +1,14 @@
+module probe_named_r.gap_named_r
+
+import std.encoding.serde.{json_encode, Serialize}
+
+#impl(Serialize)
+type R value {
+    ro a Option[int]
+    ro b Option[int]
+}
+
+fn main() Io {
+    ro r = R{ a: Some(1), b: None }
+    println(json_encode(r) ?? "<err>")
+}

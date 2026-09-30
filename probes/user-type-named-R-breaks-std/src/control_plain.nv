@@ -1,0 +1,12 @@
+module probe_named_r.control_plain
+
+type Rx value {
+    ro a int
+}
+
+fn main() Io {
+    ro r = Rx{ a: 1 }
+    mut v []int = []
+    v.push(r.a)
+    println("${v.len()}")
+}

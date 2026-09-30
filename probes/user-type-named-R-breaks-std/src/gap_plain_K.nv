@@ -1,0 +1,12 @@
+module probe_named_r.gap_plain_K
+
+type K value {
+    ro a int
+}
+
+fn main() Io {
+    ro r = K{ a: 1 }
+    mut v []int = []
+    v.push(r.a)
+    println("${v.len()}")
+}

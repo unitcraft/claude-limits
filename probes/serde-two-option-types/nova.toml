@@ -1,0 +1,9 @@
+# Probe: autoderived Serialize on a record with Option fields of TWO different types
+
+[lib]
+src = "src"
+
+[package]
+name = "probe_two_opt"
+version = "0.0.0"
+description = "Probe: serde derive, Option[str] and Option[int] in one record"

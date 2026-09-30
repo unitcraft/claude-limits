@@ -1,0 +1,14 @@
+module probe_two_opt.control_one
+
+import std.encoding.serde.{json_encode, Serialize}
+
+#impl(Serialize)
+type Rec value {
+    ro a Option[str]
+    ro b int
+}
+
+fn main() Io {
+    ro r = Rec{ a: Some("x"), b: 7 }
+    println(json_encode(r) ?? "<err>")
+}

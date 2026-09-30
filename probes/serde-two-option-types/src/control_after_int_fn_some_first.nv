@@ -1,0 +1,25 @@
+module probe_two_opt.control_after_int_fn_some_first
+
+type Src value {
+    ro retry Option[int]
+    ro detail str
+}
+
+type Rec value {
+    ro d Option[str]
+    ro n Option[int]
+}
+
+fn ok(e Src) -> bool {
+    if e.retry.is_none() { return false }
+    true
+}
+
+fn make(e Src) -> Rec {
+    Rec{ d: if e.detail != "" { Some(e.detail) } else { None }, n: e.retry }
+}
+
+fn main() Io {
+    ro s = Src{ retry: Some(3), detail: "hi" }
+    println("${ok(s)} ${make(s).d ?? "<none>"}")
+}
