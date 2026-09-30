@@ -137,8 +137,7 @@ export fn unavailable_for(state str, is_locked bool) -> bool {
 export fn effective_minutes(sched Schedule, from_min int, to_min int) -> int {
     if to_min <= from_min { return 0 }
     mut total = 0
-    mut t = from_min
-    while t < to_min {
+    for t in from_min..to_min {
         ro day = (t / 1440) % 7
         ro in_day = t % 1440
         ro working_day = if day < sched.days.len() { sched.days[day] } else { false }
@@ -148,7 +147,6 @@ export fn effective_minutes(sched Schedule, from_min int, to_min int) -> int {
         } else {
             total += sched.off_hours_rate
         }
-        t += 1
     }
     total / 100
 }

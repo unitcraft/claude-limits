@@ -55,9 +55,7 @@ fn round_half_even(scaled int) -> int {
 
 /// How many cells of the bar are filled, for a whole percentage.
 export fn filled_cells(pct int) -> int {
-    mut p = pct
-    if p < 0 { p = 0 }
-    if p > 100 { p = 100 }
+    ro p = pct.max(0).min(100)
     return round_half_even(p * BAR_WIDTH)
 }
 

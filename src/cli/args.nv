@@ -106,7 +106,7 @@ export fn parse(argv []str) -> Result[Args, Complaint] {
     mut parent = ""
     mut color = "auto"
     mut bar_style = "ascii"
-    mut dirs = Vec[str].new()
+    mut dirs []str = []
     mut i = 0
 
     while i < argv.len() {
@@ -123,19 +123,19 @@ export fn parse(argv []str) -> Result[Args, Complaint] {
             mode = Mode.UninstallAutostart
         } else if a == "--config" {
             if i + 1 >= argv.len() { return Err(needs_value("--config")) }
-            i = i + 1
+            i += 1
             config = argv[i]
         } else if a == "--offline" {
             if i + 1 >= argv.len() { return Err(needs_value("--offline")) }
-            i = i + 1
+            i += 1
             offline = argv[i]
         } else if a == "--parent" {
             if i + 1 >= argv.len() { return Err(needs_value("--parent")) }
-            i = i + 1
+            i += 1
             parent = argv[i]
         } else if a == "--color" {
             if i + 1 >= argv.len() { return Err(needs_value("--color")) }
-            i = i + 1
+            i += 1
             color = argv[i]
             if !one_of(COLORS, color) {
                 return Err(Complaint.new(
@@ -144,7 +144,7 @@ export fn parse(argv []str) -> Result[Args, Complaint] {
             }
         } else if a == "--bar-style" {
             if i + 1 >= argv.len() { return Err(needs_value("--bar-style")) }
-            i = i + 1
+            i += 1
             bar_style = argv[i]
             if !one_of(BAR_STYLES, bar_style) {
                 return Err(Complaint.new(
@@ -156,7 +156,7 @@ export fn parse(argv []str) -> Result[Args, Complaint] {
         } else {
             dirs.push(a)
         }
-        i = i + 1
+        i += 1
     }
 
     return Ok(Args.new(mode, config, offline, parent, dirs, color, bar_style))

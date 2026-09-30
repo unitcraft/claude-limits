@@ -183,11 +183,11 @@ export fn merge(mut snap Snapshot, slot AccountSlot) -> () {
     while i < snap.accounts.len() {
         if snap.accounts[i].email == slot.email {
             snap.accounts[i] = slot
-            if slot.polled_at_ms > snap.fetched_at_ms { snap.fetched_at_ms = slot.polled_at_ms }
+            snap.fetched_at_ms = snap.fetched_at_ms.max(slot.polled_at_ms)
             return ()
         }
         i += 1
     }
     snap.accounts.push(slot)
-    if slot.polled_at_ms > snap.fetched_at_ms { snap.fetched_at_ms = slot.polled_at_ms }
+    snap.fetched_at_ms = snap.fetched_at_ms.max(slot.polled_at_ms)
 }

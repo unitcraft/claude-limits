@@ -73,10 +73,8 @@ const SNAP = "{\"fetched_at\":\"2026-09-08T16:47:02Z\",\"accounts\":[],\"limits\
 /// A registry with `n` events already published.
 fn with_events(n int) -> Registry {
     mut reg = Registry.new()
-    mut i = 0
-    while i < n {
+    for i in 0..n {
         ro _ = publish(reg, "snapshot", "{\"seq\":${i}}")
-        i += 1
     }
     reg
 }

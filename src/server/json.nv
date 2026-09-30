@@ -162,10 +162,8 @@ export fn field_fixed3_or_null(name str, v Option[int]) -> str {
 /// `n` scaled by `10^digits`, written as a decimal.
 fn decimal(n int, digits int) -> str {
     mut scale = 1
-    mut i = 0
-    while i < digits {
-        scale = scale * 10
-        i += 1
+    for _ in 0..digits {
+        scale *= 10
     }
     ro neg = n < 0
     ro abs = if neg { 0 - n } else { n }

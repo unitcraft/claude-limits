@@ -33,11 +33,11 @@
 module handlers.config
 
 import claude_limits.server.routes.{Ctx, ApiHandler, problem}
-import claude_limits.server.errors.{ApiError, FieldError, to_json}
+import claude_limits.server.errors.{ApiError, FieldError, to_json, field_errors_of}
 import claude_limits.server.etag.{etag_of}
 import claude_limits.server.dto.{Disclosure, pii_path}
 import claude_limits.server.json.{field_str, field_str_or_null, field_int, field_bool, field_raw, object, array, array_str}
-import claude_limits.config.{Config, ConfigError, validate, render}
+import claude_limits.config.{Config, validate, render}
 import polaris.{ServerRequest, ServerResponse}
 import std.encoding.json.{Json, JsonValue}
 
@@ -235,7 +235,7 @@ export type Merge value {
     errors []FieldError
 }
 
-fn as_int(v JsonValue, path str, mut errs []FieldError, current int) -> int {
+fn read_int(v JsonValue, path str, mut errs []FieldError, current int) -> int {
     match v.num() {
         Some(n) => n as int
         None => {
@@ -245,21 +245,21 @@ fn as_int(v JsonValue, path str, mut errs []FieldError, current int) -> int {
     }
 }
 
-fn as_bool(v JsonValue, path str, mut errs []FieldError, current bool) -> bool {
+fn read_bool(v JsonValue, path str, mut errs []FieldError, current bool) -> bool {
     v.bool() ?? {
         errs.push(wrong_type(path, "true or false"))
         current
     }
 }
 
-fn as_str(v JsonValue, path str, mut errs []FieldError, current str) -> str {
+fn read_str(v JsonValue, path str, mut errs []FieldError, current str) -> str {
     v.str() ?? {
         errs.push(wrong_type(path, "a string"))
         current
     }
 }
 
-fn as_str_list(v JsonValue, path str, mut errs []FieldError, current []str) -> []str {
+fn read_str_list(v JsonValue, path str, mut errs []FieldError, current []str) -> []str {
     match v.array() {
         None => {
             errs.push(wrong_type(path, "a list"))
@@ -291,11 +291,11 @@ fn merge_poll(mut c Config, obj JsonObject, mut errs []FieldError) -> () {
             None => break
             Some((k, v)) => {
                 if k == "interval_sec" {
-                    c.poll.interval_sec = as_int(v, "poll.interval_sec", errs, c.poll.interval_sec)
+                    c.poll.interval_sec = read_int(v, "poll.interval_sec", errs, c.poll.interval_sec)
                 } else if k == "min_interval_sec" {
-                    c.poll.min_interval_sec = as_int(v, "poll.min_interval_sec", errs, c.poll.min_interval_sec)
+                    c.poll.min_interval_sec = read_int(v, "poll.min_interval_sec", errs, c.poll.min_interval_sec)
                 } else if k == "request_timeout_sec" {
-                    c.poll.request_timeout_sec = as_int(v, "poll.request_timeout_sec", errs, c.poll.request_timeout_sec)
+                    c.poll.request_timeout_sec = read_int(v, "poll.request_timeout_sec", errs, c.poll.request_timeout_sec)
                 } else {
                     errs.push(unknown("poll.${k}"))
                 }
@@ -311,9 +311,9 @@ fn merge_thresholds(mut c Config, obj JsonObject, mut errs []FieldError) -> () {
             None => break
             Some((k, v)) => {
                 if k == "warning" {
-                    c.thresholds.warning = as_int(v, "thresholds.warning", errs, c.thresholds.warning)
+                    c.thresholds.warning = read_int(v, "thresholds.warning", errs, c.thresholds.warning)
                 } else if k == "critical" {
-                    c.thresholds.critical = as_int(v, "thresholds.critical", errs, c.thresholds.critical)
+                    c.thresholds.critical = read_int(v, "thresholds.critical", errs, c.thresholds.critical)
                 } else {
                     errs.push(unknown("thresholds.${k}"))
                 }
@@ -329,23 +329,23 @@ fn merge_forecast(mut c Config, obj JsonObject, mut errs []FieldError) -> () {
             None => break
             Some((k, v)) => {
                 if k == "enabled" {
-                    c.forecast.enabled = as_bool(v, "forecast.enabled", errs, c.forecast.enabled)
+                    c.forecast.enabled = read_bool(v, "forecast.enabled", errs, c.forecast.enabled)
                 } else if k == "work_days" {
-                    c.forecast.work_days = as_str_list(v, "forecast.work_days", errs, c.forecast.work_days)
+                    c.forecast.work_days = read_str_list(v, "forecast.work_days", errs, c.forecast.work_days)
                 } else if k == "work_from" {
-                    c.forecast.work_from = as_str(v, "forecast.work_from", errs, c.forecast.work_from)
+                    c.forecast.work_from = read_str(v, "forecast.work_from", errs, c.forecast.work_from)
                 } else if k == "work_to" {
-                    c.forecast.work_to = as_str(v, "forecast.work_to", errs, c.forecast.work_to)
+                    c.forecast.work_to = read_str(v, "forecast.work_to", errs, c.forecast.work_to)
                 } else if k == "off_hours_rate" {
-                    c.forecast.off_hours_rate = as_int(v, "forecast.off_hours_rate", errs, c.forecast.off_hours_rate)
+                    c.forecast.off_hours_rate = read_int(v, "forecast.off_hours_rate", errs, c.forecast.off_hours_rate)
                 } else if k == "rate_window_days" {
-                    c.forecast.rate_window_days = as_int(v, "forecast.rate_window_days", errs, c.forecast.rate_window_days)
+                    c.forecast.rate_window_days = read_int(v, "forecast.rate_window_days", errs, c.forecast.rate_window_days)
                 } else if k == "working_hours" {
-                    c.forecast.working_hours = as_bool(v, "forecast.working_hours", errs, c.forecast.working_hours)
+                    c.forecast.working_hours = read_bool(v, "forecast.working_hours", errs, c.forecast.working_hours)
                 } else if k == "warning" {
-                    c.forecast.warning = as_int(v, "forecast.warning", errs, c.forecast.warning)
+                    c.forecast.warning = read_int(v, "forecast.warning", errs, c.forecast.warning)
                 } else if k == "critical" {
-                    c.forecast.critical = as_int(v, "forecast.critical", errs, c.forecast.critical)
+                    c.forecast.critical = read_int(v, "forecast.critical", errs, c.forecast.critical)
                 } else {
                     errs.push(unknown("forecast.${k}"))
                 }
@@ -361,20 +361,20 @@ fn merge_server(mut c Config, obj JsonObject, mut errs []FieldError) -> () {
             None => break
             Some((k, v)) => {
                 if k == "bind" {
-                    c.server.bind = as_str(v, "server.bind", errs, c.server.bind)
+                    c.server.bind = read_str(v, "server.bind", errs, c.server.bind)
                 } else if k == "port" {
-                    c.server.port = as_int(v, "server.port", errs, c.server.port)
+                    c.server.port = read_int(v, "server.port", errs, c.server.port)
                 } else if k == "allow_lan" {
-                    c.server.allow_lan = as_bool(v, "server.allow_lan", errs, c.server.allow_lan)
+                    c.server.allow_lan = read_bool(v, "server.allow_lan", errs, c.server.allow_lan)
                 } else if k == "access_token" {
                     // Writable but never readable back (§3.7 gives only
                     // `access_token_set`). Accepting it here is what lets a person
                     // set one; nothing in this file ever renders it.
-                    c.server.access_token = as_str(v, "server.access_token", errs, c.server.access_token)
+                    c.server.access_token = read_str(v, "server.access_token", errs, c.server.access_token)
                 } else if k == "tls_cert" {
-                    c.server.tls_cert = as_str(v, "server.tls_cert", errs, c.server.tls_cert)
+                    c.server.tls_cert = read_str(v, "server.tls_cert", errs, c.server.tls_cert)
                 } else if k == "tls_key" {
-                    c.server.tls_key = as_str(v, "server.tls_key", errs, c.server.tls_key)
+                    c.server.tls_key = read_str(v, "server.tls_key", errs, c.server.tls_key)
                 } else {
                     errs.push(unknown("server.${k}"))
                 }
@@ -390,13 +390,13 @@ fn merge_ui(mut c Config, obj JsonObject, mut errs []FieldError) -> () {
             None => break
             Some((k, v)) => {
                 if k == "accounts_order" {
-                    c.ui.accounts_order = as_str_list(v, "ui.accounts_order", errs, c.ui.accounts_order)
+                    c.ui.accounts_order = read_str_list(v, "ui.accounts_order", errs, c.ui.accounts_order)
                 } else if k == "hidden_accounts" {
-                    c.ui.hidden_accounts = as_str_list(v, "ui.hidden_accounts", errs, c.ui.hidden_accounts)
+                    c.ui.hidden_accounts = read_str_list(v, "ui.hidden_accounts", errs, c.ui.hidden_accounts)
                 } else if k == "hide_stale" {
-                    c.ui.hide_stale = as_bool(v, "ui.hide_stale", errs, c.ui.hide_stale)
+                    c.ui.hide_stale = read_bool(v, "ui.hide_stale", errs, c.ui.hide_stale)
                 } else if k == "time_bar" {
-                    c.ui.time_bar = as_bool(v, "ui.time_bar", errs, c.ui.time_bar)
+                    c.ui.time_bar = read_bool(v, "ui.time_bar", errs, c.ui.time_bar)
                 } else {
                     errs.push(unknown("ui.${k}"))
                 }
@@ -412,15 +412,15 @@ fn merge_widget(mut c Config, obj JsonObject, mut errs []FieldError) -> () {
             None => break
             Some((k, v)) => {
                 if k == "enabled" {
-                    c.widget.enabled = as_bool(v, "widget.enabled", errs, c.widget.enabled)
+                    c.widget.enabled = read_bool(v, "widget.enabled", errs, c.widget.enabled)
                 } else if k == "always_on_top" {
-                    c.widget.always_on_top = as_bool(v, "widget.always_on_top", errs, c.widget.always_on_top)
+                    c.widget.always_on_top = read_bool(v, "widget.always_on_top", errs, c.widget.always_on_top)
                 } else if k == "x" {
-                    c.widget.x = as_int(v, "widget.x", errs, c.widget.x)
+                    c.widget.x = read_int(v, "widget.x", errs, c.widget.x)
                 } else if k == "y" {
-                    c.widget.y = as_int(v, "widget.y", errs, c.widget.y)
+                    c.widget.y = read_int(v, "widget.y", errs, c.widget.y)
                 } else if k == "visible" {
-                    c.widget.visible = as_bool(v, "widget.visible", errs, c.widget.visible)
+                    c.widget.visible = read_bool(v, "widget.visible", errs, c.widget.visible)
                 } else {
                     errs.push(unknown("widget.${k}"))
                 }
@@ -436,11 +436,11 @@ fn merge_history(mut c Config, obj JsonObject, mut errs []FieldError) -> () {
             None => break
             Some((k, v)) => {
                 if k == "keep_days" {
-                    c.history.keep_days = as_int(v, "history.keep_days", errs, c.history.keep_days)
+                    c.history.keep_days = read_int(v, "history.keep_days", errs, c.history.keep_days)
                 } else if k == "rollup_keep_days" {
-                    c.history.rollup_keep_days = as_int(v, "history.rollup_keep_days", errs, c.history.rollup_keep_days)
+                    c.history.rollup_keep_days = read_int(v, "history.rollup_keep_days", errs, c.history.rollup_keep_days)
                 } else if k == "config_versions_keep" {
-                    c.history.config_versions_keep = as_int(v, "history.config_versions_keep", errs, c.history.config_versions_keep)
+                    c.history.config_versions_keep = read_int(v, "history.config_versions_keep", errs, c.history.config_versions_keep)
                 } else {
                     errs.push(unknown("history.${k}"))
                 }
@@ -456,13 +456,13 @@ fn merge_storage(mut c Config, obj JsonObject, mut errs []FieldError) -> () {
             None => break
             Some((k, v)) => {
                 if k == "data_dir" {
-                    c.storage.data_dir = as_str(v, "storage.data_dir", errs, c.storage.data_dir)
+                    c.storage.data_dir = read_str(v, "storage.data_dir", errs, c.storage.data_dir)
                 } else if k == "backups_keep" {
-                    c.storage.backups_keep = as_int(v, "storage.backups_keep", errs, c.storage.backups_keep)
+                    c.storage.backups_keep = read_int(v, "storage.backups_keep", errs, c.storage.backups_keep)
                 } else if k == "memory_limit" {
-                    c.storage.memory_limit = as_str(v, "storage.memory_limit", errs, c.storage.memory_limit)
+                    c.storage.memory_limit = read_str(v, "storage.memory_limit", errs, c.storage.memory_limit)
                 } else if k == "threads" {
-                    c.storage.threads = as_int(v, "storage.threads", errs, c.storage.threads)
+                    c.storage.threads = read_int(v, "storage.threads", errs, c.storage.threads)
                 } else {
                     errs.push(unknown("storage.${k}"))
                 }
@@ -572,13 +572,6 @@ export fn apply(current Config, body JsonObject) -> Merge {
     { cfg: c, errors: errs }
 }
 
-/// Validation errors as `errors[]` entries.
-export fn as_field_errors(errs []ConfigError) -> []FieldError {
-    mut out = []FieldError.new()
-    for e in errs { out.push(FieldError.new(e.field, e.code, e.message)) }
-    out
-}
-
 // ── what changed ─────────────────────────────────────────────────────────────
 
 /// Does this change need the listener reopened (§3.8)?
@@ -663,7 +656,7 @@ fn run_put(src ConfigSource, ctx Ctx) -> ServerResponse {
                 }
                 ro bad = validate(merged.cfg)
                 if bad.len() > 0 {
-                    return problem(ApiError.invalid_config(as_field_errors(bad)), ctx.request_id, ctx.instance)
+                    return problem(ApiError.invalid_config(field_errors_of(bad)), ctx.request_id, ctx.instance)
                 }
                 accepted(st, merged.cfg)
             }

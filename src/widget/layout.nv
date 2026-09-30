@@ -187,10 +187,7 @@ export fn scaled(v int, scale_pct int) -> int {
 export fn row_height(m Metrics) -> int {
     ro bar_stack = if m.time_strip { BAR_H + BAR_STACK_GAP + TIME_H } else { BAR_H }
     ro reset_stack = if m.forecast { RESET_LINE1_H + RESET_LINE2_H } else { RESET_LINE1_H }
-    mut h = LINE_H
-    if bar_stack > h { h = bar_stack }
-    if reset_stack > h { h = reset_stack }
-    scaled(h, m.scale_pct)
+    scaled(LINE_H.max(bar_stack).max(reset_stack), m.scale_pct)
 }
 
 /// The width left for the bar when every other column keeps its size.

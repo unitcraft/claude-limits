@@ -52,9 +52,9 @@ export fn reset_moment(at Timestamp, now Timestamp, zone TimeZone) -> str {
         ro d = dt.date()
         // `Month @to_str()` and `Weekday @to_str()` already give the three-letter
         // names §2.4 asks for; a hand-rolled table was written in T0.3 and deleted.
-        return "${d.day()} ${d.month().to_str()} ${hhmm}"
+        return "${d.day()} ${d.month()} ${hhmm}"
     }
-    "${dt.weekday().to_str()} ${hhmm}"
+    "${dt.weekday()} ${hhmm}"
 }
 
 /// The whole caption: `Tue 13:00 (2d 17h)`.

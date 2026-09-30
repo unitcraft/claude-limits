@@ -39,6 +39,7 @@ module server.errors
 // `server/handlers/` imports this file -- the resolver then looks for
 // `src/server/handlers/json`. Isolated with controls in
 // `probes/module-reuse-breaks-sibling-import/`.
+import claude_limits.config.{ConfigError}
 import claude_limits.server.json.{field_str, field_str_or_null, field_int, field_int_or_null, field_raw, object, array}
 
 /// One refusal. The shape of RFC 9457 problem+json as 01.3 §0 uses it.
@@ -70,6 +71,15 @@ export type FieldError value {
 }
 
 export fn FieldError.new(field str, code str, message str) -> FieldError => { field, code, message }
+
+/// A config's validation errors as `errors[]` entries. ONE home: the settings
+/// handler and the token handler both answer a bad config with it, and each
+/// used to carry its own copy.
+export fn field_errors_of(errs []ConfigError) -> []FieldError {
+    mut out []FieldError = []
+    for e in errs { out.push(FieldError.new(e.field, e.code, e.message)) }
+    out
+}
 
 /// `urn:claude-limits:problem:method-not-allowed` from `method_not_allowed`.
 export fn type_uri(code str) -> str {

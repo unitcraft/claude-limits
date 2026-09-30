@@ -140,12 +140,12 @@ fn main() Io {
     // every run, and the failure would look like a missing fixture rather than a bug
     // here.
     ro all = with Os = real_os() { args() }
-    mut argv []str = []
-    mut i = 1
-    while i < all.len() {
-        argv.push(all[i])
-        i = i + 1
-    }
+    // A view, not a copy (D262). An empty vector has no program name to drop.
+    // THE `[]str` IS LOAD-BEARING: without it `nova check` passes and the codegen
+    // fails a for-in ELSEWHERE in this function ("cannot resolve iterator type for
+    // expression of C-type ''"). Not reproduced in isolation yet -- see
+    // probes/unannotated-let-breaks-far-for-in before removing it.
+    ro argv []str = if all.len() == 0 { all } else { all[1..] }
 
     match parse(argv) {
         Err(c) => {
@@ -231,7 +231,7 @@ fn main() Io {
                             if l.email == "" {
                                 all.push(account_header("", "", l.name))
                             } else {
-                                named = named + 1
+                                named += 1
                             }
                         }
 

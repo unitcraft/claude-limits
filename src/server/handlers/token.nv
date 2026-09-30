@@ -28,10 +28,10 @@
 module handlers.token
 
 import claude_limits.server.routes.{Ctx, ApiHandler, problem}
-import claude_limits.server.errors.{ApiError, FieldError}
+import claude_limits.server.errors.{ApiError, FieldError, field_errors_of}
 import claude_limits.server.dto.{Disclosure}
 import claude_limits.server.json.{field_str, field_bool, object}
-import claude_limits.config.{Config, ConfigError, validate}
+import claude_limits.config.{Config, validate}
 import polaris.{ServerRequest, ServerResponse}
 import std.encoding.json.{Json}
 import std.encoding.base64.{Base64}
@@ -133,15 +133,6 @@ fn header_of(ctx Ctx, name str) -> str => ctx.req.header(name) ?? ""
 
 fn body_str(req ServerRequest) -> str => unsafe { req.body_bytes().to_str_unchecked() }
 
-// `ConfigError` imported BY NAME, not spelled as a qualified path: a qualified
-// reference is not verified by `nova check` (probes/check-accepts-missing-module-member),
-// so the form that the compiler actually resolves is the only one worth writing.
-fn as_field_errors(errs []ConfigError) -> []FieldError {
-    mut out = []FieldError.new()
-    for e in errs { out.push(FieldError.new(e.field, e.code, e.message)) }
-    out
-}
-
 // Hoisted and param-captured for the [M-16] reason named in `routes.nv`.
 fn run(src TokenSource, ctx Ctx) Random -> ServerResponse {
     ro st = src()
@@ -174,7 +165,7 @@ fn run(src TokenSource, ctx Ctx) Random -> ServerResponse {
             // validation would leave the settings half-changed.
             ro bad = validate(next)
             if bad.len() > 0 {
-                return problem(ApiError.invalid_config(as_field_errors(bad)), ctx.request_id, ctx.instance)
+                return problem(ApiError.invalid_config(field_errors_of(bad)), ctx.request_id, ctx.instance)
             }
             ro body = object([field_str("access_token", token), field_bool("shown_once", true)])
             // NO `ETag` ON THIS RESPONSE, and the first version had one. I computed

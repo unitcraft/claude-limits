@@ -116,6 +116,7 @@ export fn pending(have int, all []Migration) -> []Migration {
         }
         if best < 0 { return out }
         taken[best] = true
+        // nova:allow W_MANUAL_SLICE_COPY -- a pick by version, not a contiguous range: no slice view gives it
         out.push(all[best])
         n += 1
     }

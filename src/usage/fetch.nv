@@ -122,10 +122,7 @@ export fn body_of(raw str) -> str {
 export fn retry_after_of(raw str) -> int {
     ro v = header_of(raw, "Retry-After")
     if v == "" { return 0 }
-    match v.to_int() {
-        Ok(n) => if n > 0 { n } else { 0 }
-        Err(_) => 0
-    }
+    (v.to_int() ?? 0).max(0)
 }
 
 /// One poll. The only effectful function here.
