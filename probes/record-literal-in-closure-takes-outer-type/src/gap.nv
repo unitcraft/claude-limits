@@ -1,0 +1,19 @@
+module probe_lit_closure.gap
+
+type Inner value {
+    ro n int
+}
+
+type Outer value {
+    ro label str
+    ro inner Option[Inner]
+}
+
+fn main() Io {
+    ro x Option[int] = Some(7)
+    ro o Outer = { label: "a", inner: x.map(fn(v int) -> Inner => { n: v }) }
+    match o.inner {
+        Some(i) => println("${o.label} ${i.n}")
+        None => println("none")
+    }
+}

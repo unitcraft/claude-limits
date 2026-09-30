@@ -33,7 +33,8 @@ module server.dto
 // `server/handlers/` imports this file -- the resolver then looks for
 // `src/server/handlers/json`. Isolated with controls in
 // `probes/module-reuse-breaks-sibling-import/`.
-import claude_limits.server.json.{quote, field_str, field_str_or_null, field_int, field_bool, field_raw, field_fixed2, field_fixed3, object, array}
+import claude_limits.server.json.{quote, field_str, field_str_or_null, field_int, field_raw, object}
+import std.encoding.serde.{json_encode, Serialize}
 
 /// How much this response may say.
 ///
@@ -230,87 +231,163 @@ export type SnapshotView value {
     limits []LimitView
 }
 
-fn render_dir(d Disclosure, v DirView) -> str =>
-    object([field_str("id", v.id), pii_path(d, "path", v.path), field_str("name", v.name)])
+// ── the wire (T2.29): serde writes these, nothing assembles JSON by hand ─────
+//
+// The View records above are what the model hands over; the Wire records below are
+// what goes out, in wire order. The mapping between them is the ONLY hand-written
+// part, and it is about VALUES, not text: "" becomes `None` (section 0's `null`),
+// integer hundredths and thousandths become numbers, and a `pii-path` is dropped
+// for a client that may not see it. Escaping, commas and quotes are serde's.
+//
+// Fractions leave as `f64` only here, at the last step, and only for the width of
+// one division -- the concern in the header above (a float through four layers) is
+// kept: the model still counts in integers.
 
-fn render_account(d Disclosure, a AccountView) -> str {
-    mut dirs = []str.new()
-    for x in a.dirs { dirs.push(render_dir(d, x)) }
-    object([
-        field_str("id", a.id),
-        field_str("email", a.email),
-        field_str("org", a.org),
-        field_raw("dirs", array(dirs)),
-        field_str("state", a.state),
-        field_str_or_null("message", a.message),
-        field_str_or_null("polled_at", a.polled_at),
-        field_str_or_null("next_poll_at", a.next_poll_at),
-        field_bool("locked", a.locked),
-        field_bool("at_100", a.at_100),
-    ])
-}
+/// "" is `null` on the wire (section 0). `Some` first on purpose -- see
+/// probes/serde-two-option-types.
+fn opt(s str) -> Option[str] => if s != "" { Some(s) } else { None }
 
-fn render_forecast(f ForecastView) -> str =>
-    object([
-        field_int("percent_at_reset", f.percent_at_reset),
-        field_str_or_null("runs_out_at", f.runs_out_at),
-        field_fixed3("rate_per_hour", f.rate_per_hour_milli),
-        field_str("basis", f.basis),
-        field_int("sample_minutes", f.sample_minutes),
-        field_str("label", f.label),
-        field_bool("warning", f.warning),
-    ])
-
-fn render_limit(l LimitView) -> str {
-    ro fc = match l.forecast {
-        Some(f) => field_raw("forecast", render_forecast(f))
-        None    => field_raw("forecast", "null")
+/// A `pii-path` field: the value on loopback, `null` for everyone else, and `null`
+/// for an empty path whoever asks -- the same three answers `pii_path` gives.
+fn shown_path(d Disclosure, path str) -> Option[str] =>
+    match d {
+        Disclosure.Loopback => opt(path)
+        Disclosure.Lan => None
+        Disclosure.Anonymous => None
     }
-    object([
-        field_str("account_id", l.account_id),
-        field_str("kind", l.kind),
-        field_str_or_null("model", l.model),
-        field_str("label", l.label),
-        field_int("percent", l.percent),
-        field_str("severity", l.severity),
-        field_str("server_severity", l.server_severity),
-        field_bool("locked", l.locked),
-        field_str_or_null("locked_reason", l.locked_reason),
-        field_bool("active", l.active),
-        field_str("resets_at", l.resets_at),
-        field_int("seconds_left", l.seconds_left),
-        field_str("reset_label", l.reset_label),
-        field_int("window_sec", l.window_sec),
-        field_fixed2("elapsed_share", l.elapsed_share_hundredths),
-        fc,
-    ])
+
+#impl(Serialize)
+type WireDir value {
+    ro id str
+    ro path Option[str]
+    ro name str
 }
 
-fn render_worst(w WorstView) -> str =>
-    object([
-        field_str("account_id", w.account_id),
-        field_str("kind", w.kind),
-        field_int("percent", w.percent),
-        field_str("severity", w.severity),
-    ])
+#impl(Serialize)
+type WireAccount value {
+    ro id str
+    ro email str
+    ro org str
+    ro dirs []WireDir
+    ro state str
+    ro message Option[str]
+    ro polled_at Option[str]
+    ro next_poll_at Option[str]
+    ro locked bool
+    ro at_100 bool
+}
+
+#impl(Serialize)
+type WireForecast value {
+    ro percent_at_reset int
+    ro runs_out_at Option[str]
+    ro rate_per_hour f64
+    ro basis str
+    ro sample_minutes int
+    ro label str
+    ro warning bool
+}
+
+#impl(Serialize)
+type WireLimit value {
+    ro account_id str
+    ro kind str
+    ro model Option[str]
+    ro label str
+    ro percent int
+    ro severity str
+    ro server_severity str
+    ro locked bool
+    ro locked_reason Option[str]
+    ro active bool
+    ro resets_at str
+    ro seconds_left int
+    ro reset_label str
+    ro window_sec int
+    ro elapsed_share f64
+    ro forecast Option[WireForecast]
+}
+
+#impl(Serialize)
+type WireWorst value {
+    ro account_id str
+    ro kind str
+    ro percent int
+    ro severity str
+}
+
+#impl(Serialize)
+type WireSnapshot value {
+    ro fetched_at str
+    ro next_poll_at Option[str]
+    ro tz str
+    ro restored bool
+    ro worst Option[WireWorst]
+    ro accounts []WireAccount
+    ro limits []WireLimit
+}
+
+fn wire_account(d Disclosure, a AccountView) -> WireAccount {
+    mut dirs []WireDir = []
+    for x in a.dirs { dirs.push({ id: x.id, path: shown_path(d, x.path), name: x.name }) }
+    {
+        id: a.id, email: a.email, org: a.org, dirs, state: a.state,
+        message: opt(a.message), polled_at: opt(a.polled_at), next_poll_at: opt(a.next_poll_at),
+        locked: a.locked, at_100: a.at_100,
+    }
+}
+
+/// A named function, not a record literal inside the closure: there the codegen
+/// gave the literal the OUTER literal's type (WireSnapshot) and the C refused it --
+/// probes/record-literal-in-closure-takes-outer-type.
+fn wire_worst(x WorstView) -> WireWorst =>
+    { account_id: x.account_id, kind: x.kind, percent: x.percent, severity: x.severity }
+
+fn wire_forecast(f ForecastView) -> WireForecast => {
+    percent_at_reset: f.percent_at_reset,
+    runs_out_at: opt(f.runs_out_at),
+    rate_per_hour: (f.rate_per_hour_milli as f64) / 1000.0,
+    basis: f.basis,
+    sample_minutes: f.sample_minutes,
+    label: f.label,
+    warning: f.warning,
+}
+
+fn wire_limit(l LimitView) -> WireLimit => {
+    account_id: l.account_id,
+    kind: l.kind,
+    model: opt(l.model),
+    label: l.label,
+    percent: l.percent,
+    severity: l.severity,
+    server_severity: l.server_severity,
+    locked: l.locked,
+    locked_reason: opt(l.locked_reason),
+    active: l.active,
+    resets_at: l.resets_at,
+    seconds_left: l.seconds_left,
+    reset_label: l.reset_label,
+    window_sec: l.window_sec,
+    elapsed_share: (l.elapsed_share_hundredths as f64) / 100.0,
+    forecast: l.forecast.map(fn(f ForecastView) -> WireForecast => wire_forecast(f)),
+}
 
 /// The body of `GET /api/snapshot`, at the disclosure level of this client.
 export fn render_snapshot(v SnapshotView, d Disclosure) -> str {
-    mut accounts = []str.new()
-    for a in v.accounts { accounts.push(render_account(d, a)) }
-    mut limits = []str.new()
-    for l in v.limits { limits.push(render_limit(l)) }
-    ro worst = match v.worst {
-        Some(w) => field_raw("worst", render_worst(w))
-        None    => field_raw("worst", "null")
+    mut accounts []WireAccount = []
+    for a in v.accounts { accounts.push(wire_account(d, a)) }
+    mut limits []WireLimit = []
+    for l in v.limits { limits.push(wire_limit(l)) }
+    ro w WireSnapshot = {
+        fetched_at: v.fetched_at,
+        next_poll_at: opt(v.next_poll_at),
+        tz: v.tz,
+        restored: v.restored,
+        worst: v.worst.map(fn(x WorstView) -> WireWorst => wire_worst(x)),
+        accounts,
+        limits,
     }
-    object([
-        field_str("fetched_at", v.fetched_at),
-        field_str_or_null("next_poll_at", v.next_poll_at),
-        field_str("tz", v.tz),
-        field_bool("restored", v.restored),
-        worst,
-        field_raw("accounts", array(accounts)),
-        field_raw("limits", array(limits)),
-    ])
+    // serde refuses only integers past 2^53 and non-finite floats; a snapshot holds
+    // neither. An empty object is still a body the page can parse and show as empty.
+    json_encode(w) ?? "{}"
 }

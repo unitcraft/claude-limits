@@ -1,0 +1,9 @@
+# Probe: a record literal inside a closure takes the OUTER literal type
+
+[lib]
+src = "src"
+
+[package]
+name = "probe_lit_closure"
+version = "0.0.0"
+description = "Probe: record literal in closure body vs outer expected type"

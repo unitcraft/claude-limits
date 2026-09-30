@@ -1,6 +1,6 @@
 # A user type named like a std generic parameter breaks `check` INSIDE std
 
-**Status: isolated (2026-09-30).** Loud, not silent: `nova check` fails -- but it
+**Status: isolated (2026-09-30); registry 221.1 #1391 (K2), filed and re-measured by the integrator.** Loud, not silent: `nova check` fails -- but it
 fails pointing into the standard library, at code the user did not write.
 
 ## The case -- `src/gap_plain.nv`
