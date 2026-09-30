@@ -17,7 +17,7 @@
 
 module storage.repo_test
 
-import repo.{Tick, WindowRow, Ids, quote, opt, moment, plan_sql, write_tick, upsert_account_sql, Seen, OpenRow, OccupancyStep, occupancy_step, occupancy_sql, two_open_sql, db_token_state, LockStep, lock_step, lock_open_sql, lock_close_sql}
+import repo.{Tick, WindowRow, Ids, quote, sql_opt, moment, plan_sql, write_tick, upsert_account_sql, Seen, OpenRow, OccupancyStep, occupancy_step, occupancy_sql, two_open_sql, db_token_state, LockStep, lock_step, lock_open_sql, lock_close_sql}
 import duckdb.db_effect.{Db, DbRef, ConnRef, ResultRef}
 import duckdb.errors.{DuckError}
 
@@ -129,9 +129,9 @@ test "a value that would close the literal and start a statement is neutralised"
 test "an empty string is NULL, and a blank one is not" {
     // 01.2 §0 treats "not set" and "empty" as opposite answers, so they cannot share
     // a spelling.
-    assert(opt("") == "NULL")
-    assert(opt(" ") == "' '")
-    assert(opt("x") == "'x'")
+    assert(sql_opt("") == "NULL")
+    assert(sql_opt(" ") == "' '")
+    assert(sql_opt("x") == "'x'")
 }
 
 test "a moment goes in as microseconds, not as formatted text" {

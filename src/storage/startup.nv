@@ -1,0 +1,136 @@
+// startup.nv — the database at the start of --serve: key, file, migrations, owner.
+//
+//   ./nova.sh test src/storage/ --filter startup_test
+//
+// Source: 01.2 §1 (key and instance), §3.1 (open with the key), §3.3 (`schema_meta`),
+// §5 (a backup before every migration, one transaction per migration).
+//
+// WHY A FILE OF ITS OWN. `db.nv` answers "what is in there" and applies ONE migration;
+// `backup.nv` copies a file. Nothing said, in order, "open, back up if there is
+// something to lose, migrate, claim" -- plan 01.5 T2.2 left that out by its own
+// boundary, and no card took it (a seam, found 2026-09-30 when --serve was to open
+// the database). This is that order, and nothing else.
+
+module storage.startup
+
+import std.fs.{create_dir_all}
+import duckdb.db_effect.{Db, ConnRef}
+import duckdb.errors.{DbOptions, DuckError}
+import claude_limits.storage.paths.{Paths, dir_of}
+import claude_limits.storage.db.{Migration, Opened, OpenFail, pending, ensure_key, ensure_instance, open_and_read, apply_migration, claim}
+import claude_limits.storage.backup.{take_backup}
+
+/// The migration files, in the binary (01.2 §5: `embed_dir("migrations")`).
+/// `../../`: the path is relative to THIS file (`src/storage/`).
+export fn bundled() -> EmbeddedDir => embed_dir("../../migrations")
+
+/// `0001_init.sql` -> 1. A name that does not start with digits and `_` is not a
+/// migration and is skipped, not guessed at.
+export fn version_of(name str) -> int {
+    ro base = match name.rsplit_once("/") {
+        Some(pair) => pair.1
+        None => name
+    }
+    ro head = match base.split_once("_") {
+        Some(pair) => pair.0
+        None => return 0
+    }
+    if !base.ends_with(".sql") { return 0 }
+    head.to_int() ?? 0
+}
+
+/// Every migration in `dir`, unsorted -- `db.pending` orders them by version.
+export fn migrations_in(dir EmbeddedDir) -> []Migration {
+    mut out []Migration = []
+    for p in dir.paths() {
+        ro v = version_of(p)
+        if v <= 0 { continue }
+        match dir.get(p) {
+            Some(bytes) => out.push(Migration.new(v, bytes.to_str_lossy()))
+            None => ()
+        }
+    }
+    out
+}
+
+/// What the start did to the database.
+export type Ready value {
+    ro opened Opened
+    /// How many migrations ran now.
+    ro applied int
+    /// The backup taken before them, or "" when there was nothing to lose.
+    ro backup str
+}
+
+/// Why the database is not ready. The key and the schema keep `OpenFail`'s own
+/// exit codes and texts; a failed backup or migration is 5, as a refusal is.
+export type StartFail enum
+    | Open(OpenFail)
+    | Backup(str)
+    | Migrate(str)
+
+export fn StartFail @exit_code() -> int =>
+    match @ {
+        Open(f) => f.exit_code()
+        Backup(_) => 5
+        Migrate(_) => 5
+    }
+
+export fn StartFail @message(key_path str) -> str =>
+    match @ {
+        Open(f) => f.message(key_path)
+        // Nothing was migrated: the backup comes first, so a failed one stops here.
+        Backup(m) => "the backup before the migration failed, nothing was changed: ${m}"
+        Migrate(m) => "a migration failed and was rolled back: ${m}"
+    }
+
+/// Open the database for --serve.
+///
+/// THE BACKUP ONLY WHEN THERE IS SOMETHING TO LOSE: an existing database with
+/// migrations pending. A first start has no data, and a current schema has nothing
+/// to migrate.
+export fn open_for_serve(p Paths, all []Migration, now_ms int, keep int, windows bool) Db Fs Random -> Result[Ready, StartFail] {
+    ro key = ensure_key(p.key_file, dir_of(p.key_file, windows)).map_err(fn(f OpenFail) -> StartFail => StartFail.Open(f))?
+    ro mine = ensure_instance(p.instance_file, dir_of(p.instance_file, windows))
+    // DuckDB creates the file, not its directory.
+    ro _ = create_dir_all(p.data_dir.to_path())
+    ro opened = open_and_read(p.db_file, key, p.temp_dir, mine).map_err(fn(f OpenFail) -> StartFail => StartFail.Open(f))?
+    ro todo = pending(opened.schema_version, all)
+
+    mut opts = DbOptions.defaults()
+    opts.encryption_key = key
+    opts.temp_dir = p.temp_dir
+    ro db = Db.open(p.db_file, opts).map_err(fn(e DuckError) -> StartFail => StartFail.Open(OpenFail.DbRefused(e.message())))?
+    ro conn = match Db.connect(db) {
+        Ok(c) => c
+        Err(e) => {
+            Db.close_db(db)
+            return Err(StartFail.Open(OpenFail.DbRefused(e.message())))
+        }
+    }
+    ro r = migrate_and_claim(conn, opened, todo, p, now_ms, keep, windows, key, mine)
+    Db.close_conn(conn)
+    Db.close_db(db)
+    r
+}
+
+fn migrate_and_claim(conn ConnRef, opened Opened, todo []Migration, p Paths, now_ms int, keep int, windows bool, key str, mine str) Db Fs -> Result[Ready, StartFail] {
+    mut backup = ""
+    if !opened.first_start && todo.len() > 0 {
+        match take_backup(conn, p.backup_dir, now_ms, keep, windows, key) {
+            Ok(name) => { backup = name }
+            Err(e) => return Err(StartFail.Backup(e.message()))
+        }
+    }
+    for m in todo {
+        match apply_migration(conn, m) {
+            Ok(_) => ()
+            Err(e) => return Err(StartFail.Migrate("${m.version}: ${e.message()}"))
+        }
+    }
+    match claim(conn, mine) {
+        Ok(_) => ()
+        Err(e) => return Err(StartFail.Migrate("claim: ${e.message()}"))
+    }
+    Ok({ opened, applied: todo.len(), backup })
+}

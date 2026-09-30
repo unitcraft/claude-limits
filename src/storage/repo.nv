@@ -105,7 +105,10 @@ export fn moment(ms int) -> str => "(make_timestamp(${ms * 1000}) AT TIME ZONE '
 
 /// A `NULL` or a quoted value — the difference between "not set" and "empty", which
 /// 01.2 §0 treats as opposite answers.
-export fn opt(s str) -> str {
+///
+/// NOT `opt`: `server.dto` declares an `opt` too, and once `--serve` linked both
+/// the codegen could not tell them apart (registry 221.1 #1090, 2026-09-30).
+export fn sql_opt(s str) -> str {
     if s == "" { return "NULL" }
     quote(s)
 }
@@ -120,13 +123,13 @@ export fn opt(s str) -> str {
 export fn upsert_account_sql(t Tick, id str) -> str {
     ro at = moment(t.at_ms)
     ro email = t.email.to_ascii_lower()
-    "INSERT INTO account (id, created_at, updated_at, created_by, updated_by, email, org_name, color_slot, first_seen_at, last_seen_at) VALUES (${quote(id)}, ${at}, ${at}, ${quote(t.instance)}, ${quote(t.instance)}, ${quote(email)}, ${opt(t.org)}, 0, ${at}, ${at}) ON CONFLICT (email) DO UPDATE SET last_seen_at = excluded.last_seen_at, updated_at = excluded.updated_at, updated_by = excluded.updated_by"
+    "INSERT INTO account (id, created_at, updated_at, created_by, updated_by, email, org_name, color_slot, first_seen_at, last_seen_at) VALUES (${quote(id)}, ${at}, ${at}, ${quote(t.instance)}, ${quote(t.instance)}, ${quote(email)}, ${sql_opt(t.org)}, 0, ${at}, ${at}) ON CONFLICT (email) DO UPDATE SET last_seen_at = excluded.last_seen_at, updated_at = excluded.updated_at, updated_by = excluded.updated_by"
 }
 
 /// Upsert one limit window of an account.
 export fn upsert_window_sql(t Tick, w WindowRow, id str, account_id str) -> str {
     ro at = moment(t.at_ms)
-    "INSERT INTO limit_window (id, created_at, updated_at, created_by, updated_by, account_id, kind, model, first_seen_at, last_seen_at) VALUES (${quote(id)}, ${at}, ${at}, ${quote(t.instance)}, ${quote(t.instance)}, ${quote(account_id)}, ${quote(w.kind)}, ${opt(w.model)}, ${at}, ${at}) ON CONFLICT (account_id, kind, model) DO UPDATE SET last_seen_at = excluded.last_seen_at, updated_at = excluded.updated_at, updated_by = excluded.updated_by"
+    "INSERT INTO limit_window (id, created_at, updated_at, created_by, updated_by, account_id, kind, model, first_seen_at, last_seen_at) VALUES (${quote(id)}, ${at}, ${at}, ${quote(t.instance)}, ${quote(t.instance)}, ${quote(account_id)}, ${quote(w.kind)}, ${sql_opt(w.model)}, ${at}, ${at}) ON CONFLICT (account_id, kind, model) DO UPDATE SET last_seen_at = excluded.last_seen_at, updated_at = excluded.updated_at, updated_by = excluded.updated_by"
 }
 
 /// Upsert the cycle this reading belongs to (01.2 §3.10: one pass of a window).
@@ -143,7 +146,7 @@ export fn upsert_cycle_sql(t Tick, w WindowRow, id str, window_id str) -> str {
 export fn insert_sample_sql(t Tick, w WindowRow, id str, window_id str, cycle_id str) -> str {
     ro at = moment(t.at_ms)
     ro locked = if w.locked { "true" } else { "false" }
-    "INSERT INTO sample (id, created_at, updated_at, created_by, updated_by, window_id, sampled_at, cycle_id, percent, locked, locked_reason, server_severity, active) VALUES (${quote(id)}, ${at}, ${at}, ${quote(t.instance)}, ${quote(t.instance)}, ${quote(window_id)}, ${at}, ${quote(cycle_id)}, ${w.percent}, ${locked}, ${opt(w.locked_reason)}, ${opt(w.server_severity)}, true) ON CONFLICT (window_id, sampled_at) DO NOTHING"
+    "INSERT INTO sample (id, created_at, updated_at, created_by, updated_by, window_id, sampled_at, cycle_id, percent, locked, locked_reason, server_severity, active) VALUES (${quote(id)}, ${at}, ${at}, ${quote(t.instance)}, ${quote(t.instance)}, ${quote(window_id)}, ${at}, ${quote(cycle_id)}, ${w.percent}, ${locked}, ${sql_opt(w.locked_reason)}, ${sql_opt(w.server_severity)}, true) ON CONFLICT (window_id, sampled_at) DO NOTHING"
 }
 
 /// The journal entry: what the endpoint answered, whatever that was.
@@ -152,7 +155,7 @@ export fn insert_sample_sql(t Tick, w WindowRow, id str, window_id str, cycle_id
 /// is not in `poll` is a 429 nobody can explain the next morning.
 export fn insert_poll_sql(t Tick, id str, account_id str) -> str {
     ro at = moment(t.at_ms)
-    "INSERT INTO poll (id, created_at, updated_at, created_by, updated_by, account_id, polled_at, outcome, http_status, retry_after_sec, latency_ms, error) VALUES (${quote(id)}, ${at}, ${at}, ${quote(t.instance)}, ${quote(t.instance)}, ${quote(account_id)}, ${at}, ${quote(t.outcome)}, ${t.http_status}, ${t.retry_after_sec}, ${t.latency_ms}, ${opt(t.error)}) ON CONFLICT (account_id, polled_at) DO NOTHING"
+    "INSERT INTO poll (id, created_at, updated_at, created_by, updated_by, account_id, polled_at, outcome, http_status, retry_after_sec, latency_ms, error) VALUES (${quote(id)}, ${at}, ${at}, ${quote(t.instance)}, ${quote(t.instance)}, ${quote(account_id)}, ${at}, ${quote(t.outcome)}, ${t.http_status}, ${t.retry_after_sec}, ${t.latency_ms}, ${sql_opt(t.error)}) ON CONFLICT (account_id, polled_at) DO NOTHING"
 }
 
 // ── the tick ─────────────────────────────────────────────────────────────────
@@ -307,7 +310,7 @@ export fn occupancy_sql(t Tick, seen Seen, new_id str, close_id str) -> []str {
     if close_id != "" {
         out.push("UPDATE occupancy SET ended_at = ${at}, updated_at = ${at}, updated_by = ${quote(t.instance)} WHERE id = ${quote(close_id)}")
     }
-    out.push("INSERT INTO occupancy (id, created_at, updated_at, created_by, updated_by, login_dir_id, account_id, token_state, started_at, ended_at) VALUES (${quote(new_id)}, ${at}, ${at}, ${quote(t.instance)}, ${quote(t.instance)}, ${quote(seen.login_dir_id)}, ${opt(seen.account_id)}, ${quote(seen.token_state)}, ${at}, NULL)")
+    out.push("INSERT INTO occupancy (id, created_at, updated_at, created_by, updated_by, login_dir_id, account_id, token_state, started_at, ended_at) VALUES (${quote(new_id)}, ${at}, ${at}, ${quote(t.instance)}, ${quote(t.instance)}, ${quote(seen.login_dir_id)}, ${sql_opt(seen.account_id)}, ${quote(seen.token_state)}, ${at}, NULL)")
     out
 }
 

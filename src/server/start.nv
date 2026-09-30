@@ -19,9 +19,9 @@
 //
 // * The live snapshot: the store fiber and the pollers are wired in the next step;
 //   until then `/api/snapshot` answers an empty picture honestly.
-// * History: the database cannot be opened with its key yet (plan 01.5, question 8),
-//   so `health` reports `history_days: 0` and `encrypted: false` -- what is true of
-//   this process, not what the design will be.
+// * History: the database IS opened with its key at the start (storage.startup, since
+//   2026-09-30), and `health` reports its schema and `encrypted: true`; no tick is
+//   written yet, so `history_days` stays 0 -- what is true of this process.
 // * Stopping on a signal with `bye` to SSE subscribers: std has no OS signal hook to
 //   stop on. Ctrl+C ends the process; the page's live connection reconnects.
 
@@ -117,11 +117,22 @@ export fn decide_start(loaded Loaded) -> Start {
     Start.Go(cfg, repairs)
 }
 
+/// What the start did with the database, as `health` reports it.
+export type DbAtStart value {
+    ro schema_version int
+    ro encrypted bool
+    ro size_bytes int
+}
+
+/// No database in this process (the tests, and a start that has not opened one).
+export fn DbAtStart.none() -> DbAtStart => { schema_version: 0, encrypted: false, size_bytes: 0 }
+
 /// `/api/health` of this process at start (01.3 §3.2).
 ///
 /// Counts the store owns are zero until the store is wired; the database fields say
-/// what is true of this process -- no history, no key in use -- and not the design.
-export fn health_at(cfg Config, paths Paths, started_at str) -> HealthState => {
+/// what is true of this process -- the schema it opened and whether its key is in
+/// use; `history_days` stays 0 until ticks are written -- and not the design.
+export fn health_at(cfg Config, paths Paths, started_at str, db DbAtStart) -> HealthState => {
     app_version: version(),
     started_at,
     uptime_sec: 0,
@@ -142,10 +153,10 @@ export fn health_at(cfg Config, paths Paths, started_at str) -> HealthState => {
     login_dirs: 0,
     config_path: paths.config_file,
     db_path: paths.db_file,
-    db_size_bytes: 0,
-    schema_version: 0,
+    db_size_bytes: db.size_bytes,
+    schema_version: db.schema_version,
     history_days: 0,
-    encrypted: false,
+    encrypted: db.encrypted,
     key_store: "file",
     widget_enabled: false,
     widget_running: false,
@@ -189,10 +200,10 @@ fn export_at_start() -> ExportState => { from_day: "", to_day: "", rows: [], dis
 /// (`store.view()`, computed by the poller at the moment of its round); in a test,
 /// whatever body the test wants the page to get. The settings and `health` are real;
 /// the folders and the history stay empty until discovery and the database are wired.
-export fn sources_at_start(cfg Config, paths Paths, started_at str, now_ms int, current fn() -> SnapshotView) -> Sources {
+export fn sources_at_start(cfg Config, paths Paths, started_at str, now_ms int, db DbAtStart, current fn() -> SnapshotView) -> Sources {
     ro tag = tag_of(render(cfg))
     Sources.new(
-        fn() -> HealthState => health_at(cfg, paths, started_at),
+        fn() -> HealthState => health_at(cfg, paths, started_at, db),
         fn() -> SnapshotState => snapshot_around(current(), cfg, tag),
         fn() -> RefreshState => refresh_at_start(cfg, now_ms),
         fn() -> EventsState => events_at_start(),

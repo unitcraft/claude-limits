@@ -10,7 +10,7 @@ module server.start_test
 import claude_limits.config.{Config, ConfigError}
 import claude_limits.storage.config_file.{Loaded}
 import claude_limits.storage.paths.{Paths}
-import start.{Start, decide_start, health_at, sources_at_start}
+import start.{Start, decide_start, health_at, sources_at_start, DbAtStart}
 import claude_limits.server.app.{api_router}
 import claude_limits.server.handlers.config.{tag_of, base_url}
 import claude_limits.config.{render, listen_addr}
@@ -98,7 +98,7 @@ fn some_paths() -> Paths => {
 }
 
 test "health at start says what is true of this process" {
-    ro h = health_at(Config.defaults(), some_paths(), "2026-09-30T09:00:00Z")
+    ro h = health_at(Config.defaults(), some_paths(), "2026-09-30T09:00:00Z", DbAtStart.none())
     assert(same("started", "2026-09-30T09:00:00Z", h.started_at))
     assert(same("config", "C:/cfg/claude-limits.toml", h.config_path))
     assert(h.port == 7391)
@@ -114,7 +114,7 @@ fn wire_text(wire []u8) -> str => unsafe { wire.to_str_unchecked() }
 fn ask(path str) Time Random -> str => ask_with(path, fn() -> SnapshotView => nothing_yet())
 
 fn ask_with(path str, current fn() -> SnapshotView) Time Random -> str {
-    ro r = api_router(sources_at_start(Config.defaults(), some_paths(), "2026-09-30T09:00:00Z", 1790758800000, current))!!
+    ro r = api_router(sources_at_start(Config.defaults(), some_paths(), "2026-09-30T09:00:00Z", 1790758800000, DbAtStart.none(), current))!!
     wire_text(serve_once(r, "GET ${path} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"))
 }
 

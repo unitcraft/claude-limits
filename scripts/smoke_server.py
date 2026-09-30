@@ -87,6 +87,13 @@ def main(argv):
     tmp = tempfile.mkdtemp(prefix="claude-limits-smoke-")
     port = free_port()
     ok_cfg, lan_cfg = fixture(tmp, port)
+    # The server opens its DATABASE at the start (since 2026-09-30), under the user's
+    # data directory. Without this the smoke would create a key and an encrypted file
+    # in the real profile of whoever runs it. Every launch below gets `env`.
+    env = dict(os.environ,
+               LOCALAPPDATA=os.path.join(tmp, "local"), APPDATA=os.path.join(tmp, "roaming"),
+               XDG_DATA_HOME=os.path.join(tmp, "xdg-data"), XDG_CONFIG_HOME=os.path.join(tmp, "xdg-config"),
+               XDG_STATE_HOME=os.path.join(tmp, "xdg-state"))
     base = f"http://127.0.0.1:{port}"
     results = []
 
@@ -95,7 +102,7 @@ def main(argv):
         print(("PASS" if passed else "FAIL") + f": {name}" + (f" -- {detail}" if detail and not passed else ""))
 
     server = subprocess.Popen([exe, "--serve", "--config", ok_cfg],
-                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
     try:
         status = 0
         deadline = time.time() + 60
@@ -109,6 +116,13 @@ def main(argv):
 
         status, _, body = get(base + "/api/health")
         check("health", status == 200 and '"ok":true' in body, f"{status} {body[:120]}")
+        # The database this start opened: encrypted, schema 1, a real file.
+        try:
+            st = json.loads(body).get("storage", {})
+            db_ok = st.get("encrypted") is True and st.get("schema_version") == 1 and st.get("db_size_bytes", 0) > 0
+        except ValueError:
+            st, db_ok = {}, False
+        check("database", db_ok, f"storage {st}")
 
         status, ctype, _ = get(base + "/")
         check("page", status == 200 and ctype.startswith("text/html"), f"{status} {ctype}")
@@ -125,14 +139,14 @@ def main(argv):
         except ValueError:
             check("snapshot", False, f"{status} not JSON: {body[:120]}")
 
-        second = subprocess.run([exe, "--serve", "--config", ok_cfg], capture_output=True, text=True, timeout=60)
+        second = subprocess.run([exe, "--serve", "--config", ok_cfg], capture_output=True, text=True, timeout=60, env=env)
         check("busy port", second.returncode == 1 and "address already in use" in second.stdout,
               f"exit {second.returncode}: {second.stdout.strip()[:160]}")
     finally:
         server.kill()
         server.wait(timeout=10)
 
-    lan = subprocess.run([exe, "--serve", "--config", lan_cfg], capture_output=True, text=True, timeout=60)
+    lan = subprocess.run([exe, "--serve", "--config", lan_cfg], capture_output=True, text=True, timeout=60, env=env)
     check("lan", lan.returncode == 2 and "server.allow_lan" in lan.stdout,
           f"exit {lan.returncode}: {lan.stdout.strip()[:160]}")
 

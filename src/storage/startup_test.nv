@@ -1,0 +1,131 @@
+// Tests for startup.nv -- the database at the start of --serve.
+//
+//   ./nova.sh test src/storage/ --filter startup_test
+//
+// The names of migration files are pure; the cycle runs against REAL files in the
+// system temp (a mock would answer whatever `open_and_read` asks -- db_live_test.nv
+// says why that is not enough). `Random` is seeded: the key file is created here.
+
+module storage.startup_test
+
+import std.fs.{real_fs, try_exists, create_dir_all, remove_dir_all}
+import std.os.{real_os, temp_dir}
+import std.testing.handlers as th
+import duckdb.db_real.{with_real_db}
+import claude_limits.storage.paths.{Paths}
+import claude_limits.storage.db.{Migration, KNOWN_SCHEMA}
+import startup.{version_of, migrations_in, bundled, open_for_serve, Ready, StartFail}
+
+fn same(label str, want str, got str) -> bool {
+    if want == got { return true }
+    panic("${label}: want [${want}], got [${got}]")
+}
+
+// -- names ---------------------------------------------------------------------
+
+test "a migration's version is the number before the first underscore" {
+    assert(version_of("0001_init.sql") == 1)
+    assert(version_of("migrations/0003_add_notification.sql") == 3)
+}
+
+test "a file that is not a migration is skipped, not guessed at" {
+    assert(version_of("README.md") == 0)
+    assert(version_of("init.sql") == 0)
+    assert(version_of("draft_0002.sql") == 0)
+    assert(version_of("0002_draft.txt") == 0)
+}
+
+test "the binary carries 0001, and it creates schema_meta" {
+    ro all = migrations_in(bundled())
+    mut found = false
+    for m in all {
+        if m.version == 1 {
+            found = true
+            assert(m.sql.contains("CREATE TABLE schema_meta"))
+        }
+    }
+    assert(found)
+}
+
+// -- the cycle, on real files --------------------------------------------------
+
+fn place(name str) Io -> Paths {
+    ro base = with Os = real_os() { temp_dir().display().replace("\\", "/") }
+    ro d = "${base}/claude-limits-startup-${name}"
+    with Fs = real_fs() {
+        ro _ = remove_dir_all(d.to_path())
+        ro _ = create_dir_all(d.to_path())
+    }
+    {
+        config_dir: "${d}/cfg", data_dir: "${d}/data", log_dir: "${d}/log",
+        config_file: "${d}/cfg/claude-limits.toml", db_file: "${d}/data/claude-limits.duckdb",
+        wal_file: "${d}/data/claude-limits.duckdb.wal", temp_dir: "${d}/data/tmp",
+        backup_dir: "${d}/data/backup", log_file: "${d}/log/claude-limits.log",
+        key_file: "${d}/cfg/claude-limits.key", instance_file: "${d}/cfg/claude-limits.instance",
+        portable: false,
+    }
+}
+
+// 2026-09-30 09:00:00 UTC.
+const T0 = 1790758800000
+
+fn start(p Paths, all []Migration, seed int) Io -> str {
+    ro now = T0
+    ro r = with Fs = real_fs(), Random = th.seeded(seed as u64) {
+        with_real_db(fn() Db Fs Random -> Result[Ready, StartFail] => open_for_serve(p, all, now, 5, true))
+    }
+    match r {
+        Ok(ready) => "first=${ready.opened.first_start} schema=${ready.opened.schema_version} applied=${ready.applied} backup=${ready.backup != ""}"
+        Err(f) => "FAIL ${f.message(p.key_file)}"
+    }
+}
+
+fn is_on_disk(path str) Io -> bool => with Fs = real_fs() { try_exists(path.to_path()) ?? false }
+
+test "a first start creates the key, the file and the schema, and backs up nothing" {
+    ro p = place("first")
+    ro all = migrations_in(bundled())
+    assert(same("first", "first=true schema=0 applied=1 backup=false", start(p, all, 7)))
+    assert(is_on_disk(p.key_file))
+    assert(is_on_disk(p.db_file))
+}
+
+test "the second start finds schema 1, applies nothing and backs up nothing" {
+    ro p = place("second")
+    ro all = migrations_in(bundled())
+    ro _ = start(p, all, 7)
+    assert(same("second", "first=false schema=1 applied=0 backup=false", start(p, all, 8)))
+}
+
+test "a new migration on an existing file is preceded by a backup" {
+    ro p = place("upgrade")
+    mut all = migrations_in(bundled())
+    ro _ = start(p, all, 7)
+    all.push(Migration.new(2, "CREATE TABLE startup_probe (x INTEGER)"))
+    assert(same("upgrade", "first=false schema=1 applied=1 backup=true", start(p, all, 8)))
+    // Schema 2 is beyond what THIS build knows (KNOWN_SCHEMA = 1), so the next start
+    // refuses -- the rule of 01.2 §5, shown on the file the upgrade just wrote.
+    assert(start(p, all, 9).starts_with("FAIL the database was written by a newer version (schema 2"))
+}
+
+test "KNOWN_SCHEMA is the highest migration the binary carries" {
+    // Two numbers that must move together: a migration added without the constant
+    // would be applied and then refused on the next start.
+    mut top = 0
+    for m in migrations_in(bundled()) {
+        if m.version > top { top = m.version }
+    }
+    assert(top == KNOWN_SCHEMA)
+}
+
+test "a migration that fails is rolled back and says which" {
+    ro p = place("broken")
+    mut all = migrations_in(bundled())
+    ro _ = start(p, all, 7)
+    all.push(Migration.new(2, "CREATE TABLE schema_meta (x INTEGER)"))
+    ro got = start(p, all, 8)
+    assert(got.starts_with("FAIL a migration failed and was rolled back: 2:"))
+    // Rolled back: the schema is still 1, and the next start tries again.
+    ro fixed = migrations_in(bundled())
+    assert(same("still 1", "first=false schema=1 applied=0 backup=false", start(p, fixed, 9)))
+}

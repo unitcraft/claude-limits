@@ -42,7 +42,7 @@ import claude_limits.usage.parse as usage_parse
 import claude_limits.cli.table.{row, cli_label, reference_moment}
 import claude_limits.install.autostart.{install, uninstall, message, entry_for, Autostart, Change}
 import claude_limits.install.real_autostart.{with_real_autostart, host}
-import std.fs.{real_fs}
+import std.fs.{real_fs, metadata}
 import std.net.{TcpListener}
 import polaris.net.{ServerPolicy}
 import polaris.serve.{serve_router}
@@ -51,7 +51,11 @@ import claude_limits.storage.paths.{resolve}
 import claude_limits.storage.config_file.{load}
 import claude_limits.server.app.{api_router}
 import claude_limits.server.handlers.config.{base_url}
-import claude_limits.server.start.{real_paths_input, decide_start, sources_at_start}
+import claude_limits.server.start.{real_paths_input, decide_start, sources_at_start, DbAtStart}
+import claude_limits.storage.startup.{migrations_in, bundled, open_for_serve, Ready, StartFail}
+import claude_limits.storage.db.{owner_changed, owner_line}
+import duckdb.db_effect.{Db}
+import duckdb.db_real.{with_real_db}
 import claude_limits.server.feed.{Rounds, one_round}
 import claude_limits.model.snapshot.{SeverityBounds}
 import claude_limits.server.dto.{SnapshotView}
@@ -155,6 +159,32 @@ fn home_str() Os -> str =>
         None => ""
     }
 
+/// What `health` says about the database this start opened. A named function, not a
+/// literal in the `match`: a record literal there did not become the arm's value.
+fn db_seen(r Ready, size int) -> DbAtStart =>
+    { schema_version: r.opened.schema_version + r.applied, encrypted: true, size_bytes: size }
+
+/// Say what the start did to the database, and answer the file's size for `health`.
+///
+/// ONE CALL IN THE `match` ARM, on purpose: with the lines and the size written out
+/// in the arm, the arm's value came out as `()` (measured 2026-09-30).
+fn announced(r Ready, db_file str) Io -> int {
+    if r.opened.first_start {
+        println("claude-limits: new database ${db_file}, encrypted")
+    } else if r.applied > 0 {
+        println("claude-limits: database migrated to schema ${r.opened.schema_version + r.applied} (backup ${r.backup})")
+    }
+    if owner_changed(r.opened.previous_owner, r.opened.instance_id) {
+        println("claude-limits: ${owner_line(r.opened.previous_owner, r.opened.instance_id)}")
+    }
+    with Fs = real_fs() {
+        match metadata(db_file.to_path()) {
+            Ok(m) => m.len()
+            Err(_) => 0
+        }
+    }
+}
+
 /// `--serve` (task T2.27): read the settings, refuse or go, listen, give the page.
 ///
 /// Every decision is in `server.start` and tested there; this is the printing and the
@@ -187,6 +217,25 @@ fn serve_mode(exe str, config_override str) Io Net Time Detach -> int {
                     // ask the endpoint at all. The rounds do not repeat yet -- see
                     // `feed.one_round` for the two runtime defects that stop them.
                     ro now = Time.now().unix_millis()
+                    // THE DATABASE, AFTER THE BIND and before the round: a second copy on
+                    // a busy port must not touch the file either. `Random` is given
+                    // EXPLICITLY: the default handler lives only in a thread-local slot
+                    // that the GC does not see (registry 221.1 #1420), and the key is
+                    // generated here on a first start.
+                    ro all = migrations_in(bundled())
+                    ro keep = cfg.storage.backups_keep
+                    ro win = input.windows
+                    ro opened = with Fs = real_fs(), Random = real_random() {
+                        with_real_db(fn() Db Fs Random -> Result[Ready, StartFail] => open_for_serve(paths, all, now, keep, win))
+                    }
+                    // NOT `db`: a module of that name is in the unit, and the name resolved to it (registry 221.1 #1400).
+                    ro db_state = match opened {
+                        Ok(r) => db_seen(r, announced(r, paths.db_file))
+                        Err(f) => {
+                            println("claude-limits: ${f.message(paths.key_file)}")
+                            return f.exit_code()
+                        }
+                    }
                     ro bounds = SeverityBounds.new(cfg.thresholds.warning, cfg.thresholds.critical)
                     ro rounds = Rounds.new(cfg.folders, cfg.poll.interval_sec, bounds, TimeZone.Fixed(Offset.local()), Offset.local().to_iso())
                     ro first = with_real_disk(fn() Dirs Creds -> SnapshotView {
@@ -207,7 +256,7 @@ fn serve_mode(exe str, config_override str) Io Net Time Detach -> int {
                     println("claude-limits: ${first.accounts.len()} account(s) found in ${cfg.folders.len()} folder(s)")
                     // `!!`: the table is static, and `app_test` builds the same one -- a
                     // refusal here is a programming error, not a condition of this run.
-                    ro router = api_router(sources_at_start(cfg, paths, moment_iso(now), now, fn() -> SnapshotView => first))!!
+                    ro router = api_router(sources_at_start(cfg, paths, moment_iso(now), now, db_state, fn() -> SnapshotView => first))!!
                     println("claude-limits: listening on ${base_url(cfg)}/  (Ctrl+C to stop)")
                     serve_router(listener, router, ServerPolicy.new())
                     return EXIT_OK
