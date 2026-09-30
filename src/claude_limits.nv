@@ -144,8 +144,9 @@ fn main() Io {
     // THE `[]str` IS LOAD-BEARING. This file imports TWO functions named `parse`
     // (cli.args and usage.parse), and for an argument it holds no C-type for, the
     // codegen types the call's result by the WRONG one -- here a for-in then fails;
-    // with C-compatible return types the value is silently corrupted. Isolated in
-    // probes/unannotated-let-breaks-far-for-in; keep the annotation until it is fixed.
+    // with C-compatible return types the value is silently corrupted. Registry 221.1
+    // #1390 (K1), probe in probes/unannotated-let-breaks-far-for-in; keep the
+    // annotation until #1390 is fixed.
     ro argv []str = if all.len() == 0 { all } else { all[1..] }
 
     match parse(argv) {

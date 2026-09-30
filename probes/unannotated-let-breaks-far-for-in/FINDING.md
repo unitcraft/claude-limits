@@ -1,9 +1,10 @@
 # Two imported functions share a name: codegen types the call by the WRONG one
 
 **Status: ISOLATED (2026-09-30). A silent miscompile -- `check` and `build` both pass,
-and the program prints `true` where it must print `13`.** Not filed by me in the nova
-registry (this window works only in claude-limits, owner's word 2026-09-21); handed to
-the integrator with this directory as the evidence.
+and the program prints `true` where it must print `13`.** Filed as **registry 221.1
+#1390 (K1)** by the integrator, who re-measured it (05:59: `true` vs `13`); this
+window works only in claude-limits (owner's word 2026-09-21) and handed it over with
+this directory as the evidence. The fix is the integrator's (oracle, resolve channel).
 
 ## The minimal case -- `src/gap_silent_bool.nv`
 
