@@ -177,11 +177,11 @@ test "an unreadable key is told apart from an absent one" {
 /// be a database: it answers the one question `open_and_read` asks.
 fn db_with(version int, owner str, has_table bool) -> Effect[Db] {
     effect Db {
-        open(path str, opts DbOptions) -> Result[DbRef, DuckError] => Ok(DbRef.of(1 as CDbHandle))
-        connect(db DbRef) -> Result[ConnRef, DuckError] => Ok(ConnRef.of(1 as CConnHandle))
+        open(path str, opts DbOptions) -> Result[DbRef, DuckError] => Ok(DbRef.new(1 as CDbHandle))
+        connect(db DbRef) -> Result[ConnRef, DuckError] => Ok(ConnRef.new(1 as CConnHandle))
         exec(conn ConnRef, sql str) -> Result[int, DuckError] => Ok(0)
         query(conn ConnRef, sql str) -> Result[ResultRef, DuckError] {
-            if has_table { Ok(ResultRef.of(1 as CResultHandle)) }
+            if has_table { Ok(ResultRef.new(1 as CResultHandle)) }
             else { Err(DuckError.Query("no such table: schema_meta")) }
         }
         describe(result ResultRef) -> Result[[]Col, DuckError] => Ok([])

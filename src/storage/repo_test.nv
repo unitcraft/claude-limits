@@ -75,12 +75,12 @@ fn Spy mut @ran(sql str) -> bool {
 
 fn spied(mut s Spy) -> Effect[Db] {
     effect Db {
-        open(path str, opts DbOptions) -> Result[DbRef, DuckError] => Ok(DbRef.of(1 as CDbHandle))
-        connect(db DbRef) -> Result[ConnRef, DuckError] => Ok(ConnRef.of(1 as CConnHandle))
+        open(path str, opts DbOptions) -> Result[DbRef, DuckError] => Ok(DbRef.new(1 as CDbHandle))
+        connect(db DbRef) -> Result[ConnRef, DuckError] => Ok(ConnRef.new(1 as CConnHandle))
         exec(conn ConnRef, sql str) -> Result[int, DuckError] {
             if s.ran(sql) { Ok(1) } else { Err(DuckError.Query("injected at call ${s.calls}")) }
         }
-        query(conn ConnRef, sql str) -> Result[ResultRef, DuckError] => Ok(ResultRef.of(1 as CResultHandle))
+        query(conn ConnRef, sql str) -> Result[ResultRef, DuckError] => Ok(ResultRef.new(1 as CResultHandle))
         describe(result ResultRef) -> Result[[]Col, DuckError] => Ok([])
         next(result ResultRef) -> Result[Option[[]Value], DuckError] => Ok(None)
         close_result(result ResultRef) -> () => ()
@@ -194,7 +194,7 @@ test "the reference tables upsert and the facts do not" {
 test "a tick is wrapped in BEGIN and COMMIT, and ends with CHECKPOINT" {
     mut s = Spy.new()
     ro got = with Db = spied(s) {
-        write_tick(ConnRef.of(1 as CConnHandle), tick(), ids())
+        write_tick(ConnRef.new(1 as CConnHandle), tick(), ids())
     }
     assert(got.is_ok())
     assert(saw(s, "BEGIN TRANSACTION"))
@@ -210,7 +210,7 @@ test "a tick is wrapped in BEGIN and COMMIT, and ends with CHECKPOINT" {
 
 test "eleven calls for a two-window tick: begin, eight statements, commit, checkpoint" {
     mut s = Spy.new()
-    ro _ = with Db = spied(s) { write_tick(ConnRef.of(1 as CConnHandle), tick(), ids()) }
+    ro _ = with Db = spied(s) { write_tick(ConnRef.new(1 as CConnHandle), tick(), ids()) }
     assert(s.calls == 11)
 }
 
@@ -221,7 +221,7 @@ test "a failure mid-tick rolls back and reports" {
     // ahead of it.
     mut s = Spy.failing(4)
     ro got = with Db = spied(s) {
-        write_tick(ConnRef.of(1 as CConnHandle), tick(), ids())
+        write_tick(ConnRef.new(1 as CConnHandle), tick(), ids())
     }
     assert(got.is_err())
     assert(saw(s, "ROLLBACK"))
@@ -233,7 +233,7 @@ test "a failure mid-tick leaves NO journal entry -- the card's own line" {
     // last statement, so a failure before it means the row was never attempted --
     // and even if it had been, the ROLLBACK takes it.
     mut s = Spy.failing(4)
-    ro _ = with Db = spied(s) { write_tick(ConnRef.of(1 as CConnHandle), tick(), ids()) }
+    ro _ = with Db = spied(s) { write_tick(ConnRef.new(1 as CConnHandle), tick(), ids()) }
     assert(!saw(s, "INSERT INTO poll"))
 }
 
@@ -242,7 +242,7 @@ test "a failure on the LAST statement also rolls back" {
     // samples behind without it.
     mut s = Spy.failing(10)
     ro got = with Db = spied(s) {
-        write_tick(ConnRef.of(1 as CConnHandle), tick(), ids())
+        write_tick(ConnRef.new(1 as CConnHandle), tick(), ids())
     }
     assert(got.is_err())
     assert(saw(s, "ROLLBACK"))
@@ -254,7 +254,7 @@ test "a healthy tick does NOT roll back -- the control" {
     // rolls back.
     mut s = Spy.new()
     ro got = with Db = spied(s) {
-        write_tick(ConnRef.of(1 as CConnHandle), tick(), ids())
+        write_tick(ConnRef.new(1 as CConnHandle), tick(), ids())
     }
     assert(got.is_ok())
     assert(!saw(s, "ROLLBACK"))
