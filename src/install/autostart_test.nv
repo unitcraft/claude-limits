@@ -88,14 +88,21 @@ test "the two platforms agree on the record's NAME" {
 test "the command line quotes the executable" {
     // A path with a space -- which `C:/Program Files/...` always has -- becomes two
     // arguments unquoted, and the record silently starts nothing.
-    assert(command_line("C:/Program Files/cl/cl.exe") == "\"C:/Program Files/cl/cl.exe\"")
+    assert(command_line("C:/Program Files/cl/cl.exe") == "\"C:/Program Files/cl/cl.exe\" --serve")
+}
+
+test "the record starts the backend: --serve, not the bare binary" {
+    // A bare run is `--once`: one table and exit. The first version recorded the bare
+    // path, so the login "started" a program that printed to nowhere and quit.
+    assert(command_line(EXE).ends_with(" --serve"))
+    assert(desktop_text(EXE).contains(" --serve\n"))
 }
 
 test "the desktop entry carries the four keys that make it run and show" {
     ro t = desktop_text("/usr/bin/claude-limits")
     assert(t.starts_with("[Desktop Entry]"))
     assert(t.contains("Type=Application"))
-    assert(t.contains("Exec=\"/usr/bin/claude-limits\""))
+    assert(t.contains("Exec=\"/usr/bin/claude-limits\" --serve"))
     assert(t.contains("Terminal=false"))
     // Without this GNOME runs the entry but hides it from its own settings, so the
     // person cannot see or disable what they installed.

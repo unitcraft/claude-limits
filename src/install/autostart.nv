@@ -111,7 +111,12 @@ export type Autostart effect {
 /// second, optional thing the person turns on in its own menu (plan 01 §0). An
 /// autostart entry that opened a window on every login would be the kind of default
 /// people uninstall the whole program over.
-export fn command_line(exe str) -> str => "\"${exe}\""
+///
+/// `--serve` IS included. CORRECTION 2026-09-30: this used to be the bare path, which
+/// was written before `--serve` existed -- and a bare run is `--once` (one table,
+/// then exit), so the record "started the backend" by printing a table nobody saw and
+/// quitting. Found while writing the README, by asking what the recorded line runs.
+export fn command_line(exe str) -> str => "\"${exe}\" --serve"
 
 /// The `.desktop` file freedesktop.org expects in `~/.config/autostart`.
 ///
