@@ -1,0 +1,49 @@
+// d2 (#1407): how deep can the BODY of `supervised` recurse, beside a timer spawn?
+// Argument: 1 = recursion in main before any scope, 2 = in the body of `supervised`
+// (with a timer spawn beside it, the --serve shape), 3 = inside a `spawn`.
+module p1406.d2_body_stack
+
+import std.concurrency.nvchan.{Chan, ChanTx}
+import std.os.{real_os, args}
+import std.time.duration
+
+// ~ a few hundred bytes a frame: enough locals that the depth maps to stack bytes.
+fn deep(n int, a int, b int, c int, d int) -> int {
+    if n == 0 { return a + b + c + d }
+    ro x = (a * 3 + 1) % 1000
+    ro y = (b * 5 + 2) % 1000
+    ro z = (c * 7 + 3) % 1000
+    ro w = (d * 11 + 4) % 1000
+    deep(n - 1, y, z, w, x) + 1
+}
+
+fn timer(tx ChanTx[int]) Time -> () {
+    mut going = true
+    while going {
+        50.to_millis().sleep()
+        going = tx.send(1)
+    }
+}
+
+fn main() Io Time Detach {
+    ro argv = with Os = real_os() { args() }
+    ro mode = if argv.len() > 1 { argv[1] } else { "2" }
+    ro dname = if argv.len() > 2 { argv[2] } else { "100000" }
+    ro depth = match dname { "1000" => 1000, "10000" => 10000, "30000" => 30000, _ => 100000 }
+    if mode == "1" {
+        println("d2 main: ${deep(depth, 1, 2, 3, 4)}")
+        return
+    }
+    ro ch = Chan[int].new(4)
+    ro tx = ch.tx
+    supervised {
+        spawn { timer(tx) }
+        if mode == "3" {
+            spawn { println("d2 spawn: ${deep(depth, 1, 2, 3, 4)}") }
+        } else {
+            println("d2 body: ${deep(depth, 1, 2, 3, 4)}")
+        }
+        tx.close()
+    }
+    println("d2 done")
+}

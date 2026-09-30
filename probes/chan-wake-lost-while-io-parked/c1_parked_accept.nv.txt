@@ -1,0 +1,64 @@
+// c1: a1 (store in the body, asker in a spawn: GREEN) plus ONE more fiber that is
+// parked in `accept()` on a listener nobody connects to. The asker does no I/O.
+module p1406.c1_parked_accept
+
+import std.concurrency.nvchan.{Chan, ChanTx, ChanRx}
+import std.net.{TcpListener}
+import std.os.{real_os, exit_process}
+import std.time.duration
+
+type Ask value {
+    ro n int
+    ro reply ChanTx[int]
+}
+
+fn store(rx ChanRx[Ask]) -> () {
+    mut going = true
+    while going {
+        match rx.recv() {
+            None => { going = false }
+            Some(a) => { ro _ = a.reply.send(a.n * 10) }
+        }
+    }
+}
+
+fn ask(tx ChanTx[Ask], n int) -> int {
+    ro pair = Chan[int].new(1)
+    ro _ = tx.send({ n, reply: pair.tx })
+    pair.rx.recv() ?? (0 - 1)
+}
+
+fn main() Io Net Time Detach {
+    detach {
+        5000.to_millis().sleep()
+        println("c1 WATCHDOG: still running after 5 s -- hung")
+        with Os = real_os() { exit_process(3) }
+    }
+    ro req = Chan[Ask].new(8)
+    ro tx = req.tx
+    consume l = match TcpListener.bind("127.0.0.1:0") {
+        Ok(consume x) => x
+        Err(e) => panic("bind: ${e}")
+    }
+    // Parked for good: nobody connects. Detached, so the scope does not wait for it.
+    detach consume l {
+        consume lis = l
+        match lis.accept() {
+            Ok(consume s) => s.close()
+            Err(_) => ()
+        }
+        lis.close()
+    }
+    supervised {
+        spawn {
+            100.to_millis().sleep()
+            println("c1 asking")
+            ro got = ask(tx, 4)
+            println("c1 reply ${got}")
+            tx.close()
+        }
+        store(req.rx)
+    }
+    println("c1 done")
+    with Os = real_os() { exit_process(0) }
+}

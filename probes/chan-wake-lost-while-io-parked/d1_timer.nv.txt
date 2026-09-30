@@ -1,0 +1,41 @@
+// d1 (#1407): the loop of --serve without the server -- the store in the body of
+// `supervised` counts ticks; a timer in a `spawn` sends one every 200 ms.
+module p1406.d1_timer
+
+import std.concurrency.nvchan.{Chan, ChanTx, ChanRx}
+import std.os.{real_os, exit_process}
+import std.time.duration
+
+fn timer(tx ChanTx[int]) Time -> () {
+    mut n = 0
+    mut going = true
+    while going {
+        200.to_millis().sleep()
+        n += 1
+        going = tx.send(n)
+    }
+}
+
+fn main() Io Time Detach {
+    detach {
+        5000.to_millis().sleep()
+        println("d1 WATCHDOG: still running after 5 s -- hung")
+        with Os = real_os() { exit_process(3) }
+    }
+    ro ch = Chan[int].new(4)
+    ro rx = ch.rx
+    ro tx = ch.tx
+    supervised {
+        spawn { timer(tx) }
+        mut seen = 0
+        while seen < 3 {
+            match rx.recv() {
+                Some(n) => { seen += 1; println("d1 tick ${n}") }
+                None => { seen = 99 }
+            }
+        }
+        tx.close()
+    }
+    println("d1 done")
+    with Os = real_os() { exit_process(0) }
+}

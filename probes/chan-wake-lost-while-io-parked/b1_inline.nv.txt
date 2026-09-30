@@ -1,0 +1,100 @@
+// b1: as a3, the connection is served INLINE by the accept-loop fiber (no detach).
+// a3: a server shape with REAL sockets and no polaris. The store answers in the body
+// of `supervised`; an accept loop runs in a `spawn`, each accepted connection goes to
+// a DETACHED fiber (`detach consume stream`, as polaris `serve` does), which asks the
+// store and writes the answer back. Clients are a third fiber.
+module p1406.b1_inline
+
+import std.concurrency.nvchan.{Chan, ChanTx, ChanRx}
+import std.net.{TcpListener, TcpStream}
+import std.os.{real_os, exit_process}
+import std.time.duration
+
+const CONNS = 2
+
+type Ask value {
+    ro n int
+    ro reply ChanTx[int]
+}
+
+fn store(rx ChanRx[Ask]) -> () {
+    mut going = true
+    while going {
+        match rx.recv() {
+            None => { going = false }
+            Some(a) => { ro _ = a.reply.send(a.n * 10) }
+        }
+    }
+}
+
+fn ask(tx ChanTx[Ask], n int) -> int {
+    ro pair = Chan[int].new(1)
+    ro _ = tx.send({ n, reply: pair.tx })
+    pair.rx.recv() ?? (0 - 1)
+}
+
+fn serve_one(consume s TcpStream, tx ChanTx[Ask], i int) Net -> () {
+    ro _ = s.read_bytes(64)
+    println("b1 conn ${i}: asking the store")
+    ro got = ask(tx, i + 1)
+    println("b1 conn ${i}: store said ${got}")
+    ro _ = s.write_all("reply ${got}".bytes())
+    s.close()
+}
+
+fn accept_loop(consume l TcpListener, tx ChanTx[Ask]) Net Detach -> () {
+    consume lis = l
+    for i in 0..CONNS {
+        match lis.accept() {
+            Ok(consume stream) => {
+                serve_one(stream, tx, i)
+            }
+            Err(e) => { println("b1 accept failed: ${e}") }
+        }
+    }
+    lis.close()
+}
+
+fn clients(port int) Net -> () {
+    for i in 0..CONNS {
+        match TcpStream.connect("127.0.0.1:${port}") {
+            Err(e) => println("b1 client ${i}: connect ${e}")
+            Ok(consume c) => {
+                ro _ = c.write_all("hi".bytes())
+                match c.read_text(64) {
+                    Ok(t) => println("b1 client ${i}: got [${t}]")
+                    Err(e) => println("b1 client ${i}: read ${e}")
+                }
+                c.close()
+            }
+        }
+    }
+}
+
+fn main() Io Net Time Detach {
+    // The watchdog: a hang must still print. stdout into a pipe is buffered and a
+    // killed process loses it; `exit_process` flushes first.
+    detach {
+        5000.to_millis().sleep()
+        println("b1 WATCHDOG: still running after 5 s -- hung")
+        with Os = real_os() { exit_process(3) }
+    }
+    ro req = Chan[Ask].new(8)
+    ro tx = req.tx
+    consume l = match TcpListener.bind("127.0.0.1:0") {
+        Ok(consume x) => x
+        Err(e) => panic("bind: ${e}")
+    }
+    ro port = l.local_port()
+    supervised {
+        spawn consume l {
+            accept_loop(l, tx)
+        }
+        spawn {
+            clients(port)
+            tx.close()
+        }
+        store(req.rx)
+    }
+    println("b1 done")
+}
