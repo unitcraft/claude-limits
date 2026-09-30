@@ -1,5 +1,5 @@
 <!-- SPDX-License-Identifier: CC-BY-4.0 -->
-# №TBD — `.collect()` вектора записей, затем `sort_by`: процесс падает (0xC0000005)
+# №1403 — `.collect()` вектора записей, затем `sort_by`: процесс падает (0xC0000005)
 
 **Замер 2026-09-30 12:45**, окно claude-limits, бинарь `nova-integ` 10:55. Найдено так:
 линтер потребовал в `model/live.nv` заменить цикл `push` на канон `windows.collect()`
