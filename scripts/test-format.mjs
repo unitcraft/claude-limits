@@ -11,7 +11,8 @@ import {
   formatResetMoment, formatReset, rowLabel, sortLimits, severityOf,
   isRetryable, retryDelay, MAX_RETRIES, refuseFor, REFUSAL_DEFAULT_SEC, REFUSAL_MAX_SEC,
   moveTo, applyOrder, dropIndexFor, landingIndex, orderRequest, configPut,
-  footerRight, legendText, footerCounts, stripTooltip, percentTooltip, forecastTooltip} from '../src/web/format.js';
+  footerRight, legendText, footerCounts, stripTooltip, percentTooltip, forecastTooltip,
+  captionTime} from '../src/web/format.js';
 
 let passed = 0;
 const test = (name, fn) => {
@@ -363,8 +364,11 @@ test('the right half says how often AND when, as the artboard does', () => {
   // The page printed only "polling every 300 s" until 2026-09-08. `next_poll_at` is
   // in the payload and in the fixture, and it is the half a person waiting for a
   // number actually wants.
-  const at = new Date('2026-09-07T16:52:02Z');
-  const hhmm = at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  // The page's own clock format (24-hour, captionTime) -- NOT the machine's locale:
+  // `toLocaleTimeString([])` gave "04:52 PM" on the CI runner (en-US) and failed a
+  // test that passed on every developer machine here.
+  const hhmm = captionTime(new Date('2026-09-07T16:52:02Z'));
+  assert.match(hhmm, /^\d\d:\d\d$/);
   assert.equal(footerRight(300, '2026-09-07T16:52:02Z'), `polling every 300 s \u00b7 next ${hhmm}`);
 });
 
