@@ -86,12 +86,21 @@ export fn quote(s str) -> str {
     "${out}'"
 }
 
-/// A moment as DuckDB reads it: microseconds since the epoch, cast to TIMESTAMPTZ.
+/// A moment as DuckDB reads it: microseconds since the epoch, as a TIMESTAMPTZ.
 ///
 /// `make_timestamp` rather than a formatted string: formatting would put a timezone
 /// and a locale between us and the number, and 01.2 §3.1 says the column is UTC
 /// microseconds.
-export fn moment(ms int) -> str => "make_timestamp(${ms * 1000})"
+///
+/// `AT TIME ZONE 'UTC'` IS THE FIX OF A MEASURED DEFECT (2026-09-30). `make_timestamp`
+/// returns a zoneless TIMESTAMP, and DuckDB turns a zoneless value into a TIMESTAMPTZ
+/// through the SESSION zone -- the machine's. On a Moscow machine
+/// `epoch(make_timestamp(0)::TIMESTAMPTZ)` is -10800: every moment this file wrote
+/// landed three hours early, by an amount that depends on where it ran. The tests
+/// compared SQL text and could not see it. Declaring the zoneless value UTC keeps the
+/// integer microseconds and removes the session from the answer; the maintenance live
+/// test pins the property itself, in two session zones.
+export fn moment(ms int) -> str => "(make_timestamp(${ms * 1000}) AT TIME ZONE 'UTC')"
 
 /// A `NULL` or a quoted value — the difference between "not set" and "empty", which
 /// 01.2 §0 treats as opposite answers.
@@ -122,7 +131,7 @@ export fn upsert_window_sql(t Tick, w WindowRow, id str, account_id str) -> str 
 /// Upsert the cycle this reading belongs to (01.2 §3.10: one pass of a window).
 export fn upsert_cycle_sql(t Tick, w WindowRow, id str, window_id str) -> str {
     ro at = moment(t.at_ms)
-    "INSERT INTO window_cycle (id, created_at, updated_at, created_by, updated_by, window_id, starts_at, resets_at) VALUES (${quote(id)}, ${at}, ${at}, ${quote(t.instance)}, ${quote(t.instance)}, ${quote(window_id)}, ${moment(w.starts_at_ms)}, ${moment(w.resets_at_ms)}) ON CONFLICT (window_id, starts_at) DO NOTHING"
+    "INSERT INTO window_cycle (id, created_at, updated_at, created_by, updated_by, window_id, starts_at, resets_at) VALUES (${quote(id)}, ${at}, ${at}, ${quote(t.instance)}, ${quote(t.instance)}, ${quote(window_id)}, ${moment(w.starts_at_ms)}, ${moment(w.resets_at_ms)}) ON CONFLICT (window_id, resets_at) DO NOTHING"
 }
 
 /// The reading itself.

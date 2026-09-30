@@ -136,7 +136,9 @@ test "an empty string is NULL, and a blank one is not" {
 
 test "a moment goes in as microseconds, not as formatted text" {
     // Formatting would put a timezone and a locale between us and the number.
-    assert(moment(1000) == "make_timestamp(1000000)")
+    // The text only; the PROPERTY -- that the stored instant is the one named, in any
+    // session zone -- is asserted against a live database in maintenance_test.
+    assert(moment(1000) == "(make_timestamp(1000000) AT TIME ZONE 'UTC')")
 }
 
 // ── what a tick writes, and in what order ────────────────────────────────────

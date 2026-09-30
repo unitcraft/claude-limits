@@ -1,0 +1,93 @@
+// repo.nv against a LIVE database -- the half repo_test cannot see.
+//
+//   ./nova.sh test src/storage/ --filter repo_live_test
+//
+// repo_test checks the SQL TEXT through a spy, which is right for order and
+// rollback and blind to what DuckDB actually does with the text. Found 2026-09-30:
+// DuckDB refuses to UPDATE a row that another table references ("key ... is still
+// referenced by a foreign key in a different table"). Every tick UPDATEs its
+// account on conflict, and `poll` and `limit_window` reference the account -- so the
+// question "does the SECOND tick go through" is one only a live database can answer.
+
+module storage.repo_live_test
+
+import std.fs.{real_fs, read_text}
+import duckdb.{Database, DbOptions}
+import duckdb.types.{Value}
+import claude_limits.storage.repo.{Tick, WindowRow, Ids, plan_sql}
+
+const INST = "01900000-0000-7000-8000-000000000001"
+
+fn migration() Io -> str =>
+    with Fs = real_fs() {
+        read_text("migrations/0001_init.sql".to_path()) ?? ""
+    }
+
+fn run(setup []str, queries []str) Io -> []str {
+    mut out = []str.new()
+    ro schema = migration()
+    mut last = "<nothing ran>"
+    with Fail[DuckError] = |e| { panic("DuckDB refused [${last}]: ${e.message()}") } {
+        consume db = Database.open_memory(DbOptions.defaults())!! {
+            consume con = db.connect()!! {
+                last = "migration"
+                ro _ = con.exec(schema)!!
+                for s in setup {
+                    last = s
+                    ro _ = con.exec(s)!!
+                }
+                for q in queries {
+                    last = q
+                    consume r = con.query(q)!! {
+                        match r.value(0, 0)!! {
+                            Value.Text(s) => out.push(s)
+                            _ => out.push("<non-text>")
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+fn win(kind str, percent int) -> WindowRow =>
+    WindowRow.new(kind, "", percent, false, "", "", 1757340000000, 1757358000000)
+
+fn tick(at_ms int) -> Tick => {
+    instance: INST, at_ms, email: "work@example.org", org: "Tech Center",
+    outcome: "ok", http_status: 200, retry_after_sec: 0, latency_ms: 120, error: "",
+    windows: [win("session", 74), win("weekly_all", 41)],
+}
+
+/// Distinct UUIDs per tick: `n` is the tick's number.
+fn ids(n int) -> Ids {
+    ro p = "01900000-0000-7000-8000-000000${n}"
+    Ids.new("01900000-0000-7000-8000-0000000000a1", "${p}01", ["${p}11", "${p}12"], ["${p}21", "${p}22"], ["${p}31", "${p}32"])
+}
+
+fn two_ticks() -> []str {
+    mut all = plan_sql(tick(1757347622000), ids(1000))
+    for s in plan_sql(tick(1757347922000), ids(2000)) { all.push(s) }
+    all
+}
+
+test "one tick writes its rows" {
+    ro a = run(plan_sql(tick(1757347622000), ids(1000)), [
+        "SELECT count(*)::VARCHAR FROM account",
+        "SELECT count(*)::VARCHAR FROM sample",
+    ])
+    assert(a[0] == "1")
+    assert(a[1] == "2")
+}
+
+test "THE SECOND TICK goes through: one account, two polls, four samples" {
+    ro a = run(two_ticks(), [
+        "SELECT count(*)::VARCHAR FROM account",
+        "SELECT count(*)::VARCHAR FROM poll",
+        "SELECT count(*)::VARCHAR FROM sample",
+    ])
+    assert(a[0] == "1")
+    assert(a[1] == "2")
+    assert(a[2] == "4")
+}
