@@ -1,0 +1,204 @@
+// server/start.nv -- what `--serve` decides before it listens (task T2.27).
+//
+//   ./nova.sh test src/server/ --filter start_test
+//
+// Source: 01.2 §1 (where the settings live), §2.2 (a missing file is a first start,
+// a bad one is reported), 01.3 §1 (loopback only before phase 6), §3.2 (`health`).
+//
+// ── WHAT IS HERE, AND WHY PRINTING IS NOT ────────────────────────────────────
+//
+// Every decision of the start is a function here and returns a VALUE: go or refuse,
+// with the lines to say. The entry point prints them -- `println` works only in the
+// entry module (registry 221.1 #1017, see `version.nv`), and a refusal that is a value
+// is also a refusal a test can read.
+//
+// The environment is read in ONE function, `real_paths_input`, and everything after
+// it is pure: which file, which address, whether the settings allow a start at all.
+//
+// ── NOT HERE YET, AND NAMED ──────────────────────────────────────────────────
+//
+// * The live snapshot: the store fiber and the pollers are wired in the next step;
+//   until then `/api/snapshot` answers an empty picture honestly.
+// * History: the database cannot be opened with its key yet (plan 01.5, question 8),
+//   so `health` reports `history_days: 0` and `encrypted: false` -- what is true of
+//   this process, not what the design will be.
+// * Stopping on a signal with `bye` to SSE subscribers: std has no OS signal hook to
+//   stop on. Ctrl+C ends the process; the page's live connection reconnects.
+
+module server.start
+
+import std.os.{env, home_dir}
+import std.fs.{try_exists}
+import claude_limits.config.{Config, ConfigError, validate, repair_for_start}
+import claude_limits.storage.paths.{PathsInput, Paths, join, dir_of}
+import claude_limits.storage.config_file.{Loaded}
+import claude_limits.server.app.{Sources}
+import claude_limits.server.handlers.health.{HealthState}
+import claude_limits.server.handlers.snapshot.{SnapshotState}
+import claude_limits.server.handlers.refresh.{RefreshState}
+import claude_limits.server.handlers.events.{EventsState}
+import claude_limits.server.handlers.config.{ConfigState, tag_of}
+import claude_limits.server.handlers.folders.{ProbeState}
+import claude_limits.server.handlers.token.{TokenEndpointState}
+import claude_limits.server.handlers.exporter.{ExportState}
+import claude_limits.server.dto.{Disclosure, SnapshotView}
+import claude_limits.model.store.{Registry}
+import claude_limits.config.{render}
+import claude_limits.version.{version}
+
+#cfg(target_os = "windows")
+fn on_windows() -> bool => true
+
+#cfg(!target_os = "windows")
+fn on_windows() -> bool => false
+
+fn env_or(key str) Os -> str => env(key) ?? ""
+
+/// The environment as 01.2 §1 reads it -- the one effectful function of the start.
+///
+/// `exe` is the program's own path as the system handed it over (`args()[0]`): a
+/// `claude-limits.toml` beside it makes the install portable.
+export fn real_paths_input(exe str, config_override str) Os Fs -> PathsInput {
+    ro win = on_windows()
+    ro exe_dir = if exe == "" { "" } else { dir_of(exe, win) }
+    ro home = match home_dir() {
+        Some(p) => p.display()
+        None => ""
+    }
+    ro beside = join(exe_dir, "claude-limits.toml", win)
+    ro portable = exe_dir != "" && (try_exists(beside.to_path()) ?? false)
+    ro cfg_override = if config_override != "" { config_override } else { env_or("CLAUDE_LIMITS_CONFIG") }
+    {
+        windows: win, exe_dir, home,
+        appdata: env_or("APPDATA"), local_appdata: env_or("LOCALAPPDATA"),
+        xdg_config: env_or("XDG_CONFIG_HOME"), xdg_data: env_or("XDG_DATA_HOME"),
+        xdg_state: env_or("XDG_STATE_HOME"),
+        portable,
+        config_override: cfg_override,
+        data_override: env_or("CLAUDE_LIMITS_DATA"),
+        log_override: "",
+        key_override: env_or("CLAUDE_LIMITS_DB_KEY_FILE"),
+    }
+}
+
+/// What the start does with the settings it read.
+export type Start enum
+    /// Serve with these settings; the lines are the repairs made on the way (01.2 §2.2).
+    | Go(Config, []str)
+    /// Do not start; one line per reason. The exit code is the configuration one.
+    | Refuse([]str)
+
+fn line_of(e ConfigError) -> str {
+    if e.field == "" { return e.message }
+    "${e.field}: ${e.message}"
+}
+
+/// Go or refuse, from what `config_file.load` found.
+///
+/// A MISSING FILE STARTS ON THE DEFAULTS (01.2 §2.2: a first start has no file). A file
+/// that does not PARSE refuses: the person wrote something, and serving on defaults
+/// would silently ignore it. A file that parses but fails validation refuses too --
+/// this is where 01.3 §1 bites: `allow_lan = true`, or a `bind` that is not loopback,
+/// stops the start instead of opening a plain-HTTP listener to the network.
+export fn decide_start(loaded Loaded) -> Start {
+    if loaded.errors.len() > 0 {
+        mut lines []str = []
+        for e in loaded.errors { lines.push(line_of(e)) }
+        return Start.Refuse(lines)
+    }
+    mut cfg = loaded.cfg
+    ro repairs = repair_for_start(cfg)
+    ro errs = validate(cfg)
+    if errs.len() > 0 {
+        mut lines []str = []
+        for e in errs { lines.push(line_of(e)) }
+        return Start.Refuse(lines)
+    }
+    Start.Go(cfg, repairs)
+}
+
+/// `/api/health` of this process at start (01.3 §3.2).
+///
+/// Counts the store owns are zero until the store is wired; the database fields say
+/// what is true of this process -- no history, no key in use -- and not the design.
+export fn health_at(cfg Config, paths Paths, started_at str) -> HealthState => {
+    app_version: version(),
+    started_at,
+    uptime_sec: 0,
+    bind: cfg.server.bind,
+    port: cfg.server.port,
+    allow_lan: cfg.server.allow_lan,
+    tls: false,
+    poll_interval_sec: cfg.poll.interval_sec,
+    poll_last_at: "",
+    poll_next_at: "",
+    sse_clients: 0,
+    accounts_total: 0,
+    accounts_ok: 0,
+    accounts_stale: 0,
+    accounts_unknown: 0,
+    accounts_error: 0,
+    accounts_hidden: 0,
+    login_dirs: 0,
+    config_path: paths.config_file,
+    db_path: paths.db_file,
+    db_size_bytes: 0,
+    schema_version: 0,
+    history_days: 0,
+    encrypted: false,
+    key_store: "file",
+    widget_enabled: false,
+    widget_running: false,
+    config_error: "",
+    disclosure: Disclosure.Loopback,
+}
+
+// ── the sources of the first release's router ───────────────────────────────
+//
+// Each literal lives in a named function and the lambdas only call them: a record
+// literal inside a closure is typed as the ENCLOSING literal's type (registry 221.1
+// #1392).
+
+fn view_at_start() -> SnapshotView => {
+    fetched_at: "", next_poll_at: "", tz: "UTC", restored: false, worst: None,
+    accounts: [], limits: [],
+}
+
+fn snapshot_at_start(tag str) -> SnapshotState => {
+    view: view_at_start(), order: [], hidden: [], config_etag: tag, disclosure: Disclosure.Loopback,
+}
+
+fn refresh_at_start(cfg Config, now_ms int) -> RefreshState => {
+    now_ms, floor_sec: cfg.poll.min_interval_sec, targets: [],
+}
+
+fn events_at_start() -> EventsState => { reg: Registry.new(), snapshot_body: "{}", rest: [] }
+
+fn config_at_start(cfg Config, tag str, paths Paths) -> ConfigState => {
+    cfg, etag: tag, path: paths.config_file, portable: paths.portable, folders: [],
+    accounts_found: [], disclosure: Disclosure.Loopback,
+}
+
+fn probe_at_start(now_ms int) -> ProbeState => { now_ms, listed: [], known: [], disclosure: Disclosure.Loopback }
+
+fn token_at_start(cfg Config, tag str) -> TokenEndpointState => { cfg, etag: tag, disclosure: Disclosure.Loopback }
+
+fn export_at_start() -> ExportState => { from_day: "", to_day: "", rows: [], disclosure: Disclosure.Loopback }
+
+/// Everything the router reads, for a process that has just started.
+///
+/// The settings and `health` are REAL; the snapshot, the folders and the history are
+/// empty until the store, discovery and the database are wired (see the header).
+export fn sources_at_start(cfg Config, paths Paths, started_at str, now_ms int) -> Sources {
+    ro tag = tag_of(render(cfg))
+    Sources.new(
+        fn() -> HealthState => health_at(cfg, paths, started_at),
+        fn() -> SnapshotState => snapshot_at_start(tag),
+        fn() -> RefreshState => refresh_at_start(cfg, now_ms),
+        fn() -> EventsState => events_at_start(),
+        fn() -> ConfigState => config_at_start(cfg, tag, paths),
+        fn() -> ProbeState => probe_at_start(now_ms),
+        fn() -> TokenEndpointState => token_at_start(cfg, tag),
+        fn() -> ExportState => export_at_start(),
+    )
+}

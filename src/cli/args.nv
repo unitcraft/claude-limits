@@ -34,6 +34,7 @@ export type Mode enum
     | Help              // --help / -h
     | InstallAutostart  // --install-autostart   (plan 01 Ф.4, task T4.2)
     | UninstallAutostart // --uninstall-autostart
+    | Serve             // --serve: listen, and give the page (plan 01.5, task T2.27)
 
 /// The canonical receiver inside a method body is `match @`, NOT `match @self`. The
 /// latter type-checks -- `nova check` prints `ok:` on it -- and then dies in codegen
@@ -47,6 +48,7 @@ export fn Mode @to_str() -> str =>
         Mode.Help => "help"
         Mode.InstallAutostart => "install-autostart"
         Mode.UninstallAutostart => "uninstall-autostart"
+        Mode.Serve => "serve"
     }
 
 /// The parsed command line. Empty string means "not given" throughout, matching the
@@ -99,7 +101,7 @@ fn needs_value(flag str) -> Complaint =>
 /// package has already met once from the other side: a setting that silently does
 /// nothing is worse than an error, which is why encryption and `read_only` are refused
 /// in nova-duckdb too.
-export fn parse(argv []str) -> Result[Args, Complaint] {
+export fn parse_args(argv []str) -> Result[Args, Complaint] {
     mut mode = Mode.Once
     mut config = ""
     mut offline = ""
@@ -121,6 +123,8 @@ export fn parse(argv []str) -> Result[Args, Complaint] {
             mode = Mode.InstallAutostart
         } else if a == "--uninstall-autostart" {
             mode = Mode.UninstallAutostart
+        } else if a == "--serve" {
+            mode = Mode.Serve
         } else if a == "--config" {
             if i + 1 >= argv.len() { return Err(needs_value("--config")) }
             i += 1

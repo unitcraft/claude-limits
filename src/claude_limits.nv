@@ -29,19 +29,31 @@ module claude_limits.claude_limits
 
 import claude_limits.version.{version_line}
 import std.os.{args, real_os, home_dir}
-import claude_limits.cli.args.{parse, EXIT_OK, EXIT_CONFIG}
+import claude_limits.cli.args.{EXIT_OK, EXIT_CONFIG, EXIT_OTHER}
+import claude_limits.cli.args as cli_args
 import claude_limits.cli.table.{account_header, short_name, no_logins, expired_note}
 import claude_limits.accounts.real_dirs.{with_real_disk}
 import claude_limits.accounts.discover.{scan}
 import claude_limits.accounts.login.{read_login, TokenState}
 import claude_limits.accounts.group.{group}
 import claude_limits.accounts.login.{Login}
-import claude_limits.usage.parse.{parse}
+import claude_limits.usage.parse.{moment_iso}
+import claude_limits.usage.parse as usage_parse
 import claude_limits.cli.table.{row, cli_label, reference_moment}
 import claude_limits.install.autostart.{install, uninstall, message, entry_for, Autostart, Change}
 import claude_limits.install.real_autostart.{with_real_autostart, host}
+import std.fs.{real_fs}
+import std.net.{TcpListener}
+import polaris.net.{ServerPolicy}
+import polaris.serve.{serve_router}
+import claude_limits.config.{listen_addr}
+import claude_limits.storage.paths.{resolve}
+import claude_limits.storage.config_file.{load}
+import claude_limits.server.app.{api_router}
+import claude_limits.server.handlers.config.{base_url}
+import claude_limits.server.start.{real_paths_input, decide_start, sources_at_start}
 
-const USAGE = "usage: claude-limits [--once] [--config PATH] [--offline DIR] [--parent DIR] [--color auto|always|never] [DIR ...]"
+const USAGE = "usage: claude-limits [--once | --serve] [--config PATH] [--offline DIR] [--parent DIR] [--color auto|always|never] [DIR ...]"
 const USAGE_AUTOSTART = "       claude-limits --install-autostart | --uninstall-autostart"
 
 /// One folder's worth of output, as lines, computed with the disk available.
@@ -134,7 +146,59 @@ fn home_str() Os -> str =>
         None => ""
     }
 
-fn main() Io {
+/// `--serve` (task T2.27): read the settings, refuse or go, listen, give the page.
+///
+/// Every decision is in `server.start` and tested there; this is the printing and the
+/// socket, which no test can reach. Returns the exit code for the cases that end.
+///
+/// THE LISTENER IS BOUND BEFORE "listening" IS PRINTED. `serve_addr` would bind and
+/// serve in one call, and then the only place to say "listening" is before the bind --
+/// a line that is false on a busy port, printed right above the refusal.
+fn serve_mode(exe str, config_override str) Io Net Time Detach -> int {
+    ro input = with Os = real_os(), Fs = real_fs() { real_paths_input(exe, config_override) }
+    ro paths = resolve(input)
+    ro loaded = with Fs = real_fs() { load(paths.config_file) }
+    match decide_start(loaded) {
+        Start.Refuse(lines) => {
+            println("claude-limits: the settings in ${paths.config_file} do not allow a start:")
+            for l in lines { println("  ${l}") }
+            return EXIT_CONFIG
+        }
+        Start.Go(cfg, repairs) => {
+            for r in repairs { println("claude-limits: ${r}") }
+            ro now = Time.now().unix_millis()
+            ro routed = api_router(sources_at_start(cfg, paths, moment_iso(now), now))
+            match routed {
+                Err(e) => {
+                    println("claude-limits: the router did not build: ${e}")
+                    return EXIT_OTHER
+                }
+                Ok(router) => {
+                    ro addr = listen_addr(cfg)
+                    match TcpListener.bind(addr) {
+                        Err(e) => {
+                            println("claude-limits: cannot listen on ${addr}: ${e}")
+                            println("claude-limits: is another copy already running? The port is [server] port in ${paths.config_file}")
+                            return EXIT_OTHER
+                        }
+                        Ok(consume listener) => {
+                            if loaded.missing {
+                                println("claude-limits: no settings file yet, running on the defaults (${paths.config_file})")
+                            } else {
+                                println("claude-limits: settings ${paths.config_file}")
+                            }
+                            println("claude-limits: listening on ${base_url(cfg)}/  (Ctrl+C to stop)")
+                            serve_router(listener, router, ServerPolicy.new())
+                            return EXIT_OK
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn main() Io Net Time Detach {
     // `args()[0]` is the program name. `cli.args.parse` takes the vector WITHOUT
     // it -- accepting it would make `claude-limits` a positional directory argument on
     // every run, and the failure would look like a missing fixture rather than a bug
@@ -149,7 +213,7 @@ fn main() Io {
     // annotation until #1390 is fixed.
     ro argv []str = if all.len() == 0 { all } else { all[1..] }
 
-    match parse(argv) {
+    match cli_args.parse_args(argv) {
         Err(c) => {
             println(c.message)
             exit(c.code, "")
@@ -186,6 +250,11 @@ fn main() Io {
                     ro got = with_real_autostart(exe, fn() Autostart -> Change => uninstall())
                     println(message(got, e))
                     if !got.ok() { exit(EXIT_CONFIG, "") }
+                }
+                Mode.Serve => {
+                    ro exe = if all.len() > 0 { all[0] } else { "" }
+                    ro code = serve_mode(exe, a.config)
+                    if code != EXIT_OK { exit(code, "") }
                 }
                 Mode.Once => {
                     // A BARE INVOCATION IS NOT AN ERROR. `nova test` runs every unit
@@ -270,7 +339,7 @@ fn main() Io {
                             }
 
                             ro body = recorded_reply(a.offline, acc.email)
-                            ro usage = parse(body)
+                            ro usage = usage_parse.parse(body)
                             for w in usage.windows {
                                 all.push(row(cli_label(w.kind, w.model), w.percent,
                                              true, "normal",

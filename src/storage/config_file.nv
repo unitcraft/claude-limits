@@ -34,7 +34,10 @@
 module storage.config_file
 
 import std.fs.{write_atomic, read_text, metadata, try_exists}
-import claude_limits.config.{Config, ConfigError, parse, render, validate}
+import claude_limits.config.{Config, ConfigError, render, validate}
+// `parse` through the module name: three free `parse` of one arity live in the binary
+// (cli.args, usage.parse, config), and a bare call is refused as ambiguous (#1390).
+import claude_limits.config as settings
 
 /// What a version of the file was saved because of (01.2 §3.14 `source`).
 ///
@@ -176,7 +179,7 @@ export fn load(path str) Fs -> Loaded {
     }
     ro text = read_text(path.to_path()) ?? ""
     ro mt = mtime_of(path)
-    match parse(text) {
+    match settings.parse(text) {
         Err(msg) => {
             // The text is KEPT even though it did not parse: it is what goes into
             // `config_history` if the person saves over it, and it is the only copy

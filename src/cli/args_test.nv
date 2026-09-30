@@ -13,10 +13,10 @@
 
 module cli.args_test
 
-import args.{parse, Mode, EXIT_CONFIG}
+import args.{parse_args, Mode, EXIT_CONFIG}
 
 test "no arguments at all: one table, and every option left alone" {
-    ro r = parse(Vec[str].new())
+    ro r = parse_args(Vec[str].new())
     assert(r.is_ok())
     ro a = r!!
     assert(a.mode == Mode.Once)
@@ -27,8 +27,16 @@ test "no arguments at all: one table, and every option left alone" {
     assert(a.dirs.len() == 0)
 }
 
+test "--serve is its own mode, and keeps --config beside it" {
+    ro a = parse_args(["--serve", "--config", "C:/x/claude-limits.toml"])!!
+    assert(a.mode == Mode.Serve)
+    assert(a.config == "C:/x/claude-limits.toml")
+    // And the flag is not read as a directory.
+    assert(a.dirs.len() == 0)
+}
+
 test "--config takes the NEXT argument, and does not eat the one after it" {
-    ro r = parse(["--config", "cl.toml", "dirA"])
+    ro r = parse_args(["--config", "cl.toml", "dirA"])
     assert(r.is_ok())
     ro a = r!!
     assert(a.config == "cl.toml")
@@ -37,7 +45,7 @@ test "--config takes the NEXT argument, and does not eat the one after it" {
 }
 
 test "--config at the very end is a refusal, not an empty value" {
-    ro r = parse(["--config"])
+    ro r = parse_args(["--config"])
     assert(r.is_err())
     ro c = r.err()!!
     assert(c.code == EXIT_CONFIG)
@@ -45,7 +53,7 @@ test "--config at the very end is a refusal, not an empty value" {
 }
 
 test "--offline and --parent each take their own value" {
-    ro r = parse(["--offline", "fixtures/usage", "--parent", "fixtures/dirs"])
+    ro r = parse_args(["--offline", "fixtures/usage", "--parent", "fixtures/dirs"])
     assert(r.is_ok())
     ro a = r!!
     assert(a.offline == "fixtures/usage")
@@ -54,7 +62,7 @@ test "--offline and --parent each take their own value" {
 }
 
 test "positional directories accumulate in order" {
-    ro r = parse(["one", "two", "three"])
+    ro r = parse_args(["one", "two", "three"])
     assert(r.is_ok())
     ro a = r!!
     assert(a.dirs.len() == 3)
@@ -64,14 +72,14 @@ test "positional directories accumulate in order" {
 
 test "--color takes its three words" {
     for word in ["auto", "always", "never"] {
-        ro r = parse(["--color", word])
+        ro r = parse_args(["--color", word])
         assert(r.is_ok())
         assert(r!!.color == word)
     }
 }
 
 test "a misspelled --color is refused, not quietly defaulted" {
-    ro r = parse(["--color", "alwyas"])
+    ro r = parse_args(["--color", "alwyas"])
     assert(r.is_err())
     ro c = r.err()!!
     assert(c.code == EXIT_CONFIG)
@@ -81,35 +89,35 @@ test "a misspelled --color is refused, not quietly defaulted" {
 }
 
 test "an unknown flag is refused, while a bare word beside it is a directory" {
-    ro bad = parse(["--quiet"])
+    ro bad = parse_args(["--quiet"])
     assert(bad.is_err())
     assert(bad.err()!!.code == EXIT_CONFIG)
 
-    ro good = parse(["quiet"])
+    ro good = parse_args(["quiet"])
     assert(good.is_ok())
     assert(good!!.dirs.len() == 1)
 }
 
 test "--help and --version each win over the default mode" {
-    assert(parse(["--help"])!!.mode == Mode.Help)
-    assert(parse(["-h"])!!.mode == Mode.Help)
-    assert(parse(["--version"])!!.mode == Mode.Version)
-    assert(parse(["--once"])!!.mode == Mode.Once)
+    assert(parse_args(["--help"])!!.mode == Mode.Help)
+    assert(parse_args(["-h"])!!.mode == Mode.Help)
+    assert(parse_args(["--version"])!!.mode == Mode.Version)
+    assert(parse_args(["--once"])!!.mode == Mode.Once)
 }
 
 test "the last mode flag wins, rather than the first" {
-    ro r = parse(["--version", "--help"])
+    ro r = parse_args(["--version", "--help"])
     assert(r!!.mode == Mode.Help)
 }
 
 test "--bar-style takes its two words, and defaults to the reference's default" {
-    assert(parse([])!!.bar_style == "ascii")
-    assert(parse(["--bar-style", "blocks"])!!.bar_style == "blocks")
-    assert(parse(["--bar-style", "ascii"])!!.bar_style == "ascii")
+    assert(parse_args([])!!.bar_style == "ascii")
+    assert(parse_args(["--bar-style", "blocks"])!!.bar_style == "blocks")
+    assert(parse_args(["--bar-style", "ascii"])!!.bar_style == "ascii")
 }
 
 test "a misspelled --bar-style is refused, like a misspelled --color" {
-    ro r = parse(["--bar-style", "blokcs"])
+    ro r = parse_args(["--bar-style", "blokcs"])
     assert(r.is_err())
     assert(r.err()!!.code == EXIT_CONFIG)
     assert(r.err()!!.message.contains("blokcs"))
@@ -119,7 +127,7 @@ test "the flags the differential passes are all accepted together" {
     // scripts/diff_with_probe.py invokes both programs with exactly these. This test
     // exists because the differential found them missing: it reported CANNOT COMPARE,
     // which is the right answer and an easy one to mistake for a difference.
-    ro r = parse(["--color", "never", "--bar-style", "ascii", "--offline", "fixtures/usage", "fixtures/dirs/no-login"])
+    ro r = parse_args(["--color", "never", "--bar-style", "ascii", "--offline", "fixtures/usage", "fixtures/dirs/no-login"])
     assert(r.is_ok())
     ro a = r!!
     assert(a.color == "never")
@@ -131,7 +139,7 @@ test "the flags the differential passes are all accepted together" {
 // ── the autostart verbs (task T4.2) ──────────────────────────────────────────
 
 test "--install-autostart is a verb, and it takes no value" {
-    ro r = parse(["--install-autostart"])
+    ro r = parse_args(["--install-autostart"])
     assert(r.is_ok())
     ro a = r!!
     assert(a.mode.to_str() == "install-autostart")
@@ -142,7 +150,7 @@ test "--install-autostart is a verb, and it takes no value" {
 }
 
 test "--uninstall-autostart is the other verb, not a flag on the first" {
-    ro r = parse(["--uninstall-autostart"])
+    ro r = parse_args(["--uninstall-autostart"])
     assert(r.is_ok())
     assert(r!!.mode.to_str() == "uninstall-autostart")
 }
@@ -151,7 +159,7 @@ test "a directory after the verb is still a directory, not a value" {
     // The failure this pins: a verb accidentally written to consume `argv[i+1]`
     // would eat the path and the program would install with no argument and no
     // complaint.
-    ro r = parse(["--install-autostart", "fixtures/dirs/no-login"])
+    ro r = parse_args(["--install-autostart", "fixtures/dirs/no-login"])
     assert(r.is_ok())
     ro a = r!!
     assert(a.mode.to_str() == "install-autostart")
@@ -164,14 +172,14 @@ test "the two verbs cannot both hold: the last one wins" {
     // the program then has to decide which of two contradictory orders it was given
     // -- a rule nobody would have written down. A variant cannot hold both, so the
     // contradiction resolves the way every other verb in this parser already does.
-    ro a = parse(["--install-autostart", "--uninstall-autostart"])!!
+    ro a = parse_args(["--install-autostart", "--uninstall-autostart"])!!
     assert(a.mode.to_str() == "uninstall-autostart")
-    ro b = parse(["--uninstall-autostart", "--install-autostart"])!!
+    ro b = parse_args(["--uninstall-autostart", "--install-autostart"])!!
     assert(b.mode.to_str() == "install-autostart")
 }
 
 test "a misspelled autostart verb is refused, like every other unknown flag" {
-    ro r = parse(["--install-autostrat"])
+    ro r = parse_args(["--install-autostrat"])
     assert(r.is_err())
     assert(r.err()!!.code == EXIT_CONFIG)
     assert(r.err()!!.message.contains("install-autostrat"))

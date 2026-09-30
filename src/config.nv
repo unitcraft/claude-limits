@@ -252,6 +252,16 @@ export fn validate(cfg Config) -> []ConfigError {
 /// refused here regardless. Refusing a loopback address costs a person one puzzled
 /// minute and a clear message; ACCEPTING a routable one costs them their filesystem
 /// paths. The two mistakes are not the same size, so the check leans the safe way.
+/// The address the server listens on, `host:port`. An IPv6 literal goes in brackets:
+/// `::1:7391` is not an address, and a listener refuses it with a message about the
+/// wrong thing. One home for the spelling -- the start binds it, and `base_url` of
+/// `PUT /api/config` tells a client where to reconnect with it.
+export fn listen_addr(cfg Config) -> str {
+    ro host = cfg.server.bind
+    if host.contains(":") { return "[${host}]:${cfg.server.port}" }
+    "${host}:${cfg.server.port}"
+}
+
 fn is_loopback(bind str) -> bool =>
     bind == "127.0.0.1" || bind == "::1" || bind == "localhost"
 

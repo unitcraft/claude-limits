@@ -37,7 +37,7 @@ import claude_limits.server.errors.{ApiError, FieldError, to_json, field_errors_
 import claude_limits.server.etag.{etag_of}
 import claude_limits.server.dto.{Disclosure, opt, shown_path}
 import std.encoding.serde.{json_encode, Serialize}
-import claude_limits.config.{Config, validate, render}
+import claude_limits.config.{Config, validate, render, listen_addr}
 import polaris.{ServerRequest, ServerResponse}
 import std.encoding.json.{Json, JsonValue}
 
@@ -692,9 +692,12 @@ export fn listener_moved(before Config, after Config) -> bool {
     before.server.tls_key != after.server.tls_key
 }
 
+/// Where a client reconnects. The address comes from `config.listen_addr`, the one
+/// spelling the listener uses -- it used to be assembled here by hand, and gave
+/// `http://::1:7391` for an IPv6 bind (fixed 2026-09-30).
 export fn base_url(c Config) -> str {
     ro scheme = if c.server.tls_cert != "" { "https" } else { "http" }
-    "${scheme}://${c.server.bind}:${c.server.port}"
+    "${scheme}://${listen_addr(c)}"
 }
 
 // ── the handlers ─────────────────────────────────────────────────────────────

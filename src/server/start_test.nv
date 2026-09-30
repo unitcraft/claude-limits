@@ -1,0 +1,129 @@
+// Tests for server/start.nv -- the decisions `--serve` makes before it listens.
+//
+//   ./nova.sh test src/server/ --filter start_test
+//
+// Helper names avoid every module name in the unit (registry 221.1 #1400: a function
+// named like a module resolves as that module).
+
+module server.start_test
+
+import claude_limits.config.{Config, ConfigError}
+import claude_limits.storage.config_file.{Loaded}
+import claude_limits.storage.paths.{Paths}
+import start.{Start, decide_start, health_at, sources_at_start}
+import claude_limits.server.app.{api_router}
+import claude_limits.server.handlers.config.{tag_of, base_url}
+import claude_limits.config.{render, listen_addr}
+import polaris.{serve_once}
+
+fn same(label str, want str, got str) -> bool {
+    if want == got { return true }
+    panic("${label}: want ${want}, got ${got}")
+}
+
+fn found(cfg Config) -> Loaded => { cfg, mtime_ns: 1, text: "x", errors: [], missing: false }
+
+fn went(s Start) -> bool => match s { Start.Go(_, _) => true, Start.Refuse(_) => false }
+
+fn refusal(s Start) -> str =>
+    match s {
+        Start.Refuse(lines) => lines.join(" | ")
+        Start.Go(_, _) => "<went>"
+    }
+
+test "no file at all is a first start, on the defaults" {
+    ro l Loaded = { cfg: Config.defaults(), mtime_ns: 0, text: "", errors: [], missing: true }
+    assert(went(decide_start(l)))
+}
+
+test "a file that does not parse refuses, and says why" {
+    ro e = ConfigError { field: "", code: "parse", message: "line 3: expected '='" }
+    ro l Loaded = { cfg: Config.defaults(), mtime_ns: 1, text: "junk", errors: [e], missing: false }
+    assert(same("refusal", "line 3: expected '='", refusal(decide_start(l))))
+}
+
+test "01.3 §1: asking for the LAN refuses the start instead of listening on it" {
+    // The card's own reverse probe: `allow_lan = true` without token and certificate
+    // must not become a plain-HTTP listener on the network.
+    mut c = Config.defaults()
+    c.server.allow_lan = true
+    ro r = refusal(decide_start(found(c)))
+    assert(r.contains("server.allow_lan"))
+}
+
+test "a bind that is not loopback refuses too -- the door reached by editing a file" {
+    mut c = Config.defaults()
+    c.server.bind = "0.0.0.0"
+    ro r = refusal(decide_start(found(c)))
+    assert(r.contains("server.bind"))
+}
+
+test "the control: the defaults as found in a file go" {
+    // Without it every refusal above is equally true of a start that refuses always.
+    assert(went(decide_start(found(Config.defaults()))))
+}
+
+test "an interval under the floor is repaired, and the repair is said" {
+    mut c = Config.defaults()
+    c.poll.interval_sec = 1
+    match decide_start(found(c)) {
+        Start.Go(cfg, lines) => {
+            assert(cfg.poll.interval_sec == cfg.poll.min_interval_sec)
+            assert(lines.len() == 1)
+            assert(lines[0].contains("poll.interval_sec 1 raised to"))
+        }
+        Start.Refuse(lines) => panic("refused: ${lines.join(" | ")}")
+    }
+}
+
+test "the address: IPv4 as is, IPv6 in brackets" {
+    mut c = Config.defaults()
+    assert(same("v4", "127.0.0.1:7391", listen_addr(c)))
+    assert(same("url", "http://127.0.0.1:7391", base_url(c)))
+    c.server.bind = "::1"
+    assert(same("v6", "[::1]:7391", listen_addr(c)))
+    // The reconnect URL of PUT /api/config goes through the same spelling.
+    assert(same("v6 url", "http://[::1]:7391", base_url(c)))
+}
+
+fn some_paths() -> Paths => {
+    config_dir: "C:/cfg", data_dir: "C:/data", log_dir: "C:/log",
+    config_file: "C:/cfg/claude-limits.toml", db_file: "C:/data/claude-limits.duckdb",
+    wal_file: "C:/data/claude-limits.duckdb.wal", temp_dir: "C:/data/tmp",
+    backup_dir: "C:/data/backup", log_file: "C:/log/claude-limits.log",
+    key_file: "C:/cfg/claude-limits.key", instance_file: "C:/cfg/claude-limits.instance",
+    portable: false,
+}
+
+test "health at start says what is true of this process" {
+    ro h = health_at(Config.defaults(), some_paths(), "2026-09-30T09:00:00Z")
+    assert(same("started", "2026-09-30T09:00:00Z", h.started_at))
+    assert(same("config", "C:/cfg/claude-limits.toml", h.config_path))
+    assert(h.port == 7391)
+    // No database is open in this process yet: saying otherwise would be a claim.
+    assert(!h.encrypted)
+    assert(h.history_days == 0)
+}
+
+// -- the production composition, through the router --------------------------
+
+fn wire_text(wire []u8) -> str => unsafe { wire.to_str_unchecked() }
+
+fn ask(path str) Time Random -> str {
+    ro r = api_router(sources_at_start(Config.defaults(), some_paths(), "2026-09-30T09:00:00Z", 1790758800000))!!
+    wire_text(serve_once(r, "GET ${path} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"))
+}
+
+test "the router a start builds answers health with this process's paths" {
+    // The SAME composition `--serve` listens with, not a test's own stand-in: what
+    // passes here is what a browser gets.
+    ro w = ask("/api/health")
+    assert(w.starts_with("HTTP/1.1 200"))
+    assert(w.contains("claude-limits.toml"))
+}
+
+test "and the settings, tagged as GET /api/config tags them" {
+    ro w = ask("/api/config")
+    assert(w.starts_with("HTTP/1.1 200"))
+    assert(w.contains(tag_of(render(Config.defaults()))))
+}
