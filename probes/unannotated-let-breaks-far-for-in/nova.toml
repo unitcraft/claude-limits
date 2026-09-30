@@ -1,0 +1,9 @@
+# Probe: an unannotated let in main breaks a for-in elsewhere in the same function (codegen only)
+
+[lib]
+src = "src"
+
+[package]
+name = "probe_far_for_in"
+version = "0.0.0"
+description = "Probe: if-expression typed vec/slice, unannotated"

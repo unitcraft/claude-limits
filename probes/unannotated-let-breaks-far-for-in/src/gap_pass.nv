@@ -1,0 +1,13 @@
+module probe_far_for_in.gap_pass
+
+fn count(xs []str) -> int {
+    mut n = 0
+    for x in xs { if x != "" { n += 1 } }
+    n
+}
+
+fn main() Io {
+    ro all = ["prog", "a", "b"]
+    ro v = if all.len() == 0 { all } else { all[1..] }
+    println("${count(v)}")
+}

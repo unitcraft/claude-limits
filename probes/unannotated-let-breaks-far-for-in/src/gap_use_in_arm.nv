@@ -1,0 +1,30 @@
+module probe_far_for_in.gap_use_in_arm
+
+type Parsed value {
+    dirs []str
+}
+
+fn parse(xs []str) -> Result[Parsed, str] {
+    mut out []str = []
+    for x in xs { out.push(x) }
+    Ok({ dirs: out })
+}
+
+fn run(f fn() -> int) -> int => f()
+
+fn main() Io {
+    ro all = ["prog", "a", "b"]
+    ro v = if all.len() == 0 { all } else { all[1..] }
+    match parse(v) {
+        Err(e) => println(e)
+        Ok(a) => {
+            if v.len() == 0 { println("none") }
+            ro n = run(fn() -> int {
+                mut k = 0
+                for d in a.dirs { if d != "" { k += 1 } }
+                k
+            })
+            println("${n}")
+        }
+    }
+}

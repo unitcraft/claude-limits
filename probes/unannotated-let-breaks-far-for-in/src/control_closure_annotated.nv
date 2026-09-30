@@ -1,0 +1,15 @@
+module probe_far_for_in.control_closure_annotated
+
+fn run(f fn() -> int) -> int => f()
+
+fn main() Io {
+    ro all = ["prog", "a", "b"]
+    ro v []str = if all.len() == 0 { all } else { all[1..] }
+    ro words = ["x", "y"]
+    ro n = run(fn() -> int {
+        mut k = 0
+        for w in words { if w != "" { k += 1 } }
+        k
+    })
+    println("${v.len()} ${n}")
+}

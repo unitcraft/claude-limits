@@ -1,0 +1,11 @@
+module probe_far_for_in.lib
+
+export type Parsed value {
+    dirs []str
+}
+
+export fn parse(xs []str) -> Result[Parsed, str] {
+    mut out []str = []
+    for x in xs { out.push(x) }
+    Ok({ dirs: out })
+}

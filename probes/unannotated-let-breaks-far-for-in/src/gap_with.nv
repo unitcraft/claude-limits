@@ -1,0 +1,11 @@
+module probe_far_for_in.gap_with
+
+import std.os.{args, real_os}
+
+fn main() Io {
+    ro all = with Os = real_os() { args() }
+    ro v = if all.len() == 0 { all } else { all[1..] }
+    mut n = 0
+    for x in v { if x != "" { n += 1 } }
+    println("${n}")
+}

@@ -1,0 +1,9 @@
+module probe_far_for_in.control_no_if
+
+fn main() Io {
+    ro all = ["prog", "a", "b"]
+    ro v = all[1..]
+    mut n = 0
+    for x in v { if x != "" { n += 1 } }
+    println("${n}")
+}

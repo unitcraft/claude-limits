@@ -1,0 +1,24 @@
+module probe_far_for_in.control_result_field_no_if
+
+type Parsed value {
+    dirs []str
+}
+
+fn parse(xs []str) -> Result[Parsed, str] {
+    mut out []str = []
+    for x in xs { out.push(x) }
+    Ok({ dirs: out })
+}
+
+fn main() Io {
+    ro all = ["prog", "a", "b"]
+    ro v = all[1..]
+    match parse(v) {
+        Err(e) => println(e)
+        Ok(a) => {
+            mut n = 0
+            for d in a.dirs { if d != "" { n += 1 } }
+            println("${n}")
+        }
+    }
+}

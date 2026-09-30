@@ -1,0 +1,11 @@
+module probe_far_for_in.control_with_no_if
+
+import std.os.{args, real_os}
+
+fn main() Io {
+    ro all = with Os = real_os() { args() }
+    ro v = all[1..]
+    mut n = 0
+    for x in v { if x != "" { n += 1 } }
+    println("${n}")
+}
