@@ -14,9 +14,9 @@
 module server.serde_parity_test
 
 import std.encoding.serde.{json_encode, Serialize, Serializer, SerError}
-import claude_limits.server.json.{field_str, field_str_or_null, field_int, field_bool, field_int_or_null, field_fixed2, field_raw, object, array, array_str}
+import claude_limits.server.json.{quote, field_str, field_str_or_null, field_int, field_bool, field_int_or_null, field_fixed2, field_raw, object, array, array_str}
 import claude_limits.server.errors.{ApiError, FieldError, to_json, type_uri}
-import claude_limits.server.dto.{Disclosure, pii_path, render_snapshot, SnapshotView, AccountView, DirView, LimitView, ForecastView, WorstView}
+import claude_limits.server.dto.{Disclosure, render_snapshot, SnapshotView, AccountView, DirView, LimitView, ForecastView, WorstView}
 import claude_limits.server.handlers.health.{HealthState, render_health}
 import claude_limits.server.routes.{API_VERSION}
 
@@ -184,6 +184,16 @@ fn shortest(n int, digits int) -> str {
     mut text = "${frac}"
     while text.byte_len() < width { text = "0${text}" }
     "${sign}${abs / scale}.${text}"
+}
+
+/// The retired `dto.pii_path`, verbatim: the references below need it, and the
+/// module no longer carries it (T2.29).
+fn pii_path(d Disclosure, name str, value str) -> str {
+    match d {
+        Disclosure.Loopback => field_str_or_null(name, value)
+        Disclosure.Lan => "${quote(name)}:null"
+        Disclosure.Anonymous => "${quote(name)}:null"
+    }
 }
 
 fn ref_dir(d Disclosure, v DirView) -> str =>

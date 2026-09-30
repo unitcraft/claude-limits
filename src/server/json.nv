@@ -1,6 +1,14 @@
 // json.nv — writing JSON by hand, with the escaping that string interpolation
 // does not do for you (task T2.11).
 //
+// RETIRED FROM PRODUCTION BY T2.29 (2026-09-30). No handler imports this file any
+// more: every response body is a wire record written by std serde. What keeps it
+// in the tree is exactly one job -- it is the REFERENCE the parity tests compare
+// serde against (serde_parity_test, and the refresh/token/exporter tests), so that
+// "the bodies did not change" stays a measurement instead of a memory. Do not bring
+// it back into a handler: a new body is a new wire record. Delete this file only
+// together with the last reference that uses it.
+//
 // Source: 01.3 §0 ("JSON": ключи `snake_case`, отсутствующее значение — `null`,
 // а не пропуск ключа; списки — всегда списки, даже пустые; верхний уровень —
 // всегда объект), §4 (`json.nv`).

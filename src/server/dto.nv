@@ -12,13 +12,13 @@
 // re-decided in each handler:
 //
 //   * how far a given client is allowed to see (`Disclosure`);
-//   * the fields that are blanked when it is not allowed (`pii_path`);
-//   * the rule that a human caption travels BESIDE its machine value, never
-//     instead of it (`labelled`).
+//   * the fields that are blanked when it is not allowed (`shown_path`), and the
+//     rule that an absent value is `null`, not "" (`opt`).
 //
-// The third one exists because it is the deviation the plan argues for at length
-// (§0, D2: "страница и виджет показывают одно и то же"), and a rule that lives
-// only in prose is a rule the fourth handler forgets.
+// SINCE T2.29 serde writes every body, and each handler declares its wire records
+// in wire order. A caption still travels BESIDE its machine value (01.3 section 0,
+// deviation D2) -- as its own field of the wire record, e.g. `reset_label` beside
+// `resets_at`; the `labelled` helper that spliced the pair by hand is retired.
 //
 // T2.12 added the first of the response types below (`GET /api/snapshot`, §3.3), as
 // the paragraph above said would happen. `Health`, `Config` and the rest still are
@@ -26,14 +26,13 @@
 
 module server.dto
 
-// Imports here are PACKAGE-PREFIXED (`claude_limits.server.json`) rather than bare
+// Imports here are PACKAGE-PREFIXED (`claude_limits.server.xxx`) rather than bare
 // sibling names (`json`). Not a style choice: a bare sibling import inside a module
 // is resolved relative to whoever imports THAT module, not relative to the module
 // itself, so `import json` in this file breaks the moment a handler in
 // `server/handlers/` imports this file -- the resolver then looks for
 // `src/server/handlers/json`. Isolated with controls in
 // `probes/module-reuse-breaks-sibling-import/`.
-import claude_limits.server.json.{quote, field_str, field_str_or_null, field_int, field_raw, object}
 import std.encoding.serde.{json_encode, Serialize}
 
 /// How much this response may say.
@@ -49,67 +48,11 @@ import std.encoding.serde.{json_encode, Serialize}
 /// the permissive branch somewhere nobody looked.
 export type Disclosure enum Loopback | Lan | Anonymous
 
-/// A field of class `pii-path` (01.2 §10): a filesystem path, which on every
-/// platform this runs on contains the operating system user's name.
-///
-/// `null` for a LAN client, the value itself on loopback. Not "" and not an
-/// omitted key — §0 wants an absent value spelled `null`, so the page can tell
-/// "hidden from you" apart from "empty".
-export fn pii_path(d Disclosure, name str, value str) -> str {
-    match d {
-        Disclosure.Loopback => field_str_or_null(name, value)
-        Disclosure.Lan => "${quote(name)}:null"
-        Disclosure.Anonymous => "${quote(name)}:null"
-    }
-}
-
-/// The same for a whole list of paths: a LAN client gets an empty list, not a
-/// list of nulls, because the count of directories is itself a fact about the
-/// machine.
-export fn pii_path_list(d Disclosure, name str, values []str) -> str {
-    match d {
-        Disclosure.Loopback => {
-            mut items = []str.new()
-            for v in values { items.push("\"${v}\"") }
-            field_raw(name, "[${join_commas(items)}]")
-        }
-        Disclosure.Lan => field_raw(name, "[]")
-        Disclosure.Anonymous => field_raw(name, "[]")
-    }
-}
-
-fn join_commas(items []str) -> str {
-    consume sb = StringBuilder.new()
-    mut first = true
-    for it in items {
-        if !first { sb.append(",") }
-        sb.append(it)
-        first = false
-    }
-    sb
-}
-
-/// A machine value and its caption, as TWO fields.
-///
-/// 01.3 §0, deviation D2: "готовые подписи вида `2d 17h` сервер даёт полями
-/// `*_label` РЯДОМ с машинным значением, НИКОГДА вместо него". The page and the
-/// widget then show the same words without either of them re-deriving them, and a
-/// script still gets the number.
-///
-/// Returning both fields from one call is what makes that mechanical: there is no
-/// way to emit the label and forget the value, because one function emits the
-/// pair. The caller splices the result into an `object([...])`.
-export fn labelled(name str, seconds int, label str) -> str =>
-    "${field_int(name, seconds)},${field_str("${name}_label", label)}"
-
-/// The same for a value that is already serialised (a string, a timestamp).
-export fn labelled_str(name str, value str, label str) -> str =>
-    "${field_str(name, value)},${field_str("${name}_label", label)}"
-
-/// A whole object from fields, re-exported so a handler needs one import to build
-/// a body rather than two.
-export fn body(fields []str) -> str => object(fields)
-
+// The hand-written field helpers that lived here (pii_path, pii_path_list,
+// labelled, labelled_str, body) were retired by T2.29: every body is a wire record
+// serde writes, and the two rules they carried -- a `pii-path` is `null` below
+// loopback, an empty value is `null` rather than "" -- live in `shown_path` and
+// `opt` below, which every handler shares. dto_test pins both.
 
 // ═════════════════════════════════════════════════════════════════════════════
 // GET /api/snapshot (01.3 §3.3) — task T2.12
@@ -190,9 +133,8 @@ export type LimitView value {
     active bool
     resets_at str
     seconds_left int
-    /// "20:50 (1h 02m)". Named `reset_label`, not `resets_at_label`, so it does
-    /// NOT go through `labelled_str` — the contract fixes the field name and the
-    /// helper is not worth bending it for.
+    /// "20:50 (1h 02m)". Named `reset_label`, not `resets_at_label`: the contract
+    /// fixes the field name.
     reset_label str
     window_sec int
     /// Hundredths of the window elapsed at `fetched_at`.
@@ -248,7 +190,8 @@ export type SnapshotView value {
 export fn opt(s str) -> Option[str] => if s != "" { Some(s) } else { None }
 
 /// A `pii-path` field: the value on loopback, `null` for everyone else, and `null`
-/// for an empty path whoever asks -- the same three answers `pii_path` gives.
+/// for an empty path whoever asks -- the three answers the retired hand-written
+/// `pii_path` gave, now in the one place every handler asks.
 export fn shown_path(d Disclosure, path str) -> Option[str] =>
     match d {
         Disclosure.Loopback => opt(path)
