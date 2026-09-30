@@ -132,11 +132,14 @@ fn render_config(d Disclosure, c Config) -> str =>
         ])),
         field_raw("forecast", object([
             field_bool("enabled", c.forecast.enabled),
+            field_bool("working_hours", c.forecast.working_hours),
             field_raw("work_days", array_str(c.forecast.work_days)),
             field_str("work_from", c.forecast.work_from),
             field_str("work_to", c.forecast.work_to),
             field_int("off_hours_rate", c.forecast.off_hours_rate),
             field_int("rate_window_days", c.forecast.rate_window_days),
+            field_int("warning", c.forecast.warning),
+            field_int("critical", c.forecast.critical),
         ])),
         field_raw("server", object([
             field_str("bind", c.server.bind),
@@ -337,6 +340,12 @@ fn merge_forecast(mut c Config, obj JsonObject, mut errs []FieldError) -> () {
                     c.forecast.off_hours_rate = as_int(v, "forecast.off_hours_rate", errs, c.forecast.off_hours_rate)
                 } else if k == "rate_window_days" {
                     c.forecast.rate_window_days = as_int(v, "forecast.rate_window_days", errs, c.forecast.rate_window_days)
+                } else if k == "working_hours" {
+                    c.forecast.working_hours = as_bool(v, "forecast.working_hours", errs, c.forecast.working_hours)
+                } else if k == "warning" {
+                    c.forecast.warning = as_int(v, "forecast.warning", errs, c.forecast.warning)
+                } else if k == "critical" {
+                    c.forecast.critical = as_int(v, "forecast.critical", errs, c.forecast.critical)
                 } else {
                     errs.push(unknown("forecast.${k}"))
                 }

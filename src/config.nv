@@ -45,11 +45,28 @@ export type Thresholds value {
 
 export type Forecast value {
     enabled bool
+    working_hours bool      // false: every window counts calendar minutes (01.1 part 5.3, 2026-09-21)
     work_days []str
     work_from str
     work_to str
     off_hours_rate int
     rate_window_days int
+    warning int             // ghost colour thresholds, softer than the fill's on purpose
+    critical int            // (01.1 part 5.3, 2026-09-22); a bad pair: see `@ghost_thresholds`
+}
+
+/// The ghost's colour thresholds as the page should use them.
+///
+/// A BAD PAIR FALLS BACK, IT IS NOT REFUSED (T1.2 inventory: "0 < warning < critical
+/// <= 100, otherwise the defaults 80/95"). That is the opposite of the fill's
+/// `[thresholds]`, which `validate` refuses -- and on purpose: the fill colours a
+/// measured number, the ghost a guess about later, and a guess tinted by the
+/// defaults is better than a page that will not start over one.
+export fn Forecast @ghost_thresholds() -> Thresholds {
+    if @warning <= 0 || @critical <= @warning || @critical > 100 {
+        return { warning: 80, critical: 95 }
+    }
+    { @warning, @critical }
 }
 
 export type Server value {
@@ -119,11 +136,14 @@ export fn Config.defaults() -> Config => {
     thresholds: { warning: 70, critical: 90 },
     forecast: {
         enabled: true,
+        working_hours: false,
         work_days: ["mon", "tue", "wed", "thu", "fri"],
         work_from: "09:00",
         work_to: "19:00",
         off_hours_rate: 0,
         rate_window_days: 3,
+        warning: 80,
+        critical: 95,
     },
     server: {
         bind: "127.0.0.1", port: 7391, allow_lan: false,
@@ -524,6 +544,21 @@ fn assign(section str, key str, value str, mut cfg Config, mut errs []ConfigErro
                 Some(n) => { cfg.forecast.rate_window_days = n }
                 None => {}
             }
+        } else if key == "working_hours" {
+            match set_bool(field, value, errs) {
+                Some(b) => { cfg.forecast.working_hours = b }
+                None => {}
+            }
+        } else if key == "warning" {
+            match set_int(field, value, errs) {
+                Some(n) => { cfg.forecast.warning = n }
+                None => {}
+            }
+        } else if key == "critical" {
+            match set_int(field, value, errs) {
+                Some(n) => { cfg.forecast.critical = n }
+                None => {}
+            }
         } else {
             errs.push(unknown(field))
         }
@@ -734,11 +769,14 @@ export fn render(cfg Config) -> str {
 
     out = "${out}\n[forecast]\n"
     out = "${out}enabled = ${bool_of(cfg.forecast.enabled)}\n"
+    out = "${out}working_hours = ${bool_of(cfg.forecast.working_hours)}\n"
     out = "${out}work_days = ${list_of(cfg.forecast.work_days)}\n"
     out = "${out}work_from = ${toml_quote(cfg.forecast.work_from)}\n"
     out = "${out}work_to = ${toml_quote(cfg.forecast.work_to)}\n"
     out = "${out}off_hours_rate = ${cfg.forecast.off_hours_rate}\n"
     out = "${out}rate_window_days = ${cfg.forecast.rate_window_days}\n"
+    out = "${out}warning = ${cfg.forecast.warning}\n"
+    out = "${out}critical = ${cfg.forecast.critical}\n"
 
     out = "${out}\n[server]\n"
     out = "${out}bind = ${toml_quote(cfg.server.bind)}\n"

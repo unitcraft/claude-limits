@@ -49,6 +49,9 @@ test "defaults are the table of 01.2 section 2.1" {
     assert(c.thresholds.warning == 70)
     assert(c.thresholds.critical == 90)
     assert(c.forecast.work_days.len() == 5)
+    assert(!c.forecast.working_hours)
+    assert(c.forecast.warning == 80)
+    assert(c.forecast.critical == 95)
     assert(c.server.port == 7391)
     assert(c.server.bind == "127.0.0.1")
     assert(!c.server.allow_lan)
@@ -315,4 +318,61 @@ test "the rendered file NEVER contains the access token" {
     assert(!text.contains("sk-ant"))
     assert(!text.contains("SECRET"))
     assert(!text.contains("access_token"))
+}
+
+// -- the forecast keys added on 2026-09-21/22 ----------------------------------
+// The fixture and the reference grew them first; the Nova parser refused them as
+// unknown keys, so the full-valid file stopped being valid. These pin the three
+// keys on their own, so the next drift fails HERE by name, not as "errs != 0".
+
+test "working_hours and the ghost thresholds are read from the file" {
+    match parse("[forecast]\nworking_hours = true\nwarning = 60\ncritical = 85\n") {
+        Err(_) => assert(false)
+        Ok((cfg, errs)) => {
+            assert(errs.len() == 0)
+            assert(cfg.forecast.working_hours)
+            assert(cfg.forecast.warning == 60)
+            assert(cfg.forecast.critical == 85)
+        }
+    }
+}
+
+test "the ghost thresholds survive the round trip" {
+    mut c = Config.defaults()
+    c.forecast.working_hours = true
+    c.forecast.warning = 50
+    c.forecast.critical = 75
+    match parse(render(c)) {
+        Err(_) => assert(false)
+        Ok((back, errs)) => {
+            assert(errs.len() == 0)
+            assert(back.forecast.working_hours)
+            assert(back.forecast.warning == 50)
+            assert(back.forecast.critical == 75)
+            assert(back.thresholds.warning == 70)   // the fill's pair is a different pair
+        }
+    }
+}
+
+test "a bad ghost pair falls back to 80/95 and is NOT an error" {
+    mut c = Config.defaults()
+    c.forecast.warning = 90
+    c.forecast.critical = 60      // out of order
+    assert(validate(c).len() == 0)
+    ro t = c.forecast.ghost_thresholds()
+    assert(t.warning == 80)
+    assert(t.critical == 95)
+
+    c.forecast.warning = 0        // the lower edge is exclusive
+    c.forecast.critical = 50
+    assert(c.forecast.ghost_thresholds().warning == 80)
+
+    c.forecast.warning = 50
+    c.forecast.critical = 101     // 100 is allowed, beyond it is not
+    assert(c.forecast.ghost_thresholds().critical == 95)
+
+    c.forecast.critical = 100
+    ro kept = c.forecast.ghost_thresholds()
+    assert(kept.warning == 50)
+    assert(kept.critical == 100)
 }
