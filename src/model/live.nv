@@ -62,6 +62,14 @@ export fn Known.new(id str, email str, org str, dirs []DirView, state AccountSta
 
 fn iso_or_empty(ms int) -> str => if ms == 0 { "" } else { moment_iso(ms) }
 
+/// The body before the first poll: no accounts, no rows, no times. What the page is
+/// shown between the start and the first round, and what a store with nothing in it
+/// answers.
+export fn nothing_yet() -> SnapshotView => {
+    fetched_at: "", next_poll_at: "", tz: "", restored: false, worst: None,
+    accounts: [], limits: [],
+}
+
 /// Does this state carry rows? §3.3: `stale` and `error` have none; `unknown` shows the
 /// last good reading.
 fn has_rows(s AccountState) -> bool =>

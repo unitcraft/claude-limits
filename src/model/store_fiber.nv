@@ -27,6 +27,8 @@ module model.store_fiber
 
 import std.concurrency.nvchan.{Chan, ChanTx, ChanRx}
 import claude_limits.model.store.{Registry, Snapshot, AccountSlot, Event, subscribe, unsubscribe, publish, since, missed, merge}
+import claude_limits.model.live.{nothing_yet}
+import claude_limits.server.dto.{SnapshotView}
 
 /// One thing to ask of the store.
 ///
@@ -50,6 +52,13 @@ export type Request enum
     | Since(int, ChanTx[Events])
     /// Has `id` fallen off the ring? The reply says so.
     | Missed(int, ChanTx[bool])
+    /// Replace the body of `GET /api/snapshot`. The poller computes it AT THE MOMENT OF
+    /// ITS POLL -- 01.3 §3.3 counts `seconds_left` and `elapsed_share` to `fetched_at` --
+    /// so the store keeps it whole rather than recomputing it with a clock it has not
+    /// got. No reply, like `Merge`.
+    | SetView(SnapshotView)
+    /// Give me that body.
+    | GetView(ChanTx[SnapshotView])
 
 /// The envelope the request travels in. A WORKAROUND, not a form.
 ///
@@ -113,6 +122,7 @@ export fn run(rx ChanRx[Envelope], start Snapshot) -> () {
     snap.fetched_at_ms = start.fetched_at_ms
     snap.restored = start.restored
     mut reg = Registry.new()
+    mut view = nothing_yet()
 
     mut going = true
     while going {
@@ -135,6 +145,9 @@ export fn run(rx ChanRx[Envelope], start Snapshot) -> () {
                     Request.Since(after, reply) => { ro _ = reply.send(Events.new(since(reg, after))) }
                     // nova:allow W_RESULT_DISCARDED -- the asker is gone; there is nothing to do and nobody to tell
                     Request.Missed(after, reply) => { ro _ = reply.send(missed(reg, after)) }
+                    Request.SetView(v) => { view = v }
+                    // nova:allow W_RESULT_DISCARDED -- the asker is gone; there is nothing to do and nobody to tell
+                    Request.GetView(reply) => { ro _ = reply.send(view) }
                 }
             }
         }
@@ -210,4 +223,18 @@ export fn Store @missed(after int) -> bool {
     // reach the store should resend the whole snapshot rather than assume its cursor
     // is still good.
     pair.rx.recv() ?? true
+}
+
+/// Replace the snapshot body. `false` means the store is gone.
+export fn Store @set_view(v SnapshotView) -> bool {
+    @tx.send(Envelope.new(Request.SetView(v)))
+}
+
+/// The snapshot body as it stands; before the first poll, and when the store is gone,
+/// the empty one -- "we know nothing" is what it says, and it is true.
+export fn Store @view() -> SnapshotView {
+    ro pair = Chan[SnapshotView].new(1)
+    // nova:allow W_RESULT_DISCARDED -- a failed send surfaces as `None` below, answered with the empty body
+    ro _ = @tx.send(Envelope.new(Request.GetView(pair.tx)))
+    pair.rx.recv() ?? nothing_yet()
 }

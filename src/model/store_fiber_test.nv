@@ -14,6 +14,7 @@ module model.store_fiber_test
 import std.concurrency.nvchan.{Chan}
 import store_fiber.{Envelope, Store, run}
 import store.{Snapshot, AccountSlot, Event}
+import claude_limits.server.dto.{SnapshotView}
 
 // Boxes for the results that are LISTS. `Chan[[]T]` hits the same defect as
 // `Chan[<sum>]`: a pointer-represented element gets no `ChanTx`/`ChanRx`
@@ -163,4 +164,26 @@ test "a cursor that has fallen off the ring is reported as missed" {
     ro answers = box.items
     assert(!answers[0])
     assert(answers[1])
+}
+
+// -- the snapshot body (T2.27 step B2) ----------------------------------------
+
+fn body_marked(at str) -> SnapshotView => {
+    fetched_at: at, next_poll_at: "", tz: "", restored: false, worst: None,
+    accounts: [], limits: [],
+}
+
+test "before the first poll the store answers the empty body, not a stale one" {
+    ro at = with_store(Snapshot.empty(), fn(s Store) -> str => s.view().fetched_at)
+    assert(at == "")
+}
+
+test "a body set by the poller is the body the next reader gets" {
+    ro at = with_store(Snapshot.empty(), fn(s Store) -> str => {
+        ro _ = s.set_view(body_marked("2026-09-30T09:00:00Z"))
+        ro _ = s.set_view(body_marked("2026-09-30T09:05:00Z"))
+        s.view().fetched_at
+    })
+    // The LATER one: a store that kept the first would show a page five minutes old.
+    assert(at == "2026-09-30T09:05:00Z")
 }
