@@ -51,20 +51,23 @@ export fn Interval.new(configured_sec int) -> Interval {
 /// moments, a test starting its clock at 0 polls at 0, and `due` then read the account
 /// as never polled and said yes to everything. Two tests failed for that one cause and
 /// both were right.
-export type Poll value {
+/// NOT `Poll`: `config.nv` has a record of that name (the `[poll]` settings), and two
+/// types of one name in one binary share a C name (registry 221.1 #154) -- measured
+/// 2026-09-30 when `--serve` first linked the poller with the settings.
+export type PollSchedule value {
     ro has_polled bool
     ro last_poll_ms int
     ro next_allowed_ms int  // earliest moment the next poll may happen
 }
 
-export fn Poll.new() -> Poll =>
+export fn PollSchedule.new() -> PollSchedule =>
     { has_polled: false, last_poll_ms: 0, next_allowed_ms: 0 }
 
 /// Is a scheduled poll due at `now_ms`?
 ///
 /// An account never polled is due immediately: the first tick after start must produce
 /// a reading, or the page shows nothing until a whole interval has passed.
-export fn due(p Poll, iv Interval, now_ms int) -> bool {
+export fn due(p PollSchedule, iv Interval, now_ms int) -> bool {
     if !p.has_polled { return now_ms >= p.next_allowed_ms }
     if now_ms < p.next_allowed_ms { return false }
     return now_ms - p.last_poll_ms >= iv.seconds * 1000
@@ -77,7 +80,7 @@ export fn due(p Poll, iv Interval, now_ms int) -> bool {
 /// asking for 600 s must be obeyed even when the person configured 60, and a server
 /// asking for 10 has still said something. The interval governs the ordinary rhythm;
 /// `wait_sec` governs the earliest moment. `due` requires BOTH.
-export fn polled(p Poll, now_ms int, wait_sec int) -> Poll =>
+export fn polled(p PollSchedule, now_ms int, wait_sec int) -> PollSchedule =>
     { has_polled: true, last_poll_ms: now_ms,
       next_allowed_ms: now_ms + wait_sec * 1000 }
 
@@ -87,7 +90,7 @@ export fn polled(p Poll, now_ms int, wait_sec int) -> Poll =>
 /// refused" is the card's own wording. Refusing it is not rudeness: a refresh button
 /// that fires a request per click is a rate limit waiting to be earned, and the person
 /// cannot see that they are the cause.
-export fn refresh_allowed(p Poll, now_ms int) -> bool {
+export fn refresh_allowed(p PollSchedule, now_ms int) -> bool {
     if !p.has_polled { return true }
     if now_ms < p.next_allowed_ms { return false }
     return now_ms - p.last_poll_ms >= POLL_FLOOR_SEC * 1000

@@ -48,12 +48,15 @@ export fn AccountState @to_str() -> str =>
     }
 
 /// The thresholds a person set (01.2 §2.1: warning 70, critical 90 by default).
-export type Thresholds value {
+/// NOT `Thresholds`: `config.nv` has a record of that name (the settings the person
+/// edits), and two types of one name in one binary share a C name (registry 221.1
+/// #154) -- measured 2026-09-30 when the server first linked both.
+export type SeverityBounds value {
     warning int
     critical int
 }
 
-export fn Thresholds.new(warning int, critical int) -> Thresholds => { warning, critical }
+export fn SeverityBounds.new(warning int, critical int) -> SeverityBounds => { warning, critical }
 
 /// Severity of one window under those thresholds.
 ///
@@ -63,7 +66,7 @@ export fn Thresholds.new(warning int, critical int) -> Thresholds => { warning, 
 ///
 /// The boundary is INCLUSIVE — 70 with `warning = 70` is already `warning`. The
 /// acceptance names the case that pins it: with `warning = 50`, 61 % is `warning`.
-export fn severity_of(w Window, th Thresholds) -> Severity {
+export fn severity_of(w Window, th SeverityBounds) -> Severity {
     if w.locked_reason != "" { return Critical }
     if w.percent >= th.critical { return Critical }
     if w.percent >= th.warning { return Warning }
@@ -89,7 +92,7 @@ export fn locked(windows []Window) -> bool {
 
 /// The worst severity across the account's windows — what the tray icon and the
 /// footer summary read.
-export fn worst(windows []Window, th Thresholds) -> Severity {
+export fn worst(windows []Window, th SeverityBounds) -> Severity {
     mut acc = Normal
     for w in windows {
         ro s = severity_of(w, th)

@@ -12,7 +12,7 @@
 
 module usage.schedule_test
 
-import schedule.{Interval, Poll, due, polled, refresh_allowed}
+import schedule.{Interval, PollSchedule, due, polled, refresh_allowed}
 import claude_limits.usage.outcome.{POLL_FLOOR_SEC}
 
 const MIN = 60 * 1000
@@ -42,13 +42,13 @@ test "an interval above the floor is left alone" {
 test "an account never polled is due at once" {
     // Otherwise the page shows nothing until a whole interval has gone by, and the
     // first thing a person sees after starting the app is emptiness.
-    assert(due(Poll.new(), Interval.new(300), 0))
-    assert(due(Poll.new(), Interval.new(300), 1_000_000))
+    assert(due(PollSchedule.new(), Interval.new(300), 0))
+    assert(due(PollSchedule.new(), Interval.new(300), 1_000_000))
 }
 
 test "one request per tick: not due a millisecond early, due exactly on time" {
     ro iv = Interval.new(300)
-    ro p = polled(Poll.new(), 1_000_000, POLL_FLOOR_SEC)
+    ro p = polled(PollSchedule.new(), 1_000_000, POLL_FLOOR_SEC)
     // 300 s after the poll is the moment. Both sides of it.
     assert(!due(p, iv, 1_000_000 + 300 * 1000 - 1))
     assert(due(p, iv, 1_000_000 + 300 * 1000))
@@ -58,7 +58,7 @@ test "after a 429 the wait is the server's, even past the interval" {
     // `Retry-After: 600` against a configured 60: the server wins. A scheduler taking
     // the interval alone would poll nine times inside the window it was told to wait.
     ro iv = Interval.new(60)
-    ro p = polled(Poll.new(), 0, 600)
+    ro p = polled(PollSchedule.new(), 0, 600)
     assert(!due(p, iv, 599 * 1000))
     assert(due(p, iv, 600 * 1000))
 }
@@ -68,14 +68,14 @@ test "the interval still applies when the server asked for LESS" {
     // `Retry-After: 10` does not licence polling every ten seconds when the person
     // configured five minutes. `due` requires BOTH conditions.
     ro iv = Interval.new(300)
-    ro p = polled(Poll.new(), 0, 10)
+    ro p = polled(PollSchedule.new(), 0, 10)
     assert(!due(p, iv, 11 * 1000))          // the server's window has passed
     assert(!due(p, iv, 299 * 1000))         // the interval has not
     assert(due(p, iv, 300 * 1000))
 }
 
 test "a refresh inside the floor is refused, and allowed exactly at it" {
-    ro p = polled(Poll.new(), 1_000_000, POLL_FLOOR_SEC)
+    ro p = polled(PollSchedule.new(), 1_000_000, POLL_FLOOR_SEC)
     assert(!refresh_allowed(p, 1_000_000 + POLL_FLOOR_SEC * 1000 - 1))
     assert(refresh_allowed(p, 1_000_000 + POLL_FLOOR_SEC * 1000))
 }
@@ -84,7 +84,7 @@ test "a refresh obeys a 429 window longer than the floor" {
     // The floor is not the only gate. After `Retry-After: 600`, a refresh at 61 s is
     // still a request inside a window the server closed -- and the person clicking
     // cannot see that they are the cause.
-    ro p = polled(Poll.new(), 0, 600)
+    ro p = polled(PollSchedule.new(), 0, 600)
     assert(!refresh_allowed(p, 61 * 1000))
     assert(!refresh_allowed(p, 599 * 1000))
     assert(refresh_allowed(p, 600 * 1000))
@@ -92,5 +92,5 @@ test "a refresh obeys a 429 window longer than the floor" {
 
 test "a refresh before the first poll is allowed" {
     // Nothing has been asked yet, so nothing is being asked too often.
-    assert(refresh_allowed(Poll.new(), 0))
+    assert(refresh_allowed(PollSchedule.new(), 0))
 }

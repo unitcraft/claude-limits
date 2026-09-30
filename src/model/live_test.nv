@@ -10,7 +10,7 @@ module model.live_test
 
 import std.time.civil.{TimeZone}
 import claude_limits.window.{Window}
-import claude_limits.model.snapshot.{AccountState, Thresholds}
+import claude_limits.model.snapshot.{AccountState, SeverityBounds}
 import claude_limits.server.dto.{DirView, SnapshotView}
 import live.{Known, view_of, in_row_order}
 
@@ -23,7 +23,7 @@ fn same(label str, want str, got str) -> bool {
     panic("${label}: want ${want}, got ${got}")
 }
 
-fn th() -> Thresholds => Thresholds.new(70, 90)
+fn th() -> SeverityBounds => SeverityBounds.new(70, 90)
 
 fn dirs_of(name str) -> []DirView => [DirView { id: "d-${name}", path: "C:/accounts/${name}", name }]
 

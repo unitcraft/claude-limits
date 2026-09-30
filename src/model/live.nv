@@ -30,7 +30,7 @@ module model.live
 
 import std.time.civil.{TimeZone}
 import claude_limits.window.{Window}
-import claude_limits.model.snapshot.{AccountState, Thresholds, severity_of, at_100, locked}
+import claude_limits.model.snapshot.{AccountState, SeverityBounds, severity_of, at_100, locked}
 import claude_limits.model.format.{row_label, reset_caption}
 import claude_limits.server.dto.{SnapshotView, AccountView, LimitView, WorstView, DirView}
 import claude_limits.usage.parse.{moment_iso}
@@ -104,7 +104,7 @@ export fn in_row_order(windows []Window) -> []Window {
 
 fn window_sec_of(kind str) -> int => if kind == "session" { SESSION_SEC } else { WEEK_SEC }
 
-fn limit_of(account_id str, w Window, th Thresholds, now_ms int, zone TimeZone) -> LimitView {
+fn limit_of(account_id str, w Window, th SeverityBounds, now_ms int, zone TimeZone) -> LimitView {
     ro span = window_sec_of(w.kind)
     ro known_reset = w.resets_at_ms > 0
     ro left = if known_reset { ((w.resets_at_ms - now_ms) / 1000).max(0) } else { 0 }
@@ -157,7 +157,7 @@ export fn worst_of(limits []LimitView) -> Option[WorstView] {
 ///
 /// Accounts stay in the order given -- `ui.accounts_order` and the hiding are applied
 /// by the handler (`snapshot.arrange`), the one place that knows the request.
-export fn view_of(known []Known, th Thresholds, now_ms int, next_poll_ms int, tz str, zone TimeZone) -> SnapshotView {
+export fn view_of(known []Known, th SeverityBounds, now_ms int, next_poll_ms int, tz str, zone TimeZone) -> SnapshotView {
     mut accounts []AccountView = []
     mut limits []LimitView = []
     for k in known {

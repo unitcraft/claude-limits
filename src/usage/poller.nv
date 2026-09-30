@@ -37,7 +37,7 @@ module usage.poller
 
 import claude_limits.usage.fetch.{fetch}
 import claude_limits.usage.outcome.{Outcome}
-import claude_limits.usage.schedule.{Interval, Poll, due, polled, refresh_allowed}
+import claude_limits.usage.schedule.{Interval, PollSchedule, due, polled, refresh_allowed}
 import claude_limits.usage.parse.{Usage}
 import claude_limits.accounts.login.{TokenState}
 import http.{Http}
@@ -110,7 +110,7 @@ export fn may_ask(state TokenState) -> bool =>
         TokenState.NoToken => false
     }
 
-/// Poll one account and write the result down.
+/// PollSchedule one account and write the result down.
 ///
 /// UNCONDITIONAL: the caller has already decided this account is due. Splitting the
 /// decision from the act is what makes both testable -- `due` without a network, and
@@ -144,7 +144,7 @@ export fn wait_after(o Outcome) -> int => o.retry_after_sec
 /// Returns the new schedule state. When nothing was asked, the state comes back
 /// UNCHANGED -- a skipped tick must not move `last_poll_ms`, or an account that is
 /// never due would drift forward forever and never become due at all.
-export fn tick(a PollTarget, state TokenState, p Poll, iv Interval, now_ms int) Http PollLog -> (Poll, bool) {
+export fn tick(a PollTarget, state TokenState, p PollSchedule, iv Interval, now_ms int) Http PollLog -> (PollSchedule, bool) {
     // THE TOKEN IS CHECKED BEFORE THE RHYTHM, and the order is the cheaper one: a
     // stale account is refused without consulting the schedule, and the schedule is
     // left untouched so that the account polls immediately once its token is renewed.
@@ -159,7 +159,7 @@ export fn tick(a PollTarget, state TokenState, p Poll, iv Interval, now_ms int) 
 /// The floor applies to demand exactly as it does to the rhythm (01.3 §3.5), and the
 /// refusal is returned rather than swallowed: the page shows "server asks to wait
 /// until 19:49", which it cannot do if the refusal looks like a successful poll.
-export fn refresh(a PollTarget, state TokenState, p Poll, now_ms int) Http PollLog -> (Poll, bool) {
+export fn refresh(a PollTarget, state TokenState, p PollSchedule, now_ms int) Http PollLog -> (PollSchedule, bool) {
     // A person pressing refresh cannot make a dead token work, and the 401 it would
     // earn is charged to the whole machine rather than to them.
     if !may_ask(state) { return (p, false) }

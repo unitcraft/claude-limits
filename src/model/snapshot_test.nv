@@ -13,7 +13,7 @@
 module model.snapshot_test
 
 import claude_limits.window.{Window}
-import snapshot.{Thresholds, Severity, AccountState, severity_of, at_100, locked, worst, stale_message, error_401_message, error_parse_message, rate_limited_badge, network_badge, red_panel_caption}
+import snapshot.{SeverityBounds, Severity, AccountState, severity_of, at_100, locked, worst, stale_message, error_401_message, error_parse_message, rate_limited_badge, network_badge, red_panel_caption}
 import format.{duration_words, reset_moment, reset_caption, row_label}
 import std.time.civil.{TimeZone}
 
@@ -30,15 +30,15 @@ fn win(kind str, percent int) -> Window => Window.new(kind, "", percent, 0, "")
 // ── severity follows OUR thresholds ──────────────────────────────────────────
 
 test "the acceptance case: with warning = 50, 61 percent is warning" {
-    ro th = Thresholds.new(50, 90)
+    ro th = SeverityBounds.new(50, 90)
     assert(severity_of(win("session", 61), th).to_str() == "warning")
     // ... and under the default thresholds the same 61 % is normal. The number did
     // not change; the person's setting did.
-    assert(severity_of(win("session", 61), Thresholds.new(70, 90)).to_str() == "normal")
+    assert(severity_of(win("session", 61), SeverityBounds.new(70, 90)).to_str() == "normal")
 }
 
 test "the boundary is inclusive at both ends" {
-    ro th = Thresholds.new(70, 90)
+    ro th = SeverityBounds.new(70, 90)
     assert(severity_of(win("session", 69), th).to_str() == "normal")
     assert(severity_of(win("session", 70), th).to_str() == "warning")
     assert(severity_of(win("session", 89), th).to_str() == "warning")
@@ -46,7 +46,7 @@ test "the boundary is inclusive at both ends" {
 }
 
 test "a locked window is critical at ANY percent" {
-    ro th = Thresholds.new(70, 90)
+    ro th = SeverityBounds.new(70, 90)
     ro w = Window.new("session", "", 40, 0, "session_limit")
     // Colouring it green because 40 is a small number hides the only thing that
     // matters about this account.
@@ -63,7 +63,7 @@ test "at_100 and locked are different questions" {
 }
 
 test "worst takes the worst window, not the first or the last" {
-    ro th = Thresholds.new(70, 90)
+    ro th = SeverityBounds.new(70, 90)
     assert(worst([win("session", 5), win("weekly_all", 95), win("weekly_scoped", 10)], th).to_str() == "critical")
     assert(worst([win("session", 5), win("weekly_all", 75)], th).to_str() == "warning")
     assert(worst([win("session", 5)], th).to_str() == "normal")
