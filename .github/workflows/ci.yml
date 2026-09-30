@@ -65,6 +65,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: nova/nova-cli -> target
+          cache-on-failure: true
 
       - name: Build nova
         working-directory: nova/nova-cli
@@ -72,9 +73,9 @@ jobs:
 
       # Boehm GC for the runtime. bdwgc only -- nova's own vcpkg manifest also pulls z3,
       # which the package does not use and which takes the better part of an hour.
-      - name: Cache Boehm GC
+      - name: Restore Boehm GC
         id: gc
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: C:/vcpkg/installed/x64-windows-static
           key: bdwgc-x64-windows-static-v1
@@ -83,12 +84,23 @@ jobs:
         if: steps.gc.outputs.cache-hit != 'true'
         run: vcpkg install bdwgc:x64-windows-static
 
+      - name: Save Boehm GC
+        if: steps.gc.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: C:/vcpkg/installed/x64-windows-static
+          key: bdwgc-x64-windows-static-v1
+
       - name: The DuckDB submodule commit (the cache key)
         id: duck
         run: echo "commit=$(git -C nova-duckdb/native/duckdb rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      - name: Cache the built DuckDB
-        uses: actions/cache@v4
+      # RESTORE and SAVE as two steps, the save right after the build: a combined
+      # actions/cache saves in its post step only when the whole job succeeds, so a red
+      # test later in the job would throw away an hour of DuckDB (the first runs did).
+      - name: Restore the built DuckDB
+        id: duckcache
+        uses: actions/cache/restore@v4
         with:
           path: nova-duckdb/native/lib
           key: duckdb-win-${{ env.DUCKDB_TAG }}-${{ steps.duck.outputs.commit }}-${{ hashFiles('nova-duckdb/scripts/build-duckdb.ps1', 'nova-duckdb/scripts/build-crypto.ps1', 'nova-duckdb/native/duckdb_mbedtls_prefix.h', 'nova-duckdb/native/os_nonce_crypto.cpp') }}
@@ -98,6 +110,13 @@ jobs:
       - name: Build DuckDB (long on a cold cache)
         shell: pwsh
         run: pwsh -File nova-duckdb/scripts/build-duckdb.ps1
+
+      - name: Save the built DuckDB
+        if: steps.duckcache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: nova-duckdb/native/lib
+          key: ${{ steps.duckcache.outputs.cache-primary-key }}
 
       - name: The DuckDB build carries no unprefixed mbedTLS symbol
         run: python nova-duckdb/scripts/check-mbedtls-prefix.py
@@ -116,8 +135,11 @@ jobs:
           NOVA_INCLUDE_DIR: C:/vcpkg/installed/x64-windows-static/include
           NOVA_GC_INCLUDE_DIR: C:/vcpkg/installed/x64-windows-static/include
         run: |
-          set -uo pipefail
+          # `+e`: GitHub runs bash with -e, and `nova test` exits 1 on the known failure
+          # -- the first run stopped HERE, before the verdict below could read it.
+          set +e -uo pipefail
           "$GITHUB_WORKSPACE/nova/nova-cli/target/release/nova.exe" test src --timeout 900 > test.out 2>&1
+          echo "nova test exited $?"
           tail -40 test.out
           # The exit code is not the verdict: one known compiler defect is named in the
           # script, with the text it must fail with -- see its header.
