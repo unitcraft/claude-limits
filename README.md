@@ -122,9 +122,106 @@ By hand: `python scripts/refresh_token.py <dir>` or `--all`
 - Polling is slow (a minute by default); the numbers change slowly and the
   endpoint is not ours.
 
+## Install
+
+There are no prebuilt binaries yet; the tool is built from source with the
+[Nova](https://nv-lang.org) toolchain. On Windows (Linux cannot link the database
+yet -- see below):
+
+1. Build the `nova` compiler (Rust 1.85+) from `nv-lang/nova`, and Boehm GC
+   (`vcpkg install bdwgc:x64-windows-static`).
+2. Build the database library once: check out `nv-lang/nova-duckdb` at `v0.2.1`
+   with submodules and run `scripts/build-duckdb.ps1` (40-60 minutes the first
+   time; Visual Studio 2022 and LLVM are needed).
+3. In this repository, point `duckdb` at that checkout in a `nova.override.toml`
+   (never committed):
+
+   ```toml
+   [replace]
+   duckdb = { path = "../nova-duckdb" }
+   ```
+
+4. `nova build src/claude_limits.nv -o target/claude-limits.exe`
+
+The CI workflow (`.github/workflows/ci.yml`) is the same recipe, step by step.
+
+## Run
+
+```
+claude-limits --serve                  # the page at http://127.0.0.1:7391
+claude-limits --serve --config D:/x.toml
+claude-limits --once                   # one table in the terminal, no server
+claude-limits --install-autostart      # start --serve at login; --uninstall-autostart undoes it
+```
+
+A second copy on the same port refuses to start and says so. A settings file
+that asks for the network (`allow_lan = true`) is refused at the start: listening
+beyond `127.0.0.1` is not built yet.
+
+## Configuration
+
+One TOML file, `claude-limits.toml`. The page's settings panel writes it; you can
+edit it by hand while the tool is stopped. Where things live:
+
+| | Windows | Linux |
+|---|---|---|
+| settings | `%APPDATA%\claude-limits\claude-limits.toml` | `$XDG_CONFIG_HOME/claude-limits/` (`~/.config/...`) |
+| database key | beside the settings, `claude-limits.key` | the same |
+| database | `%LOCALAPPDATA%\claude-limits\claude-limits.duckdb` | `$XDG_DATA_HOME/claude-limits/` (`~/.local/share/...`) |
+| backups | `backup\` beside the database | the same |
+| log | `%LOCALAPPDATA%\claude-limits\logs\` | `$XDG_STATE_HOME/claude-limits/` |
+
+Overrides, strongest first: `--config <file>` (the key follows the settings file),
+`CLAUDE_LIMITS_CONFIG`, `CLAUDE_LIMITS_DATA` or `[storage] data_dir`,
+`CLAUDE_LIMITS_DB_KEY_FILE`. **Portable mode:** put a `claude-limits.toml` beside
+the binary and everything -- settings, key, database -- lives beside it.
+
+The minimum is the folders that hold Claude Code logins:
+
+```toml
+[[folders]]
+path = "D:/accounts"      # a login directory, or a folder of them
+
+[server]
+port = 7391
+```
+
+## Pin the browser window
+
+The page is an ordinary web page. To keep it as a small window of its own, open
+it as an app window of a Chromium browser:
+
+```
+msedge --app=http://127.0.0.1:7391
+chrome --app=http://127.0.0.1:7391
+```
+
+## Backups and the key
+
+The database is encrypted (AES-GCM) with the key in `claude-limits.key`, created
+on the first start. **Keep the key**: without it the history cannot be read, and
+nothing can recover it. The settings are unaffected -- they are plain TOML.
+
+A backup is written to `backup\` before every schema migration (the last five are
+kept, `[storage] backups_keep`). A backup is ciphertext too and opens only with
+the same key, which is NOT copied into `backup\` -- back the key up separately. To
+restore, stop the tool and copy a backup over `claude-limits.duckdb`.
+
 ## Status
 
-Design stage. `scripts/claude_limits.py` is a stdlib-only reference for the data path:
+**The Nova binary runs** (`--serve`): it finds the logins, asks the endpoint,
+serves the page and opens its encrypted database at the start. Two limits of this
+stage, both waiting on the compiler rather than on this code:
+
+- **It polls ONCE, at the start.** The repeating rounds are written and do not run
+  yet: a runtime defect of the compiler (nova registry #1406) loses a channel
+  wake-up while the server waits for a connection. Restart to refresh.
+- **TLS trusts the embedded Mozilla list, not the Windows certificate store.** A
+  TLS-inspecting antivirus that installs its own root can make some requests fail.
+  nova-tls 0.2 reads the OS store; moving to it waits on a compiler fix
+  (nova #1234).
+
+`scripts/claude_limits.py` is a stdlib-only reference for the data path:
 it discovers config directories and prints one row per account and window, once
 or as a daemon (a snapshot every five minutes by default).
 
@@ -193,8 +290,8 @@ python scripts/claude_limits.py --parent C:/accounts # every child dir instead o
 ## Roadmap
 
 - [x] reference script: discovery (default dir, `CLAUDE_CONFIG_DIR`, configured list, parent dir), same-account grouping, 429 backoff, daemon mode
-- [ ] Nova core: same table as the script, byte-for-byte (`--once`)
-- [ ] local backend: `/api/snapshot`, `/api/events` (SSE), embedded page with one bar per account per window
+- [x] Nova core: same table as the script, byte-for-byte (`--once`)
+- [ ] local backend: `/api/snapshot`, `/api/events` (SSE), embedded page with one bar per account per window -- serves the page and one poll; repeating rounds wait on the compiler
 - [ ] threshold notifications, history
 - [ ] after the first release: optional widget (`--widget`) — always-on-top window and tray icon on Windows and Linux (StatusNotifier)
 
