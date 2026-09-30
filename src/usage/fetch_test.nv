@@ -79,6 +79,19 @@ test "the body is everything after the blank line, and empty when there is none"
     assert(body_of("HTTP/1.1 200 OK${EOL}A: b") == "")
 }
 
+test "a CHUNKED body is joined back, its sizes counted in BYTES" {
+    // The real endpoint answers `Transfer-Encoding: chunked` (measured 2026-09-30:
+    // the first live poll came back as `9fc\r\n{"five_hour":...` and was refused as
+    // bad JSON). `é` is two bytes: a size read as characters would cut it in half.
+    ro wire = reply("HTTP/1.1 200 OK", "Transfer-Encoding: chunked", "5${EOL}{\"x\":${EOL}5${EOL}\"é\"}${EOL}0${EOL}${EOL}")
+    assert(body_of(wire) == "{\"x\":\"é\"}")
+    // A size line may carry an extension after `;`, and the hex may be upper case.
+    ro ext = reply("HTTP/1.1 200 OK", "transfer-encoding: Chunked", "A;name=v${EOL}0123456789${EOL}0${EOL}${EOL}")
+    assert(body_of(ext) == "0123456789")
+    // And a body that is NOT chunked stays as it was -- `9fc` is a legal body too.
+    assert(body_of(reply("HTTP/1.1 200 OK", "A: b", "9fc")) == "9fc")
+}
+
 test "Retry-After: absent, unreadable and non-positive all read as ZERO" {
     // Zero means ABSENT, and `of_status` turns that into the floor. Reading any of
     // these as "immediately" would turn a rate limit into a tighter loop.

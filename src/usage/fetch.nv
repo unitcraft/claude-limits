@@ -28,7 +28,7 @@ import claude_limits.usage.outcome.{Outcome, of_status, bad_body, transport_fail
 import claude_limits.usage.parse.{Usage, PollOutcome}
 // `parse` through the module name: three free `parse` of one arity live in the binary
 // (cli.args, usage.parse, config), and a bare call is refused as ambiguous (#1390).
-import claude_limits.usage.parse as reply
+import claude_limits.usage.parse as usage_reply
 
 /// CRLF, spelled once. Written as an escape rather than a literal because a literal
 /// carriage return in a source file is invisible and survives a copy-paste into
@@ -111,13 +111,62 @@ export fn header_of(raw str, name str) -> str {
     ""
 }
 
-/// Everything after the blank line, or "" when there is no blank line.
+/// Everything after the blank line, or "" when there is no blank line -- joined back
+/// when the reply says `Transfer-Encoding: chunked`.
+///
+/// THE REAL ENDPOINT CHUNKS (measured 2026-09-30, the first live poll): its body began
+/// `9fc` + CRLF, and the parser refused it as bad JSON. Every test here had used
+/// whole bodies, which a mock hands over and a server need not.
 export fn body_of(raw str) -> str {
     ro sep = "${CRLF}${CRLF}"
-    match raw.split_once(sep) {
-        Some((_, body)) => body
-        None => ""
+    ro body = match raw.split_once(sep) {
+        Some((_, b)) => b
+        None => return ""
     }
+    if header_of(raw, "Transfer-Encoding").to_ascii_lower().contains("chunked") { return dechunk(body) }
+    body
+}
+
+fn hex_digit(c u8) -> int {
+    ro n = c as int
+    if n >= 48 && n <= 57 { return n - 48 }
+    if n >= 97 && n <= 102 { return n - 87 }
+    if n >= 65 && n <= 70 { return n - 55 }
+    -1
+}
+
+/// A chunked body joined back (RFC 9112 §7.1). Sizes are hexadecimal BYTE counts, and
+/// an extension after `;` is ignored. A size that does not read ends the body where
+/// it stands: what follows is refused by the JSON parser, loudly, rather than guessed
+/// at here.
+export fn dechunk(body str) -> str {
+    ro b = body.bytes()
+    mut out []u8 = []
+    mut i = 0
+    while i < b.len() {
+        mut size = 0
+        mut digits = 0
+        mut in_ext = false
+        while i < b.len() && (b[i] as int) != 13 {
+            if (b[i] as int) == 59 { in_ext = true }
+            if !in_ext {
+                ro d = hex_digit(b[i])
+                if d < 0 { return out.to_str_lossy() }
+                size = size * 16 + d
+                digits += 1
+            }
+            i += 1
+        }
+        // CRLF after the size line.
+        i += 2
+        if digits == 0 || size == 0 { return out.to_str_lossy() }
+        // A short last chunk takes what is there; the parser judges the rest.
+        ro end = (i + size).min(b.len())
+        out.append(b[i..end])
+        // CRLF after the data.
+        i = end + 2
+    }
+    out.to_str_lossy()
 }
 
 /// `Retry-After` in seconds, or 0 when absent or unreadable.
@@ -145,7 +194,7 @@ export fn fetch(host str, port int, secure bool, path str, token str) Http -> Re
             ro out = of_status(status, retry_after_of(raw))
             if !out.body_usable { return Reply.new(out, Usage.empty()) }
 
-            ro usage = reply.parse(body_of(raw))
+            ro usage = usage_reply.parse(body_of(raw))
             // A 200 whose body will not parse is `error`, per 01.1 §3.2 -- see the
             // note in `outcome_test` about the fixture that says `unknown` instead.
             if usage.outcome == PollOutcome.BadJson {
