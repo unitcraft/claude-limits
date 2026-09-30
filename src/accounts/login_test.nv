@@ -163,6 +163,12 @@ test "two directories with one e-mail become ONE account with two dirs" {
     assert(accounts[0].dirs.len() == 2)
     assert(accounts[0].dirs[0] == "same-email-a")
     assert(accounts[0].dirs[1] == "same-email-b")
+    // The paths ride along index for index: the server shows the name and finds the
+    // credentials by the path, and a path paired with the wrong name would read the
+    // wrong login's token.
+    assert(accounts[0].paths.len() == 2)
+    assert(accounts[0].paths[0] == "/fx/same-email-a")
+    assert(accounts[0].paths[1] == "/fx/same-email-b")
 }
 
 test "different e-mails stay different accounts, in discovery order" {

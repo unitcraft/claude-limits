@@ -15,8 +15,8 @@ module accounts.group
 // and every test of it was green.
 import claude_limits.accounts.login.{Login, GroupedAccount, TokenState, state_of}
 
-fn GroupedAccount.new(email str, org str, dirs []str, state TokenState, expires_at_ms int) -> GroupedAccount =>
-    { email, org, dirs, state, expires_at_ms }
+fn GroupedAccount.new(email str, org str, dirs []str, paths []str, state TokenState, expires_at_ms int) -> GroupedAccount =>
+    { email, org, dirs, paths, state, expires_at_ms }
 
 fn index_of(accounts []GroupedAccount, email str) -> int {
     mut i = 0
@@ -58,12 +58,13 @@ export fn group(logins []Login, now_ms int) -> []GroupedAccount {
         ro st = state_of(l, now_ms)
         ro at = index_of(out, l.email)
         if at < 0 {
-            out.push(GroupedAccount.new(l.email, l.org, [l.name], st, l.expires_at_ms))
+            out.push(GroupedAccount.new(l.email, l.org, [l.name], [l.dir], st, l.expires_at_ms))
             continue
         }
 
         mut acc = out[at]
         acc.dirs.push(l.name)
+        acc.paths.push(l.dir)
         acc.state = worse(acc.state, st)
         // The EARLIEST expiry, because that is the one that will bite first. A zero
         // means "unknown" and must not win a minimum against a real timestamp.

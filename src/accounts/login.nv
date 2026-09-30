@@ -98,6 +98,8 @@ export type GroupedAccount value {
     email str
     org str
     dirs []str          // directory NAMES, in discovery order
+    paths []str         // the same directories' PATHS, index for index -- the server needs
+                        // both: the name is shown, the path finds the credentials file
     state TokenState
     expires_at_ms int   // the EARLIEST expiry among its directories
 }
