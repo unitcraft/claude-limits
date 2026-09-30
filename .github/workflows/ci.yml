@@ -49,6 +49,9 @@ jobs:
           repository: nv-lang/nova
           ref: ${{ env.NOVA_REF }}
           path: nova
+          # libuv (mandatory for the runtime), gc and libatomic_ops are submodules: the
+          # third run stopped at "libuv submodule not initialized" without them.
+          submodules: recursive
 
       - name: Checkout nova-duckdb (source; the libraries are built below)
         uses: actions/checkout@v4
