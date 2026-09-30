@@ -1,0 +1,158 @@
+# ci — claude-limits on Windows: the package suite, the binary's smoke, the page, the guards.
+#
+# Plan 01.5 T4.1. WINDOWS ONLY, by the owner's decision (2026-09-30): on Linux the
+# suite cannot link -- the storage tests pull DuckDB, which is C++, and the Nova
+# toolchain cannot link a C++ runtime yet (nova-duckdb's pkg-gate names it as its
+# KNOWN BLOCKER). A Linux job would be red for that one reason forever, and a job that
+# is always red is read by nobody. It is added when the compiler learns C++.
+#
+# WHAT IS PINNED, AND WHY BY HAND:
+#   * nova at a commit, not `main`: the compiler moves several times a day, and a CI
+#     that goes red because somebody else merged is a CI people learn to ignore. Bump
+#     NOVA_REF deliberately, with a green local run on the new commit.
+#   * nova-duckdb at its tag: the package is pulled by tag, but the tag carries SOURCE,
+#     and the static libraries are built here (cached) -- the resolver's copy would
+#     have none. `nova.override.toml` points `duckdb` at that checkout.
+#
+# NEVER here: credentials. The smoke runs on a fixture login with an expired token,
+# under its own LOCALAPPDATA/APPDATA, and asks no endpoint.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  NOVA_REF: 97ab70f5d
+  DUCKDB_TAG: v0.2.1
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout claude-limits
+        uses: actions/checkout@v4
+        with:
+          path: pkg
+
+      - name: Checkout nova (compiler, runtime, std)
+        uses: actions/checkout@v4
+        with:
+          repository: nv-lang/nova
+          ref: ${{ env.NOVA_REF }}
+          path: nova
+
+      - name: Checkout nova-duckdb (source; the libraries are built below)
+        uses: actions/checkout@v4
+        with:
+          repository: nv-lang/nova-duckdb
+          ref: ${{ env.DUCKDB_TAG }}
+          path: nova-duckdb
+          submodules: recursive
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache the nova build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: nova/nova-cli -> target
+
+      - name: Build nova
+        working-directory: nova/nova-cli
+        run: cargo build --release
+
+      # Boehm GC for the runtime. bdwgc only -- nova's own vcpkg manifest also pulls z3,
+      # which the package does not use and which takes the better part of an hour.
+      - name: Cache Boehm GC
+        id: gc
+        uses: actions/cache@v4
+        with:
+          path: C:/vcpkg/installed/x64-windows-static
+          key: bdwgc-x64-windows-static-v1
+
+      - name: Install Boehm GC
+        if: steps.gc.outputs.cache-hit != 'true'
+        run: vcpkg install bdwgc:x64-windows-static
+
+      - name: The DuckDB submodule commit (the cache key)
+        id: duck
+        run: echo "commit=$(git -C nova-duckdb/native/duckdb rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache the built DuckDB
+        uses: actions/cache@v4
+        with:
+          path: nova-duckdb/native/lib
+          key: duckdb-win-${{ env.DUCKDB_TAG }}-${{ steps.duck.outputs.commit }}-${{ hashFiles('nova-duckdb/scripts/build-duckdb.ps1', 'nova-duckdb/scripts/build-crypto.ps1', 'nova-duckdb/native/duckdb_mbedtls_prefix.h', 'nova-duckdb/native/os_nonce_crypto.cpp') }}
+
+      # The script keeps its own stamp: on a cache hit it rebuilds only the small crypto
+      # library, on a miss it builds DuckDB (40-60 minutes cold).
+      - name: Build DuckDB (long on a cold cache)
+        shell: pwsh
+        run: pwsh -File nova-duckdb/scripts/build-duckdb.ps1
+
+      - name: The DuckDB build carries no unprefixed mbedTLS symbol
+        run: python nova-duckdb/scripts/check-mbedtls-prefix.py
+
+      - name: Point duckdb at the built checkout
+        working-directory: pkg
+        run: printf '[replace]\nduckdb = { path = "../nova-duckdb" }\n' > nova.override.toml
+
+      - name: nova test src
+        working-directory: pkg
+        env:
+          NOVA_RT_DIR: ${{ github.workspace }}/nova/compiler-codegen/nova_rt
+          NOVA_CG_INCLUDE: ${{ github.workspace }}/nova/compiler-codegen
+          NOVA_STD_PATH: ${{ github.workspace }}/nova/std/src
+          NOVA_GC_LIB_DIR: C:/vcpkg/installed/x64-windows-static/lib
+          NOVA_INCLUDE_DIR: C:/vcpkg/installed/x64-windows-static/include
+          NOVA_GC_INCLUDE_DIR: C:/vcpkg/installed/x64-windows-static/include
+        run: |
+          set -uo pipefail
+          "$GITHUB_WORKSPACE/nova/nova-cli/target/release/nova.exe" test src --timeout 900 > test.out 2>&1
+          tail -40 test.out
+          # The exit code is not the verdict: one known compiler defect is named in the
+          # script, with the text it must fail with -- see its header.
+          python scripts/ci-test-verdict.py test.out
+
+      - name: Build the binary
+        working-directory: pkg
+        env:
+          NOVA_RT_DIR: ${{ github.workspace }}/nova/compiler-codegen/nova_rt
+          NOVA_CG_INCLUDE: ${{ github.workspace }}/nova/compiler-codegen
+          NOVA_STD_PATH: ${{ github.workspace }}/nova/std/src
+          NOVA_GC_LIB_DIR: C:/vcpkg/installed/x64-windows-static/lib
+          NOVA_INCLUDE_DIR: C:/vcpkg/installed/x64-windows-static/include
+          NOVA_GC_INCLUDE_DIR: C:/vcpkg/installed/x64-windows-static/include
+        run: '"$GITHUB_WORKSPACE/nova/nova-cli/target/release/nova.exe" build src/claude_limits.nv -o target/claude-limits.exe'
+
+      - name: Smoke of --serve (no network, no real credentials)
+        working-directory: pkg
+        run: python scripts/smoke_server.py target/claude-limits.exe
+
+      - name: The page, its tests and the checkers
+        working-directory: pkg
+        run: node scripts/check-web.mjs
+
+      # ALL of them, by glob -- a list here would be a second source of truth that
+      # quietly measures less. check-web runs fourteen of them already; running them
+      # again costs seconds and covers the ones it does not name.
+      - name: Guards of this repository
+        working-directory: pkg
+        run: |
+          set -uo pipefail
+          rc=0; n=0
+          for g in scripts/check-*.py; do
+            n=$((n+1))
+            python "$g" > guard.out 2>&1 || { echo "::error::guard failed: $g"; cat guard.out; rc=1; }
+          done
+          echo "guards run: $n"
+          if [ "$n" -eq 0 ]; then echo "::error::no guards found -- the glob stopped matching"; exit 1; fi
+          exit $rc
