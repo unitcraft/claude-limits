@@ -102,7 +102,9 @@ export fn in_row_order(windows []Window) -> []Window {
     out
 }
 
-fn window_sec_of(kind str) -> int => if kind == "session" { SESSION_SEC } else { WEEK_SEC }
+/// The length of a window of `kind`, in seconds: one home for it (the snapshot and the
+/// database both need it -- `storage/tick.nv` derives a window's start from it).
+export fn window_sec_of(kind str) -> int => if kind == "session" { SESSION_SEC } else { WEEK_SEC }
 
 fn limit_of(account_id str, w Window, th SeverityBounds, now_ms int, zone TimeZone) -> LimitView {
     ro span = window_sec_of(w.kind)

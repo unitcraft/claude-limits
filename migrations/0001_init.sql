@@ -133,12 +133,12 @@ CREATE TABLE limit_window (
   updated_by    UUID NOT NULL,
   account_id    UUID NOT NULL REFERENCES account(id),
   kind          VARCHAR(32) NOT NULL CHECK (kind IN ('session','weekly_all','weekly_scoped')),
-  model         VARCHAR,                         -- display_name модели для weekly_scoped, иначе NULL
+  model         VARCHAR NOT NULL DEFAULT '',     -- display_name модели для weekly_scoped, иначе '' (НЕ NULL: UNIQUE считает NULL-ы различными, и окно без модели удваивалось на каждом тике -- замер 2026-09-30)
   first_seen_at TIMESTAMPTZ NOT NULL,
   last_seen_at  TIMESTAMPTZ NOT NULL,
   CONSTRAINT limit_window_account_kind_model_uq UNIQUE (account_id, kind, model),
   CONSTRAINT limit_window_seen_ck CHECK (last_seen_at >= first_seen_at),
-  CONSTRAINT limit_window_model_ck CHECK ((kind = 'weekly_scoped') = (model IS NOT NULL))
+  CONSTRAINT limit_window_model_ck CHECK ((kind = 'weekly_scoped') = (model <> ''))
 );
 
 -- ── 01.2 §3.10 ──────────────────────────────────────────────────

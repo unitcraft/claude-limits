@@ -60,10 +60,14 @@ fn tick(at_ms int) -> Tick => {
     windows: [win("session", 74), win("weekly_all", 41)],
 }
 
-/// Distinct UUIDs per tick: `n` is the tick's number.
+/// Distinct UUIDs per tick, THE ACCOUNT'S INCLUDED: `n` is the tick's number.
+///
+/// The account id used to be one constant for both ticks, and that hid a defect: the
+/// references pointed at the CANDIDATE ids, which exist only on the first tick. A
+/// caller mints fresh ids every time (`storage/tick.nv`), so the test does too.
 fn ids(n int) -> Ids {
     ro p = "01900000-0000-7000-8000-000000${n}"
-    Ids.new("01900000-0000-7000-8000-0000000000a1", "${p}01", ["${p}11", "${p}12"], ["${p}21", "${p}22"], ["${p}31", "${p}32"])
+    Ids.new("${p}a1", "${p}01", ["${p}11", "${p}12"], ["${p}21", "${p}22"], ["${p}31", "${p}32"])
 }
 
 fn two_ticks() -> []str {
@@ -90,4 +94,32 @@ test "THE SECOND TICK goes through: one account, two polls, four samples" {
     assert(a[0] == "1")
     assert(a[1] == "2")
     assert(a[2] == "4")
+}
+
+test "two ticks of the same windows keep TWO windows and TWO cycles, not four" {
+    // `model` is NULL for session and weekly_all, and UNIQUE treats NULLs as distinct:
+    // an ON CONFLICT upsert never fired, and every tick added a window and a cycle
+    // (measured 2026-09-30: four of each after two ticks).
+    ro a = run(two_ticks(), [
+        "SELECT count(*)::VARCHAR FROM limit_window",
+        "SELECT count(*)::VARCHAR FROM window_cycle",
+        "SELECT count(DISTINCT window_id)::VARCHAR FROM sample",
+        "SELECT ((SELECT max(sampled_at) FROM sample) > (SELECT min(sampled_at) FROM sample))::VARCHAR",
+    ])
+    assert(a[0] == "2")
+    assert(a[1] == "2")
+    assert(a[2] == "2")
+    // When a window was last seen is its newest sample -- and the second tick's is newer.
+    assert(a[3] == "true")
+}
+
+test "every reference names a row that exists" {
+    ro a = run(two_ticks(), [
+        "SELECT count(*)::VARCHAR FROM limit_window w LEFT JOIN account x ON x.id = w.account_id WHERE x.id IS NULL",
+        "SELECT count(*)::VARCHAR FROM sample s LEFT JOIN window_cycle c ON c.id = s.cycle_id WHERE c.id IS NULL",
+        "SELECT count(*)::VARCHAR FROM poll p LEFT JOIN account x ON x.id = p.account_id WHERE x.id IS NULL",
+    ])
+    assert(a[0] == "0")
+    assert(a[1] == "0")
+    assert(a[2] == "0")
 }

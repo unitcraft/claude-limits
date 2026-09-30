@@ -1,0 +1,157 @@
+// Tests for tick.nv -- a poll's reading as the rows of one tick.
+//
+//   ./nova.sh test src/storage/ --filter tick_test
+//
+// Pure, except `fresh_ids`, which runs under a seeded `Random`. The live half -- that
+// the rows it produces go into a real database twice over -- is the last test here.
+
+module storage.tick_test
+
+import std.fs.{real_fs, read_text}
+import std.testing.handlers.{seeded}
+import duckdb.{Database, DbOptions}
+import duckdb.types.{Value}
+import claude_limits.usage.poller.{Reading}
+import claude_limits.usage.outcome.{Outcome}
+import claude_limits.usage.parse.{Usage, PollOutcome}
+import claude_limits.model.snapshot.{AccountState}
+import claude_limits.window.{Window}
+import claude_limits.storage.repo.{Tick, Ids, plan_sql}
+import tick.{outcome_of, scrub, tick_of, fresh_ids}
+
+const INST = "01900000-0000-7000-8000-000000000001"
+// 2026-09-30 09:00:00 UTC; the session resets at 13:30, the week on 3 October.
+const NOW = 1790758800000
+const SESSION_RESET = 1790775000000
+const WEEK_RESET = 1791061200000
+
+fn same(label str, want str, got str) -> bool {
+    if want == got { return true }
+    panic("${label}: want [${want}], got [${got}]")
+}
+
+// Named functions, not literals inside lambdas (registry 221.1 #1392).
+fn usage_of(ws []Window, o PollOutcome) -> Usage => { windows: ws, outcome: o, from_fallback: false }
+
+fn reading(status int, state AccountState, message str, ws []Window, o PollOutcome, at int) -> Reading =>
+    { email: "Work@Example.org", outcome: Outcome.new(state, message, 0, status == 200, status),
+      usage: usage_of(ws, o), at_ms: at }
+
+fn two_windows() -> []Window => [
+    Window.new("session", "", 24, SESSION_RESET, ""),
+    Window.new("weekly_all", "", 21, WEEK_RESET, ""),
+]
+
+// -- outcome ---------------------------------------------------------------------
+
+test "the outcome names what the request answered, in 01.2's words" {
+    assert(same("ok", "ok", outcome_of(200, true)))
+    assert(same("parse", "parse", outcome_of(200, false)))
+    assert(same("401", "http_401", outcome_of(401, false)))
+    assert(same("429", "http_429", outcome_of(429, false)))
+    assert(same("503", "http_5xx", outcome_of(503, false)))
+    assert(same("418", "http_other", outcome_of(418, false)))
+    assert(same("network", "network", outcome_of(0, false)))
+}
+
+// -- poll.error ------------------------------------------------------------------
+
+test "a token in an error is masked before it is written" {
+    ro got = scrub("refused with sk-ant-oat01-SECRET and eyJhbGciOi.eyJzdWIi.sig attached")
+    assert(!got.contains("SECRET"))
+    assert(!got.contains("eyJhbGciOi"))
+    assert(same("masked", "refused with *** and *** attached", got))
+}
+
+test "an error is cut to 200 characters, AFTER the mask" {
+    mut long = ""
+    for _ in 0..30 { long = "${long}0123456789 " }
+    ro got = scrub(long)
+    mut n = 0
+    for _ in got.chars() { n += 1 }
+    assert(n == 200)
+    // A token at the cut is masked whole, not half-kept: the mask comes first.
+    // NOT `near`: windows.h defines `near` (and `far`) as empty macros, and the local
+    // reached the C unmangled -- `nova_str near = ...` became `nova_str = ...`.
+    mut filler = ""
+    for _ in 0..19 { filler = "${filler}012345678 " }
+    ro cut = scrub("${filler}sk-ant-oat01-SECRET")
+    assert(!cut.contains("sk-ant"))
+    assert(!cut.contains("SECRET"))
+}
+
+// -- the rows --------------------------------------------------------------------
+
+test "a parsed reading gives its windows, each with a start one window-length before its reset" {
+    ro t = tick_of(reading(200, AccountState.Ok, "", two_windows(), PollOutcome.Parsed, NOW), "Example Inc", INST)
+    assert(same("outcome", "ok", t.outcome))
+    assert(t.windows.len() == 2)
+    // session: five hours; week: seven days.
+    assert(t.windows[0].starts_at_ms == SESSION_RESET - 5 * 3600 * 1000)
+    assert(t.windows[1].starts_at_ms == WEEK_RESET - 7 * 86400 * 1000)
+    assert(t.windows[0].percent == 24)
+    assert(same("org", "Example Inc", t.org))
+}
+
+test "a refused reading writes the journal and NO windows" {
+    ro t = tick_of(reading(429, AccountState.Unknown, "slow down", two_windows(), PollOutcome.Parsed, NOW), "", INST)
+    assert(same("outcome", "http_429", t.outcome))
+    assert(t.windows.len() == 0)
+    assert(same("error", "slow down", t.error))
+}
+
+test "a window without a reset has no cycle and is not written" {
+    ro ws = [Window.new("session", "", 10, 0, ""), Window.new("weekly_all", "", 5, WEEK_RESET, "")]
+    ro t = tick_of(reading(200, AccountState.Ok, "", ws, PollOutcome.Parsed, NOW), "", INST)
+    assert(t.windows.len() == 1)
+    assert(same("kept", "weekly_all", t.windows[0].kind))
+}
+
+test "fresh ids: one account, one poll, and a window, cycle and sample per row, all distinct" {
+    ro t = tick_of(reading(200, AccountState.Ok, "", two_windows(), PollOutcome.Parsed, NOW), "", INST)
+    ro ids = with Random = seeded(3 as u64) { fresh_ids(t) }
+    assert(ids.windows.len() == 2)
+    assert(ids.cycles.len() == 2)
+    assert(ids.samples.len() == 2)
+    assert(ids.account != ids.poll)
+    assert(ids.windows[0] != ids.windows[1])
+}
+
+// -- live: two ticks built here go into a real database ----------------------------
+
+fn migration() Io -> str =>
+    with Fs = real_fs() {
+        read_text("migrations/0001_init.sql".to_path()) ?? ""
+    }
+
+fn counts(stmts []str) Io -> str {
+    mut out = "<none>"
+    ro schema = migration()
+    with Fail[DuckError] = |e| { out = "REFUSED ${e.message()}" } {
+        consume db = Database.open_memory(DbOptions.defaults())!! {
+            consume con = db.connect()!! {
+                ro _ = con.exec(schema)!!
+                for s in stmts { ro _ = con.exec(s)!! }
+                consume r = con.query("SELECT (SELECT count(*) FROM account)::VARCHAR || '/' || (SELECT count(*) FROM limit_window)::VARCHAR || '/' || (SELECT count(*) FROM window_cycle)::VARCHAR || '/' || (SELECT count(*) FROM sample)::VARCHAR || '/' || (SELECT count(*) FROM poll)::VARCHAR")!! {
+                    match r.value(0, 0)!! {
+                        Value.Text(t) => { out = t }
+                        _ => ()
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+fn planned(at int, seed int) -> []str {
+    ro t = tick_of(reading(200, AccountState.Ok, "", two_windows(), PollOutcome.Parsed, at), "Example Inc", INST)
+    ro ids = with Random = seeded(seed as u64) { fresh_ids(t) }
+    plan_sql(t, ids)
+}
+
+test "two ticks with FRESH ids: 1 account / 2 windows / 2 cycles / 4 samples / 2 polls" {
+    mut all = planned(NOW, 1)
+    for s in planned(NOW + 300000, 2) { all.push(s) }
+    assert(same("rows", "1/2/2/4/2", counts(all)))
+}

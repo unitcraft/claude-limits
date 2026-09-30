@@ -1,0 +1,103 @@
+// tick.nv — one poll's reading as the rows `repo.write_tick` writes (01.2 §3.8–§3.11).
+//
+//   ./nova.sh test src/storage/ --filter tick_test
+//
+// `repo.nv` knows how to write a tick and `usage.poller` knows how to take a reading;
+// nothing turned the second into the first. This file is that translation, PURE except
+// for the ids, which come from `Random` through `Uuid.v7`.
+//
+// ── WHAT A READING DOES NOT CARRY, AND WHAT IS WRITTEN INSTEAD ─────────────────
+//
+// * `server_severity`: the parser does not keep it -> "" (NULL).
+// * `latency_ms`: the poller does not measure it -> 0.
+// * a window's START: the endpoint gives only `resets_at`; the start is `resets_at`
+//   minus the window's length (`model.live.window_sec_of`). A window with no
+//   `resets_at` has no cycle to name, and is not written at all.
+//
+// ── `poll.error` ────────────────────────────────────────────────────────────────
+//
+// 01.2 §6: cut to 200 characters, and anything that looks like a bearer token --
+// `sk-ant-...`, or a JWT-like `eyJ....` -- replaced by `***` BEFORE the cut, so a
+// token can never be half-kept by the cut itself.
+
+module storage.tick
+
+import std.identifiers.uuid.{Uuid}
+import claude_limits.usage.poller.{Reading}
+import claude_limits.usage.parse.{PollOutcome}
+import claude_limits.model.snapshot.{AccountState}
+import claude_limits.model.live.{window_sec_of}
+import claude_limits.storage.repo.{Tick, WindowRow, Ids}
+
+/// `poll.outcome` (01.2 §3.2) from what the request answered.
+export fn outcome_of(status int, parsed bool) -> str {
+    if status == 0 { return "network" }
+    if status == 200 { return if parsed { "ok" } else { "parse" } }
+    if status == 401 { return "http_401" }
+    if status == 429 { return "http_429" }
+    if status >= 500 && status <= 599 { return "http_5xx" }
+    "http_other"
+}
+
+const ERROR_CHARS = 200
+
+fn token_like(word str) -> bool =>
+    word.starts_with("sk-ant") || (word.starts_with("eyJ") && word.contains("."))
+
+/// `poll.error` as 01.2 §6 wants it written: tokens masked, then at most 200 characters.
+export fn scrub(message str) -> str {
+    mut masked = ""
+    mut first = true
+    for w in message.split_ascii_whitespace() {
+        ro piece = if token_like(w) { "***" } else { w }
+        masked = if first { piece } else { "${masked} ${piece}" }
+        first = false
+    }
+    mut out = ""
+    mut n = 0
+    for c in masked.chars() {
+        if n == ERROR_CHARS { break }
+        out = "${out}${c}"
+        n += 1
+    }
+    out
+}
+
+/// The rows of one reading. Only windows with a `resets_at` are written: without it
+/// there is no cycle to put the sample in.
+export fn tick_of(r Reading, org str, instance str) -> Tick {
+    mut rows []WindowRow = []
+    ro parsed = r.usage.outcome == PollOutcome.Parsed
+    if r.outcome.state == AccountState.Ok && parsed {
+        for w in r.usage.windows {
+            if w.resets_at_ms <= 0 { continue }
+            ro starts = w.resets_at_ms - window_sec_of(w.kind) * 1000
+            rows.push(WindowRow.new(w.kind, w.model, w.percent, w.locked_reason != "",
+                                    w.locked_reason, "", starts, w.resets_at_ms))
+        }
+    }
+    {
+        instance, at_ms: r.at_ms, email: r.email, org,
+        outcome: outcome_of(r.outcome.status, parsed),
+        http_status: r.outcome.status,
+        retry_after_sec: r.outcome.retry_after_sec,
+        latency_ms: 0,
+        error: if r.outcome.message == "" { "" } else { scrub(r.outcome.message) },
+        windows: rows,
+    }
+}
+
+/// Fresh ids for a tick: one account, one poll, and a window, a cycle and a sample per
+/// row. The account and window ids are CANDIDATES -- `repo` upserts by natural key and
+/// keeps the ids already there.
+export fn fresh_ids(t Tick) Random -> Ids {
+    mut windows []str = []
+    mut cycles []str = []
+    mut samples []str = []
+    for _ in t.windows {
+        windows.push(Uuid.v7().to_str())
+        cycles.push(Uuid.v7().to_str())
+        samples.push(Uuid.v7().to_str())
+    }
+    Ids.new(Uuid.v7().to_str(), Uuid.v7().to_str(), windows, cycles, samples)
+}

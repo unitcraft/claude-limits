@@ -143,7 +143,7 @@ test "a moment goes in as microseconds, not as formatted text" {
 
 // ── what a tick writes, and in what order ────────────────────────────────────
 
-test "a tick with two windows plans nine statements" {
+test "a tick with two windows plans eight statements" {
     // account + (window, cycle, sample) x 2 + poll.
     assert(plan_sql(tick(), ids()).len() == 8)
 }
@@ -183,10 +183,11 @@ test "the reference tables upsert and the facts do not" {
         if sql.contains("DO UPDATE SET") { updates += 1 }
         if sql.contains("DO NOTHING") { nothings += 1 }
     }
-    // account + two windows update their `last_seen_at`; two cycles, two samples and
-    // the journal entry do nothing on conflict (01.2 §3.1).
-    assert(updates == 3)
-    assert(nothings == 5)
+    // Only the account updates its `last_seen_at` on conflict. The two windows, two
+    // cycles, two samples and the journal entry do nothing: DuckDB refuses to update a
+    // window its cycles reference (see repo.nv).
+    assert(updates == 1)
+    assert(nothings == 7)
 }
 
 // ── one transaction, and a checkpoint after it ───────────────────────────────
@@ -217,7 +218,7 @@ test "eleven calls for a two-window tick: begin, eight statements, commit, check
 // ── the injected failure: the line that needs a mock ─────────────────────────
 
 test "a failure mid-tick rolls back and reports" {
-    // The fourth call is a window upsert -- in the middle, with the journal still
+    // The fourth call is a cycle upsert -- in the middle, with the journal still
     // ahead of it.
     mut s = Spy.failing(4)
     ro got = with Db = spied(s) {
@@ -240,7 +241,8 @@ test "a failure mid-tick leaves NO journal entry -- the card's own line" {
 test "a failure on the LAST statement also rolls back" {
     // The other end of the same rule: the journal itself failing must not leave the
     // samples behind without it.
-    mut s = Spy.failing(10)
+    // Call 9 of 11: begin is 1, the eight statements are 2..9, the journal is 9.
+    mut s = Spy.failing(9)
     ro got = with Db = spied(s) {
         write_tick(ConnRef.new(1 as CConnHandle), tick(), ids())
     }
@@ -283,8 +285,10 @@ test "the facts refuse to change on a repeat, and the references touch only last
         if is_fact {
             assert(sql.contains("DO NOTHING"))
         }
-        ro is_ref = sql.contains("INSERT INTO account") || sql.contains("INSERT INTO limit_window")
-        if is_ref {
+        if sql.contains("INSERT INTO limit_window") {
+            assert(sql.contains("DO NOTHING"))
+        }
+        if sql.contains("INSERT INTO account") {
             assert(sql.contains("last_seen_at = excluded.last_seen_at"))
             // And NOT the whole row: a repeat must not rewrite `first_seen_at`.
             assert(!sql.contains("first_seen_at = excluded"))

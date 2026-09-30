@@ -46,7 +46,7 @@ fn fixture() -> []str {
     [
         "SET TimeZone = 'Europe/Moscow'",
         "INSERT INTO account (id, created_at, updated_at, created_by, updated_by, email, color_slot, first_seen_at, last_seen_at) VALUES ('${ACC}', ${svc}, 'main@example.com', 0, ${t0}, ${t0})",
-        "INSERT INTO limit_window (id, created_at, updated_at, created_by, updated_by, account_id, kind, model, first_seen_at, last_seen_at) VALUES ('${WIN}', ${svc}, '${ACC}', 'session', NULL, ${t0}, ${t0})",
+        "INSERT INTO limit_window (id, created_at, updated_at, created_by, updated_by, account_id, kind, model, first_seen_at, last_seen_at) VALUES ('${WIN}', ${svc}, '${ACC}', 'session', '', ${t0}, ${t0})",
         // One reset a day at 10:00 local, 2026-08-26 .. 2026-09-29: `resets` is 1 on every day.
         "INSERT INTO window_cycle SELECT uuidv7(), ${svc}, '${WIN}', r - INTERVAL 5 HOUR, r FROM generate_series(TIMESTAMPTZ '2026-08-26 10:00:00+03', TIMESTAMPTZ '2026-09-29 10:00:00+03', INTERVAL 1 DAY) AS s(r)",
         // 840 hourly samples; the percent is a function of the hour so days differ.

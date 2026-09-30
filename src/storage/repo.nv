@@ -126,16 +126,49 @@ export fn upsert_account_sql(t Tick, id str) -> str {
     "INSERT INTO account (id, created_at, updated_at, created_by, updated_by, email, org_name, color_slot, first_seen_at, last_seen_at) VALUES (${quote(id)}, ${at}, ${at}, ${quote(t.instance)}, ${quote(t.instance)}, ${quote(email)}, ${sql_opt(t.org)}, 0, ${at}, ${at}) ON CONFLICT (email) DO UPDATE SET last_seen_at = excluded.last_seen_at, updated_at = excluded.updated_at, updated_by = excluded.updated_by"
 }
 
-/// Upsert one limit window of an account.
-export fn upsert_window_sql(t Tick, w WindowRow, id str, account_id str) -> str {
+// ── references BY NATURAL KEY, not by the ids the caller minted ──────────────
+//
+// CORRECTION 2026-09-30. The statements below used to reference the CANDIDATE ids of
+// `Ids`: the window pointed at `ids.account`, the cycle at `ids.windows[i]`, and so on.
+// An upsert that finds the row already there keeps the OLD id, so on every tick after
+// the first the references named rows that did not exist. repo_live_test's "second
+// tick" passed only because it handed both ticks the SAME account id. And the window
+// upsert never met its conflict at all: `model` is NULL for `session`/`weekly_all`, and
+// `UNIQUE (account_id, kind, model)` treats NULLs as distinct -- every tick created
+// a new window and a new cycle (measured: two ticks, four windows). Found while
+// writing `storage/tick.nv`, the first caller that mints fresh ids per tick.
+//
+// Now every reference is a subquery on the natural key. And `model` is `''`, not NULL,
+// for the two windows that have none (0001: NOT NULL DEFAULT ''), so the UNIQUE key
+// conflicts as meant and a repeat finds the window instead of adding one.
+//
+// THE WINDOW IS NOT TOUCHED ON A REPEAT (`DO NOTHING`), and that is DuckDB's call, not
+// a choice (measured 2026-09-30 on 1.5.5): both a plain `UPDATE limit_window SET
+// last_seen_at` and `INSERT ... ON CONFLICT DO UPDATE` on a window that cycles already
+// reference are refused ("key window_id ... is still referenced by a foreign key"),
+// while the SAME `DO UPDATE` on the account goes through. A HYPOTHESIS, not measured:
+// the window's conflict key contains its own foreign-key column (`account_id`), the
+// account's (`email`) does not. When a window was last seen is `max(sample.sampled_at)`
+// of its samples; `limit_window.last_seen_at` stays its first sighting (01.2 says so).
+
+fn account_ref(t Tick) -> str => "(SELECT id FROM account WHERE email = ${quote(t.email.to_ascii_lower())})"
+
+fn window_ref(t Tick, w WindowRow) -> str =>
+    "(SELECT id FROM limit_window WHERE account_id = ${account_ref(t)} AND kind = ${quote(w.kind)} AND model = ${quote(w.model)})"
+
+fn cycle_ref(t Tick, w WindowRow) -> str =>
+    "(SELECT id FROM window_cycle WHERE window_id = ${window_ref(t, w)} AND resets_at = ${moment(w.resets_at_ms)})"
+
+/// Insert one limit window of an account, or leave the one already there.
+export fn upsert_window_sql(t Tick, w WindowRow, id str) -> str {
     ro at = moment(t.at_ms)
-    "INSERT INTO limit_window (id, created_at, updated_at, created_by, updated_by, account_id, kind, model, first_seen_at, last_seen_at) VALUES (${quote(id)}, ${at}, ${at}, ${quote(t.instance)}, ${quote(t.instance)}, ${quote(account_id)}, ${quote(w.kind)}, ${sql_opt(w.model)}, ${at}, ${at}) ON CONFLICT (account_id, kind, model) DO UPDATE SET last_seen_at = excluded.last_seen_at, updated_at = excluded.updated_at, updated_by = excluded.updated_by"
+    "INSERT INTO limit_window (id, created_at, updated_at, created_by, updated_by, account_id, kind, model, first_seen_at, last_seen_at) VALUES (${quote(id)}, ${at}, ${at}, ${quote(t.instance)}, ${quote(t.instance)}, ${account_ref(t)}, ${quote(w.kind)}, ${quote(w.model)}, ${at}, ${at}) ON CONFLICT (account_id, kind, model) DO NOTHING"
 }
 
 /// Upsert the cycle this reading belongs to (01.2 §3.10: one pass of a window).
-export fn upsert_cycle_sql(t Tick, w WindowRow, id str, window_id str) -> str {
+export fn upsert_cycle_sql(t Tick, w WindowRow, id str) -> str {
     ro at = moment(t.at_ms)
-    "INSERT INTO window_cycle (id, created_at, updated_at, created_by, updated_by, window_id, starts_at, resets_at) VALUES (${quote(id)}, ${at}, ${at}, ${quote(t.instance)}, ${quote(t.instance)}, ${quote(window_id)}, ${moment(w.starts_at_ms)}, ${moment(w.resets_at_ms)}) ON CONFLICT (window_id, resets_at) DO NOTHING"
+    "INSERT INTO window_cycle (id, created_at, updated_at, created_by, updated_by, window_id, starts_at, resets_at) VALUES (${quote(id)}, ${at}, ${at}, ${quote(t.instance)}, ${quote(t.instance)}, ${window_ref(t, w)}, ${moment(w.starts_at_ms)}, ${moment(w.resets_at_ms)}) ON CONFLICT (window_id, resets_at) DO NOTHING"
 }
 
 /// The reading itself.
@@ -143,19 +176,19 @@ export fn upsert_cycle_sql(t Tick, w WindowRow, id str, window_id str) -> str {
 /// `DO NOTHING` on `(window_id, sampled_at)`: polling the same window twice in the
 /// same instant is the same fact, and the acceptance line «повтор того же тика не
 /// меняет счётчиков» rests on this clause rather than on the caller remembering.
-export fn insert_sample_sql(t Tick, w WindowRow, id str, window_id str, cycle_id str) -> str {
+export fn insert_sample_sql(t Tick, w WindowRow, id str) -> str {
     ro at = moment(t.at_ms)
     ro locked = if w.locked { "true" } else { "false" }
-    "INSERT INTO sample (id, created_at, updated_at, created_by, updated_by, window_id, sampled_at, cycle_id, percent, locked, locked_reason, server_severity, active) VALUES (${quote(id)}, ${at}, ${at}, ${quote(t.instance)}, ${quote(t.instance)}, ${quote(window_id)}, ${at}, ${quote(cycle_id)}, ${w.percent}, ${locked}, ${sql_opt(w.locked_reason)}, ${sql_opt(w.server_severity)}, true) ON CONFLICT (window_id, sampled_at) DO NOTHING"
+    "INSERT INTO sample (id, created_at, updated_at, created_by, updated_by, window_id, sampled_at, cycle_id, percent, locked, locked_reason, server_severity, active) VALUES (${quote(id)}, ${at}, ${at}, ${quote(t.instance)}, ${quote(t.instance)}, ${window_ref(t, w)}, ${at}, ${cycle_ref(t, w)}, ${w.percent}, ${locked}, ${sql_opt(w.locked_reason)}, ${sql_opt(w.server_severity)}, true) ON CONFLICT (window_id, sampled_at) DO NOTHING"
 }
 
 /// The journal entry: what the endpoint answered, whatever that was.
 ///
 /// WRITTEN FOR EVERY OUTCOME, including the ones nobody wants to look at. A 429 that
 /// is not in `poll` is a 429 nobody can explain the next morning.
-export fn insert_poll_sql(t Tick, id str, account_id str) -> str {
+export fn insert_poll_sql(t Tick, id str) -> str {
     ro at = moment(t.at_ms)
-    "INSERT INTO poll (id, created_at, updated_at, created_by, updated_by, account_id, polled_at, outcome, http_status, retry_after_sec, latency_ms, error) VALUES (${quote(id)}, ${at}, ${at}, ${quote(t.instance)}, ${quote(t.instance)}, ${quote(account_id)}, ${at}, ${quote(t.outcome)}, ${t.http_status}, ${t.retry_after_sec}, ${t.latency_ms}, ${sql_opt(t.error)}) ON CONFLICT (account_id, polled_at) DO NOTHING"
+    "INSERT INTO poll (id, created_at, updated_at, created_by, updated_by, account_id, polled_at, outcome, http_status, retry_after_sec, latency_ms, error) VALUES (${quote(id)}, ${at}, ${at}, ${quote(t.instance)}, ${quote(t.instance)}, ${account_ref(t)}, ${at}, ${quote(t.outcome)}, ${t.http_status}, ${t.retry_after_sec}, ${t.latency_ms}, ${sql_opt(t.error)}) ON CONFLICT (account_id, polled_at) DO NOTHING"
 }
 
 // ── the tick ─────────────────────────────────────────────────────────────────
@@ -230,12 +263,12 @@ export fn plan_sql(t Tick, ids Ids) -> []str {
         ro wid = if i < ids.windows.len() { ids.windows[i] } else { "" }
         ro cid = if i < ids.cycles.len() { ids.cycles[i] } else { "" }
         ro sid = if i < ids.samples.len() { ids.samples[i] } else { "" }
-        out.push(upsert_window_sql(t, w, wid, ids.account))
-        out.push(upsert_cycle_sql(t, w, cid, wid))
-        out.push(insert_sample_sql(t, w, sid, wid, cid))
+        out.push(upsert_window_sql(t, w, wid))
+        out.push(upsert_cycle_sql(t, w, cid))
+        out.push(insert_sample_sql(t, w, sid))
         i += 1
     }
-    out.push(insert_poll_sql(t, ids.poll, ids.account))
+    out.push(insert_poll_sql(t, ids.poll))
     out
 }
 
