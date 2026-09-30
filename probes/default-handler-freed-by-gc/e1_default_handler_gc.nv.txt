@@ -1,0 +1,27 @@
+// e1: the default `Random` handler is installed lazily into a thread-local slot on
+// the first call (`_nova_handler_Random = real_random()`, a GC-heap vtable). If
+// nothing else references that vtable, a collection frees it and the next call
+// jumps through whatever reused the block.
+module p1406.e1_default_handler_gc
+
+import std.identifiers.uuid.{Uuid}
+
+fn churn(rounds int) -> int {
+    mut total = 0
+    for r in 0..rounds {
+        mut junk []str = []
+        for i in 0..20000 {
+            // Small strings: blocks of the vtable's size class get reused.
+            junk.push("# c ${i}")
+        }
+        total += junk.len()
+    }
+    total
+}
+
+fn main() Io {
+    ro first = Uuid.v7().to_str()      // installs the default Random handler
+    ro n = churn(40)                   // allocates ~800k small objects, drops them
+    ro second = Uuid.v7().to_str()     // dispatches through the TLS slot again
+    println("e1 ok ${n} ${first != second}")
+}

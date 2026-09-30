@@ -1,0 +1,28 @@
+// e2: CONTROL for e1 -- the first call is removed, so the handler is installed AFTER the churn.
+// e1: the default `Random` handler is installed lazily into a thread-local slot on
+// the first call (`_nova_handler_Random = real_random()`, a GC-heap vtable). If
+// nothing else references that vtable, a collection frees it and the next call
+// jumps through whatever reused the block.
+module p1406.e2_control_installed_after
+
+import std.identifiers.uuid.{Uuid}
+
+fn churn(rounds int) -> int {
+    mut total = 0
+    for r in 0..rounds {
+        mut junk []str = []
+        for i in 0..20000 {
+            // Small strings: blocks of the vtable's size class get reused.
+            junk.push("# c ${i}")
+        }
+        total += junk.len()
+    }
+    total
+}
+
+fn main() Io {
+    ro first = "none"                  // CONTROL: nothing installed before the churn
+    ro n = churn(40)                   // allocates ~800k small objects, drops them
+    ro second = Uuid.v7().to_str()     // dispatches through the TLS slot again
+    println("e2 ok ${n} ${first != second}")
+}

@@ -13,7 +13,8 @@ import http.{Http, HttpError}
 import claude_limits.accounts.discover.{Dirs}
 import claude_limits.accounts.login.{Creds}
 import claude_limits.usage.poller.{PollLog}
-import claude_limits.model.live.{Known}
+import claude_limits.model.live.{Known, view_of}
+import claude_limits.model.snapshot.{SeverityBounds}
 import claude_limits.model.snapshot.{AccountState}
 import feed.{Found, stable_id, found_in, poll_round, expiry_text}
 
@@ -172,4 +173,20 @@ test "a refused round keeps the last good rows and their moment, and says why" {
 test "the stale text names the moment in the zone it is given" {
     assert(same("utc", "29 Sep 09:00", expiry_text(NOW_MS - DAY_MS, TimeZone.Utc)))
     assert(same("none", "at an unknown time", expiry_text(0, TimeZone.Utc)))
+}
+
+// A settings file with NO [[folders]] is a legal first start (the page's settings
+// panel adds them). `--serve` on such a file crashed with 0xC0000005 before it
+// listened -- measured 2026-09-30 18:0x; an EMPTY folder did not. This is the round
+// with nothing to find, end to end short of the socket.
+test "no folders at all: an empty round and an empty body, not a crash" {
+    mut a = Asked.new()
+    ro now = NOW_MS
+    ro found = on_disk(fn() Dirs Creds -> []Found => found_in([], now))
+    assert(found.len() == 0)
+    ro known = endpoint(a, reply_ok(), fn() Http PollLog Creds -> []Known => poll_round(found, [], now, now + 300000, TimeZone.Utc))
+    assert(known.len() == 0)
+    assert(a.n == 0)
+    ro view = view_of(known, SeverityBounds.new(70, 90), now, now + 300000, "+00:00", TimeZone.Utc)
+    assert(view.accounts.len() == 0)
 }
