@@ -13,7 +13,7 @@ import claude_limits.accounts.discover.{Dirs}
 import claude_limits.accounts.login.{Creds}
 import polaris.{Router, serve_once}
 import std.testing.handlers as th
-import folders.{KnownLogin, ProbeState, Ask, parse_ask, probe_handler}
+import folders.{KnownLogin, ProbeState, Ask, parse_probe_ask, probe_handler}
 
 fn wire_str(wire []u8) -> str => unsafe { wire.to_str_unchecked() }
 
@@ -217,16 +217,16 @@ test "a body that is not JSON is 400" {
     }
 }
 
-test "parse_ask reads the shapes on its own" {
-    match parse_ask("{\"path\":\"/x\"}") {
+test "parse_probe_ask reads the shapes on its own" {
+    match parse_probe_ask("{\"path\":\"/x\"}") {
         Ask.Path(p) => assert(p == "/x")
         _ => assert(false)
     }
-    match parse_ask("{\"path\":5}") {
+    match parse_probe_ask("{\"path\":5}") {
         Ask.Bad(e) => assert(e.code == "invalid_request")
         _ => assert(false)
     }
-    match parse_ask("") {
+    match parse_probe_ask("") {
         Ask.Bad(e) => assert(e.code == "invalid_request")
         _ => assert(false)
     }

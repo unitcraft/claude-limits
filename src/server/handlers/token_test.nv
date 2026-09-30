@@ -10,7 +10,7 @@ import claude_limits.server.etag.{etag_of}
 import claude_limits.config.{Config, render}
 import polaris.{Router, serve_once}
 import std.testing.handlers as th
-import token.{TokenState, Ask, parse_ask, mint, applied, token_handler, token_body}
+import token.{TokenEndpointState, Ask, parse_token_ask, mint, applied, token_handler, token_body}
 import claude_limits.server.json.{field_str, field_bool, object}
 
 fn wire_str(wire []u8) -> str => unsafe { wire.to_str_unchecked() }
@@ -52,7 +52,7 @@ fn base_cfg() -> Config {
     c
 }
 
-fn state(d Disclosure) -> TokenState => {
+fn state(d Disclosure) -> TokenEndpointState => {
     cfg: base_cfg(),
     etag: etag_of([render(base_cfg())]),
     disclosure: d,
@@ -60,7 +60,7 @@ fn state(d Disclosure) -> TokenState => {
 
 fn app(d Disclosure) -> Router {
     ro level = d
-    build([route("/api/config/token", [on(HttpMethod.Post, token_handler(fn() -> TokenState => state(level)))])])!!
+    build([route("/api/config/token", [on(HttpMethod.Post, token_handler(fn() -> TokenEndpointState => state(level)))])])!!
 }
 
 fn serve(d Disclosure, raw []u8) Time Random -> str => wire_str(serve_once(app(d), raw))
@@ -198,11 +198,11 @@ test "a body that is not JSON is 400" {
     }
 }
 
-test "parse_ask reads the three shapes" {
-    match parse_ask("") { Ask.Issue(lan) => assert(!lan), _ => assert(false) }
-    match parse_ask("{}") { Ask.Issue(lan) => assert(!lan), _ => assert(false) }
-    match parse_ask("{\"allow_lan\":true}") { Ask.Issue(lan) => assert(lan), _ => assert(false) }
-    match parse_ask("{\"allow_lan\":\"yes\"}") {
+test "parse_token_ask reads the three shapes" {
+    match parse_token_ask("") { Ask.Issue(lan) => assert(!lan), _ => assert(false) }
+    match parse_token_ask("{}") { Ask.Issue(lan) => assert(!lan), _ => assert(false) }
+    match parse_token_ask("{\"allow_lan\":true}") { Ask.Issue(lan) => assert(lan), _ => assert(false) }
+    match parse_token_ask("{\"allow_lan\":\"yes\"}") {
         Ask.Bad(e) => assert(e.code == "invalid_request")
         _ => assert(false)
     }

@@ -41,14 +41,17 @@ import std.encoding.base64.{Base64}
 /// data and a chain is as strong as its weakest link.
 const TOKEN_BYTES = 32
 
-export type TokenState value {
+/// NOT `TokenState`: that is the enum of `accounts/login.nv`, and two types of one
+/// name in one binary share a C name (registry 221.1 #154, open) -- the app
+/// composition test in `server/app_test.nv` failed on exactly this pair.
+export type TokenEndpointState value {
     cfg Config
     /// The tag of the current settings text, for `If-Match`.
     etag str
     disclosure Disclosure
 }
 
-export type TokenSource fn() -> TokenState
+export type TokenSource fn() -> TokenEndpointState
 
 // ── the body ─────────────────────────────────────────────────────────────────
 
@@ -60,7 +63,10 @@ export type Ask enum
     | Bad(ApiError)
 
 /// Parse the body. Empty means `{}` means "just issue a token".
-export fn parse_ask(raw str) -> Ask {
+/// NAMED FOR ITS MODULE, not `parse_ask`: four handler modules each had a private
+/// `parse_ask`, and linked into one binary they collapsed into one C symbol (registry
+/// 221.1 #1097, open; the app composition test in `server/app_test.nv` holds it).
+export fn parse_token_ask(raw str) -> Ask {
     ro text = raw.trim_ascii()
     if text == "" { return Ask.Issue(false) }
     match Json.parse(text) {
@@ -165,7 +171,7 @@ fn run(src TokenSource, ctx Ctx) Random -> ServerResponse {
     // lock out the tab that is holding the first one.
     if if_match != st.etag { return problem(ApiError.precondition_failed(), ctx.request_id, ctx.instance) }
 
-    match parse_ask(body_str(ctx.req)) {
+    match parse_token_ask(body_str(ctx.req)) {
         Ask.Bad(e) => problem(e, ctx.request_id, ctx.instance)
         Ask.Issue(want_lan) => {
             ro token = mint()

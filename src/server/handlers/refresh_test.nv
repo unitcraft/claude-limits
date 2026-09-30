@@ -11,7 +11,7 @@ module handlers.refresh_test
 import claude_limits.server.routes.{HttpMethod, on, route, build}
 import polaris.{Router, serve_once}
 import std.testing.handlers as th
-import refresh.{RefreshTarget, RefreshState, Ask, RefreshDecision, parse_ask, decide, wait_sec, refresh_handler, accepted_body}
+import refresh.{RefreshTarget, RefreshState, Ask, RefreshDecision, parse_refresh_ask, decide, wait_sec, refresh_handler, accepted_body}
 import claude_limits.server.json.{field_str, field_raw, object, array}
 
 // ── wire helpers ─────────────────────────────────────────────────────────────
@@ -265,15 +265,15 @@ test "a list of only stale accounts is too_soon with the whole floor, not a 404"
     }
 }
 
-test "parse_ask reads the three shapes and refuses the fourth" {
-    match parse_ask("{}") { Ask.All => assert(true), _ => assert(false) }
-    match parse_ask("") { Ask.All => assert(true), _ => assert(false) }
-    match parse_ask("  {}  ") { Ask.All => assert(true), _ => assert(false) }
-    match parse_ask("{\"account_id\":\"a-1\"}") {
+test "parse_refresh_ask reads the three shapes and refuses the fourth" {
+    match parse_refresh_ask("{}") { Ask.All => assert(true), _ => assert(false) }
+    match parse_refresh_ask("") { Ask.All => assert(true), _ => assert(false) }
+    match parse_refresh_ask("  {}  ") { Ask.All => assert(true), _ => assert(false) }
+    match parse_refresh_ask("{\"account_id\":\"a-1\"}") {
         Ask.One(id) => assert(id == "a-1")
         _ => assert(false)
     }
-    match parse_ask("{\"email\":\"x\"}") {
+    match parse_refresh_ask("{\"email\":\"x\"}") {
         Ask.Bad(e) => assert(e.code == "extra_forbidden")
         _ => assert(false)
     }

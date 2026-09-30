@@ -1,0 +1,111 @@
+// The whole router in ONE binary: every handler module linked together (T2.27).
+//
+//   ./nova.sh test src/server/ --filter app_test
+//
+// Each handler is proven alone in its own test; what only this file can prove is
+// that they LINK together. Registry №1097 lived exactly there: every module test was
+// green, and the composition did not build, because four same-named private
+// functions collapsed into one C symbol. A composition is a subject of its own.
+//
+// Sources other than `health` hand over empty states: the requests below never
+// reach them, and their types still have to link.
+
+module server.app_test
+
+import claude_limits.server.app.{Sources, api_router}
+import claude_limits.server.dto.{Disclosure, SnapshotView}
+import claude_limits.config.{Config}
+import claude_limits.model.store.{Registry}
+import claude_limits.server.handlers.health.{HealthState}
+import claude_limits.server.handlers.snapshot.{SnapshotState}
+import claude_limits.server.handlers.refresh.{RefreshState}
+import claude_limits.server.handlers.events.{EventsState}
+import claude_limits.server.handlers.config.{ConfigState}
+import claude_limits.server.handlers.folders.{ProbeState}
+import claude_limits.server.handlers.token.{TokenEndpointState}
+import claude_limits.server.handlers.exporter.{ExportState}
+import polaris.{Router, serve_once}
+
+fn wire_str(wire []u8) -> str => unsafe { wire.to_str_unchecked() }
+
+fn status_of(wire []u8) -> str {
+    ro s = wire_str(wire)
+    match s.find("\r\n") { Some(i) => s[..i], None => s }
+}
+
+fn body_of(wire []u8) -> str {
+    ro s = wire_str(wire)
+    match s.find("\r\n\r\n") { Some(i) => s[i + 4..], None => "" }
+}
+
+fn get(path str) -> []u8 => "GET ${path} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"
+
+fn health_state() -> HealthState => {
+    app_version: "0.3.0", started_at: "2026-09-30T09:00:00Z", uptime_sec: 60,
+    bind: "127.0.0.1", port: 7391, allow_lan: false, tls: false, poll_interval_sec: 300,
+    poll_last_at: "2026-09-30T09:00:00Z", poll_next_at: "2026-09-30T09:05:00Z",
+    sse_clients: 0, accounts_total: 1, accounts_ok: 1, accounts_stale: 0,
+    accounts_unknown: 0, accounts_error: 0, accounts_hidden: 0, login_dirs: 1,
+    config_path: "C:/cfg/claude-limits.toml", db_path: "C:/data/claude-limits.duckdb",
+    db_size_bytes: 0, schema_version: 1, history_days: 30, encrypted: true,
+    key_store: "file", widget_enabled: false, widget_running: false, config_error: "",
+    disclosure: Disclosure.Loopback,
+}
+
+// Empty but REAL states for the sources the requests below do not reach. Not
+// `panic(...)` in their place: `fn() -> SnapshotState => panic("…")` does not build
+// (codegen types the panic as an integer and C refuses to return it as a struct).
+// Helper names avoid every module name in this binary: a function named like a
+// module in the unit resolves as that module (registry 221.1 #1400 -- `health()`
+// here did exactly that).
+
+fn view_of_nothing() -> SnapshotView => {
+    fetched_at: "", next_poll_at: "", tz: "UTC", restored: false, worst: None,
+    accounts: [], limits: [],
+}
+
+// The literals live in named functions, not in the lambdas: a record literal inside a
+// closure is typed as the ENCLOSING literal's type (registry 221.1 #1392) -- written
+// inline, every one of these became a `Router` in C.
+fn snap_empty() -> SnapshotState => { view: view_of_nothing(), order: [], hidden: [], config_etag: "", disclosure: Disclosure.Loopback }
+fn refresh_empty() -> RefreshState => { now_ms: 0, floor_sec: 60, targets: [] }
+fn events_empty() -> EventsState => { reg: Registry.new(), snapshot_body: "{}", rest: [] }
+fn config_empty() -> ConfigState => { cfg: Config.defaults(), etag: "", path: "", portable: false, folders: [], accounts_found: [], disclosure: Disclosure.Loopback }
+fn probe_empty() -> ProbeState => { now_ms: 0, listed: [], known: [], disclosure: Disclosure.Loopback }
+fn token_empty() -> TokenEndpointState => { cfg: Config.defaults(), etag: "", disclosure: Disclosure.Loopback }
+fn export_empty() -> ExportState => { from_day: "", to_day: "", rows: [], disclosure: Disclosure.Loopback }
+
+fn router() -> Router =>
+    api_router(Sources.new(
+        fn() -> HealthState => health_state(),
+        fn() -> SnapshotState => snap_empty(),
+        fn() -> RefreshState => refresh_empty(),
+        fn() -> EventsState => events_empty(),
+        fn() -> ConfigState => config_empty(),
+        fn() -> ProbeState => probe_empty(),
+        fn() -> TokenEndpointState => token_empty(),
+        fn() -> ExportState => export_empty(),
+    ))!!
+
+fn serve(path str) Time Random -> []u8 => serve_once(router(), get(path))
+
+test "the assembled router answers health from its own handler" {
+    ro w = serve("/api/health")
+    assert(status_of(w).contains("200"))
+    // The value came from THIS test's source, through the assembled table -- not a
+    // default of some other handler that happened to answer the path.
+    assert(body_of(w).contains("\"api_version\""))
+    assert(body_of(w).contains("0.3.0"))
+}
+
+test "an unknown API path is the API's own 404, not the page" {
+    ro w = serve("/api/no-such-thing")
+    assert(status_of(w).contains("404"))
+    assert(wire_str(w).contains("application/problem+json"))
+}
+
+test "everything else is the page" {
+    ro w = serve("/")
+    assert(status_of(w).contains("200"))
+    assert(wire_str(w).contains("text/html"))
+}

@@ -54,7 +54,10 @@ const ONLY_FIELD = "account_id"
 /// An unknown field is `422 extra_forbidden` with the field NAMED, not a `400`:
 /// §0 draws that line as "разобрали, но так нельзя", and the page shows the
 /// message beside the field it names.
-export fn parse_ask(raw str) -> Ask {
+/// NAMED FOR ITS MODULE, not `parse_ask`: four handler modules each had a private
+/// `parse_ask`, and linked into one binary they collapsed into one C symbol (registry
+/// 221.1 #1097, open; the app composition test in `server/app_test.nv` holds it).
+export fn parse_refresh_ask(raw str) -> Ask {
     ro text = raw.trim_ascii()
     if text == "" { return Ask.All }
     match Json.parse(text) {
@@ -206,7 +209,7 @@ fn body_str(req ServerRequest) -> str => unsafe { req.body_bytes().to_str_unchec
 // Hoisted and param-captured for the [M-16] reason named in `routes.nv`.
 fn run(src RefreshSource, ctx Ctx) -> ServerResponse {
     ro st = src()
-    match decide(st, parse_ask(body_str(ctx.req))) {
+    match decide(st, parse_refresh_ask(body_str(ctx.req))) {
         RefreshDecision.Refuse(e) => problem(e, ctx.request_id, ctx.instance)
         RefreshDecision.Queue(ts) => accepted(ts)
     }

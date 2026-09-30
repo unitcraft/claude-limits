@@ -177,7 +177,10 @@ export type Ask enum
 /// machine); nothing else may. `account_id` and `email` are refused as unknown, and
 /// that refusal is the mechanism keeping personal data out of the URL — not a
 /// separate rule someone has to remember.
-export fn parse_ask(req ServerRequest, d Disclosure) -> Ask {
+/// NAMED FOR ITS MODULE, not `parse_ask`: four handler modules each had a private
+/// `parse_ask`, and linked into one binary they collapsed into one C symbol (registry
+/// 221.1 #1097, open; the app composition test in `server/app_test.nv` holds it).
+export fn parse_export_ask(req ServerRequest, d Disclosure) -> Ask {
     mut fmt = "csv"
     mut unmasked = false
     mut seen_format = 0
@@ -287,7 +290,7 @@ fn attach(body str, name str, ctype str) -> ServerResponse {
 // Hoisted and param-captured for the [M-16] reason named in `routes.nv`.
 fn run(src ExportSource, ctx Ctx) -> ServerResponse {
     ro st = src()
-    match parse_ask(ctx.req, st.disclosure) {
+    match parse_export_ask(ctx.req, st.disclosure) {
         Ask.Bad(e) => problem(e, ctx.request_id, ctx.instance)
         Ask.AsCsv(unmasked) =>
             attach(to_csv(st.rows, unmasked), filename(st.from_day, st.to_day, "csv"), "text/csv; charset=utf-8")

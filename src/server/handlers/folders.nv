@@ -56,7 +56,10 @@ export type Ask enum
 /// The path travels in the BODY and not the URL: §0 keeps directory paths out of
 /// URLs entirely, because on every platform this runs on a home directory contains
 /// the operating system user's name.
-export fn parse_ask(raw str) -> Ask {
+/// NAMED FOR ITS MODULE, not `parse_ask`: four handler modules each had a private
+/// `parse_ask`, and linked into one binary they collapsed into one C symbol (registry
+/// 221.1 #1097, open; the app composition test in `server/app_test.nv` holds it).
+export fn parse_probe_ask(raw str) -> Ask {
     ro text = raw.trim_ascii()
     if text == "" {
         return Ask.Bad(ApiError.invalid_request([FieldError.new(ONLY_FIELD, "required", "a path is required")]))
@@ -176,7 +179,7 @@ fn body_str(req ServerRequest) -> str => unsafe { req.body_bytes().to_str_unchec
 // Hoisted and param-captured for the [M-16] reason named in `routes.nv`.
 fn run(src ProbeSource, ctx Ctx) Dirs Creds -> ServerResponse {
     ro st = src()
-    match parse_ask(body_str(ctx.req)) {
+    match parse_probe_ask(body_str(ctx.req)) {
         Ask.Bad(e) => problem(e, ctx.request_id, ctx.instance)
         Ask.Path(p) => {
             ro resolved = normalise(p)
