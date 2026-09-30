@@ -68,11 +68,16 @@ export fn Sources.new(health HealthSource, snapshot SnapshotSource, refresh Refr
 // than from a handler's behaviour -- a handler that ignores an unknown parameter and
 // a route that forbids it look identical until somebody sends one.
 
+// FUNCTIONS, not module values: the two compilers in use disagree about a module-level
+// array literal -- nova-integ 8900d9a61 demands `const` (E_RO_FOR_CONSTEXPR_PREFER_CONST),
+// main after #1394 refuses it as `const` (E_CONST_NOT_CONSTEXPR). A function is legal
+// under both. 2026-09-30.
+
 /// §3.3.
-const Q_SNAPSHOT = ["include_hidden"]
+fn q_snapshot() -> []str => ["include_hidden"]
 
 /// §3.11: `range` or `from`/`to`, `login_dir_id` (repeatable), `format`, `unmasked`.
-const Q_EXPORT = ["range", "from", "to", "login_dir_id", "format", "unmasked"]
+fn q_export() -> []str => ["range", "from", "to", "login_dir_id", "format", "unmasked"]
 
 /// The API of the first release, in the order of 01.3 §2.
 ///
@@ -80,14 +85,14 @@ const Q_EXPORT = ["range", "from", "to", "login_dir_id", "format", "unmasked"]
 /// («Query-параметров нет») -- not an oversight to be filled in later.
 export fn api_routes(s Sources) -> []Route => [
     route("/api/health", [on(HttpMethod.Get, health_handler(s.health))]),
-    route_q("/api/snapshot", [on(HttpMethod.Get, snapshot_handler(s.snapshot))], Q_SNAPSHOT),
+    route_q("/api/snapshot", [on(HttpMethod.Get, snapshot_handler(s.snapshot))], q_snapshot()),
     route("/api/events", [on(HttpMethod.Get, events_handler(s.events))]),
     route("/api/snapshot/refresh", [on(HttpMethod.Post, refresh_handler(s.refresh))]),
     route("/api/config", [on(HttpMethod.Get, config_get_handler(s.config)),
                           on(HttpMethod.Put, config_put_handler(s.config))]),
     route("/api/folders/probe", [on(HttpMethod.Post, probe_handler(s.probe))]),
     route("/api/config/token", [on(HttpMethod.Post, token_handler(s.token))]),
-    route_q("/api/export", [on(HttpMethod.Get, export_handler(s.exporter))], Q_EXPORT),
+    route_q("/api/export", [on(HttpMethod.Get, export_handler(s.exporter))], q_export()),
 ]
 
 /// What 01.3 §2 lists and this table does NOT mount, with the reason for each.
