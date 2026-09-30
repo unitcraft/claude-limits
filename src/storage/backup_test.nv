@@ -8,7 +8,7 @@
 
 module storage.backup_test
 
-import std.fs.{mock_fs, MemFs, real_fs, read_text, write_text, try_exists, create_dir_all, remove_dir_all}
+import std.fs.{mock_fs, MemFs, real_fs, read, read_text, write_text, try_exists, create_dir_all, remove_dir_all}
 import std.os.{real_os, temp_dir}
 import duckdb.{Database, DbOptions}
 import duckdb.db_effect.{Db}
@@ -346,4 +346,89 @@ test "a backup of an encrypted database is attached WITH the key" {
     assert(same("keyed", "ATTACH 'C:/b/x.part' AS nova_backup (ENCRYPTION_KEY 'k-1')", with_key[0]))
     ro plain = backup_sql("main", "C:/b/x.part", [], [], "")
     assert(same("plain", "ATTACH 'C:/b/x.part' AS nova_backup", plain[0]))
+}
+
+// -- an encrypted database (nova-duckdb 0.2) ---------------------------------
+
+fn keyed(key str) -> DbOptions {
+    mut o = DbOptions.defaults()
+    o.encryption_key = key
+    o
+}
+
+/// Seed the file WITH a key, then back it up through the effect with `backup_key`.
+fn backup_encrypted(path str, dir str, key str, backup_key str) Io -> str {
+    mut seeded = "<not seeded>"
+    with Fail[DuckError] = |e| { seeded = "REFUSED ${e.message()}" } {
+        consume db = Database.open(path, keyed(key))!! {
+            consume con = db.connect()!! {
+                for s in two_ticks() { ro _ = con.exec(s)!! }
+                seeded = "ok"
+            }
+        }
+    }
+    if seeded != "ok" { return seeded }
+    ro now = 1790758800000
+    with_real_db(fn() Db -> str => {
+        with Fs = real_fs() {
+            match Db.open(path, keyed(key)) {
+                Err(e) => "OPEN ${e.message()}"
+                Ok(db) => match Db.connect(db) {
+                    Err(e) => {
+                        Db.close_db(db)
+                        "CONNECT ${e.message()}"
+                    }
+                    Ok(conn) => {
+                        ro r = take_backup(conn, dir, now, 5, false, backup_key)
+                        Db.close_conn(conn)
+                        Db.close_db(db)
+                        match r {
+                            Ok(n) => n
+                            Err(e) => "FAIL ${e.message()}"
+                        }
+                    }
+                }
+            }
+        }
+    })
+}
+
+fn file_has(path str, needle str) Io -> bool =>
+    with Fs = real_fs() {
+        // BYTES, read lossily: a database file is not UTF-8, and `read_text` answered
+        // "" for it -- which made "the address is absent" true for ANY file, the clear
+        // one included. The control below is what caught it.
+        (read(path.to_path()) ?? []u8.new()).to_str_lossy().contains(needle)
+    }
+
+test "a backup of an encrypted database is ciphertext too, and opens with the key" {
+    ro key = "k-0123456789abcdef-0123456789abcd"
+    ro dir = scratch("encrypted")
+    ro name = backup_encrypted("${dir}/claude-limits.duckdb", "${dir}/backup", key, key)
+    assert(same("backup", backup_name(1790758800000), name))
+    ro copy = "${dir}/backup/${name}"
+    assert(!file_has(copy, "work@example.org"))
+    mut rows = "<none>"
+    with Fail[DuckError] = |e| { rows = "REFUSED ${e.message()}" } {
+        consume db = Database.open(copy, keyed(key))!! {
+            consume con = db.connect()!! {
+                consume r = con.query(SAMPLES)!! {
+                    match r.value(0, 0)!! {
+                        Value.Text(t) => { rows = t }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+    assert(same("rows in the backup", "4", rows))
+}
+
+test "the control: without the key, the same backup is written in the clear" {
+    // What `backup_sql`'s key prevents, shown rather than assumed -- and the proof that
+    // the byte search above can see an address when one is there.
+    ro dir = scratch("clear")
+    ro name = backup_encrypted("${dir}/claude-limits.duckdb", "${dir}/backup", "k-0123456789abcdef-0123456789abcd", "")
+    assert(same("backup", backup_name(1790758800000), name))
+    assert(file_has("${dir}/backup/${name}", "work@example.org"))
 }

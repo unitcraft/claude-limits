@@ -17,8 +17,8 @@ name = "duckdb"
 source = "git"
 git = "https://github.com/nv-lang/nova-duckdb"
 pin = "version:>=0.2.0, <0.3.0"
-version = "0.2.0"
-commit = "5db17bf7e0695631ec638e2e628ad61feda6de8c"
+version = "0.2.1"
+commit = "87a4a679d1867a88ea730f3defa46b0d8e0cb884"
 
 [[package]]
 name = "http"
