@@ -1,0 +1,4 @@
+module probe_far_for_in.lib_flag
+
+/// Same name, a str parameter, and a DIFFERENT return type that C converts silently.
+export fn parse(body str) -> bool => body != ""

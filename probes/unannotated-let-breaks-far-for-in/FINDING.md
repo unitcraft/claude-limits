@@ -1,69 +1,74 @@
-# An unannotated `let` in `main` breaks a for-in elsewhere in the same function
+# Two imported functions share a name: codegen types the call by the WRONG one
 
-**Status: reproduced on the real file, NOT isolated.** Nothing here is filed in the
-nova registry yet: a row needs a minimal case, and this probe does not have one.
-Written down so the next attempt starts from the excluded axes instead of redoing them.
+**Status: ISOLATED (2026-09-30). A silent miscompile -- `check` and `build` both pass,
+and the program prints `true` where it must print `13`.** Not filed by me in the nova
+registry (this window works only in claude-limits, owner's word 2026-09-21); handed to
+the integrator with this directory as the evidence.
 
-## What happened (2026-09-30)
-
-The lint sweep replaced a copying loop in `src/claude_limits.nv` `main` with a view:
-
-```nova
-ro argv = if all.len() == 0 { all } else { all[1..] }
-```
-
-`nova check` passes. `nova build` fails:
-
-    codegen error: for-in: cannot resolve iterator type for expression of C-type ''.
-
-with no location. Adding the type makes it build and every test pass:
+## The minimal case -- `src/gap_silent_bool.nv`
 
 ```nova
-ro argv []str = if all.len() == 0 { all } else { all[1..] }
+import std.os.{args, real_os}
+import probe_far_for_in.lib_count.{parse}   // parse(xs []str) -> int
+import probe_far_for_in.lib_flag.{parse}    // parse(body str) -> bool
+
+fn main() Io {
+    ro all = with Os = real_os() { args() }
+    ro n = parse(all)            // the checker picks lib_count: `all` is []str
+    println("${n + 10}")
+}
 ```
 
-The annotated form is what the file now carries, with a comment saying the `[]str`
-is load-bearing.
+Run with two arguments (three with the program name):
 
-## Measured on the real file (one line changed at a time, same tree)
+| form | check | build | prints |
+|---|---|---|---|
+| `control_silent_bool_annotated` (`ro all []str = with ...`) | ok | ok | `13` |
+| `gap_silent_bool` (`ro all = with ...`) | ok | ok | **`true`** |
 
-| line 144 | build |
-|---|---|
-| `ro argv []str = if all.len() == 0 { all } else { all[1..] }` | ok |
-| `ro argv = if all.len() == 0 { all } else { all[1..] }` | **codegen error** |
-| `ro argv []str = all` | ok |
+## What the codegen does
 
-`NOVA_DEBUG_IF_INFER=1` shows the `if` itself typed correctly by the codegen
-(`then_ty=Nova_Vec____nova_str* else_ty=Nova_Vec____nova_str*`), so the loss is not
-in the `if` expression; the failing for-in is somewhere else in `main`.
+The CALL goes to the right function; the TYPE of its result is taken from the other
+function of the same name. The real case in `src/claude_limits.nv` shows it in the C:
 
-A polluted run (two edits at once, so weaker evidence) also failed with
-`match parse(all)` -- `all` being the unannotated result of
-`with Os = real_os() { args() }`. That points at "a binding the codegen has no
-C-type for", not at slices or `if`.
+    NovaValue_Usage _nv_scr_2591 = nova_fn_3cli4args5parse(argv);
 
-## Excluded in isolation -- every form below builds and runs
+`cli.args.parse` is called (right), its `Result` is stored in a `Usage` temporary --
+the return type of `usage.parse.parse` (wrong). There the C compiler happened to
+refuse it; with `int` against `bool` C converts silently, and the value is corrupted.
 
-Each has its control; all green, which is the point: none of these axes is the cause.
+**The trigger is an argument the codegen holds no C-type for** -- here the value of a
+`with` block bound without an annotation. With a literal, or with any annotation, the
+right overload's type is found:
 
-| form | axis |
-|---|---|
-| `gap_for` | unannotated `if` vec/slice, then for-in over it |
-| `gap_pass` | the same value passed to a fn that iterates |
-| `gap_closure` | a closure with a for-in in the same scope |
-| `gap_result_field` | for-in over a field of `parse(v)`'s result |
-| `gap_captured_field` | that field iterated inside a closure capturing `a` |
-| `gap_use_in_arm` | `v.len()` used inside the `Ok(a)` arm, as line 190 does |
-| `gap_with` | `all` from `with Os = real_os() { args() }` |
-| `gap_xmod_with` | `parse` in ANOTHER module, fed the `with`-block value |
-| (on the real file) | renaming `all`: the closure's own `mut all []str` is not it |
+| form | argument | result |
+|---|---|---|
+| `gap_two_parse` | vector literal | correct |
+| `gap_mod_named_parse_lit` | literal, second `parse` in a module named `parse` | correct |
+| `gap_mod_named_parse_with` | `with` block, through an unannotated `if` | codegen error |
+| `gap_with_no_if` | `with` block, `ro v = all` | codegen error |
+| `gap_with_direct` | `with` block, `parse(all)` directly | codegen error |
+| `gap_with_lib_text` | as above, second module NOT named `parse` | codegen error |
+| `control_with_one_parse` | `with` block, only ONE `parse` imported | correct |
+| `gap_silent_bool` | `with` block, the two return types C-compatible | **wrong value** |
 
-## Where to look next
+So: the module's name, `if`, slices -- none of it matters. Two same-named imports plus
+an argument of unknown codegen type is enough.
 
-The real `main` is ~150 lines with several closures (`with_real_disk(fn() ... {..})`,
-`with_real_autostart(...)`) and a match with seven arms. The next attempt should
-bisect the REAL function -- delete arms and closures until the error disappears --
-rather than build up from a guess; nine guesses built up from nothing all missed.
+## Class
 
-Family, if it holds: registry 221.1 #1105 / #1106 -- the codegen working a type out
-again from the shape of an expression the frontend already typed.
+K1 (silent wrong result). Family: registry 221.1 #1105 / #1106 -- the frontend knows
+the answer (it resolved the call), and a second consumer works it out again, here by
+NAME, and gets it wrong.
+
+## How it was found, and what did NOT reproduce it
+
+claude-limits `main` imports both `cli.args.{parse}` and `usage.parse.{parse}`. A lint
+fix made `argv` an unannotated `if` over `all` (itself an unannotated `with` result),
+and the build failed with "for-in: cannot resolve iterator type for expression of
+C-type ''" and no location. Nine guesses built up from nothing missed (the older
+`gap_*` forms with one `parse` in scope, all green, kept as excluded axes). The case
+was found by bisecting the REAL function: emptying one match arm turned the vague
+for-in error into the C type mismatch above, which named the second `parse`.
+
+claude-limits keeps `ro argv []str = ...`; the comment at that line points here.

@@ -1,0 +1,13 @@
+module probe_far_for_in.control_silent_bool_annotated
+
+import std.os.{args, real_os}
+import probe_far_for_in.lib_count.{parse}
+import probe_far_for_in.lib_flag.{parse}
+
+// parse(all) is lib_count: the argument count, an int. If the codegen types the
+// temporary by the OTHER parse, the int passes through a bool and prints 1 or true.
+fn main() Io {
+    ro all []str = with Os = real_os() { args() }
+    ro n = parse(all)
+    println("${n + 10}")
+}

@@ -141,10 +141,11 @@ fn main() Io {
     // here.
     ro all = with Os = real_os() { args() }
     // A view, not a copy (D262). An empty vector has no program name to drop.
-    // THE `[]str` IS LOAD-BEARING: without it `nova check` passes and the codegen
-    // fails a for-in ELSEWHERE in this function ("cannot resolve iterator type for
-    // expression of C-type ''"). Not reproduced in isolation yet -- see
-    // probes/unannotated-let-breaks-far-for-in before removing it.
+    // THE `[]str` IS LOAD-BEARING. This file imports TWO functions named `parse`
+    // (cli.args and usage.parse), and for an argument it holds no C-type for, the
+    // codegen types the call's result by the WRONG one -- here a for-in then fails;
+    // with C-compatible return types the value is silently corrupted. Isolated in
+    // probes/unannotated-let-breaks-far-for-in; keep the annotation until it is fixed.
     ro argv []str = if all.len() == 0 { all } else { all[1..] }
 
     match parse(argv) {

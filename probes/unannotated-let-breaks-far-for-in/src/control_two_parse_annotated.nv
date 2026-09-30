@@ -1,0 +1,17 @@
+module probe_far_for_in.control_two_parse_annotated
+
+import probe_far_for_in.lib.{parse}
+import probe_far_for_in.lib_text.{parse}
+
+fn main() Io {
+    ro all = ["prog", "a", "b"]
+    ro v []str = if all.len() == 0 { all } else { all[1..] }
+    match parse(v) {
+        Err(e) => println(e)
+        Ok(a) => {
+            mut n = 0
+            for d in a.dirs { if d != "" { n += 1 } }
+            println("${n} ${parse("xyz").size}")
+        }
+    }
+}

@@ -1,0 +1,4 @@
+module probe_far_for_in.lib_count
+
+/// The number of arguments.
+export fn parse(xs []str) -> int => xs.len()

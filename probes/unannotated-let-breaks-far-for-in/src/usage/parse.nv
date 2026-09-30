@@ -1,0 +1,7 @@
+module probe_far_for_in.usage.parse
+
+export type Summary value {
+    size int
+}
+
+export fn parse(body str) -> Summary => { size: body.byte_len() }

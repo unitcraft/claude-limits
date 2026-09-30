@@ -1,4 +1,4 @@
-# Probe: an unannotated let in main breaks a for-in elsewhere in the same function (codegen only)
+# Probe: two imported functions share a name; codegen types the call by the wrong one (silent miscompile)
 
 [lib]
 src = "src"

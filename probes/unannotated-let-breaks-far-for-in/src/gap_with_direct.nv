@@ -1,0 +1,17 @@
+module probe_far_for_in.gap_with_direct
+
+import std.os.{args, real_os}
+import probe_far_for_in.lib.{parse}
+import probe_far_for_in.usage.parse.{parse}
+
+fn main() Io {
+    ro all = with Os = real_os() { args() }
+    match parse(all) {
+        Err(e) => println(e)
+        Ok(a) => {
+            mut n = 0
+            for d in a.dirs { if d != "" { n += 1 } }
+            println("${n} ${parse("xyz").size}")
+        }
+    }
+}

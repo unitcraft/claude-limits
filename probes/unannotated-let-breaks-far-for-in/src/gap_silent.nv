@@ -1,0 +1,13 @@
+module probe_far_for_in.gap_silent
+
+import std.os.{args, real_os}
+import probe_far_for_in.lib_count.{parse}
+import probe_far_for_in.lib_len.{parse}
+
+// The checker resolves parse(all) to lib_count (all is []str) and must print
+// the argument count. A number of 1000 or more means lib_len was CALLED with a
+// vector where a string belongs.
+fn main() Io {
+    ro all = with Os = real_os() { args() }
+    println("${parse(all)}")
+}

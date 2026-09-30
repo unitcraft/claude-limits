@@ -1,0 +1,4 @@
+module probe_far_for_in.lib_len
+
+/// A fixed marker, so a wrong dispatch is visible in the output.
+export fn parse(body str) -> int => 1000 + body.byte_len()
