@@ -1,14 +1,14 @@
-// maintenance.nv -- rollups and retention (task T2.6, first half).
+// maintenance.nv -- rollups, retention and anonymisation (task T2.6).
 //
-// ANONYMISATION IS HERE BUT NOT RUN, and that is a decision forced by the engine, not
-// a gap left open (measured 2026-09-30; pinned by maintenance_test's KNOWN LIMIT test):
-// DuckDB refuses to UPDATE an INDEXED column of a row another table references
-// ("key ... is still referenced by a foreign key in a different table"). `path` is
-// under UNIQUE on both `folder` and `login_dir`, and `login_dir` references `folder`,
-// `occupancy` references `login_dir` -- so the rewrite §5 asks for fails on exactly the
-// rows it is for. Inside the retention transaction one refused statement would roll
-// the whole pass back, and no day would ever be rolled up. `anonymise_sql` therefore
-// stands apart, and how the schema should change is a question to the owner.
+// ANONYMISATION RUNS IN THE RETENTION PASS since 2026-09-30. Before that it stood
+// apart, forced by the engine: DuckDB refuses to UPDATE an INDEXED column of a row
+// another table references ("key ... is still referenced by a foreign key in a
+// different table"), `path` is under UNIQUE on `folder` and `login_dir`, and
+// `login_dir` referenced `folder`, `occupancy` referenced `login_dir` -- so the
+// rewrite §5 asks for failed on exactly the rows it is for, and inside the pass one
+// refused statement would have rolled everything back. The owner's answer (plan 01.5,
+// question 7): those two links lose `REFERENCES`, the columns stay. maintenance_test
+// shows the rewrite now passes on a folder a directory still points at.
 //
 //   ./nova.sh test src/storage/ --filter maintenance_test
 //
@@ -107,20 +107,22 @@ export fn retention_sql(p Policy, now_ms int, instance str) -> []str {
     ro inst = quote(instance)
     ro kept = first_kept_day(p, now_ms)
     ro today = local_day(now, p.tz)
+    ro anon = anonymise_sql(p, now_ms, instance)
     [
         rollup_sql(p, now_ms, instance),
         "DELETE FROM sample WHERE ${local_day("sampled_at", p.tz)} < ${kept}",
         "DELETE FROM poll WHERE ${local_day("polled_at", p.tz)} < ${kept}",
         "DELETE FROM daily_rollup WHERE day_on < (${today} - ${p.rollup_keep_days})",
         "DELETE FROM config_history WHERE id NOT IN (SELECT id FROM config_history ORDER BY created_at DESC LIMIT ${p.config_versions_keep})",
+        anon[0],
+        anon[1],
         "INSERT INTO schema_meta VALUES ('last_rollup_day', (${kept} - 1)::VARCHAR) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
     ]
 }
 
 /// Anonymisation by age (01.2 §5, convention §13.6): a path removed longer ago than
 /// `rollup_keep_days` becomes `deleted:<id>`; the `name` stays for the history's
-/// captions. NOT part of `retention_sql` -- see the header: DuckDB refuses it on any
-/// row still referenced, which is every row it is meant for.
+/// captions. Part of `retention_sql` -- see the header for why it once was not.
 export fn anonymise_sql(p Policy, now_ms int, instance str) -> []str {
     ro now = moment(now_ms)
     ro inst = quote(instance)

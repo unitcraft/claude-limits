@@ -55,7 +55,7 @@ CREATE TABLE login_dir (
   deleted_reason VARCHAR(32) CHECK (deleted_reason IN ('removed_from_config','not_found','forgotten')),
   created_by     UUID NOT NULL,
   updated_by     UUID NOT NULL,
-  folder_id      UUID NOT NULL REFERENCES folder(id),
+  folder_id      UUID NOT NULL,                  -- → folder(id); БЕЗ REFERENCES намеренно: DuckDB не даёт менять индексированный path у строки, на которую ссылаются, а обезличивание (§5) делает ровно это (решение владельца 2026-09-30, 01.5 вопрос 7). Целостность держит код записи
   path           VARCHAR NOT NULL,               -- ПДн: содержит имя пользователя ОС (§10); нормализация как у folder.path; у каталога с deleted_at старше rollup_keep_days заменяется на 'deleted:<id>' (§5)
   name           VARCHAR NOT NULL,               -- короткое имя для подписи: nv-lang, dev, dev-wsl
   layout         VARCHAR(32) NOT NULL CHECK (layout IN ('default','config_dir')),  -- .claude.json РЯДОМ или ВНУТРИ
@@ -96,7 +96,7 @@ CREATE TABLE occupancy (
   updated_at   TIMESTAMPTZ NOT NULL,
   created_by   UUID NOT NULL,
   updated_by   UUID NOT NULL,
-  login_dir_id UUID NOT NULL REFERENCES login_dir(id),
+  login_dir_id UUID NOT NULL,                    -- → login_dir(id); БЕЗ REFERENCES по той же причине, что folder_id у login_dir (01.5 вопрос 7)
   account_id   UUID REFERENCES account(id),      -- NULL = логина нет, либо учётка забыта (§3.15)
   token_state  VARCHAR(32) NOT NULL CHECK (token_state IN ('ok','expired','rejected','none')),
   started_at   TIMESTAMPTZ NOT NULL,

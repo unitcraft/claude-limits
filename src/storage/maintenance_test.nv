@@ -104,21 +104,6 @@ fn session(setup []str, queries []str) Io -> []str {
     out
 }
 
-/// Run `setup` and return DuckDB's refusal text, or "<accepted>" when it all went in.
-fn refusal(setup []str) Io -> str {
-    mut out = "<accepted>"
-    ro schema = migration()
-    with Fail[DuckError] = |e| { out = e.message() } {
-        consume db = Database.open_memory(DbOptions.defaults())!! {
-            consume con = db.connect()!! {
-                ro _ = con.exec(schema)!!
-                for s in setup { ro _ = con.exec(s)!! }
-            }
-        }
-    }
-    out
-}
-
 fn with_pass(extra []str) -> []str {
     mut all = fixture()
     for s in retention_sql(policy(), NOW_MS, INST) { all.push(s) }
@@ -211,13 +196,30 @@ test "the anonymisation statement is right where the engine allows it" {
     assert(same("recent dir path", "C:/Users/me/accounts/nv-lang", a[2]))
 }
 
-test "KNOWN LIMIT: DuckDB refuses the rewrite on a row that is still referenced" {
-    // FOLD_OLD is referenced by DIR_OLD. This is why `anonymise_sql` is NOT part of the
-    // retention pass (see maintenance.nv's header): one refused statement would roll the
-    // whole pass back. A TRIPWIRE, not a wish -- if a DuckDB upgrade lifts the limit,
-    // this test turns red, and the open question about the schema can be closed.
-    ro err = refusal(with_pass([anonymise_sql(policy(), NOW_MS, INST)[1]]))
-    assert(err.contains("still referenced by a foreign key"))
+test "a folder a directory still points at is anonymised too (no REFERENCES since question 7)" {
+    // FOLD_OLD is pointed at by DIR_OLD. With `login_dir.folder_id REFERENCES folder`
+    // DuckDB refused this very statement ("still referenced by a foreign key"); the
+    // owner's answer to plan 01.5 question 7 dropped that REFERENCES, and the rewrite
+    // goes through. The link itself survives: DIR_OLD still names FOLD_OLD.
+    ro a = session(with_pass([anonymise_sql(policy(), NOW_MS, INST)[1]]), [
+        "SELECT path FROM folder WHERE id = '${FOLD_OLD}'",
+        "SELECT folder_id::VARCHAR FROM login_dir WHERE id = '${DIR_OLD}'",
+    ])
+    assert(same("old folder path", "deleted:${FOLD_OLD}", a[0]))
+    assert(same("link kept", FOLD_OLD, a[1]))
+}
+
+test "the retention pass anonymises, in the same transaction as the rollup" {
+    // Both rewrites run inside `retention_sql`: an old directory AND the old folder it
+    // points at, while the recently removed directory keeps its path.
+    ro a = session(with_pass(retention_sql(policy(), NOW_MS, INST)), [
+        "SELECT path FROM login_dir WHERE id = '${DIR_OLD}'",
+        "SELECT path FROM folder WHERE id = '${FOLD_OLD}'",
+        "SELECT path FROM login_dir WHERE id = '${DIR_NEW}'",
+    ])
+    assert(same("old dir", "deleted:${DIR_OLD}", a[0]))
+    assert(same("old folder", "deleted:${FOLD_OLD}", a[1]))
+    assert(same("recent dir", "C:/Users/me/accounts/nv-lang", a[2]))
 }
 
 test "twice in a row changes nothing (convention §11.5)" {
