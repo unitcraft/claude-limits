@@ -35,7 +35,11 @@ import claude_limits.server.dto.{SnapshotView}
 /// A sum, because the alternative is a record with a "kind" field and five optional
 /// payloads -- which makes every unused combination representable and none of them
 /// checked.
-export type Request enum
+/// NOT `Request`: `http` declares `export type Request consume`, and with both in one
+/// unit the checker judged `Envelope.req` against the OTHER one -- "field `req` has a
+/// consume type" (registry 221.1 #154 class, measured 2026-09-30 when `server/feed.nv`
+/// first put this module beside the HTTP client).
+export type StoreAsk enum
     /// Give me the snapshot as it stands.
     | GetSnapshot(ChanTx[Snapshot])
     /// Fold one account's reading in. No reply: the sender has nothing to wait for,
@@ -59,10 +63,13 @@ export type Request enum
     | SetView(SnapshotView)
     /// Give me that body.
     | GetView(ChanTx[SnapshotView])
+    /// Time for a poll round. Sent by a timer fiber; acted on by the loop that owns the
+    /// poller, because the poll cannot run in a spawned fiber (D446 refuses the chain).
+    | Tick
 
 /// The envelope the request travels in. A WORKAROUND, not a form.
 ///
-/// `Chan[Request]` does not compile: `Chan[T].new` emits `ChanPair[T]` and not the two
+/// `Chan[StoreAsk]` does not compile: `Chan[T].new` emits `ChanPair[T]` and not the two
 /// types its own fields are made of, when T is a user-defined sum. Four probes isolate
 /// it in `probes/chan-of-user-sum/` -- `Chan[int]` and `Chan[<record>]` pass, a sum
 /// fails, and a record CONTAINING the same sum passes. `nova check` says `ok:` to all
@@ -74,10 +81,10 @@ export type Request enum
 /// REMOVE THIS WHEN THE DEFECT IS FIXED. One line here, one unwrap in the loop.
 /// [M-chan-envelope-workaround]
 export type Envelope value {
-    ro req Request
+    ro req StoreAsk
 }
 
-export fn Envelope.new(req Request) -> Envelope => { req }
+export fn Envelope.new(req StoreAsk) -> Envelope => { req }
 
 /// A list of events, boxed for the same reason as `Envelope`: a channel cannot carry a
 /// VECTOR either. The axis turned out to be pointer representation, not sums -- vectors
@@ -117,40 +124,58 @@ export fn run(rx ChanRx[Envelope], start Snapshot) -> () {
     // Replaying costs one pass at start-up, has no aliasing question, and runs a
     // restored snapshot through the SAME path a polled one takes -- so the two cannot
     // be subtly different.
-    mut snap = Snapshot.empty()
-    for slot in start.accounts { merge(snap, slot) }
-    snap.fetched_at_ms = start.fetched_at_ms
-    snap.restored = start.restored
-    mut reg = Registry.new()
-    mut view = nothing_yet()
-
+    mut st = StoreState.new(start)
     mut going = true
     while going {
         match rx.recv() {
             None => { going = false }
-            Some(env) => {
-                // Unwrap the envelope. [M-chan-envelope-workaround]
-                match env.req {
-                    // nova:allow W_RESULT_DISCARDED -- the asker is gone; there is nothing to do and nobody to tell
-                    Request.GetSnapshot(reply) => { ro _ = reply.send(snap) }
-                    Request.Merge(slot) => { merge(snap, slot) }
-                    // nova:allow W_RESULT_DISCARDED -- the asker is gone; there is nothing to do and nobody to tell
-                    Request.Subscribe(reply) => { ro _ = reply.send(subscribe(reg)) }
-                    Request.Unsubscribe(id) => { unsubscribe(reg, id) }
-                    Request.Publish(name, data, reply) => {
-                        // nova:allow W_RESULT_DISCARDED -- the asker is gone; there is nothing to do and nobody to tell
-                        ro _ = reply.send(publish(reg, name, data))
-                    }
-                    // nova:allow W_RESULT_DISCARDED -- the asker is gone; there is nothing to do and nobody to tell
-                    Request.Since(after, reply) => { ro _ = reply.send(Events.new(since(reg, after))) }
-                    // nova:allow W_RESULT_DISCARDED -- the asker is gone; there is nothing to do and nobody to tell
-                    Request.Missed(after, reply) => { ro _ = reply.send(missed(reg, after)) }
-                    Request.SetView(v) => { view = v }
-                    // nova:allow W_RESULT_DISCARDED -- the asker is gone; there is nothing to do and nobody to tell
-                    Request.GetView(reply) => { ro _ = reply.send(view) }
-                }
-            }
+            // Unwrap the envelope. [M-chan-envelope-workaround]
+            Some(env) => step(st, env.req)
         }
+    }
+}
+
+/// What the store holds. A record so that a loop other than `run` -- the one `--serve`
+/// runs, which also polls -- can hold the same state and hand every request to the
+/// same `step`: one home for what each request does.
+export type StoreState {
+    mut snap Snapshot
+    mut reg Registry
+    mut view SnapshotView
+}
+
+/// The state a store starts in. See `run` for why the snapshot is replayed, not copied.
+export fn StoreState.new(start Snapshot) -> StoreState {
+    mut snap = Snapshot.empty()
+    for slot in start.accounts { merge(snap, slot) }
+    snap.fetched_at_ms = start.fetched_at_ms
+    snap.restored = start.restored
+    { snap, reg: Registry.new(), view: nothing_yet() }
+}
+
+/// Answer one request. `Tick` is not answered here: it asks for a poll round, which
+/// only a loop that owns a poller can run (`server.feed.store_and_poll`); in a plain
+/// store it is a no-op, never a failure.
+export fn step(mut st StoreState, ask StoreAsk) -> () {
+    match ask {
+        // nova:allow W_RESULT_DISCARDED -- the asker is gone; there is nothing to do and nobody to tell
+        StoreAsk.GetSnapshot(reply) => { ro _ = reply.send(st.snap) }
+        StoreAsk.Merge(slot) => { merge(st.snap, slot) }
+        // nova:allow W_RESULT_DISCARDED -- the asker is gone; there is nothing to do and nobody to tell
+        StoreAsk.Subscribe(reply) => { ro _ = reply.send(subscribe(st.reg)) }
+        StoreAsk.Unsubscribe(id) => { unsubscribe(st.reg, id) }
+        StoreAsk.Publish(name, data, reply) => {
+            // nova:allow W_RESULT_DISCARDED -- the asker is gone; there is nothing to do and nobody to tell
+            ro _ = reply.send(publish(st.reg, name, data))
+        }
+        // nova:allow W_RESULT_DISCARDED -- the asker is gone; there is nothing to do and nobody to tell
+        StoreAsk.Since(after, reply) => { ro _ = reply.send(Events.new(since(st.reg, after))) }
+        // nova:allow W_RESULT_DISCARDED -- the asker is gone; there is nothing to do and nobody to tell
+        StoreAsk.Missed(after, reply) => { ro _ = reply.send(missed(st.reg, after)) }
+        StoreAsk.SetView(v) => { st.view = v }
+        // nova:allow W_RESULT_DISCARDED -- the asker is gone; there is nothing to do and nobody to tell
+        StoreAsk.GetView(reply) => { ro _ = reply.send(st.view) }
+        StoreAsk.Tick => ()
     }
 }
 
@@ -163,7 +188,7 @@ export fn run(rx ChanRx[Envelope], start Snapshot) -> () {
 export fn Store @snapshot() -> Snapshot {
     ro pair = Chan[Snapshot].new(1)
     // nova:allow W_RESULT_DISCARDED -- a closed channel surfaces as `None` from the `recv` below, which has its own answer
-    ro _ = @tx.send(Envelope.new(Request.GetSnapshot(pair.tx)))
+    ro _ = @tx.send(Envelope.new(StoreAsk.GetSnapshot(pair.tx)))
     // No reply means the fiber is gone. An empty snapshot is the honest answer: we
     // know nothing, which is exactly what an empty one says. Inventing a stale one
     // would be worse -- a page showing yesterday's numbers as today's.
@@ -174,14 +199,14 @@ export fn Store @snapshot() -> Snapshot {
 /// delivered: this door awaits no reply, so a closed channel would otherwise drop
 /// a poller's measurement with nobody the wiser. `false` means the store is gone.
 export fn Store @merge(slot AccountSlot) -> bool {
-    @tx.send(Envelope.new(Request.Merge(slot)))
+    @tx.send(Envelope.new(StoreAsk.Merge(slot)))
 }
 
 /// Register a subscriber, and get its id.
 export fn Store @subscribe() -> int {
     ro pair = Chan[int].new(1)
     // nova:allow W_RESULT_DISCARDED -- a failed send surfaces as `None` below, and 0 is the documented answer for it
-    ro _ = @tx.send(Envelope.new(Request.Subscribe(pair.tx)))
+    ro _ = @tx.send(Envelope.new(StoreAsk.Subscribe(pair.tx)))
     // No reply gives ZERO, AND IT IS DISTINCT FROM -1 ON PURPOSE. `subscribe` answers
     // -1 when the registry is full -- the fiber replied and said no. Zero means nothing
     // replied at all, because the store is gone. A caller that conflates them retries a
@@ -192,14 +217,14 @@ export fn Store @subscribe() -> int {
 /// `false` means the store is gone, so the subscription died with it -- which is
 /// the same outcome the caller wanted, but it should learn it rather than assume.
 export fn Store @unsubscribe(id int) -> bool {
-    @tx.send(Envelope.new(Request.Unsubscribe(id)))
+    @tx.send(Envelope.new(StoreAsk.Unsubscribe(id)))
 }
 
 /// Publish, and get the event with its assigned id.
 export fn Store @publish(name str, data str) -> Option[Event] {
     ro pair = Chan[Event].new(1)
     // nova:allow W_RESULT_DISCARDED -- `recv` below returns `None` on a failed send, which is this door's whole answer
-    ro _ = @tx.send(Envelope.new(Request.Publish(name, data, pair.tx)))
+    ro _ = @tx.send(Envelope.new(StoreAsk.Publish(name, data, pair.tx)))
     pair.rx.recv()
 }
 
@@ -207,7 +232,7 @@ export fn Store @publish(name str, data str) -> Option[Event] {
 export fn Store @since(after int) -> []Event {
     ro pair = Chan[Events].new(1)
     // nova:allow W_RESULT_DISCARDED -- a failed send surfaces as `None` below, answered with an empty list
-    ro _ = @tx.send(Envelope.new(Request.Since(after, pair.tx)))
+    ro _ = @tx.send(Envelope.new(StoreAsk.Since(after, pair.tx)))
     match pair.rx.recv() {
         Some(box) => box.items
         None => []
@@ -218,7 +243,7 @@ export fn Store @since(after int) -> []Event {
 export fn Store @missed(after int) -> bool {
     ro pair = Chan[bool].new(1)
     // nova:allow W_RESULT_DISCARDED -- a failed send surfaces as `None` below, answered with `true` on purpose
-    ro _ = @tx.send(Envelope.new(Request.Missed(after, pair.tx)))
+    ro _ = @tx.send(Envelope.new(StoreAsk.Missed(after, pair.tx)))
     // No reply is "unknown", answered `true` and not `false`: a caller that cannot
     // reach the store should resend the whole snapshot rather than assume its cursor
     // is still good.
@@ -227,7 +252,7 @@ export fn Store @missed(after int) -> bool {
 
 /// Replace the snapshot body. `false` means the store is gone.
 export fn Store @set_view(v SnapshotView) -> bool {
-    @tx.send(Envelope.new(Request.SetView(v)))
+    @tx.send(Envelope.new(StoreAsk.SetView(v)))
 }
 
 /// The snapshot body as it stands; before the first poll, and when the store is gone,
@@ -235,6 +260,11 @@ export fn Store @set_view(v SnapshotView) -> bool {
 export fn Store @view() -> SnapshotView {
     ro pair = Chan[SnapshotView].new(1)
     // nova:allow W_RESULT_DISCARDED -- a failed send surfaces as `None` below, answered with the empty body
-    ro _ = @tx.send(Envelope.new(Request.GetView(pair.tx)))
+    ro _ = @tx.send(Envelope.new(StoreAsk.GetView(pair.tx)))
     pair.rx.recv() ?? nothing_yet()
+}
+
+/// Ask for a poll round. `false` means the store is gone -- the timer's cue to stop.
+export fn Store @tick() -> bool {
+    @tx.send(Envelope.new(StoreAsk.Tick))
 }

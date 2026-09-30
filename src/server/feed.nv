@@ -39,10 +39,13 @@ import claude_limits.accounts.discover.{Dirs, LoginDir, scan}
 import claude_limits.accounts.login.{Login, TokenState, Creds, read_login, read_token}
 import claude_limits.accounts.group.{group}
 import claude_limits.cli.table.{short_name}
-import claude_limits.server.dto.{DirView}
-import claude_limits.model.live.{Known}
+import claude_limits.server.dto.{DirView, SnapshotView}
+import claude_limits.model.live.{Known, view_of}
+import claude_limits.model.store_fiber.{Envelope, StoreState, step}
+import claude_limits.model.store.{Snapshot}
+import std.concurrency.nvchan.{ChanRx}
 import claude_limits.window.{Window}
-import claude_limits.model.snapshot.{AccountState, stale_message, rate_limited_badge, network_badge}
+import claude_limits.model.snapshot.{AccountState, SeverityBounds, stale_message, rate_limited_badge, network_badge}
 import claude_limits.usage.outcome.{Outcome}
 import claude_limits.usage.poller.{PollTarget, PollLog, poll_once}
 import claude_limits.usage.parse.{PollOutcome}
@@ -175,6 +178,70 @@ fn prev_polled(p Option[Known]) -> int =>
         Some(k) => k.polled_at_ms
         None => 0
     }
+
+/// What one round needs besides the moment.
+export type Rounds value {
+    ro folders []str
+    ro interval_sec int
+    ro bounds SeverityBounds
+    ro zone TimeZone
+    ro tz str
+}
+
+export fn Rounds.new(folders []str, interval_sec int, bounds SeverityBounds, zone TimeZone, tz str) -> Rounds =>
+    { folders, interval_sec, bounds, zone, tz }
+
+/// One round: find the accounts, ask about them, and put the snapshot body -- computed
+/// AT THIS MOMENT -- into the store's state. The folders are found again every round:
+/// a login added while the server runs appears without a restart.
+fn round(mut st StoreState, before []Known, r Rounds) Http PollLog Creds Dirs Time -> []Known {
+    ro now = Time.now().unix_millis()
+    ro next = now + r.interval_sec * 1000
+    ro known = poll_round(found_in(r.folders, now), before, now, next, r.zone)
+    st.view = view_of(known, r.bounds, now, next, r.tz, r.zone)
+    known
+}
+
+/// One round with no store around it: what `--serve` shows until the rounds repeat.
+///
+/// THE INTERIM SHAPE, AND WHY (2026-09-30). The repeating loop below builds and passes
+/// its tests, and in the binary it does not run: a request from a polaris connection
+/// fiber to the store in the main fiber never gets its answer (`/api/snapshot` hangs,
+/// even with a plain store `run` and no poller), and the timer fiber dies at start
+/// ("fiber stack overflow in slot 2", at 4 MB and at 64 MB alike). Both are handed to
+/// the compiler registry. Until then `--serve` runs ONE round before it listens and
+/// serves that body: the accounts, their token states, and what the endpoint said.
+export fn one_round(r Rounds) Http PollLog Creds Dirs Time -> SnapshotView {
+    mut st = StoreState.new(Snapshot.empty())
+    ro _ = round(st, [], r)
+    st.view
+}
+
+/// The store's loop, WITH the poller: `--serve` runs it in its main fiber.
+///
+/// WHY ONE LOOP AND NOT A POLLER FIBER BESIDE THE STORE. The checker refuses the poll in
+/// a `spawn`: D446 traces `poll_round` down to a std string function it counts as a
+/// mutation (`str.to_ascii_lower` -> `[]u8.into_str_unchecked`), and the store's own
+/// `run` mutates too. So both live here; a timer fiber sends `Tick`, and every other
+/// request goes to the store's `step` -- one home for what each request does. A round
+/// holds the store for its few requests; the server's readers wait that long.
+///
+/// The first round runs at once: a page opened right after the start shows accounts,
+/// not "nothing yet" for a whole interval.
+export fn store_and_poll(rx ChanRx[Envelope], r Rounds) Http PollLog Creds Dirs Time -> () {
+    mut st = StoreState.new(Snapshot.empty())
+    mut before = round(st, [], r)
+    mut going = true
+    while going {
+        match rx.recv() {
+            None => { going = false }
+            Some(env) => match env.req {
+                StoreAsk.Tick => { before = round(st, before, r) }
+                _ => step(st, env.req)
+            }
+        }
+    }
+}
 
 /// Ask about every account whose token allows it, and say what is known of the rest.
 ///

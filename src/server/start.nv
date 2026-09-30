@@ -159,13 +159,11 @@ export fn health_at(cfg Config, paths Paths, started_at str) -> HealthState => {
 // literal inside a closure is typed as the ENCLOSING literal's type (registry 221.1
 // #1392).
 
-fn view_at_start() -> SnapshotView => {
-    fetched_at: "", next_poll_at: "", tz: "UTC", restored: false, worst: None,
-    accounts: [], limits: [],
-}
-
-fn snapshot_at_start(tag str) -> SnapshotState => {
-    view: view_at_start(), order: [], hidden: [], config_etag: tag, disclosure: Disclosure.Loopback,
+/// The snapshot handler's state around a body: the person's order and hidden list from
+/// the settings (01.3 §3.3 applies them per request, in `snapshot.arrange`).
+fn snapshot_around(v SnapshotView, cfg Config, tag str) -> SnapshotState => {
+    view: v, order: cfg.ui.accounts_order, hidden: cfg.ui.hidden_accounts, config_etag: tag,
+    disclosure: Disclosure.Loopback,
 }
 
 fn refresh_at_start(cfg Config, now_ms int) -> RefreshState => {
@@ -185,15 +183,17 @@ fn token_at_start(cfg Config, tag str) -> TokenEndpointState => { cfg, etag: tag
 
 fn export_at_start() -> ExportState => { from_day: "", to_day: "", rows: [], disclosure: Disclosure.Loopback }
 
-/// Everything the router reads, for a process that has just started.
+/// Everything the router reads.
 ///
-/// The settings and `health` are REAL; the snapshot, the folders and the history are
-/// empty until the store, discovery and the database are wired (see the header).
-export fn sources_at_start(cfg Config, paths Paths, started_at str, now_ms int) -> Sources {
+/// `current` hands over the snapshot body as it stands -- in the binary, the store's
+/// (`store.view()`, computed by the poller at the moment of its round); in a test,
+/// whatever body the test wants the page to get. The settings and `health` are real;
+/// the folders and the history stay empty until discovery and the database are wired.
+export fn sources_at_start(cfg Config, paths Paths, started_at str, now_ms int, current fn() -> SnapshotView) -> Sources {
     ro tag = tag_of(render(cfg))
     Sources.new(
         fn() -> HealthState => health_at(cfg, paths, started_at),
-        fn() -> SnapshotState => snapshot_at_start(tag),
+        fn() -> SnapshotState => snapshot_around(current(), cfg, tag),
         fn() -> RefreshState => refresh_at_start(cfg, now_ms),
         fn() -> EventsState => events_at_start(),
         fn() -> ConfigState => config_at_start(cfg, tag, paths),

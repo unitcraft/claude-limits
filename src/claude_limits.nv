@@ -52,6 +52,15 @@ import claude_limits.storage.config_file.{load}
 import claude_limits.server.app.{api_router}
 import claude_limits.server.handlers.config.{base_url}
 import claude_limits.server.start.{real_paths_input, decide_start, sources_at_start}
+import claude_limits.server.feed.{Rounds, one_round}
+import claude_limits.model.snapshot.{SeverityBounds}
+import claude_limits.server.dto.{SnapshotView}
+import claude_limits.accounts.discover.{Dirs}
+import claude_limits.accounts.login.{Creds}
+import claude_limits.usage.poller.{PollLog}
+import std.time.civil.{TimeZone, Offset}
+import http.transport.{real_http}
+import http.{Http}
 
 const USAGE = "usage: claude-limits [--once | --serve] [--config PATH] [--offline DIR] [--parent DIR] [--color auto|always|never] [DIR ...]"
 const USAGE_AUTOSTART = "       claude-limits --install-autostart | --uninstall-autostart"
@@ -166,32 +175,42 @@ fn serve_mode(exe str, config_override str) Io Net Time Detach -> int {
         }
         Start.Go(cfg, repairs) => {
             for r in repairs { println("claude-limits: ${r}") }
-            ro now = Time.now().unix_millis()
-            ro routed = api_router(sources_at_start(cfg, paths, moment_iso(now), now))
-            match routed {
+            ro addr = listen_addr(cfg)
+            match TcpListener.bind(addr) {
                 Err(e) => {
-                    println("claude-limits: the router did not build: ${e}")
+                    println("claude-limits: cannot listen on ${addr}: ${e}")
+                    println("claude-limits: is another copy already running? The port is [server] port in ${paths.config_file}")
                     return EXIT_OTHER
                 }
-                Ok(router) => {
-                    ro addr = listen_addr(cfg)
-                    match TcpListener.bind(addr) {
-                        Err(e) => {
-                            println("claude-limits: cannot listen on ${addr}: ${e}")
-                            println("claude-limits: is another copy already running? The port is [server] port in ${paths.config_file}")
-                            return EXIT_OTHER
+                Ok(consume listener) => {
+                    // ONE ROUND, AFTER THE BIND: a second copy on a busy port must not
+                    // ask the endpoint at all. The rounds do not repeat yet -- see
+                    // `feed.one_round` for the two runtime defects that stop them.
+                    ro now = Time.now().unix_millis()
+                    ro bounds = SeverityBounds.new(cfg.thresholds.warning, cfg.thresholds.critical)
+                    ro rounds = Rounds.new(cfg.folders, cfg.poll.interval_sec, bounds, TimeZone.Fixed(Offset.local()), Offset.local().to_iso())
+                    ro first = with_real_disk(fn() Dirs Creds -> SnapshotView {
+                        with Http = real_http(), PollLog = effect PollLog {
+                            // Nowhere to write it yet: the `poll` table waits on question
+                            // 8, and a log line would carry the e-mail, which 01.2
+                            // section 10 keeps out of logs.
+                            record(email str, state str, message str, at_ms int) -> () {}
+                        } {
+                            one_round(rounds)
                         }
-                        Ok(consume listener) => {
-                            if loaded.missing {
-                                println("claude-limits: no settings file yet, running on the defaults (${paths.config_file})")
-                            } else {
-                                println("claude-limits: settings ${paths.config_file}")
-                            }
-                            println("claude-limits: listening on ${base_url(cfg)}/  (Ctrl+C to stop)")
-                            serve_router(listener, router, ServerPolicy.new())
-                            return EXIT_OK
-                        }
+                    })
+                    if loaded.missing {
+                        println("claude-limits: no settings file yet, running on the defaults (${paths.config_file})")
+                    } else {
+                        println("claude-limits: settings ${paths.config_file}")
                     }
+                    println("claude-limits: ${first.accounts.len()} account(s) found in ${cfg.folders.len()} folder(s)")
+                    // `!!`: the table is static, and `app_test` builds the same one -- a
+                    // refusal here is a programming error, not a condition of this run.
+                    ro router = api_router(sources_at_start(cfg, paths, moment_iso(now), now, fn() -> SnapshotView => first))!!
+                    println("claude-limits: listening on ${base_url(cfg)}/  (Ctrl+C to stop)")
+                    serve_router(listener, router, ServerPolicy.new())
+                    return EXIT_OK
                 }
             }
         }

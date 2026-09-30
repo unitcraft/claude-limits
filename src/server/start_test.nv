@@ -15,6 +15,8 @@ import claude_limits.server.app.{api_router}
 import claude_limits.server.handlers.config.{tag_of, base_url}
 import claude_limits.config.{render, listen_addr}
 import polaris.{serve_once}
+import claude_limits.server.dto.{SnapshotView}
+import claude_limits.model.live.{nothing_yet}
 
 fn same(label str, want str, got str) -> bool {
     if want == got { return true }
@@ -109,8 +111,10 @@ test "health at start says what is true of this process" {
 
 fn wire_text(wire []u8) -> str => unsafe { wire.to_str_unchecked() }
 
-fn ask(path str) Time Random -> str {
-    ro r = api_router(sources_at_start(Config.defaults(), some_paths(), "2026-09-30T09:00:00Z", 1790758800000))!!
+fn ask(path str) Time Random -> str => ask_with(path, fn() -> SnapshotView => nothing_yet())
+
+fn ask_with(path str, current fn() -> SnapshotView) Time Random -> str {
+    ro r = api_router(sources_at_start(Config.defaults(), some_paths(), "2026-09-30T09:00:00Z", 1790758800000, current))!!
     wire_text(serve_once(r, "GET ${path} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"))
 }
 
@@ -126,4 +130,20 @@ test "and the settings, tagged as GET /api/config tags them" {
     ro w = ask("/api/config")
     assert(w.starts_with("HTTP/1.1 200"))
     assert(w.contains(tag_of(render(Config.defaults()))))
+}
+
+// A named function, not a literal inside the lambda (registry 221.1 #1392).
+fn polled_body() -> SnapshotView => {
+    fetched_at: "2026-09-30T09:00:00Z", next_poll_at: "", tz: "+03:00", restored: false,
+    worst: None, accounts: [], limits: [],
+}
+
+test "the snapshot the page gets is the body the source hands over, at request time" {
+    // In the binary the source is the store, filled by the poller; this is the seam
+    // between them, and a start that served a body of its own would pass every other
+    // test here.
+    ro w = ask_with("/api/snapshot", fn() -> SnapshotView => polled_body())
+    assert(w.starts_with("HTTP/1.1 200"))
+    assert(w.contains("2026-09-30T09:00:00Z"))
+    assert(w.contains("+03:00"))
 }

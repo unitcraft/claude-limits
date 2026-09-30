@@ -57,6 +57,11 @@ path = "src/claude_limits.nv"
 http = { git = "https://github.com/nv-lang/nova-http", version = "0.1" }
 polaris = { git = "https://github.com/nv-lang/nova-polaris", version = "0.1" }
 tls = { git = "https://github.com/nv-lang/nova-tls", version = "0.1" }
+# DIRECT, though nothing here imports it: `http` does, and a package's [ffi] shim
+# is compiled only for a DIRECT dependency -- as a transitive one the link fails on
+# five compress_brotli_dec_* symbols (registry 221.1 #1033, probes/brotli-shim-link).
+# Remove when #1033 is fixed; spike T0.2 carries the same line.
+compress = { git = "https://github.com/nv-lang/nova-compress", version = "0.1" }
 # Storage (plan 01.4, tasks T2.2-T2.7). Pulled by version, which means BY TAG: the
 # resolver takes the newest matching tag, so a fix sitting on the package's `main` is
 # invisible here until it is tagged.
