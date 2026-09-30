@@ -221,20 +221,19 @@ export fn open_and_read(path str, key str, temp_dir str, mine str) Db -> Result[
     opts.encryption_key = key
     opts.temp_dir = temp_dir
 
-    ro db = match Db.open(path, opts) {
-        Ok(d) => d
-        Err(e) => return Err(DbRefused(e.message()))
-    }
-    ro conn = match Db.connect(db) {
-        Ok(c) => c
-        Err(e) => return Err(DbRefused(e.message()))
-    }
+    ro db = Db.open(path, opts).map_err(fn(e DuckError) -> OpenFail => DbRefused(e.message()))?
+    ro conn = Db.connect(db).map_err(fn(e DuckError) -> OpenFail => DbRefused(e.message()))?
     ro _ = Db.exec(conn, session_sql(temp_dir))
 
     // A fresh file has no `schema_meta` yet: the query fails and that is the FIRST
     // START, not a fault. Distinguishing them by the error text would be reading
     // DuckDB's wording; distinguishing them by "did the table exist" is the question
     // actually being asked.
+    //
+    // A `match` and not `?? return` or `.map_err(..)?`: the fallback here is an early
+    // SUCCESS, not a propagated error. D86 (2026-09-01) keeps `?? return` illegal in a
+    // `Result` function, and `.map_err` would turn a first start into a failure.
+    // nova:allow W_MANUAL_COALESCE -- an early Ok on a missing table has no shorter canon
     ro rows = match Db.query(conn, "SELECT schema_version, last_opened_by FROM schema_meta LIMIT 1") {
         Ok(r) => r
         Err(_) => return Ok({ instance_id: mine, schema_version: 0, first_start: true,

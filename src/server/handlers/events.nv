@@ -162,12 +162,7 @@ fn run(src EventsSource, ctx Ctx) -> ServerResponse {
     }
 }
 
-fn header_of(ctx Ctx, name str) -> str {
-    match ctx.req.header(name) {
-        Some(v) => v
-        None    => ""
-    }
-}
+fn header_of(ctx Ctx, name str) -> str => ctx.req.header(name) ?? ""
 
 export fn events_handler(src EventsSource) -> ApiHandler {
     ro inner = src

@@ -158,10 +158,7 @@ export fn raw_field_int(text str, key str) -> int {
     for ch in from_colon.trim_ascii().chars() {
         if ch >= '0' && ch <= '9' { digits = "${digits}${ch}" } else { break }
     }
-    match digits.to_int() {
-        Ok(n) => n
-        Err(_) => 0
-    }
+    digits.to_int() ?? 0
 }
 
 /// Lower case, trimmed. One e-mail is one account (plan 01 §0), and `Main@Example.com`

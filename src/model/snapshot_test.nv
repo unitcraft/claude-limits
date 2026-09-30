@@ -19,11 +19,8 @@ import std.time.civil.{TimeZone}
 
 fn utc() -> TimeZone => TimeZone.Utc
 
-fn at(iso str) -> Timestamp =>
-    match iso.to_timestamp() {
-        Ok(t) => t
-        Err(_) => 0.to_unix_seconds()   // a parse failure in a FIXED literal is a test bug, not a case
-    }
+// A parse failure in a FIXED literal is a test bug, not a case.
+fn at(iso str) -> Timestamp => iso.to_timestamp() ?? 0.to_unix_seconds()
 
 // Saturday 2026-09-05 19:47 UTC — the moment the artboards are drawn at.
 fn now() -> Timestamp => at("2026-09-05T19:47:00Z")

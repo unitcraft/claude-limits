@@ -81,10 +81,7 @@ export fn status_of(raw str) -> int {
         Some((code, _)) => code
         None => after_version
     }
-    match code_text.trim_ascii().to_int() {
-        Ok(n) => n
-        Err(_) => 0
-    }
+    code_text.trim_ascii().to_int() ?? 0
 }
 
 /// The value of one header, case-insensitively, or "" when absent.

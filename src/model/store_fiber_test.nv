@@ -62,13 +62,10 @@ fn with_store[T](start Snapshot, body fn(Store) -> T) -> T {
         run(pair.rx, start)
     }
 
-    match back.rx.recv() {
-        Some(v) => v
-        // Unreachable while the body always sends: `supervised` has already joined the
-        // fiber by here, so the value is either in the channel or the fiber panicked --
-        // and a panic would have surfaced before this line.
-        None => panic("the store body produced no result")
-    }
+    // The panic is unreachable while the body always sends: `supervised` has already
+    // joined the fiber by here, so the value is either in the channel or the fiber
+    // panicked -- and a panic would have surfaced before this line.
+    back.rx.recv() ?? panic("the store body produced no result")
 }
 
 test "request/reply answers: an empty store gives an empty snapshot" {

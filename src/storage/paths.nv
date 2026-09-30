@@ -69,14 +69,8 @@ export fn join(base str, name str, windows bool) -> str {
     if base == "" { return name }
     if name == "" { return base }
     ro sep = if windows { "\\" } else { "/" }
-    ro no_slash = match base.strip_suffix("/") {
-        Some(s) => s
-        None => base
-    }
-    ro trimmed = match no_slash.strip_suffix("\\") {
-        Some(s) => s
-        None => no_slash
-    }
+    ro no_slash = base.strip_suffix("/") ?? base
+    ro trimmed = no_slash.strip_suffix("\\") ?? no_slash
     "${trimmed}${sep}${name}"
 }
 

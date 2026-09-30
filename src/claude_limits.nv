@@ -130,10 +130,7 @@ fn recorded_reply(offline str, email str) Creds -> str {
 /// and then the program would tell them to look somewhere it had not written.
 fn home_str() Os -> str =>
     match home_dir() {
-        Some(p) => match p.to_str() {
-            Some(s) => s
-            None => ""
-        }
+        Some(p) => p.to_str() ?? ""
         None => ""
     }
 

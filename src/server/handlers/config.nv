@@ -243,22 +243,16 @@ fn as_int(v JsonValue, path str, mut errs []FieldError, current int) -> int {
 }
 
 fn as_bool(v JsonValue, path str, mut errs []FieldError, current bool) -> bool {
-    match v.bool() {
-        Some(b) => b
-        None => {
-            errs.push(wrong_type(path, "true or false"))
-            current
-        }
+    v.bool() ?? {
+        errs.push(wrong_type(path, "true or false"))
+        current
     }
 }
 
 fn as_str(v JsonValue, path str, mut errs []FieldError, current str) -> str {
-    match v.str() {
-        Some(s) => s
-        None => {
-            errs.push(wrong_type(path, "a string"))
-            current
-        }
+    v.str() ?? {
+        errs.push(wrong_type(path, "a string"))
+        current
     }
 }
 
@@ -594,12 +588,7 @@ export fn base_url(c Config) -> str {
 
 // ── the handlers ─────────────────────────────────────────────────────────────
 
-fn header_of(ctx Ctx, name str) -> str {
-    match ctx.req.header(name) {
-        Some(v) => v
-        None    => ""
-    }
-}
+fn header_of(ctx Ctx, name str) -> str => ctx.req.header(name) ?? ""
 
 fn json_ok(status int, body str, tag str) -> ServerResponse {
     mut r = ServerResponse.bytes(status, "application/json; charset=utf-8", body.bytes())

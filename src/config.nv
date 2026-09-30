@@ -291,13 +291,8 @@ fn unquote(v str) -> Option[str] {
 fn parse_list(v str) -> Option[[]str] {
     if !v.starts_with("[") { return None }
     if !v.ends_with("]") { return None }
-    ro inner = match v.strip_prefix("[") {
-        None => return None
-        Some(h) => match h.strip_suffix("]") {
-            None => return None
-            Some(x) => x
-        }
-    }
+    ro head = v.strip_prefix("[")?
+    ro inner = head.strip_suffix("]")?
     mut out []str = []
     if inner.trim_ascii() == "" { return Some(out) }
     for piece in inner.split(",") {
@@ -365,10 +360,7 @@ export fn parse(text str) -> Result[(Config, []ConfigError), str] {
             continue
         }
 
-        mut pair = match line.split_once("=") {
-            None => return Err("line ${line_no}: neither a section nor `key = value`")
-            Some(p) => p
-        }
+        mut pair = line.split_once("=").ok_or("line ${line_no}: neither a section nor `key = value`")?
         ro key = pair.0.trim_ascii()
         ro value = pair.1.trim_ascii()
         assign(section, key, value, cfg, errs, folders)

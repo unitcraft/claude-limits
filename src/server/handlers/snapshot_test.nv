@@ -153,7 +153,7 @@ fn count_of(hay str, needle str) -> int {
 /// Position of a substring, or -1. Used to compare ORDER inside a body without
 /// re-parsing the JSON in the test.
 fn at(hay str, needle str) -> int {
-    match hay.find(needle) { Some(i) => i, None => 0 - 1 }
+    hay.find(needle) ?? (0 - 1)
 }
 
 // ── the body is flat ─────────────────────────────────────────────────────────

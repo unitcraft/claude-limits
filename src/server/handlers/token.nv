@@ -129,12 +129,7 @@ export fn applied(cfg Config, token str, want_lan bool) -> Config {
 
 // ── the handler ──────────────────────────────────────────────────────────────
 
-fn header_of(ctx Ctx, name str) -> str {
-    match ctx.req.header(name) {
-        Some(v) => v
-        None    => ""
-    }
-}
+fn header_of(ctx Ctx, name str) -> str => ctx.req.header(name) ?? ""
 
 fn body_str(req ServerRequest) -> str => unsafe { req.body_bytes().to_str_unchecked() }
 

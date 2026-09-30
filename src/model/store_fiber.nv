@@ -151,13 +151,10 @@ export fn Store @snapshot() -> Snapshot {
     ro pair = Chan[Snapshot].new(1)
     // nova:allow W_RESULT_DISCARDED -- a closed channel surfaces as `None` from the `recv` below, which has its own answer
     ro _ = @tx.send(Envelope.new(Request.GetSnapshot(pair.tx)))
-    match pair.rx.recv() {
-        Some(s) => s
-        // The fiber is gone. An empty snapshot is the honest answer: we know nothing,
-        // which is exactly what an empty one says. Inventing a stale one would be
-        // worse -- a page showing yesterday's numbers as today's.
-        None => Snapshot.empty()
-    }
+    // No reply means the fiber is gone. An empty snapshot is the honest answer: we
+    // know nothing, which is exactly what an empty one says. Inventing a stale one
+    // would be worse -- a page showing yesterday's numbers as today's.
+    pair.rx.recv() ?? Snapshot.empty()
 }
 
 /// Fold one account's reading in. Waits for nothing, but SAYS whether it was
@@ -172,14 +169,11 @@ export fn Store @subscribe() -> int {
     ro pair = Chan[int].new(1)
     // nova:allow W_RESULT_DISCARDED -- a failed send surfaces as `None` below, and 0 is the documented answer for it
     ro _ = @tx.send(Envelope.new(Request.Subscribe(pair.tx)))
-    match pair.rx.recv() {
-        Some(id) => id
-        // ZERO, AND IT IS DISTINCT FROM -1 ON PURPOSE. `subscribe` answers -1 when the
-        // registry is full -- the fiber replied and said no. Zero means nothing replied
-        // at all, because the store is gone. A caller that conflates them retries a
-        // full registry forever, or gives up on a store that is merely busy starting.
-        None => 0
-    }
+    // No reply gives ZERO, AND IT IS DISTINCT FROM -1 ON PURPOSE. `subscribe` answers
+    // -1 when the registry is full -- the fiber replied and said no. Zero means nothing
+    // replied at all, because the store is gone. A caller that conflates them retries a
+    // full registry forever, or gives up on a store that is merely busy starting.
+    pair.rx.recv() ?? 0
 }
 
 /// `false` means the store is gone, so the subscription died with it -- which is
@@ -212,10 +206,8 @@ export fn Store @missed(after int) -> bool {
     ro pair = Chan[bool].new(1)
     // nova:allow W_RESULT_DISCARDED -- a failed send surfaces as `None` below, answered with `true` on purpose
     ro _ = @tx.send(Envelope.new(Request.Missed(after, pair.tx)))
-    match pair.rx.recv() {
-        Some(v) => v
-        // Unknown. `true` and not `false`: a caller that cannot reach the store should
-        // resend the whole snapshot rather than assume its cursor is still good.
-        None => true
-    }
+    // No reply is "unknown", answered `true` and not `false`: a caller that cannot
+    // reach the store should resend the whole snapshot rather than assume its cursor
+    // is still good.
+    pair.rx.recv() ?? true
 }

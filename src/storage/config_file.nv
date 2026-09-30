@@ -160,11 +160,7 @@ fn mtime_of(path str) Fs -> i64 =>
 
 // NOT named `exists`: that is a reserved quantifier keyword (std/fs says so in
 // its own source), and the parse error it gives points at the CALL, not the name.
-fn file_there(path str) Fs -> bool =>
-    match try_exists(path.to_path()) {
-        Ok(b) => b
-        Err(_) => false
-    }
+fn file_there(path str) Fs -> bool => try_exists(path.to_path()) ?? false
 
 /// Read the file, or report the defaults when there is none.
 ///
@@ -178,10 +174,7 @@ export fn load(path str) Fs -> Loaded {
         return { cfg: Config.defaults(), mtime_ns: 0, text: "", errors: [],
                  missing: true }
     }
-    ro text = match read_text(path.to_path()) {
-        Ok(s) => s
-        Err(_) => ""
-    }
+    ro text = read_text(path.to_path()) ?? ""
     ro mt = mtime_of(path)
     match parse(text) {
         Err(msg) => {

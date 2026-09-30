@@ -88,20 +88,14 @@ export fn normalise(path str) -> str {
     }
     if out == "/" { return out }
     if out == "//" { return out }
-    match out.strip_suffix("/") {
-        Some(s) => s
-        None => out
-    }
+    out.strip_suffix("/") ?? out
 }
 
 /// Join, assuming both sides are already normalised.
 export fn under(base str, name str) -> str {
     if base == "" { return name }
     if name == "" { return base }
-    ro trimmed = match base.strip_suffix("/") {
-        Some(s) => s
-        None => base
-    }
+    ro trimmed = base.strip_suffix("/") ?? base
     "${trimmed}/${name}"
 }
 

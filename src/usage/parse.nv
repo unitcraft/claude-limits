@@ -58,10 +58,7 @@ fn str_field(obj JsonValue, key str) -> str =>
         None => ""
         Some(fields) => match fields.get(key) {
             None => ""
-            Some(v) => match v.str() {
-                Some(s) => s
-                None => ""
-            }
+            Some(v) => v.str() ?? ""
         }
     }
 
@@ -175,14 +172,8 @@ fn window_of(item JsonValue, root JsonValue) -> Window {
 /// the same number in two spellings, and reading it with the integer reader would
 /// give zero.
 fn named_window(root JsonValue, key str, kind str) -> Option[Window] {
-    ro fields = match root.object() {
-        Some(f) => f
-        None => return None
-    }
-    ro node = match fields.get(key) {
-        Some(v) => v
-        None => return None
-    }
+    ro fields = root.object()?
+    ro node = fields.get(key)?
     if node.is_null() { return None }
     ro pct = match node.object() {
         None => return None

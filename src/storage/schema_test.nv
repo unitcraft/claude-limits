@@ -24,10 +24,7 @@ import claude_limits.accounts.discover.{FolderKind}
 /// the FILE changes, and an embedded copy would test the copy.
 fn migration() Io -> str =>
     with Fs = real_fs() {
-        match read_text("migrations/0001_init.sql".to_path()) {
-            Ok(s) => s
-            Err(_) => ""
-        }
+        read_text("migrations/0001_init.sql".to_path()) ?? ""
     }
 
 /// Every domain table. `schema_meta` is deliberately NOT here: 01.2 §3.3 calls it the
