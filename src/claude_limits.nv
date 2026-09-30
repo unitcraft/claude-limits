@@ -52,7 +52,7 @@ import claude_limits.storage.config_file.{load}
 import claude_limits.server.app.{api_router}
 import claude_limits.server.handlers.config.{base_url}
 import claude_limits.server.start.{real_paths_input, decide_start, sources_at_start, DbAtStart}
-import claude_limits.storage.startup.{migrations_in, bundled, open_for_serve, Ready, StartFail}
+import claude_limits.storage.startup.{migrations_in, bundled, open_for_serve, record_readings, Ready, StartFail}
 import claude_limits.storage.db.{owner_changed, owner_line}
 import duckdb.db_effect.{Db}
 import duckdb.db_real.{with_real_db}
@@ -61,7 +61,7 @@ import claude_limits.model.snapshot.{SeverityBounds}
 import claude_limits.server.dto.{SnapshotView}
 import claude_limits.accounts.discover.{Dirs}
 import claude_limits.accounts.login.{Creds}
-import claude_limits.usage.poller.{PollLog}
+import claude_limits.usage.poller.{PollLog, Reading}
 import std.time.civil.{TimeZone, Offset}
 import http.transport.{real_http}
 import http.{Http}
@@ -161,6 +161,35 @@ fn home_str() Os -> str =>
 
 /// What `health` says about the database this start opened. A named function, not a
 /// literal in the `match`: a record literal there did not become the arm's value.
+/// The readings of one round, gathered by the `PollLog` handler.
+type Collected {
+    mut items []Reading
+}
+
+fn Collected.new() -> Collected => { items: [] }
+
+/// A round's body and the readings behind it.
+type Round {
+    view SnapshotView
+    readings []Reading
+}
+
+fn round_of(view SnapshotView, readings []Reading) -> Round => { view, readings }
+
+/// E-mails and organisations of the accounts discovery found, as the two parallel
+/// lists `record_readings` takes: the organisation is not something the endpoint says.
+fn emails_of(v SnapshotView) -> []str {
+    mut out []str = []
+    for a in v.accounts { out.push(a.email) }
+    out
+}
+
+fn orgs_of(v SnapshotView) -> []str {
+    mut out []str = []
+    for a in v.accounts { out.push(a.org) }
+    out
+}
+
 fn db_seen(r Ready, size int) -> DbAtStart =>
     { schema_version: r.opened.schema_version + r.applied, encrypted: true, size_bytes: size }
 
@@ -238,22 +267,41 @@ fn serve_mode(exe str, config_override str) Io Net Time Detach -> int {
                     }
                     ro bounds = SeverityBounds.new(cfg.thresholds.warning, cfg.thresholds.critical)
                     ro rounds = Rounds.new(cfg.folders, cfg.poll.interval_sec, bounds, TimeZone.Fixed(Offset.local()), Offset.local().to_iso())
-                    ro first = with_real_disk(fn() Dirs Creds -> SnapshotView {
-                        with Http = real_http(), PollLog = effect PollLog {
-                            // Nowhere to write it yet: the `poll` table waits on question
-                            // 8, and a log line would carry the e-mail, which 01.2
-                            // section 10 keeps out of logs.
+                    // The round's readings are COLLECTED here and written as ticks after
+                    // it (below): the database is not held open across a network round.
+                    ro done = with_real_disk(fn() Dirs Creds -> Round {
+                        // Declared INSIDE the lambda: an outer local captured through the
+                        // lambda AND the handler did not reach the C (`got` undeclared).
+                        mut got = Collected.new()
+                        ro view = with Http = real_http(), PollLog = effect PollLog {
+                            // Not logged: a log line would carry the e-mail, which 01.2
+                            // section 10 keeps out of logs. The journal is `poll`, written
+                            // from the reading below.
                             record(email str, state str, message str, at_ms int) -> () {}
+                            reading(r Reading) -> () { got.items.push(r) }
                         } {
                             one_round(rounds)
                         }
+                        round_of(view, got.items)
                     })
+                    ro first = done.view
                     if loaded.missing {
                         println("claude-limits: no settings file yet, running on the defaults (${paths.config_file})")
                     } else {
                         println("claude-limits: settings ${paths.config_file}")
                     }
                     println("claude-limits: ${first.accounts.len()} account(s) found in ${cfg.folders.len()} folder(s)")
+                    ro emails = emails_of(first)
+                    ro orgs = orgs_of(first)
+                    ro readings = done.readings
+                    ro recorded = with Fs = real_fs(), Random = real_random() {
+                        with_real_db(fn() Db Fs Random -> Result[int, StartFail] => record_readings(paths, readings, emails, orgs, win))
+                    }
+                    // NOT fatal: the page can be served without a history line.
+                    match recorded {
+                        Ok(n) => { if n > 0 { println("claude-limits: ${n} reading(s) written to the history") } }
+                        Err(f) => println("claude-limits: the history was not written: ${f.message(paths.key_file)}")
+                    }
                     // `!!`: the table is static, and `app_test` builds the same one -- a
                     // refusal here is a programming error, not a condition of this run.
                     ro router = api_router(sources_at_start(cfg, paths, moment_iso(now), now, db_state, fn() -> SnapshotView => first))!!

@@ -78,6 +78,9 @@ export type Reading value {
 /// one eventually, and the handler that logs to a file will log it.
 export type PollLog effect {
     record(email str, state str, message str, at_ms int) -> ()
+    // The whole reading, for the history (01.2 §3.8–§3.11, `storage/tick.nv`). It
+    // carries no token either: an e-mail, the outcome, the parsed windows.
+    reading(r Reading) -> ()
 }
 
 /// Why a poll did not happen. A refusal is not a failure and is never recorded in
@@ -121,8 +124,14 @@ export fn poll_once(a PollTarget, now_ms int) Http PollLog -> Reading {
     // the ones nobody wants to look at: a 429 that is not in `poll` is a 429 nobody
     // can explain the next morning.
     PollLog.record(a.email, got.outcome.state.to_str(), got.outcome.message, now_ms)
-    { email: a.email, outcome: got.outcome, usage: got.usage, at_ms: now_ms }
+    ro r = reading_of(a.email, got.outcome, got.usage, now_ms)
+    PollLog.reading(r)
+    r
 }
+
+// A named function, not a literal next to an effect call (registry 221.1 #1392).
+fn reading_of(email str, outcome Outcome, usage Usage, at_ms int) -> Reading =>
+    { email, outcome, usage, at_ms }
 
 /// The wait the schedule should take from an outcome: whatever the outcome says.
 ///

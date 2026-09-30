@@ -19,6 +19,9 @@ import duckdb.errors.{DbOptions, DuckError}
 import claude_limits.storage.paths.{Paths, dir_of}
 import claude_limits.storage.db.{Migration, Opened, OpenFail, pending, ensure_key, ensure_instance, open_and_read, apply_migration, claim}
 import claude_limits.storage.backup.{take_backup}
+import claude_limits.storage.repo.{write_tick}
+import claude_limits.storage.tick.{tick_of, fresh_ids}
+import claude_limits.usage.poller.{Reading}
 
 /// The migration files, in the binary (01.2 §5: `embed_dir("migrations")`).
 /// `../../`: the path is relative to THIS file (`src/storage/`).
@@ -112,6 +115,51 @@ export fn open_for_serve(p Paths, all []Migration, now_ms int, keep int, windows
     Db.close_conn(conn)
     Db.close_db(db)
     r
+}
+
+/// Write one tick per reading into the database `open_for_serve` prepared, and answer
+/// how many were written.
+///
+/// `emails`/`orgs` are parallel: the organisation is a property discovery found, not
+/// something the endpoint says, so it comes from the caller. The key and the instance
+/// are read from their files again rather than passed around: a key held in a value
+/// the server carries is a key one log line away from the log.
+export fn record_readings(p Paths, rs []Reading, emails []str, orgs []str, windows bool) Db Fs Random -> Result[int, StartFail] {
+    ro key = ensure_key(p.key_file, dir_of(p.key_file, windows)).map_err(fn(f OpenFail) -> StartFail => StartFail.Open(f))?
+    ro mine = ensure_instance(p.instance_file, dir_of(p.instance_file, windows))
+    mut opts = DbOptions.defaults()
+    opts.encryption_key = key
+    opts.temp_dir = p.temp_dir
+    ro db = Db.open(p.db_file, opts).map_err(fn(e DuckError) -> StartFail => StartFail.Open(OpenFail.DbRefused(e.message())))?
+    ro conn = match Db.connect(db) {
+        Ok(c) => c
+        Err(e) => {
+            Db.close_db(db)
+            return Err(StartFail.Open(OpenFail.DbRefused(e.message())))
+        }
+    }
+    mut written = 0
+    mut failed = ""
+    for r in rs {
+        ro t = tick_of(r, org_for(r.email, emails, orgs), mine)
+        match write_tick(conn, t, fresh_ids(t)) {
+            Ok(_) => { written += 1 }
+            Err(e) => { failed = "${r.email}: ${e.message()}" }
+        }
+    }
+    Db.close_conn(conn)
+    Db.close_db(db)
+    if failed != "" { return Err(StartFail.Migrate("a tick was not written: ${failed}")) }
+    Ok(written)
+}
+
+fn org_for(email str, emails []str, orgs []str) -> str {
+    mut i = 0
+    while i < emails.len() && i < orgs.len() {
+        if emails[i] == email { return orgs[i] }
+        i += 1
+    }
+    ""
 }
 
 fn migrate_and_claim(conn ConnRef, opened Opened, todo []Migration, p Paths, now_ms int, keep int, windows bool, key str, mine str) Db Fs -> Result[Ready, StartFail] {

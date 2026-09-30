@@ -131,6 +131,10 @@ jobs:
       - name: nova test src
         working-directory: pkg
         env:
+          # A crash prints its registers and a symbolised stack into the transcript: the
+          # fourth run lost tick_test to 0xC0000005 that does not reproduce locally
+          # (0 of 12), and without this the log said only the exit code.
+          NOVA_DIAG_SEGV: "1"
           NOVA_RT_DIR: ${{ github.workspace }}/nova/compiler-codegen/nova_rt
           NOVA_CG_INCLUDE: ${{ github.workspace }}/nova/compiler-codegen
           NOVA_STD_PATH: ${{ github.workspace }}/nova/std/src

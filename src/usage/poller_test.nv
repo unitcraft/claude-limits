@@ -18,7 +18,7 @@
 module usage.poller_test
 
 import http.{Http, HttpError}
-import claude_limits.usage.poller.{PollTarget, PollLog, poll_once, tick, refresh, wait_after, may_ask}
+import claude_limits.usage.poller.{PollTarget, PollLog, Reading, poll_once, tick, refresh, wait_after, may_ask}
 import claude_limits.accounts.login.{TokenState}
 import claude_limits.usage.schedule.{Interval, PollSchedule, due}
 import claude_limits.usage.outcome.{of_status, POLL_FLOOR_SEC}
@@ -34,11 +34,13 @@ type Spy {
     mut last_message str
     mut last_at int
     mut saw_token bool
+    mut readings int
+    mut last_windows int
 }
 
 fn Spy.new() -> Spy =>
     { requests: 0, records: 0, last_email: "", last_state: "", last_message: "",
-      last_at: 0, saw_token: false }
+      last_at: 0, saw_token: false, readings: 0, last_windows: 0 }
 
 fn Spy mut @asked(request str) -> () {
     @requests += 1
@@ -82,6 +84,10 @@ fn spied[T](mut s Spy, raw str, body fn() Http PollLog -> T) -> T =>
             record(email str, state str, message str, at_ms int) -> () {
                 s.wrote(email, state, message, at_ms)
             }
+            reading(r Reading) -> () {
+                s.readings += 1
+                s.last_windows = r.usage.windows.len()
+            }
         } {
             body()
         }
@@ -95,6 +101,23 @@ test "a due account is asked exactly once" {
         fn() Http PollLog -> (PollSchedule, bool) => tick(acct(), TokenState.Ok, PollSchedule.new(), Interval.new(60), 1000))
     assert(polled_now)
     assert(s.requests == 1)
+}
+
+test "a poll hands its whole reading to PollLog, once" {
+    // The history (storage/tick.nv) is written from these readings; a poll that did
+    // not report one would leave a hole nobody sees until the chart has a gap.
+    mut s = Spy.new()
+    ro _ = spied(s, ok_body(),
+        fn() Http PollLog -> (PollSchedule, bool) => tick(acct(), TokenState.Ok, PollSchedule.new(), Interval.new(60), 1000))
+    assert(s.readings == 1)
+    assert(s.records == 1)
+}
+
+test "no poll, no reading -- the control" {
+    mut s = Spy.new()
+    ro _ = spied(s, ok_body(),
+        fn() Http PollLog -> (PollSchedule, bool) => tick(acct(), TokenState.Stale, PollSchedule.new(), Interval.new(60), 1000))
+    assert(s.readings == 0)
 }
 
 test "an account that is NOT due is not asked at all" {

@@ -12,7 +12,7 @@ import std.time.civil.{TimeZone}
 import http.{Http, HttpError}
 import claude_limits.accounts.discover.{Dirs}
 import claude_limits.accounts.login.{Creds}
-import claude_limits.usage.poller.{PollLog}
+import claude_limits.usage.poller.{PollLog, Reading}
 import claude_limits.model.live.{Known, view_of}
 import claude_limits.model.snapshot.{SeverityBounds}
 import claude_limits.model.snapshot.{AccountState}
@@ -88,6 +88,7 @@ fn endpoint[T](mut a Asked, raw str, body fn() Http PollLog Creds -> T) -> T =>
     } {
         with PollLog = effect PollLog {
             record(email str, state str, message str, at_ms int) -> () {}
+            reading(r Reading) -> () {}
         } {
             with Creds = effect Creds {
                 read(path) -> str { file_text(path) }

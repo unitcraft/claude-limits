@@ -8,13 +8,20 @@
 
 module storage.startup_test
 
-import std.fs.{real_fs, try_exists, create_dir_all, remove_dir_all}
+import std.fs.{real_fs, try_exists, create_dir_all, remove_dir_all, read_text}
 import std.os.{real_os, temp_dir}
-import std.testing.handlers as th
+import std.testing.handlers.{seeded}
 import duckdb.db_real.{with_real_db}
 import claude_limits.storage.paths.{Paths}
 import claude_limits.storage.db.{Migration, KNOWN_SCHEMA}
-import startup.{version_of, migrations_in, bundled, open_for_serve, Ready, StartFail}
+import startup.{version_of, migrations_in, bundled, open_for_serve, record_readings, Ready, StartFail}
+import duckdb.{Database, DbOptions}
+import duckdb.types.{Value}
+import claude_limits.usage.poller.{Reading}
+import claude_limits.usage.outcome.{Outcome}
+import claude_limits.usage.parse.{Usage, PollOutcome}
+import claude_limits.model.snapshot.{AccountState}
+import claude_limits.window.{Window}
 
 fn same(label str, want str, got str) -> bool {
     if want == got { return true }
@@ -71,7 +78,7 @@ const T0 = 1790758800000
 
 fn start(p Paths, all []Migration, seed int) Io -> str {
     ro now = T0
-    ro r = with Fs = real_fs(), Random = th.seeded(seed as u64) {
+    ro r = with Fs = real_fs(), Random = seeded(seed as u64) {
         with_real_db(fn() Db Fs Random -> Result[Ready, StartFail] => open_for_serve(p, all, now, 5, true))
     }
     match r {
@@ -129,3 +136,56 @@ test "a migration that fails is rolled back and says which" {
     ro fixed = migrations_in(bundled())
     assert(same("still 1", "first=false schema=1 applied=0 backup=false", start(p, fixed, 9)))
 }
+
+// -- the round's readings, written as ticks -----------------------------------------
+
+// Named functions, not literals inside lambdas (registry 221.1 #1392).
+fn usage_two() -> Usage => {
+    windows: [Window.new("session", "", 24, T0 + 16200000, ""), Window.new("weekly_all", "", 21, T0 + 302400000, "")],
+    outcome: PollOutcome.Parsed, from_fallback: false,
+}
+
+fn a_reading(at int) -> Reading =>
+    { email: "work@example.org", outcome: Outcome.new(AccountState.Ok, "", 0, true, 200), usage: usage_two(), at_ms: at }
+
+fn record(p Paths, rs []Reading, seed int) Io -> str {
+    ro r = with Fs = real_fs(), Random = seeded(seed as u64) {
+        with_real_db(fn() Db Fs Random -> Result[int, StartFail] => record_readings(p, rs, ["work@example.org"], ["Example Inc"], true))
+    }
+    match r {
+        Ok(n) => "written=${n}"
+        Err(f) => "FAIL ${f.message(p.key_file)}"
+    }
+}
+
+/// Rows in the ENCRYPTED file, opened with the key the start created.
+fn rows(p Paths) Io -> str {
+    ro key = with Fs = real_fs() { (read_text(p.key_file.to_path()) ?? "").trim_ascii() }
+    mut opts = DbOptions.defaults()
+    opts.encryption_key = key
+    mut out = "<none>"
+    with Fail[DuckError] = |e| { out = "REFUSED ${e.message()}" } {
+        consume db = Database.open(p.db_file, opts)!! {
+            consume con = db.connect()!! {
+                consume r = con.query("SELECT (SELECT count(*) FROM account)::VARCHAR || '/' || (SELECT org_name FROM account) || '/' || (SELECT count(*) FROM limit_window)::VARCHAR || '/' || (SELECT count(*) FROM sample)::VARCHAR || '/' || (SELECT count(*) FROM poll)::VARCHAR")!! {
+                    match r.value(0, 0)!! {
+                        Value.Text(t) => { out = t }
+                        _ => ()
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+test "the round's readings become ticks in the encrypted file, twice over" {
+    ro p = place("record")
+    ro _ = start(p, migrations_in(bundled()), 7)
+    assert(same("first", "written=1", record(p, [a_reading(T0)], 8)))
+    assert(same("second", "written=1", record(p, [a_reading(T0 + 300000)], 9)))
+    // One account (with the organisation discovery found), two windows, four samples,
+    // two journal entries -- the second start's round does not add windows.
+    assert(same("rows", "1/Example Inc/2/4/2", rows(p)))
+}
+
