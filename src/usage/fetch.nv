@@ -61,6 +61,10 @@ export fn request_for(host str, path str, token str) -> str {
     mut r = "GET ${path} HTTP/1.1${CRLF}"
     r = "${r}Host: ${host}${CRLF}"
     r = "${r}Authorization: Bearer ${token}${CRLF}"
+    // The OAuth usage endpoint answers only with this header (the reference sends it,
+    // scripts/claude_limits.py:79). Missing until 2026-09-30: no test here had ever
+    // spoken to the real endpoint.
+    r = "${r}anthropic-beta: oauth-2025-04-20${CRLF}"
     r = "${r}Accept: application/json${CRLF}"
     r = "${r}Connection: close${CRLF}${CRLF}"
     r

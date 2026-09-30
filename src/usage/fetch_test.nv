@@ -28,6 +28,10 @@ test "the request carries the token as a bearer, and the host it was given" {
     assert(r.starts_with("GET /v1/usage HTTP/1.1"))
     assert(r.contains("Host: api.example.com"))
     assert(r.contains("Authorization: Bearer secret-token"))
+    // The OAuth usage endpoint answers only with this header: the reference sends it
+    // (scripts/claude_limits.py:79, :566) and so does spike T0.2. Missing until
+    // 2026-09-30 -- every test here used a mock, and a mock does not care.
+    assert(r.contains("anthropic-beta: oauth-2025-04-20"))
     // One hop by contract: `nova-http` says a single `send` is exactly one hop, so
     // keep-alive is not ours to ask for.
     assert(r.contains("Connection: close"))
