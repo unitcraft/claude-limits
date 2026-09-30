@@ -223,52 +223,106 @@ export fn open_and_read(path str, key str, temp_dir str, mine str) Db -> Result[
     opts.temp_dir = temp_dir
 
     ro db = Db.open(path, opts).map_err(fn(e DuckError) -> OpenFail => DbRefused(e.message()))?
-    ro conn = Db.connect(db).map_err(fn(e DuckError) -> OpenFail => DbRefused(e.message()))?
+    ro conn = match Db.connect(db) {
+        Ok(c) => c
+        Err(e) => {
+            Db.close_db(db)
+            return Err(DbRefused(e.message()))
+        }
+    }
     ro _ = Db.exec(conn, session_sql(temp_dir))
+    ro meta = read_meta(conn)
+    // Closed on every path: this function REPORTS, it does not hold the file. The
+    // first version returned without closing either handle.
+    Db.close_conn(conn)
+    Db.close_db(db)
 
+    if meta.first { return Ok({ instance_id: mine, schema_version: 0, first_start: true, previous_owner: "" }) }
+    if too_new(meta.version) { return Err(SchemaTooNew(meta.version)) }
+    Ok({ instance_id: mine, schema_version: meta.version, first_start: false, previous_owner: meta.owner })
+}
+
+/// What `schema_meta` says, read as the KEY/VALUE table 0001 creates.
+///
+/// CORRECTION 2026-09-30: this used to ask `SELECT schema_version, last_opened_by
+/// FROM schema_meta` -- columns that do not exist: `schema_meta` is `(key, value)`
+/// (migrations/0001_init.sql, 01.2 §3.3). Against a real file the query failed, and
+/// the failure reads as "no table", so EVERY open was a first start. Only a mock
+/// answered it, and the mock answered the question the code asked. `db_live_test`
+/// now asks a real file.
+type Meta value {
+    ro first bool
+    ro version int
+    ro owner str
+}
+
+fn read_meta(conn ConnRef) Db -> Meta {
     // A fresh file has no `schema_meta` yet: the query fails and that is the FIRST
     // START, not a fault. Distinguishing them by the error text would be reading
     // DuckDB's wording; distinguishing them by "did the table exist" is the question
     // actually being asked.
-    //
-    // A `match` and not `?? return` or `.map_err(..)?`: the fallback here is an early
-    // SUCCESS, not a propagated error. D86 (2026-09-01) keeps `?? return` illegal in a
-    // `Result` function, and `.map_err` would turn a first start into a failure.
-    // nova:allow W_MANUAL_COALESCE -- an early Ok on a missing table has no shorter canon
-    ro rows = match Db.query(conn, "SELECT schema_version, last_opened_by FROM schema_meta LIMIT 1") {
+    ro rows = match Db.query(conn, "SELECT key, value FROM schema_meta WHERE key IN ('schema_version', 'last_opened_by')") {
         Ok(r) => r
-        Err(_) => return Ok({ instance_id: mine, schema_version: 0, first_start: true,
-                              previous_owner: "" })
+        Err(_) => return { first: true, version: 0, owner: "" }
     }
-
-    ro found = match Db.next(rows) {
-        Ok(Some(cells)) => cells
-        _ => {
-            Db.close_result(rows)
-            return Ok({ instance_id: mine, schema_version: 0, first_start: true,
-                        previous_owner: "" })
+    mut version = 0
+    mut owner = ""
+    mut seen_version = false
+    mut going = true
+    while going {
+        match Db.next(rows) {
+            Ok(Some(cells)) => {
+                if cells.len() > 1 {
+                    ro key = text_cell(cells[0])
+                    ro value = text_cell(cells[1])
+                    if key == "schema_version" {
+                        version = value.to_int() ?? 0
+                        seen_version = true
+                    } else if key == "last_opened_by" {
+                        owner = value
+                    }
+                }
+            }
+            _ => { going = false }
         }
     }
     Db.close_result(rows)
+    // A table without a version is a migration that never committed -- the same as no
+    // table: the whole of 0001 runs in one transaction, so it cannot be half there.
+    { first: !seen_version, version, owner }
+}
 
-    ro version = if found.len() > 0 {
-        match found[0] {
-            Value.Int(n) => n as int
-            _ => 0
+fn text_cell(v Value) -> str =>
+    match v {
+        Value.Text(s) => s
+        _ => ""
+    }
+
+/// Apply ONE migration: its statements and the new `schema_version`, in one
+/// transaction (01.2 §5), then a checkpoint so the file on disk is whole.
+///
+/// The backup that 01.2 §5 wants before every migration of an EXISTING database is the
+/// caller's (`backup.take_backup`): a first start has nothing to back up, and this
+/// function cannot tell which it is.
+export fn apply_migration(conn ConnRef, m Migration) Db -> Result[(), DuckError] {
+    ro _ = Db.exec(conn, "BEGIN TRANSACTION")?
+    match Db.exec(conn, m.sql) {
+        Ok(_) => ()
+        Err(e) => {
+            ro _ = Db.exec(conn, "ROLLBACK")
+            return Err(e)
         }
-    } else { 0 }
-
-    ro owner = if found.len() > 1 {
-        match found[1] {
-            Value.Text(s) => s
-            _ => ""
+    }
+    match Db.exec(conn, "INSERT OR REPLACE INTO schema_meta VALUES ('schema_version', '${m.version}')") {
+        Ok(_) => ()
+        Err(e) => {
+            ro _ = Db.exec(conn, "ROLLBACK")
+            return Err(e)
         }
-    } else { "" }
-
-    if too_new(version) { return Err(SchemaTooNew(version)) }
-
-    Ok({ instance_id: mine, schema_version: version, first_start: false,
-         previous_owner: owner })
+    }
+    ro _ = Db.exec(conn, "COMMIT")?
+    ro _ = Db.exec(conn, "CHECKPOINT")?
+    Ok(())
 }
 
 /// Write down that we are the ones holding it now (01.2 §3.3).
@@ -277,7 +331,10 @@ export fn open_and_read(path str, key str, temp_dir str, mine str) Db -> Result[
 /// against somebody else's file) must be able to skip it, and a function that always
 /// wrote would make that impossible without a flag.
 export fn claim(conn ConnRef, mine str) Db -> Result[(), DuckError] {
-    match Db.exec(conn, "UPDATE schema_meta SET last_opened_by = '${mine}'") {
+    // `schema_meta` is key/value, and the row may not exist yet on a database 0001 has
+    // just created -- INSERT OR REPLACE covers both (the first version UPDATEd a
+    // column that does not exist).
+    match Db.exec(conn, "INSERT OR REPLACE INTO schema_meta VALUES ('last_opened_by', '${mine}')") {
         Ok(_) => Ok(())
         Err(e) => Err(e)
     }

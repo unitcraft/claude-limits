@@ -171,11 +171,21 @@ test "an unreadable key is told apart from an absent one" {
 
 // ── the database, under a mock ───────────────────────────────────────────────
 
-/// A handler that answers `query` with the row it is given, or refuses.
+/// Where the mock's result cursor stands.
+type Cursor {
+    mut at int
+}
+
+fn Cursor.new() -> Cursor => { at: 0 }
+
+/// A handler that answers `query` with `schema_meta` rows, or refuses.
 ///
-/// `schema_meta` is the only table these tests read, so the mock does not pretend to
-/// be a database: it answers the one question `open_and_read` asks.
+/// THE ROWS ARE KEY/VALUE, as 0001 creates the table. The first version of this mock
+/// answered one row `[schema_version, last_opened_by]` -- the shape `open_and_read`
+/// asked for, which the real table does not have; the mock agreed with the code and
+/// both were wrong (db_live_test.nv asks a real file now).
 fn db_with(version int, owner str, has_table bool) -> Effect[Db] {
+    mut cur = Cursor.new()
     effect Db {
         open(path str, opts DbOptions) -> Result[DbRef, DuckError] => Ok(DbRef.new(1 as CDbHandle))
         connect(db DbRef) -> Result[ConnRef, DuckError] => Ok(ConnRef.new(1 as CConnHandle))
@@ -185,8 +195,12 @@ fn db_with(version int, owner str, has_table bool) -> Effect[Db] {
             else { Err(DuckError.Query("no such table: schema_meta")) }
         }
         describe(result ResultRef) -> Result[[]Col, DuckError] => Ok([])
-        next(result ResultRef) -> Result[Option[[]Value], DuckError] =>
-            Ok(Some([Value.Int(version as i64), Value.Text(owner)]))
+        next(result ResultRef) -> Result[Option[[]Value], DuckError] {
+            cur.at += 1
+            if cur.at == 1 { return Ok(Some([Value.Text("schema_version"), Value.Text("${version}")])) }
+            if cur.at == 2 { return Ok(Some([Value.Text("last_opened_by"), Value.Text(owner)])) }
+            Ok(None)
+        }
         close_result(result ResultRef) -> () => ()
         close_conn(conn ConnRef) -> () => ()
         close_db(db DbRef) -> () => ()

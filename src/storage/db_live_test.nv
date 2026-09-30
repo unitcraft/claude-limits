@@ -1,0 +1,133 @@
+// db.nv against a REAL file: the open/migrate/claim cycle that a mock cannot check.
+//
+//   ./nova.sh test src/storage/ --filter db_live_test
+//
+// WHY THIS FILE EXISTS (2026-09-30). `db_test.nv` runs `open_and_read` under a mock,
+// and the mock answered one row `[schema_version, last_opened_by]` -- the columns the
+// code asked for. The real `schema_meta` is `(key, value)` (migrations/0001_init.sql),
+// so against a file the query failed, the failure read as "no table", and every open
+// was a first start. Mock and code agreed and both were wrong; only a real file says
+// so. Each test here uses its own directory under the system temp, emptied first.
+
+module storage.db_live_test
+
+import std.fs.{real_fs, read_text, create_dir_all, remove_dir_all}
+import std.os.{real_os, temp_dir}
+import duckdb.db_effect.{Db}
+import duckdb.db_real.{with_real_db}
+import duckdb.errors.{DbOptions}
+import db.{Migration, open_and_read, apply_migration, claim, KNOWN_SCHEMA, OpenFail}
+
+const KEY = "k-0123456789abcdef-0123456789abcd"
+const ME = "0192f3a4-0000-7000-8000-000000000001"
+
+fn place(name str) Io -> str {
+    ro base = with Os = real_os() { temp_dir().display().replace("\\", "/") }
+    ro dir = "${base}/claude-limits-dblive-${name}"
+    with Fs = real_fs() {
+        ro _ = remove_dir_all(dir.to_path())
+        ro _ = create_dir_all(dir.to_path())
+    }
+    dir
+}
+
+fn init_sql() Io -> str =>
+    with Fs = real_fs() {
+        read_text("migrations/0001_init.sql".to_path()) ?? ""
+    }
+
+fn keyed() -> DbOptions {
+    mut o = DbOptions.defaults()
+    o.encryption_key = KEY
+    o
+}
+
+/// Open the file, run `body` on a connection, close. "" on success, else the reason.
+fn on_conn(path str, sqls []str, m Option[Migration], owner str) Io -> str =>
+    with_real_db(fn() Db -> str => {
+        match Db.open(path, keyed()) {
+            Err(e) => "OPEN ${e.message()}"
+            Ok(db) => match Db.connect(db) {
+                Err(e) => {
+                    Db.close_db(db)
+                    "CONNECT ${e.message()}"
+                }
+                Ok(conn) => {
+                    mut why = ""
+                    match m {
+                        Some(mig) => match apply_migration(conn, mig) {
+                            Ok(_) => ()
+                            Err(e) => { why = "MIGRATE ${e.message()}" }
+                        }
+                        None => ()
+                    }
+                    for s in sqls {
+                        match Db.exec(conn, s) {
+                            Ok(_) => ()
+                            Err(e) => { why = "EXEC ${e.message()}" }
+                        }
+                    }
+                    if owner != "" && why == "" {
+                        match claim(conn, owner) {
+                            Ok(_) => ()
+                            Err(e) => { why = "CLAIM ${e.message()}" }
+                        }
+                    }
+                    Db.close_conn(conn)
+                    Db.close_db(db)
+                    why
+                }
+            }
+        }
+    })
+
+/// `open_and_read` on the file, flattened to a line a test can compare.
+fn read_line(path str, dir str) Io -> str {
+    // Locals before the lambda: a module const read inside one does not build
+    // (registry 221.1 #1399).
+    ro key = KEY
+    ro me = ME
+    with_real_db(fn() Db -> str => {
+        match open_and_read(path, key, dir, me) {
+            Ok(o) => "first=${o.first_start} version=${o.schema_version} owner=${o.previous_owner}"
+            Err(e) => match e {
+                OpenFail.SchemaTooNew(n) => "too-new ${n}"
+                OpenFail.DbRefused(why) => "refused ${why}"
+                _ => "other"
+            }
+        }
+    })
+}
+
+fn same(label str, want str, got str) -> bool {
+    if want == got { return true }
+    panic("${label}: want [${want}], got [${got}]")
+}
+
+test "a fresh file is a first start" {
+    ro dir = place("fresh")
+    assert(same("fresh", "first=true version=0 owner=", read_line("${dir}/db.duckdb", dir)))
+}
+
+test "after 0001 and a claim, the file reports schema 1 and its owner" {
+    ro dir = place("migrated")
+    ro db = "${dir}/db.duckdb"
+    ro sql = init_sql()
+    assert(sql != "")
+    assert(same("migrate", "", on_conn(db, [], Some(Migration.new(1, sql)), ME)))
+    assert(same("reopen", "first=false version=${KNOWN_SCHEMA} owner=${ME}", read_line(db, dir)))
+}
+
+test "a claim by another instance is what the next open reports" {
+    ro dir = place("owner")
+    ro db = "${dir}/db.duckdb"
+    assert(same("migrate", "", on_conn(db, [], Some(Migration.new(1, init_sql())), "someone-else")))
+    assert(same("reopen", "first=false version=1 owner=someone-else", read_line(db, dir)))
+}
+
+test "the control: a schema from the future is refused on a real file too" {
+    ro dir = place("future")
+    ro db = "${dir}/db.duckdb"
+    assert(same("migrate", "", on_conn(db, ["INSERT OR REPLACE INTO schema_meta VALUES ('schema_version', '99')"], Some(Migration.new(1, init_sql())), ME)))
+    assert(same("future", "too-new 99", read_line(db, dir)))
+}
