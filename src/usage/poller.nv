@@ -30,7 +30,7 @@
 // ── WHAT NEVER REACHES THE LOG ───────────────────────────────────────────────
 //
 // `record` takes an e-mail, a state, a message and a moment. It does NOT take the
-// token, and `Account` hands the token only to `fetch`. A log operation that could
+// token, and `PollTarget` hands the token only to `fetch`. A log operation that could
 // accept a token would eventually be given one.
 
 module usage.poller
@@ -47,7 +47,10 @@ import http.{Http}
 /// The token sits here because the poller must pass it to `fetch`, and NOWHERE else
 /// in this file is it read. It is not part of `Reading` and not part of what `record`
 /// is given.
-export type Account value {
+/// NOT `Account`: a dependency in the server's binary has a type of that name, and two
+/// types of one name share a C name (registry 221.1 #154) -- measured 2026-09-30 when
+/// `server/feed.nv` first linked this module with the whole router.
+export type PollTarget value {
     ro email str
     ro host str
     ro port int
@@ -56,8 +59,8 @@ export type Account value {
     ro token str
 }
 
-export fn Account.new(email str, host str, port int, secure bool, path str,
-                     token str) -> Account =>
+export fn PollTarget.new(email str, host str, port int, secure bool, path str,
+                     token str) -> PollTarget =>
     { email, host, port, secure, path, token }
 
 /// What one poll produced, for a caller that wants the numbers rather than the state.
@@ -112,7 +115,7 @@ export fn may_ask(state TokenState) -> bool =>
 /// UNCONDITIONAL: the caller has already decided this account is due. Splitting the
 /// decision from the act is what makes both testable -- `due` without a network, and
 /// this without a clock.
-export fn poll_once(a Account, now_ms int) Http PollLog -> Reading {
+export fn poll_once(a PollTarget, now_ms int) Http PollLog -> Reading {
     ro got = fetch(a.host, a.port, a.secure, a.path, a.token)
     // WRITTEN BEFORE ANYTHING ELSE CAN GO WRONG. Every outcome is recorded, including
     // the ones nobody wants to look at: a 429 that is not in `poll` is a 429 nobody
@@ -141,7 +144,7 @@ export fn wait_after(o Outcome) -> int => o.retry_after_sec
 /// Returns the new schedule state. When nothing was asked, the state comes back
 /// UNCHANGED -- a skipped tick must not move `last_poll_ms`, or an account that is
 /// never due would drift forward forever and never become due at all.
-export fn tick(a Account, state TokenState, p Poll, iv Interval, now_ms int) Http PollLog -> (Poll, bool) {
+export fn tick(a PollTarget, state TokenState, p Poll, iv Interval, now_ms int) Http PollLog -> (Poll, bool) {
     // THE TOKEN IS CHECKED BEFORE THE RHYTHM, and the order is the cheaper one: a
     // stale account is refused without consulting the schedule, and the schedule is
     // left untouched so that the account polls immediately once its token is renewed.
@@ -156,7 +159,7 @@ export fn tick(a Account, state TokenState, p Poll, iv Interval, now_ms int) Htt
 /// The floor applies to demand exactly as it does to the rhythm (01.3 §3.5), and the
 /// refusal is returned rather than swallowed: the page shows "server asks to wait
 /// until 19:49", which it cannot do if the refusal looks like a successful poll.
-export fn refresh(a Account, state TokenState, p Poll, now_ms int) Http PollLog -> (Poll, bool) {
+export fn refresh(a PollTarget, state TokenState, p Poll, now_ms int) Http PollLog -> (Poll, bool) {
     // A person pressing refresh cannot make a dead token work, and the 401 it would
     // earn is charged to the whole machine rather than to them.
     if !may_ask(state) { return (p, false) }

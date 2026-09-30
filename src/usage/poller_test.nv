@@ -18,7 +18,7 @@
 module usage.poller_test
 
 import http.{Http, HttpError}
-import claude_limits.usage.poller.{Account, PollLog, poll_once, tick, refresh, wait_after, may_ask}
+import claude_limits.usage.poller.{PollTarget, PollLog, poll_once, tick, refresh, wait_after, may_ask}
 import claude_limits.accounts.login.{TokenState}
 import claude_limits.usage.schedule.{Interval, Poll, due}
 import claude_limits.usage.outcome.{of_status, POLL_FLOOR_SEC}
@@ -66,8 +66,8 @@ fn ok_body() -> str =>
 fn rate_limited() -> str =>
     reply("HTTP/1.1 429 Too Many Requests", "Retry-After: 120", "slow down")
 
-fn acct() -> Account =>
-    Account.new("a@example.com", "api.example.com", 443, true, "/v1/usage", "secret-token")
+fn acct() -> PollTarget =>
+    PollTarget.new("a@example.com", "api.example.com", 443, true, "/v1/usage", "secret-token")
 
 /// Runs `body` with both effects spied on. One helper, so no test can forget one of
 /// the two counters and then assert about the one it has.

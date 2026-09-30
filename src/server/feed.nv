@@ -1,0 +1,214 @@
+// feed.nv -- the accounts `--serve` finds and one round of asking about them
+// (plan 01.5, T2.27 step B3).
+//
+//   ./nova.sh test src/server/ --filter feed_test
+//
+// Source: plan 01 §0 (one e-mail is one account; a dead token is never asked),
+// 01.3 §3.3 (what the snapshot says about each state), 01.1 §3.2 (the texts).
+//
+// ── SHAPE ───────────────────────────────────────────────────────────────────
+//
+// Two functions and a wrapper around them: `found_in` reads the configured folders
+// (through `Dirs` and `Creds`, whose real handlers are `with_real_disk`), and
+// `poll_round` asks the endpoint for every account whose token allows it (through
+// `Http` and `PollLog`). Both take the moment as an argument; neither reads a clock.
+// What they produce is `model.live.Known`, and `view_of` there turns it into the body
+// of `GET /api/snapshot` at the moment of the round.
+//
+// ── IDS WITHOUT A DATABASE ──────────────────────────────────────────────────
+//
+// 01.3 §3.3 says an account's `id` is `account.id` from the database. The database
+// cannot be opened yet (plan 01.5, question 8), so the id is DERIVED: a UUID of
+// version 8 (RFC 9562, "custom") built from two FNV-64 hashes of the e-mail -- the
+// same e-mail gives the same id after every restart, which is what the page keys its
+// order and its hidden list by. When the database arrives, ids come from it and this
+// function goes.
+//
+// ── NOT HERE, AND NAMED ─────────────────────────────────────────────────────
+//
+// * Backoff after a 429 is not scheduled per account: the round runs every interval
+//   and a rate-limited account is shown `unknown` with the endpoint's own words. The
+//   per-account schedule (`usage.schedule`, T2.10) is wired in a later step.
+// * A login with no e-mail is not shown (`group` drops it; `--once` reports it).
+
+module server.feed
+
+import std.checksums.fnv.{Fnv64}
+import std.time.civil.{TimeZone}
+import claude_limits.accounts.discover.{Dirs, LoginDir, scan}
+import claude_limits.accounts.login.{Login, TokenState, Creds, read_login, read_token}
+import claude_limits.accounts.group.{group}
+import claude_limits.cli.table.{short_name}
+import claude_limits.server.dto.{DirView}
+import claude_limits.model.live.{Known}
+import claude_limits.window.{Window}
+import claude_limits.model.snapshot.{AccountState, stale_message, rate_limited_badge, network_badge}
+import claude_limits.usage.outcome.{Outcome}
+import claude_limits.usage.poller.{PollTarget, PollLog, poll_once}
+import claude_limits.usage.parse.{PollOutcome}
+import http.{Http}
+
+/// The endpoint (README §Endpoint; the header it needs is in `usage.fetch`).
+export fn usage_host() -> str => "api.anthropic.com"
+export fn usage_path() -> str => "/api/oauth/usage"
+
+// ── ids ──────────────────────────────────────────────────────────────────────
+
+fn hex16(h u64) -> str {
+    ro digits = "0123456789abcdef"
+    mut out = ""
+    mut shift = 60
+    while shift >= 0 {
+        ro nib = ((h >> (shift as u64)) & 0xf) as int
+        out = "${out}${digits[nib..nib + 1]}"
+        shift -= 4
+    }
+    out
+}
+
+fn fnv_of(text str) -> u64 {
+    mut st = Fnv64.new()
+    st.update(text.bytes())
+    st.finalize()
+}
+
+/// A stable UUID (version 8, variant 10) for `key` in the namespace `kind`.
+export fn stable_id(kind str, key str) -> str {
+    ro a = hex16(fnv_of("${kind}/a/${key}"))
+    ro b = hex16(fnv_of("${kind}/b/${key}"))
+    // Version nibble 8 at position 12; variant `8` (binary 10xx) at position 16.
+    "${a[..8]}-${a[8..12]}-8${a[13..16]}-8${b[1..4]}-${b[4..16]}"
+}
+
+// ── what the folders hold ───────────────────────────────────────────────────
+
+/// One account as the folders describe it.
+export type Found value {
+    ro email str
+    ro org str
+    ro dirs []DirView
+    ro state TokenState
+    ro expires_at_ms int
+    /// The credentials file to ask with; "" when none of its directories has one.
+    ro cred_path str
+}
+
+fn cred_of(dirs []LoginDir, path str) -> str {
+    for d in dirs {
+        if d.path == path && d.credentials != "" { return d.credentials }
+    }
+    ""
+}
+
+/// Every account in the configured folders, grouped by e-mail (plan 01 §0).
+export fn found_in(folders []str, now_ms int) Dirs Creds -> []Found {
+    mut seen []LoginDir = []
+    mut logins []Login = []
+    for f in folders {
+        for d in scan(f).logins {
+            seen.push(d)
+            logins.push(read_login(d.path, short_name(d.path, d.name), d.identity, d.credentials))
+        }
+    }
+    mut out []Found = []
+    for acc in group(logins, now_ms) {
+        mut dirs []DirView = []
+        mut cred = ""
+        mut i = 0
+        while i < acc.dirs.len() {
+            ro path = acc.paths[i]
+            dirs.push(DirView { id: stable_id("dir", path), path, name: acc.dirs[i] })
+            if cred == "" { cred = cred_of(seen, path) }
+            i += 1
+        }
+        out.push(Found { email: acc.email, org: acc.org, dirs, state: acc.state, expires_at_ms: acc.expires_at_ms, cred_path: cred })
+    }
+    out
+}
+
+// ── one round ────────────────────────────────────────────────────────────────
+
+fn two(n int) -> str => if n < 10 { "0${n}" } else { "${n}" }
+
+/// `5 Sep 18:02` -- the moment of 01.1 §3.2's stale text, in `zone`.
+export fn expiry_text(at_ms int, zone TimeZone) -> str {
+    if at_ms == 0 { return "at an unknown time" }
+    ro dt = at_ms.to_unix_millis().to_zoned(zone).datetime()
+    ro t = dt.time()
+    "${dt.day()} ${dt.month()} ${two(t.hour())}:${two(t.minute())}"
+}
+
+fn hhmm(ms int, zone TimeZone) -> str {
+    ro t = ms.to_unix_millis().to_zoned(zone).datetime().time()
+    "${two(t.hour())}:${two(t.minute())}"
+}
+
+/// The badge of an `unknown` account (01.1 §3.2), built from the reply's status: a 429
+/// and a dead network are one state and two sentences. `data` is the moment of the
+/// rows still shown -- the last good reading.
+export fn unknown_message(o Outcome, now_ms int, data_ms int, zone TimeZone) -> str {
+    if o.message != "" { return o.message }
+    ro retry = hhmm(now_ms + o.retry_after_sec * 1000, zone)
+    if o.status == 429 {
+        ro data = if data_ms == 0 { "-" } else { hhmm(data_ms, zone) }
+        return rate_limited_badge(retry, data)
+    }
+    if o.status == 0 { return network_badge(retry) }
+    "HTTP ${o.status} · retry ${retry}"
+}
+
+fn previous(before []Known, id str) -> Option[Known] {
+    for k in before {
+        if k.id == id { return Some(k) }
+    }
+    None
+}
+
+fn prev_windows(p Option[Known]) -> []Window =>
+    match p {
+        Some(k) => k.windows
+        None => []
+    }
+
+fn prev_polled(p Option[Known]) -> int =>
+    match p {
+        Some(k) => k.polled_at_ms
+        None => 0
+    }
+
+/// Ask about every account whose token allows it, and say what is known of the rest.
+///
+/// A DEAD TOKEN IS NEVER ASKED (plan 01 §0): its account is `stale` with the text that
+/// tells a person what to do, and keeps nothing to show. A LIVE one is asked once; a
+/// reply that parsed replaces the rows, and anything else keeps the last good rows and
+/// their moment -- `unknown` shows them dimmed (01.3 §3.3).
+export fn poll_round(found []Found, before []Known, now_ms int, next_ms int, zone TimeZone) Http PollLog Creds -> []Known {
+    mut out []Known = []
+    for f in found {
+        ro id = stable_id("account", f.email)
+        ro p = previous(before, id)
+        if f.state != TokenState.Ok || f.cred_path == "" {
+            ro msg = if f.state == TokenState.Stale { stale_message(expiry_text(f.expires_at_ms, zone)) } else { "no token · start Claude Code under this login" }
+            out.push(Known.new(id, f.email, f.org, f.dirs, AccountState.Stale, msg, prev_polled(p), 0, []))
+            continue
+        }
+        match read_token(f.cred_path) {
+            None => {
+                out.push(Known.new(id, f.email, f.org, f.dirs, AccountState.Stale, "no token · start Claude Code under this login", prev_polled(p), 0, []))
+            }
+            Some(consume secret) => {
+                ro token = secret.into_secret()
+                ro r = poll_once(PollTarget.new(f.email, usage_host(), 443, true, usage_path(), token), now_ms)
+                ro fresh = r.outcome.state == AccountState.Ok && r.usage.outcome == PollOutcome.Parsed
+                if fresh {
+                    out.push(Known.new(id, f.email, f.org, f.dirs, AccountState.Ok, "", now_ms, next_ms, r.usage.windows))
+                } else {
+                    ro kept = prev_polled(p)
+                    ro msg = if r.outcome.state == AccountState.Unknown { unknown_message(r.outcome, now_ms, kept, zone) } else { r.outcome.message }
+                    out.push(Known.new(id, f.email, f.org, f.dirs, r.outcome.state, msg, kept, next_ms, prev_windows(p)))
+                }
+            }
+        }
+    }
+    out
+}
