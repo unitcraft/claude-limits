@@ -28,16 +28,28 @@ import sys
 REPO = pathlib.Path(__file__).resolve().parent.parent
 SRC = REPO / "src"
 
-# suffix -> (what it means, the writers that agree with it)
+# suffix -> (what it means, the divisor that turns it into the wire's fraction; None
+# for a unit that stays an integer on the wire)
 SCALES = {
-    "_bp":          ("basis points, 1/10000", {"field_fixed4"}),
-    "_hundredths":  ("hundredths, 1/100",     {"field_fixed2", "field_fixed2_or_null"}),
-    "_thousandths": ("thousandths, 1/1000",   {"field_fixed3", "field_fixed3_or_null"}),
-    "_milli":       ("thousandths, 1/1000",   {"field_fixed3", "field_fixed3_or_null"}),
-    "_x100":        ("hundredths, 1/100",     {"field_fixed2", "field_fixed2_or_null"}),
-    "_ms":          ("milliseconds",          {"field_int", "field_int_or_null"}),
-    "_sec":         ("seconds",               {"field_int", "field_int_or_null"}),
+    "_bp":          ("basis points, 1/10000", 10000),
+    "_hundredths":  ("hundredths, 1/100",     100),
+    "_thousandths": ("thousandths, 1/1000",   1000),
+    "_milli":       ("thousandths, 1/1000",   1000),
+    "_x100":        ("hundredths, 1/100",     100),
+    "_ms":          ("milliseconds",          None),
+    "_sec":         ("seconds",               None),
 }
+
+# WHERE A SCALE MEETS THE WIRE. Since T2.29 (serde) a fixed-point field reaches JSON
+# as `(record.name_milli as f64) / 1000.0` in the record that serde writes -- the
+# divisor IS the writer now.
+#
+# CORRECTION 2026-09-30: this half used to read `field_fixed2("wire", x.name)`
+# calls, the hand-written JSON writer. T2.29 step 6 removed them; the pattern matched
+# nothing, and the guard printed `writes=0` and FAILED -- correctly, and unseen,
+# because the repository had no CI to run it.
+CONVERSION = re.compile(
+    r"\(\s*([A-Za-z_][A-Za-z0-9_.]*)\s+as\s+f64\s*\)\s*/\s*([0-9]+)(?:\.0+)?\b")
 
 bad = []
 fields_seen = 0
@@ -47,45 +59,33 @@ for f in sorted(SRC.rglob("*.nv")):
     if f.name.endswith("_test.nv"):
         continue
     text = f.read_text(encoding="utf-8", errors="replace")
-    if "field_" not in text:
+    found = list(CONVERSION.finditer(text))
+    if not found:
         continue
     files += 1
     rel = f.relative_to(REPO)
-
-    # Every `field_xxx("wire_name", <expr>.field_name)` call in the file.
-    for m in re.finditer(r"\b(field_[a-z0-9_]+)\s*\(\s*\"[^\"]*\"\s*,\s*([^)]*)\)", text):
-        writer, arg = m.group(1), m.group(2).strip()
-
-        # ONLY a plain field access is judged. `field_raw("poll", object([...]))`
-        # passes a nested expression, and taking the last dotted token out of it
-        # picks up an identifier from deep inside -- which is exactly what the first
-        # run of this check did, reporting two false positives about `interval_sec`
-        # inside a nested object. A check whose first report is about itself is worth
-        # fixing rather than tuning: the alternative is a guard people learn to skim.
-        if "(" in arg or "[" in arg or "," in arg or " " in arg:
-            continue
-        leaf = arg.split(".")[-1].strip()
-        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", leaf):
-            continue
-        fields_seen += 1
-        for suf, (meaning, ok_writers) in SCALES.items():
+    for m in found:
+        leaf = m.group(1).split(".")[-1]
+        divisor = int(m.group(2))
+        for suf, (meaning, want) in SCALES.items():
             if leaf.endswith(suf):
-                if writer not in ok_writers:
+                fields_seen += 1
+                if want is None or divisor != want:
                     line = text[: m.start()].count("\n") + 1
                     bad.append(
                         f"{rel}:{line}: `{leaf}` is named {suf} ({meaning}) but is "
-                        f"written by `{writer}`, which does not match. Rename the "
-                        f"field or change the writer -- a suffix nothing enforces is "
+                        f"divided by {divisor} on its way to the wire. Rename the "
+                        f"field or fix the divisor -- a suffix nothing enforces is "
                         f"how a value ends up a hundred times off.")
                 break
 
-print(f"files with field writers: {files}, field writes checked: {fields_seen}")
+print(f"files converting a scale: {files}, conversions checked: {fields_seen}")
 
 # The check must have found something to judge. Zero means the pattern stopped
 # matching, and the guard would stay green through anything.
 if files == 0 or fields_seen == 0:
     print("SCALE SUFFIXES: FAILED")
-    print(f"   files={files}, writes={fields_seen} -- nothing was judged, so a green "
+    print(f"   files={files}, conversions={fields_seen} -- nothing was judged, so a green "
           f"here would mean nothing")
     sys.exit(1)
 
@@ -104,7 +104,7 @@ if files == 0 or fields_seen == 0:
 #
 # So the check is added BEFORE the code it judges. It finds zero violations today,
 # which is the point: it is a trap set on the path, not a report about the past.
-scale_by_suffix = {suf: meaning for suf, (meaning, _w) in SCALES.items()}
+scale_by_suffix = {suf: meaning for suf, (meaning, _d) in SCALES.items()}
 
 inits = 0
 for f in sorted(SRC.rglob("*.nv")):

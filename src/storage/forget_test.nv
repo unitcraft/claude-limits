@@ -31,7 +31,7 @@ fn same(label str, want str, got str) -> bool {
 // ── pure ────────────────────────────────────────────────────────────────────
 
 test "an address is matched literally, whatever it contains" {
-    assert(regex_literal("a+b@x.org") == "a\\+b@x\\.org")
+    assert(regex_literal("a+b@example.org") == "a\\+b@example\\.org")
     assert(regex_literal("(x)[y]{z}|^$?*\\") == "\\(x\\)\\[y\\]\\{z\\}\\|\\^\\$\\?\\*\\\\")
 }
 

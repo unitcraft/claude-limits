@@ -633,7 +633,7 @@ def print_limit_row(kind, pct, sev, reset_label, fr, paint, bar_style,
 
 def print_stale_rows(stored, paint, bar_style):
     """The last good snapshot, dimmed, with its age -- shown when this cycle's
-    request failed (429, network). Spec 01.1 §3.3: unknown shows the last good
+    request failed (429, network). Spec 01.1 §3.2: unknown shows the last good
     data, not nothing."""
     when, rows = stored
     age = duration_of(time.time() - when)
@@ -1117,7 +1117,7 @@ def snapshot(dirs, paint, bar_style, offline_dir=None, refresher=None, kimi_refr
 
     `last_good` is the caller's dict series -> (epoch, rows) of the newest
     successful reading per account. On 429/network failure the stale rows are
-    printed DIMMED with their age instead of nothing -- spec 01.1 §3.3's
+    printed DIMMED with their age instead of nothing -- spec 01.1 §3.2's
     «unknown shows the last good snapshot» -- so a rate-limit storm does not
     blank the screen; the dict is updated in place on every success.
 

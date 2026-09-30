@@ -70,8 +70,22 @@ if not SRC.exists():
     sys.exit(1)
 
 text = SRC.read_text(encoding="utf-8")
-rendered = set(re.findall(r'field_[a-z0-9_]+\(\s*"([a-z0-9_]+)"', text))
+# WHAT GET RENDERS: the fields of the wire records serde writes (`#impl(Serialize)` on
+# a `type Conf... value { ro name T }`), plus the members spliced beside them by
+# `with_member(body, "key", value)`.
+#
+# CORRECTION 2026-09-30: this read `field_*("name"` calls -- the hand-written JSON
+# writer. T2.29 step 6 (d78882c) moved the body to serde records, the pattern matched
+# nothing from then on, and the guard printed `rendered=0` and FAILED -- correctly,
+# and unseen, because nothing ran it: the repository had no CI.
+rendered = set()
+for block in re.findall(r'#impl\(Serialize\)\s*type\s+Conf\w*\s+value\s*\{(.*?)\n\}', text, re.S):
+    rendered |= set(re.findall(r'^\s*ro\s+([a-z0-9_]+)\s', block, re.M))
+rendered |= set(re.findall(r'with_member\([^\n]*?,\s*"([a-z0-9_]+)"', text))
+# WHAT PUT ACCEPTS: a key compared by name (`k == "port"`), or a member read out of an
+# element (`o.get("path")` -- how a `folders[]` element is taken, section 3.8).
 accepted = set(re.findall(r'k\s*==\s*"([a-z0-9_]+)"', text))
+accepted |= set(re.findall(r'\bo\.get\("([a-z0-9_]+)"\)', text))
 
 print(f"rendered by GET: {len(rendered)}, accepted by PUT: {len(accepted)}")
 
