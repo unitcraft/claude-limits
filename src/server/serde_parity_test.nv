@@ -6,6 +6,10 @@
 // This file keeps the retired hand-written writers as REFERENCES and compares whole
 // bodies. A reference is deleted only together with the writer it guards -- never
 // before, or the comparison silently becomes serde against serde.
+//
+// ONE HANDLER PER COMPILATION UNIT: the refresh, token and export references live
+// in those handlers' own tests. Importing two handlers here put two private
+// `parse_ask` into one CU and the C refused them (registry 221.1 #1097).
 
 module server.serde_parity_test
 
@@ -420,3 +424,4 @@ test "GET /api/health: whole body, every level, filled and empty, against the re
     }
     assert(n == 6)
 }
+

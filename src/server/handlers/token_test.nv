@@ -10,7 +10,8 @@ import claude_limits.server.etag.{etag_of}
 import claude_limits.config.{Config, render}
 import polaris.{Router, serve_once}
 import std.testing.handlers as th
-import token.{TokenState, Ask, parse_ask, mint, applied, token_handler}
+import token.{TokenState, Ask, parse_ask, mint, applied, token_handler, token_body}
+import claude_limits.server.json.{field_str, field_bool, object}
 
 fn wire_str(wire []u8) -> str => unsafe { wire.to_str_unchecked() }
 
@@ -204,5 +205,21 @@ test "parse_ask reads the three shapes" {
     match parse_ask("{\"allow_lan\":\"yes\"}") {
         Ask.Bad(e) => assert(e.code == "invalid_request")
         _ => assert(false)
+    }
+}
+
+/// Whole-body comparison with both bodies in the failure (T2.29): a bare
+/// `assert(a == b)` would say only that they differ.
+fn same_body(label str, reference str, now str) -> bool {
+    if reference == now { return true }
+    panic("${label} REFERENCE=${reference} NOW=${now}")
+}
+
+// -- T2.29: the token body is serde's now; the retired hand writer is the reference --
+
+test "the token body, whole, against the retired hand writer" {
+    for t in ["tok-plain", "tok-\"x\\y"] {
+        ro reference = object([field_str("access_token", t), field_bool("shown_once", true)])
+        assert(same_body("token", reference, token_body(t)))
     }
 }

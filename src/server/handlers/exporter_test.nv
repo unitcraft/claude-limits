@@ -8,7 +8,8 @@ import claude_limits.server.routes.{HttpMethod, on, route, build, route_q}
 import claude_limits.server.dto.{Disclosure}
 import polaris.{Router, serve_once}
 import std.testing.handlers as th
-import exporter.{Row, ExportState, mask_email, csv_field, to_csv, filename, HEADER, export_handler}
+import exporter.{Row, ExportState, mask_email, csv_field, to_csv, filename, HEADER, export_handler, rows_to_json}
+import claude_limits.server.json.{quote}
 
 fn wire_str(wire []u8) -> str => unsafe { wire.to_str_unchecked() }
 
@@ -210,5 +211,61 @@ test "format and unmasked may not repeat, and take fixed values" {
         assert(status_of(serve(Disclosure.Loopback, "/api/export?format=csv&format=json")) == "HTTP/1.1 400 Bad Request")
         assert(status_of(serve(Disclosure.Loopback, "/api/export?format=xml")) == "HTTP/1.1 400 Bad Request")
         assert(status_of(serve(Disclosure.Loopback, "/api/export?unmasked=yes")) == "HTTP/1.1 400 Bad Request")
+    }
+}
+
+/// Whole-body comparison with both bodies in the failure (T2.29): a bare
+/// `assert(a == b)` would say only that they differ.
+fn same_body(label str, reference str, now str) -> bool {
+    if reference == now { return true }
+    panic("${label} REFERENCE=${reference} NOW=${now}")
+}
+
+// -- T2.29: the JSON export is serde's now; the retired hand writer is the reference --
+
+fn ref_bool(b bool) -> str => if b { "true" } else { "false" }
+
+fn ref_rows(rows []Row, unmasked bool) -> str {
+    consume sb = StringBuilder.new()
+    sb.append("{\"rows\":[")
+    mut first = true
+    for r in rows {
+        if !first { sb.append(",") }
+        ro email = if unmasked { r.email } else { mask_email(r.email) }
+        sb.append("{\"at\":")
+        sb.append(quote(r.at))
+        sb.append(",\"account_id\":")
+        sb.append(quote(r.account_id))
+        sb.append(",\"email\":")
+        sb.append(quote(email))
+        sb.append(",\"kind\":")
+        sb.append(quote(r.kind))
+        sb.append(",\"model\":")
+        if r.model == "" { sb.append("null") } else { sb.append(quote(r.model)) }
+        sb.append(",\"percent\":")
+        sb.append(r.percent)
+        sb.append(",\"locked\":")
+        sb.append(ref_bool(r.locked))
+        sb.append(",\"resets_at\":")
+        sb.append(quote(r.resets_at))
+        sb.append("}")
+        first = false
+    }
+    sb.append("]}")
+    sb
+}
+
+fn export_row(at str, account_id str, email str, kind str, model str, percent int, locked bool, resets_at str) -> Row =>
+    { at, account_id, email, kind, model, percent, locked, resets_at }
+
+test "the JSON export, whole, masked and not, against the retired hand writer" {
+    ro rows []Row = [
+        export_row("2026-09-06T18:00:00Z", "a1", "\"quoted\"@example.com", "session", "", 12, false, "2026-09-06T20:50:00Z"),
+        export_row("2026-09-06T18:05:00Z", "a2", "work@example.org", "weekly_scoped", "Fable", 100, true, ""),
+    ]
+    ro no_rows []Row = []
+    for unmasked in [true, false] {
+        assert(same_body("export", ref_rows(rows, unmasked), rows_to_json(rows, unmasked)))
+        assert(same_body("export empty", ref_rows(no_rows, unmasked), rows_to_json(no_rows, unmasked)))
     }
 }

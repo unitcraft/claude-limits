@@ -9,7 +9,7 @@ module handlers.refresh
 
 import claude_limits.server.routes.{Ctx, ApiHandler, problem}
 import claude_limits.server.errors.{ApiError, FieldError}
-import claude_limits.server.json.{field_str, field_raw, object, array}
+import std.encoding.serde.{json_encode, Serialize}
 import polaris.{ServerRequest, ServerResponse}
 import std.encoding.json.{Json}
 
@@ -178,13 +178,27 @@ export fn decide(st RefreshState, ask Ask) -> RefreshDecision {
 /// `202` with the list of what was queued (§3.5). There is no task resource to
 /// poll — the result arrives as an SSE `snapshot`, which is what `expect_event`
 /// names (deviation D5).
-export fn accepted(queued []RefreshTarget) -> ServerResponse {
-    mut items = []str.new()
-    for t in queued {
-        items.push(object([field_str("id", t.id), field_str("email", t.email)]))
-    }
-    ro body = object([field_raw("queued", array(items)), field_str("expect_event", "snapshot")])
-    ServerResponse.bytes(202, "application/json; charset=utf-8", body.bytes())
+export fn accepted(queued []RefreshTarget) -> ServerResponse =>
+    ServerResponse.bytes(202, "application/json; charset=utf-8", accepted_body(queued).bytes())
+
+/// The body alone, so a test can compare it whole (T2.29).
+export fn accepted_body(queued []RefreshTarget) -> str {
+    mut items []WireQueued = []
+    for t in queued { items.push({ id: t.id, email: t.email }) }
+    // serde refuses only integers past 2^53 and non-finite floats: none here.
+    json_encode(Accepted{ queued: items, expect_event: "snapshot" }) ?? "{}"
+}
+
+#impl(Serialize)
+type WireQueued value {
+    ro id str
+    ro email str
+}
+
+#impl(Serialize)
+type Accepted value {
+    ro queued []WireQueued
+    ro expect_event str
 }
 
 fn body_str(req ServerRequest) -> str => unsafe { req.body_bytes().to_str_unchecked() }

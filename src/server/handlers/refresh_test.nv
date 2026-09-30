@@ -11,7 +11,8 @@ module handlers.refresh_test
 import claude_limits.server.routes.{HttpMethod, on, route, build}
 import polaris.{Router, serve_once}
 import std.testing.handlers as th
-import refresh.{RefreshTarget, RefreshState, Ask, RefreshDecision, parse_ask, decide, wait_sec, refresh_handler}
+import refresh.{RefreshTarget, RefreshState, Ask, RefreshDecision, parse_ask, decide, wait_sec, refresh_handler, accepted_body}
+import claude_limits.server.json.{field_str, field_raw, object, array}
 
 // ── wire helpers ─────────────────────────────────────────────────────────────
 
@@ -276,4 +277,30 @@ test "parse_ask reads the three shapes and refuses the fourth" {
         Ask.Bad(e) => assert(e.code == "extra_forbidden")
         _ => assert(false)
     }
+}
+
+/// Whole-body comparison with both bodies in the failure (T2.29): a bare
+/// `assert(a == b)` would say only that they differ.
+fn same_body(label str, reference str, now str) -> bool {
+    if reference == now { return true }
+    panic("${label} REFERENCE=${reference} NOW=${now}")
+}
+
+// -- T2.29: the 202 body is serde's now; the retired hand writer is the reference --
+
+fn ref_accepted(queued []RefreshTarget) -> str {
+    mut items = []str.new()
+    for t in queued {
+        items.push(object([field_str("id", t.id), field_str("email", t.email)]))
+    }
+    object([field_raw("queued", array(items)), field_str("expect_event", "snapshot")])
+}
+
+fn queued_target(id str, email str) -> RefreshTarget => { id, email, state: "ok", last_poll_ms: 0 }
+
+test "the 202 body, whole, against the retired hand writer" {
+    ro qs []RefreshTarget = [queued_target("a1", "main@example.com"), queued_target("a\"2", "odd\\one@example.org")]
+    ro none []RefreshTarget = []
+    assert(same_body("accepted", ref_accepted(qs), accepted_body(qs)))
+    assert(same_body("accepted empty", ref_accepted(none), accepted_body(none)))
 }

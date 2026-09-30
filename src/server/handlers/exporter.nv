@@ -26,7 +26,8 @@ module handlers.exporter
 
 import claude_limits.server.routes.{Ctx, ApiHandler, problem}
 import claude_limits.server.errors.{ApiError}
-import claude_limits.server.json.{quote}
+import claude_limits.server.dto.{opt}
+import std.encoding.serde.{json_encode, Serialize}
 import claude_limits.server.dto.{Disclosure}
 import polaris.{ServerRequest, ServerResponse}
 
@@ -235,34 +236,42 @@ export fn parse_ask(req ServerRequest, d Disclosure) -> Ask {
 // `json.nv`'s own header records that this class was found and fixed once before.
 // It came back here, in the one handler that writes JSON by hand instead of through
 // the field helpers.
-fn rows_to_json(rows []Row, unmasked bool) -> str {
-    consume sb = StringBuilder.new()
-    sb.append("{\"rows\":[")
-    mut first = true
+export fn rows_to_json(rows []Row, unmasked bool) -> str {
+    mut out []WireRow = []
     for r in rows {
-        if !first { sb.append(",") }
-        ro email = if unmasked { r.email } else { mask_email(r.email) }
-        sb.append("{\"at\":")
-        sb.append(quote(r.at))
-        sb.append(",\"account_id\":")
-        sb.append(quote(r.account_id))
-        sb.append(",\"email\":")
-        sb.append(quote(email))
-        sb.append(",\"kind\":")
-        sb.append(quote(r.kind))
-        sb.append(",\"model\":")
-        if r.model == "" { sb.append("null") } else { sb.append(quote(r.model)) }
-        sb.append(",\"percent\":")
-        sb.append(r.percent)
-        sb.append(",\"locked\":")
-        sb.append(bool_str(r.locked))
-        sb.append(",\"resets_at\":")
-        sb.append(quote(r.resets_at))
-        sb.append("}")
-        first = false
+        out.push({
+            at: r.at,
+            account_id: r.account_id,
+            email: if unmasked { r.email } else { mask_email(r.email) },
+            kind: r.kind,
+            model: opt(r.model),
+            percent: r.percent,
+            locked: r.locked,
+            resets_at: r.resets_at,
+        })
     }
-    sb.append("]}")
-    sb
+    // serde refuses only integers past 2^53 and non-finite floats: a percent is
+    // neither. `{"rows":[]}` would claim an empty export; `{}` claims nothing.
+    json_encode(Export{ rows: out }) ?? "{}"
+}
+
+/// One exported row, in wire order (T2.29: serde writes it, which is what the
+/// comment above asked for -- no hand-quoted field left to forget).
+#impl(Serialize)
+type WireRow value {
+    ro at str
+    ro account_id str
+    ro email str
+    ro kind str
+    ro model Option[str]
+    ro percent int
+    ro locked bool
+    ro resets_at str
+}
+
+#impl(Serialize)
+type Export value {
+    ro rows []WireRow
 }
 
 // ── the handler ──────────────────────────────────────────────────────────────

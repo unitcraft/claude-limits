@@ -30,7 +30,7 @@ module handlers.token
 import claude_limits.server.routes.{Ctx, ApiHandler, problem}
 import claude_limits.server.errors.{ApiError, FieldError, field_errors_of}
 import claude_limits.server.dto.{Disclosure}
-import claude_limits.server.json.{field_str, field_bool, object}
+import std.encoding.serde.{json_encode, Serialize}
 import claude_limits.config.{Config, validate}
 import polaris.{ServerRequest, ServerResponse}
 import std.encoding.json.{Json}
@@ -133,6 +133,17 @@ fn header_of(ctx Ctx, name str) -> str => ctx.req.header(name) ?? ""
 
 fn body_str(req ServerRequest) -> str => unsafe { req.body_bytes().to_str_unchecked() }
 
+/// The one body that carries the token, whole, so a test can compare it (T2.29).
+export fn token_body(token str) -> str =>
+    // serde refuses only integers past 2^53 and non-finite floats: none here.
+    json_encode(TokenShown{ access_token: token, shown_once: true }) ?? "{}"
+
+#impl(Serialize)
+type TokenShown value {
+    ro access_token str
+    ro shown_once bool
+}
+
 // Hoisted and param-captured for the [M-16] reason named in `routes.nv`.
 fn run(src TokenSource, ctx Ctx) Random -> ServerResponse {
     ro st = src()
@@ -167,7 +178,7 @@ fn run(src TokenSource, ctx Ctx) Random -> ServerResponse {
             if bad.len() > 0 {
                 return problem(ApiError.invalid_config(field_errors_of(bad)), ctx.request_id, ctx.instance)
             }
-            ro body = object([field_str("access_token", token), field_bool("shown_once", true)])
+            ro body = token_body(token)
             // NO `ETag` ON THIS RESPONSE, and the first version had one. I computed
             // it as `etag_of([render(next)])` -- but `config.render` deliberately
             // NEVER writes the token: it serves the settings file AND the history
