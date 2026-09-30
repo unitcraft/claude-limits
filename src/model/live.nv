@@ -79,6 +79,10 @@ fn kind_rank(kind str) -> int {
 
 /// §3.3: inside an account, `session`, `weekly_all`, then `weekly_scoped` by model.
 export fn in_row_order(windows []Window) -> []Window {
+    // NOT `windows.collect()`, which the linter asks for: measured 2026-09-30, that form
+    // followed by `sort_by` crashes the process (0xC0000005) where this loop does not
+    // (probes/vec-collect-then-sort-crashes/).
+    // nova:allow W_MANUAL_COLLECT -- the canon form crashes at run time, see the probe
     mut out []Window = []
     for w in windows { out.push(w) }
     out.sort_by(fn(a Window, b Window) -> int => {

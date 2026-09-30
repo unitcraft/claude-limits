@@ -1,0 +1,30 @@
+module model.zz_collect_probe_test
+
+import claude_limits.window.{Window}
+
+fn ints_sorted(xs []int) -> []int {
+    mut out = xs.collect()
+    out.sort_by(fn(a int, b int) -> int => a - b)
+    out
+}
+
+fn ints_collected(xs []int) -> []int {
+    ro out = xs.collect()
+    out
+}
+
+fn wins_collected(ws []Window) -> []Window {
+    ro out = ws.collect()
+    out
+}
+
+fn wins_sorted(ws []Window) -> []Window {
+    mut out = ws.collect()
+    out.sort_by(fn(a Window, b Window) -> int => a.percent - b.percent)
+    out
+}
+
+test "A ints collect" { assert(ints_collected([3, 1, 2]).len() == 3) }
+test "B ints collect then sort" { assert(ints_sorted([3, 1, 2])[0] == 1) }
+test "C records collect" { assert(wins_collected([Window.new("s", "", 5, 0, "")]).len() == 1) }
+test "D records collect then sort" { assert(wins_sorted([Window.new("s", "", 5, 0, ""), Window.new("w", "", 1, 0, "")])[0].percent == 1) }
