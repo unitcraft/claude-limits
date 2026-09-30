@@ -18,7 +18,9 @@
 
 module handlers.sse_loop
 
+import std.encoding.serde.{json_encode, Serialize}
 import claude_limits.model.store.{Event}
+import claude_limits.usage.parse.{moment_iso}
 
 /// How long silence may last before a keep-alive (01.3 §3.4).
 ///
@@ -30,7 +32,8 @@ export const PING_AFTER_MS = 30 * 1000
 export type Tick enum
     /// Write this event and reset the silence.
     | Send(Event)
-    /// Write a keep-alive comment; the silence resets but no id is consumed.
+    /// Write the `ping` event under the last delivered id; the silence resets and no
+    /// new id is consumed.
     | Ping
     /// Write the farewell and close.
     | Bye
@@ -74,17 +77,35 @@ export fn silence_after(t Tick, silent_ms int) -> int {
     }
 }
 
+#impl(Serialize)
+type SsePing value {
+    ro at str
+}
+
+#impl(Serialize)
+type SseBye value {
+    ro reason str
+}
+
 /// The bytes for a tick, or "" when there is nothing to write.
 ///
-/// The comment form for a ping is deliberate: `: ping` is an SSE COMMENT, so it keeps
-/// the connection alive without becoming an event the client must number. An event with
-/// no id is an event a client cannot resume from -- the reason `events.nv` writes its
-/// own `frame` rather than using the one Polaris offers.
-export fn bytes_of(t Tick, frame_of fn(Event) -> str) -> str {
+/// `ping` AND `bye` ARE EVENTS, NAMED AND NUMBERED, as the contract writes them
+/// (01.3 §3.4: `ping` `{ "at": … }`, `bye` `{ "reason": "shutdown" }`, "every event
+/// carries `id:`"). Corrected 2026-09-30: this function used to write the ping as an
+/// SSE COMMENT, `: ping`. The page listens for the NAMED event (`web/live.js`,
+/// `addEventListener` over `'ping'`), a comment never fires it, and the page's
+/// silence check counted every quiet half-minute as a dead connection.
+///
+/// THE ID IS THE LAST ONE DELIVERED, `last_id`, not a new number. A ping is not in the
+/// ring; a fresh number would make a client that reconnects after it announce, through
+/// `Last-Event-ID`, an event the server never kept -- and be sent a whole snapshot, or
+/// be counted as having missed one. Repeating the last id resumes it exactly where it
+/// was. Both go through `frame_of`, the one spelling of an event on the wire.
+export fn bytes_of(t Tick, frame_of fn(Event) -> str, last_id int, now_ms int) -> str {
     match t {
         Tick.Send(e) => frame_of(e)
-        Tick.Ping => ": ping\n\n"
-        Tick.Bye => "event: bye\ndata: {}\n\n"
+        Tick.Ping => frame_of(Event.new(last_id, "ping", json_encode(SsePing{ at: moment_iso(now_ms) }) ?? "{}"))
+        Tick.Bye => frame_of(Event.new(last_id, "bye", json_encode(SseBye{ reason: "shutdown" }) ?? "{}"))
         Tick.Wait => ""
     }
 }

@@ -15,6 +15,7 @@ module handlers.sse_loop_test
 
 import sse_loop.{Tick, next_action, silence_after, bytes_of, PING_AFTER_MS}
 import claude_limits.model.store.{Event}
+import events.{frame}
 
 fn an_event() -> Event => Event.new(7, "snapshot", "{}")
 
@@ -63,31 +64,46 @@ test "a ping resets the silence, or one idle connection pings every tick" {
     assert(silence_after(Tick.Wait, 1234) == 1234)
 }
 
-test "the ping is an SSE COMMENT, not an event" {
-    // An event with no id is an event a client cannot resume from; an event WITH an id
-    // consumes a number nobody published. A comment is neither.
-    ro b = bytes_of(Tick.Ping, fn(e Event) -> str => "FRAME")
-    assert(b.starts_with(":"))
-    assert(!b.contains("id:"))
-    assert(!b.contains("event:"))
-    // Two newlines, or the client buffers it waiting for the rest.
-    assert(b.ends_with("\n\n"))
+// 2026-09-30 12:00 in Moscow.
+const NOW_MS = 1790758800000
+
+/// The real framer, wrapped. Passing `frame` itself as a value does not build: codegen
+/// writes the bare name `frame` into C (`use of undeclared identifier 'frame'`), while
+/// `frames` from the same module and a local fn named `frame` both pass as values
+/// (probes/imported-fn-value-named-like-a-module/, 2026-09-30).
+fn real_frame(e Event) -> str => frame(e)
+
+test "the ping is the contract's NAMED event, under the last delivered id" {
+    // 01.3 §3.4: `ping` `{ "at": … }`, and every event carries `id:`. The page listens
+    // for the NAMED event; the comment form this replaced (`: ping`) never fired it.
+    // The whole wire, through the real framer -- a check of pieces would pass for bytes
+    // in the wrong order.
+    ro want = "id: 41\nevent: ping\ndata: {\"at\":\"2026-09-30T09:00:00Z\"}\n\n"
+    assert(bytes_of(Tick.Ping, real_frame, 41, NOW_MS) == want)
 }
 
-test "the farewell is a named event, so the client knows the end was deliberate" {
-    ro b = bytes_of(Tick.Bye, fn(e Event) -> str => "FRAME")
-    assert(b.contains("event: bye"))
-    assert(b.ends_with("\n\n"))
+test "the ping does not consume an id: the client resumes exactly where it was" {
+    // A fresh number would make a client that reconnects after the ping announce an
+    // event the ring never held. The same `last_id` in, the same id out, twice.
+    ro a = bytes_of(Tick.Ping, fn(e Event) -> str => "${e.id}", 41, NOW_MS)
+    ro b = bytes_of(Tick.Ping, fn(e Event) -> str => "${e.id}", 41, NOW_MS + PING_AFTER_MS)
+    assert(a == "41")
+    assert(b == "41")
+}
+
+test "the farewell is the contract's named event, so the client knows the end was deliberate" {
+    ro want = "id: 41\nevent: bye\ndata: {\"reason\":\"shutdown\"}\n\n"
+    assert(bytes_of(Tick.Bye, real_frame, 41, NOW_MS) == want)
 }
 
 test "a send is framed by the framer it was given, not by a second spelling" {
     // `events.nv` owns the wire format and says so: the loop must not invent a second
     // way to write an event, or `id:` goes missing from one of them and a client
-    // cannot resume.
-    ro got = bytes_of(Tick.Send(an_event()), fn(e Event) -> str => "FRAMED-${e.id}")
+    // cannot resume. Ping and bye go through the same framer (tests above).
+    ro got = bytes_of(Tick.Send(an_event()), fn(e Event) -> str => "FRAMED-${e.id}", 41, NOW_MS)
     assert(got == "FRAMED-7")
 }
 
 test "waiting writes nothing at all" {
-    assert(bytes_of(Tick.Wait, fn(e Event) -> str => "FRAME") == "")
+    assert(bytes_of(Tick.Wait, fn(e Event) -> str => "FRAME", 41, NOW_MS) == "")
 }
