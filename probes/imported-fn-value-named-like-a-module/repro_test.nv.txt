@@ -1,0 +1,10 @@
+module handlers.zz_frame_probe_test
+
+import claude_limits.model.store.{Event}
+import events.{frame}
+
+fn ap(f fn(Event) -> str) -> str => f(Event.new(1, "a", "b"))
+
+test "imported frame passed as a value" {
+    assert(ap(frame).contains("id: 1"))
+}

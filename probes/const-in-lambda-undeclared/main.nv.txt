@@ -1,0 +1,7 @@
+module main
+
+const K = 7
+
+fn plain(body fn() -> int) -> int => body()
+
+fn main() Io -> () => println("${plain(fn() -> int => K)}")
