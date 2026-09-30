@@ -166,8 +166,14 @@ export fn others_sql(source str) -> str =>
 export fn back_sql(source str) -> str => "USE ${ident(source)}"
 
 /// The statements that write the source database into `target`.
-export fn backup_sql(source str, target str, tables []Table, others []str) -> []str {
-    mut out = ["ATTACH ${quote(target)} AS ${ALIAS}", "USE ${ALIAS}"]
+///
+/// `key` is the database's encryption key, "" for an unencrypted one. WITH IT THE
+/// BACKUP IS THE SAME KIND OF CIPHERTEXT (01.2 section 5); without it a backup of an
+/// encrypted database would be written in the clear -- the whole database, every
+/// e-mail, in a directory nobody thinks of as sensitive.
+export fn backup_sql(source str, target str, tables []Table, others []str, key str) -> []str {
+    ro with_key = if key == "" { "" } else { " (ENCRYPTION_KEY ${quote(key)})" }
+    mut out = ["ATTACH ${quote(target)} AS ${ALIAS}${with_key}", "USE ${ALIAS}"]
     for t in tables { out.push(t.sql) }
     for o in others { out.push(o) }
     out.push(back_sql(source))
@@ -185,6 +191,15 @@ export fn backup_sql(source str, target str, tables []Table, others []str) -> []
 
 fn io(e IoError) -> BackupFail => BackupFail.Io(e.to_str())
 fn engine(e DuckError) -> BackupFail => BackupFail.Engine(e.message())
+
+/// An engine refusal that may quote the statement -- and the statement may carry the
+/// key. Withheld whole when it does: a key in an error message reaches logs and
+/// terminals, and no later care takes it back.
+fn engine_hiding(e DuckError, key str) -> BackupFail {
+    ro m = e.message()
+    if key != "" && m.contains(key) { return BackupFail.Engine("the database refused the copy (the message is withheld: it contained the key)") }
+    BackupFail.Engine(m)
+}
 
 /// The names in the backup directory; none when it does not exist yet.
 export fn list_names(dir str) Fs -> []str {
@@ -232,25 +247,25 @@ fn current_database(conn ConnRef) Db -> Result[str, DuckError] {
     Ok(rows[0][0])
 }
 
-fn statements_for(conn ConnRef, source str, part str) Db -> Result[[]str, DuckError] {
+fn statements_for(conn ConnRef, source str, part str, key str) Db -> Result[[]str, DuckError] {
     mut tables = []Table.new()
     for r in text_rows(conn, tables_sql(source))? { tables.push(Table.new(r[0], r[1])) }
     mut others = []str.new()
     for r in text_rows(conn, others_sql(source))? { others.push(r[0]) }
-    Ok(backup_sql(source, part, tables, others))
+    Ok(backup_sql(source, part, tables, others, key))
 }
 
 /// Take one backup and prune to `keep` (01.2 §5). Returns the backup's name.
 ///
 /// A second backup in the same minute is the file already there: the name has no
 /// finer grain, and a backup is a state, not an event.
-export fn take_backup(conn ConnRef, dir str, now_ms int, keep int, windows bool) Db Fs -> Result[str, BackupFail] {
+export fn take_backup(conn ConnRef, dir str, now_ms int, keep int, windows bool, key str) Db Fs -> Result[str, BackupFail] {
     ro name = backup_name(now_ms)
     ro final = join(dir, name, windows)
     if try_exists(final.to_path()).map_err(io)? { return Ok(name) }
 
     create_dir_all(dir.to_path()).map_err(io)?
-    write_copy(conn, final)?
+    write_copy(conn, final, key)?
 
     for old in to_remove(list_names(dir), keep) {
         remove_file(join(dir, old, windows).to_path()).map_err(io)?
@@ -260,14 +275,15 @@ export fn take_backup(conn ConnRef, dir str, now_ms int, keep int, windows bool)
 
 /// Write the whole open database into a NEW file at `target`, under `.part` until it
 /// is whole. The one copying mechanism: a backup uses it, and so does `compact`.
-export fn write_copy(conn ConnRef, target str) Db Fs -> Result[(), BackupFail] {
+/// `key`: the database's encryption key, "" for none -- see `backup_sql`.
+export fn write_copy(conn ConnRef, target str, key str) Db Fs -> Result[(), BackupFail] {
     ro part = "${target}${PART}"
     // A `.part` left by a run that died is garbage by definition; absent is the usual
     // case, and that failure is the one to ignore.
     ro _ = remove_file(part.to_path())
 
     ro source = current_database(conn).map_err(engine)?
-    for stmt in statements_for(conn, source, part).map_err(engine)? {
+    for stmt in statements_for(conn, source, part, key).map_err(engine)? {
         match Db.exec(conn, stmt) {
             Ok(_) => ()
             Err(e) => {
@@ -278,7 +294,7 @@ export fn write_copy(conn ConnRef, target str) Db Fs -> Result[(), BackupFail] {
                 ro _ = Db.exec(conn, back_sql(source))
                 ro _ = Db.exec(conn, "DETACH DATABASE IF EXISTS ${ALIAS}")
                 ro _ = remove_file(part.to_path())
-                return Err(engine(e))
+                return Err(engine_hiding(e, key))
             }
         }
     }

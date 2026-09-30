@@ -18,6 +18,8 @@
 # `duckdb` (plan 01.4) ARRIVED 2026-09-14: `nova-duckdb v0.1.0` is tagged on all three
 # mirrors (tag object c10268eb -> commit 6e328d8), and a package is pulled BY TAG, so
 # until tonight naming it here would have broken every build. It is below.
+# 2026-09-30: pinned to 0.2 -- `nova-duckdb v0.2.0` (tag object 2ecdecff -> commit
+# 5db17bf, all three mirrors) opens the file encrypted and renames `.of` to `.new`.
 #
 # `sdl` (plan 01 Ф.3) stays absent, and now for a stronger reason than "the package
 # does not exist": the owner took the widget out of the MVP (plan 01, decision 13).
@@ -65,4 +67,4 @@ compress = { git = "https://github.com/nv-lang/nova-compress", version = "0.1" }
 # Storage (plan 01.4, tasks T2.2-T2.7). Pulled by version, which means BY TAG: the
 # resolver takes the newest matching tag, so a fix sitting on the package's `main` is
 # invisible here until it is tagged.
-duckdb = { git = "https://github.com/nv-lang/nova-duckdb", version = "0.1" }
+duckdb = { git = "https://github.com/nv-lang/nova-duckdb", version = "0.2" }

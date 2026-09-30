@@ -142,7 +142,7 @@ fn forget_on(path str, email str, bk str, compact bool) Io -> str {
                         ro r = forget(conn, email, inst, now_ms)
                         mut note = ""
                         if bk != "" {
-                            match take_backup(conn, bk, now_ms, 5, false) {
+                            match take_backup(conn, bk, now_ms, 5, false, "") {
                                 Ok(_) => ()
                                 Err(e) => { note = "${note} / BACKUP ${e.message()}" }
                             }
@@ -150,7 +150,7 @@ fn forget_on(path str, email str, bk str, compact bool) Io -> str {
                         // The copy is the LAST thing done on the open database: see
                         // `swap_in_fresh`, nothing may write after it.
                         if compact {
-                            match write_copy(conn, fresh_path(path)) {
+                            match write_copy(conn, fresh_path(path), "") {
                                 Ok(_) => ()
                                 Err(e) => { note = "${note} / COPY ${e.message()}" }
                             }

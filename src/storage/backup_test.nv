@@ -74,7 +74,7 @@ test "the weekly backup is due when there is none, or the newest is a week old" 
 test "the statements: schema first under USE, back to the source, rows in one transaction" {
     ro s = backup_sql("my \"db\"", "C:/Users/o'hara/backup/x.duckdb.part",
         [Table.new("folder", "CREATE TABLE folder(id UUID)"), Table.new("login_dir", "CREATE TABLE login_dir(id UUID)")],
-        ["CREATE VIEW v AS SELECT 1"])
+        ["CREATE VIEW v AS SELECT 1"], "")
     ro want = [
         "ATTACH 'C:/Users/o''hara/backup/x.duckdb.part' AS nova_backup",
         "USE nova_backup",
@@ -228,7 +228,7 @@ fn backup_where(path str, dir str, now_ms int, keep int, pre []str) Io -> []str 
                     }
                     Ok(conn) => {
                         for s in pre { ro _ = Db.exec(conn, s) }
-                        ro r = take_backup(conn, dir, now_ms, keep, false)
+                        ro r = take_backup(conn, dir, now_ms, keep, false, "")
                         mut on = "<unknown>"
                         match Db.query(conn, "SELECT current_database()") {
                             Ok(rows) => {
@@ -335,4 +335,15 @@ test "a backup that fails half-way leaves the connection where the application h
     ro again = backup_where(db, "${dir}/backup", NOW_MS, 5, ["DROP VIEW v_twice"])
     assert(same("next backup", backup_name(NOW_MS), again[0]))
     assert(same("connection after success", "claude-limits", again[1]))
+}
+
+test "a backup of an encrypted database is attached WITH the key" {
+    // Without it the copy of an encrypted database would be written in the clear. The
+    // live proof (ciphertext on disk, and the control that finds the address without
+    // the key) waits for nova-duckdb 0.2.1: with nova-tls in the same binary the two
+    // vendored mbedTLS copies collide (plan 01.5, T2.6).
+    ro with_key = backup_sql("main", "C:/b/x.part", [], [], "k-1")
+    assert(same("keyed", "ATTACH 'C:/b/x.part' AS nova_backup (ENCRYPTION_KEY 'k-1')", with_key[0]))
+    ro plain = backup_sql("main", "C:/b/x.part", [], [], "")
+    assert(same("plain", "ATTACH 'C:/b/x.part' AS nova_backup", plain[0]))
 }
