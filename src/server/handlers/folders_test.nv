@@ -231,3 +231,26 @@ test "parse_ask reads the shapes on its own" {
         _ => assert(false)
     }
 }
+
+/// Whole-body comparison with both bodies in the failure (T2.29).
+fn same_body(label str, reference str, now str) -> bool {
+    if reference == now { return true }
+    panic("${label} REFERENCE=${reference} NOW=${now}")
+}
+
+// -- T2.29: the probe body is serde's now --
+//
+// The references are the bodies the RETIRED hand writer produced on these fixtures,
+// captured on 2026-09-30 before the change (a panic carrying all four, read with
+// NOVA_DEBUG_RUN_DUMP=1) and pasted verbatim. A capture rather than a copy of the old
+// code, because the old renderer reads logins through `Creds` and a copy would have
+// dragged half the handler into the test.
+
+test "the probe body, whole, on four fixtures, against the captured hand-written bodies" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        assert(same_body("/fx/parent", "{\"path_resolved\":\"/fx/parent\",\"kind\":\"parent\",\"login_dirs\":[{\"name\":\"nv-lang\",\"email\":\"main@example.com\",\"org\":\"Tech Center\",\"token_state\":\"ok\",\"same_login_as\":[{\"id\":\"d-9\",\"name\":\"already-here\"}]},{\"name\":\"dev\",\"email\":\"main@example.com\",\"org\":\"Tech Center\",\"token_state\":\"ok\",\"same_login_as\":[{\"id\":\"d-9\",\"name\":\"already-here\"}]}],\"problem\":null,\"already_listed\":false}", body_of(run(post("{\"path\":\"/fx/parent\"}")))))
+        assert(same_body("/fx/single", "{\"path_resolved\":\"/fx/single\",\"kind\":\"single\",\"login_dirs\":[{\"name\":\"single\",\"email\":\"main@example.com\",\"org\":\"Tech Center\",\"token_state\":\"ok\",\"same_login_as\":[{\"id\":\"d-9\",\"name\":\"already-here\"}]}],\"problem\":null,\"already_listed\":true}", body_of(run(post("{\"path\":\"/fx/single\"}")))))
+        assert(same_body("/fx/empty", "{\"path_resolved\":\"/fx/empty\",\"kind\":\"empty\",\"login_dirs\":[],\"problem\":\"no .credentials.json here\",\"already_listed\":false}", body_of(run(post("{\"path\":\"/fx/empty\"}")))))
+        assert(same_body("/fx/nowhere", "{\"path_resolved\":\"/fx/nowhere\",\"kind\":\"missing\",\"login_dirs\":[],\"problem\":\"no such folder\",\"already_listed\":false}", body_of(run(post("{\"path\":\"/fx/nowhere\"}")))))
+    }
+}

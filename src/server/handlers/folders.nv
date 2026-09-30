@@ -21,8 +21,8 @@ module handlers.folders
 
 import claude_limits.server.routes.{Ctx, ApiHandler, problem}
 import claude_limits.server.errors.{ApiError, FieldError}
-import claude_limits.server.dto.{Disclosure, pii_path}
-import claude_limits.server.json.{field_str, field_str_or_null, field_bool, field_raw, object, array}
+import claude_limits.server.dto.{Disclosure, opt, shown_path}
+import std.encoding.serde.{json_encode, Serialize}
 import claude_limits.accounts.discover.{Dirs, Folder, LoginDir, scan, normalise}
 import claude_limits.accounts.login.{Creds, read_login, state_of}
 import polaris.{ServerRequest, ServerResponse}
@@ -112,39 +112,63 @@ fn same_login_as(known []KnownLogin, email str, self_name str) -> []KnownLogin {
     out
 }
 
-fn render_same(ks []KnownLogin) -> str {
-    mut out = []str.new()
-    for k in ks { out.push(object([field_str("id", k.id), field_str("name", k.name)])) }
-    array(out)
-}
-
 /// One login directory of the answer.
 ///
 /// `read_login` and NOT `read_token`: the description is all a probe needs, and the
 /// secret is behind a different call this file never makes.
-fn render_login(st ProbeState, base str, d LoginDir) Creds -> str {
+fn wire_login(st ProbeState, base str, d LoginDir) Creds -> WireLogin {
     ro login = read_login(base, d.name, d.identity, d.credentials)
     ro state = state_of(login, st.now_ms)
-    object([
-        field_str("name", d.name),
-        field_str_or_null("email", login.email),
-        field_str_or_null("org", login.org),
-        field_str("token_state", state.to_str()),
-        field_raw("same_login_as", render_same(same_login_as(st.known, login.email, d.name))),
-    ])
+    mut same []WireSame = []
+    for k in same_login_as(st.known, login.email, d.name) { same.push({ id: k.id, name: k.name }) }
+    {
+        name: d.name,
+        email: opt(login.email),
+        org: opt(login.org),
+        token_state: state.to_str(),
+        same_login_as: same,
+    }
 }
 
-/// The body of §3.9.
+/// The body of section 3.9. serde writes it (T2.29); the mapping above is values.
 export fn render_probe(st ProbeState, resolved str, f Folder) Creds -> str {
-    mut logins = []str.new()
-    for d in f.logins { logins.push(render_login(st, f.path, d)) }
-    object([
-        pii_path(st.disclosure, "path_resolved", resolved),
-        field_str("kind", f.kind.to_str()),
-        field_raw("login_dirs", array(logins)),
-        field_str_or_null("problem", f.problem),
-        field_bool("already_listed", st.listed.contains(resolved)),
-    ])
+    mut logins []WireLogin = []
+    for d in f.logins { logins.push(wire_login(st, f.path, d)) }
+    ro body = ProbeBody{
+        path_resolved: shown_path(st.disclosure, resolved),
+        kind: f.kind.to_str(),
+        login_dirs: logins,
+        problem: opt(f.problem),
+        already_listed: st.listed.contains(resolved),
+    }
+    // serde refuses only integers past 2^53 and non-finite floats: none here.
+    json_encode(body) ?? "{}"
+}
+
+// -- the wire (T2.29), in wire order --
+
+#impl(Serialize)
+type WireSame value {
+    ro id str
+    ro name str
+}
+
+#impl(Serialize)
+type WireLogin value {
+    ro name str
+    ro email Option[str]
+    ro org Option[str]
+    ro token_state str
+    ro same_login_as []WireSame
+}
+
+#impl(Serialize)
+type ProbeBody value {
+    ro path_resolved Option[str]
+    ro kind str
+    ro login_dirs []WireLogin
+    ro problem Option[str]
+    ro already_listed bool
 }
 
 fn body_str(req ServerRequest) -> str => unsafe { req.body_bytes().to_str_unchecked() }
