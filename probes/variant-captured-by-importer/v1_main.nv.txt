@@ -1,0 +1,13 @@
+// v1_main: a SECOND enum with the same variant names, as claude-limits' HttpMethod.
+module hcap.v1_main
+
+import hcap.v1_lib.{to_method, method_name}
+
+export type HttpMethod enum Get | Post | Put
+
+fn main() Io {
+    match to_method("POST") {
+        Ok(m) => println("v1 ${method_name(m)}")
+        Err(e) => println("v1 err ${e}")
+    }
+}

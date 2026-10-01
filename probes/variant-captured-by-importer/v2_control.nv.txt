@@ -1,0 +1,13 @@
+// v2_control: the second enum with OTHER variant names.
+module hcap.v2_control
+
+import hcap.v1_lib.{to_method, method_name}
+
+export type HttpMethod enum Head | Patch | Put
+
+fn main() Io {
+    match to_method("POST") {
+        Ok(m) => println("v2 ${method_name(m)}")
+        Err(e) => println("v2 err ${e}")
+    }
+}

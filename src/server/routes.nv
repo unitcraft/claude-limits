@@ -100,6 +100,11 @@ export type ApiHandler fn(Ctx) -> ServerResponse
 ///
 /// An enum rather than a string so that mounting a route cannot fall through a
 /// default arm and silently drop it: the compiler checks the match in `mount`.
+///
+/// Its variant names are nova-http's own (`Method`), and on nova main of 2026-10-01
+/// that is enough to break nova-http: its bare `Get`/`Post` resolve to THESE variants
+/// (registry 221.1 #1555, `probes/variant-captured-by-importer/`). Not renamed here --
+/// the defect is the compiler's, and a rename would hide its carrier.
 export type HttpMethod enum Get | Post | Put | Delete
 
 export fn HttpMethod @str() -> str {

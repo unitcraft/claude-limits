@@ -1,0 +1,22 @@
+// v1_lib: an enum whose variants are named bare inside a match, as nova-http's Method.
+module hcap.v1_lib
+
+export type Method enum
+    | Get | Post
+    | Other(str)
+
+export fn to_method(s str) -> Result[Method, str] {
+    if s == "" { return Err("empty") }
+    Ok(match s {
+        "GET"  => Get
+        "POST" => Post
+        _      => Other(s)
+    })
+}
+
+export fn method_name(m Method) -> str =>
+    match m {
+        Get => "get"
+        Post => "post"
+        Other(x) => x
+    }
