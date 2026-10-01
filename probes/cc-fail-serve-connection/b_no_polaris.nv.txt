@@ -1,0 +1,17 @@
+// zz: nova-http's transport used, NO polaris -- CONTROL.
+module claude_limits.zz_tcp_probe
+
+import std.os.{real_os, args}
+import http.transport.{real_http}
+import http.{Http}
+
+fn ask() Http -> int => 1
+
+fn main() Io Net Detach {
+    ro all = with Os = real_os() { args() }
+    if all.len() > 99 {
+        ro n = with Http = real_http() { ask() }
+        println("n ${n}")
+    }
+    println("zz ok")
+}

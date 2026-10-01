@@ -1,0 +1,25 @@
+// zz: the tiny serve_router main, plus nova-http's real transport in reach.
+module claude_limits.zz_tcp_probe
+
+import std.net.{TcpListener}
+import std.os.{real_os, args}
+import polaris.{Router}
+import polaris.net.{ServerPolicy}
+import polaris.serve.{serve_router}
+import http.transport.{real_http}
+import http.{Http}
+
+fn ask() Http -> int => 1
+
+fn main() Io Net Detach {
+    ro all = with Os = real_os() { args() }
+    if all.len() > 99 {
+        ro n = with Http = real_http() { ask() }
+        println("n ${n}")
+        match TcpListener.bind("127.0.0.1:1") {
+            Ok(consume listener) => serve_router(listener, Router.new(), ServerPolicy.new())
+            Err(_) => ()
+        }
+    }
+    println("zz ok")
+}

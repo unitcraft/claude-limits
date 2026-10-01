@@ -1,0 +1,19 @@
+// zz: the tiny serve_router main alone -- CONTROL.
+module claude_limits.zz_tcp_probe
+
+import std.net.{TcpListener}
+import std.os.{real_os, args}
+import polaris.{Router}
+import polaris.net.{ServerPolicy}
+import polaris.serve.{serve_router}
+
+fn main() Io Net Detach {
+    ro all = with Os = real_os() { args() }
+    if all.len() > 99 {
+        match TcpListener.bind("127.0.0.1:1") {
+            Ok(consume listener) => serve_router(listener, Router.new(), ServerPolicy.new())
+            Err(_) => ()
+        }
+    }
+    println("zz ok")
+}

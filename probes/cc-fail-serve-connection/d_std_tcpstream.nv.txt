@@ -1,0 +1,24 @@
+// zz: polaris serve_router plus std.net TcpStream instead of nova-http -- CONTROL.
+module claude_limits.zz_tcp_probe
+
+import std.net.{TcpListener}
+import std.os.{real_os, args}
+import polaris.{Router}
+import polaris.net.{ServerPolicy}
+import polaris.serve.{serve_router}
+import std.net.{TcpStream}
+
+fn main() Io Net Detach {
+    ro all = with Os = real_os() { args() }
+    if all.len() > 99 {
+        match TcpStream.connect("127.0.0.1:1") {
+            Ok(consume s) => s.close()
+            Err(_) => ()
+        }
+        match TcpListener.bind("127.0.0.1:1") {
+            Ok(consume listener) => serve_router(listener, Router.new(), ServerPolicy.new())
+            Err(_) => ()
+        }
+    }
+    println("zz ok")
+}

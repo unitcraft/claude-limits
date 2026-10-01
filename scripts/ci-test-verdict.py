@@ -26,8 +26,8 @@ KNOWN = {
         "CC-FAIL",
         "NovaValue_TcpStream",
         "test mode compiles polaris serve_connection with a TcpStream value where a "
-        "pointer is wanted; `nova build` of the same file passes (to the integrator, "
-        "plan 01.5 T2.27)",
+        "pointer is wanted; `nova build` of the same file passes (nova registry 221.1 "
+        "#1579, probes/cc-fail-serve-connection/)",
     ),
 }
 
