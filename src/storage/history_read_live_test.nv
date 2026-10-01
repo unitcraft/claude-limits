@@ -80,6 +80,20 @@ fn line_of(r HistRows) -> str {
     s
 }
 
+/// The rollup rows the reader brought, per window: `day:peak/avg_hundredths/locked`.
+fn rollup_line(conn ConnRef, from_ms int, to_ms int, accounts []str) Db -> str =>
+    match read_history(conn, from_ms, to_ms, accounts) {
+        Ok(r) => {
+            mut s = "w=${r.windows.len()}"
+            for w in r.windows {
+                s = "${s} ${w.kind}:"
+                for x in w.rollups { s = "${s}[${x.day}:${x.peak}/${x.avg_hundredths}/${x.locked_sec}]" }
+            }
+            s
+        }
+        Err(e) => "READ ${e.message()}"
+    }
+
 fn read_line(conn ConnRef, from_ms int, to_ms int, accounts []str) Db -> str =>
     match read_history(conn, from_ms, to_ms, accounts) {
         Ok(r) => line_of(r)
@@ -87,10 +101,13 @@ fn read_line(conn ConnRef, from_ms int, to_ms int, accounts []str) Db -> str =>
     }
 
 /// Write the history into a fresh file, then read each `(from, to, accounts)`.
-fn run(name str, asks [](int, int, []str)) Io -> []str {
+fn run(name str, asks [](int, int, []str)) Io -> []str => run_with(name, [], asks)
+
+fn run_with(name str, extra []str, asks [](int, int, []str)) Io -> []str {
     ro path = "${place(name)}/db.duckdb"
     mut setup = [init_sql()]
     for s in history_sql() { setup.push(s) }
+    for s in extra { setup.push(s) }
     ro todo = asks
     ro steps = setup
     with_real_db(fn() Db -> []str => {
@@ -115,7 +132,10 @@ fn run(name str, asks [](int, int, []str)) Io -> []str {
                         }
                     }
                     if ok {
-                        for (f, t, acc) in todo { out.push(read_line(conn, f, t, acc)) }
+                        for (f, t, acc) in todo {
+                            out.push(read_line(conn, f, t, acc))
+                            out.push(rollup_line(conn, f, t, acc))
+                        }
                     }
                     Db.close_conn(conn)
                     Db.close_db(db)
@@ -145,7 +165,7 @@ test "a narrower range keeps only its own rows, and a lock begun before it" {
     ])
     assert(same("narrow", "w=2 session:2/1[percent_100 open=true] weekly_all:2/0 a=1 work@example.org slot=0 p=2,ok,ok", got[0]))
     // The lock began at T0+5m, before this range, and has not ended: it is drawn.
-    assert(same("late", "w=2 session:1/1[percent_100 open=true] weekly_all:1/0 a=1 work@example.org slot=0 p=2,http_429,ok", got[1]))
+    assert(same("late", "w=2 session:1/1[percent_100 open=true] weekly_all:1/0 a=1 work@example.org slot=0 p=2,http_429,ok", got[2]))
 }
 
 test "an unknown account id is an empty answer, not an error" {
@@ -161,4 +181,21 @@ test "the account filter keeps the account it names" {
 test "a range with no samples is empty" {
     ro got = run("empty", [(T0 - 10 * MIN5, T0 - 5 * MIN5, [])])
     assert(same("empty", "w=0 a=0", got[0]))
+}
+
+/// A rollup row of the session window for 2025-09-01 (day 20332), a week before the
+/// samples: retention has removed that day's samples, only the rollup knows it.
+fn rollup_sql() -> str =>
+    "INSERT INTO daily_rollup (id, created_at, updated_at, created_by, updated_by, window_id, day_on, samples, peak_percent, avg_percent, locked_sec, resets) VALUES ('01900000-0000-7000-8000-0000000000e1', now(), now(), '${INST}', '${INST}', '01900000-0000-7000-8000-000000100011', DATE '2025-09-01', 288, 64, 31.25, 900, 4)"
+
+test "a window known only to the rollup in the range is read, with its day" {
+    // 2025-08-31 .. 2025-09-03: no sample, one rollup row.
+    ro got = run_with("rollup", [rollup_sql()], [(T0 - 8 * 86400000, T0 - 5 * 86400000, [])])
+    assert(same("rows", "w=1 session:0/0 a=1 work@example.org slot=0 p=0", got[0]))
+    assert(same("rollup", "w=1 session:[20332:64/3125/900]", got[1]))
+}
+
+test "the rollup row is not read for a range days away from it" {
+    ro got = run_with("rollup-far", [rollup_sql()], [(T0 - 60000, T0 + 5 * MIN5, [])])
+    assert(same("far", "w=2 session: weekly_all:", got[1]))
 }

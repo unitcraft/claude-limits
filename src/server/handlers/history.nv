@@ -29,7 +29,7 @@ module handlers.history
 import claude_limits.server.errors.{ApiError}
 import claude_limits.usage.parse.{moment_ms, moment_iso}
 import std.identifiers.uuid.{Uuid}
-import claude_limits.storage.history_rows.{HistSample, HistPoll, HistLock, HistWindow, HistAccount, HistRows}
+import claude_limits.storage.history_rows.{HistSample, HistPoll, HistLock, HistWindow, HistAccount, HistRows, HistRollup}
 import claude_limits.server.errors.{FieldError}
 import polaris.{ServerRequest, ServerResponse}
 import claude_limits.server.routes.{Ctx, ApiHandler, problem}
@@ -101,7 +101,7 @@ fn history_hex_val(b u8) -> int {
 /// own `Url` in one compilation unit (E_METHOD_REDEFINITION on `Url.to_str`), and
 /// importing nova-http's drags Polaris's `Query[T]` instantiations into this module,
 /// one of them built from a type in Polaris's own doc samples -- a CC-FAIL in code
-/// this package never wrote (registry 221.1 #1040's family, measured 2026-10-01).
+/// this package never wrote (registry 221.1 #1527's class, measured 2026-10-01).
 export fn history_pct_decode(s str) -> Option[str] {
     ro bytes = s.bytes()
     mut out []u8 = []
@@ -339,6 +339,104 @@ export fn history_gaps(polls []HistPoll) -> []HistGap {
     out
 }
 
+// ── `step=day` ──────────────────────────────────────────────────────────────
+//
+// One point a day, drawn at the day's NOON (the page's fixture does the same): a
+// point at midnight sits on the boundary between two days and reads as either. The
+// day is the MACHINE's calendar day -- the zone of the state -- because that is the
+// day a person means by "Tuesday".
+//
+// A day is built from its samples when retention has kept them, and from its
+// `daily_rollup` row when it has not. The two never mix for one day: a day with any
+// sample left is a sample day, because the rollup of a day still inside `keep_days`
+// does not exist yet (01.2 section 5: the rollup is written as a day LEAVES the window).
+
+/// One day of one window.
+export type HistDay value {
+    /// The instant of the day's local midnight.
+    start_ms int
+    peak int
+    avg_hundredths int
+    locked_sec int
+    /// The last sample's reset moment, 0 for a rollup day.
+    resets_at_ms int
+    /// The last sample's lock, false for a rollup day.
+    locked bool
+}
+
+/// The instant of local midnight of the day holding `ms`.
+export fn history_local_midnight(ms int, zone TimeZone) -> int {
+    ro t = ms.to_unix_millis().to_zoned(zone).datetime().time()
+    ro into_ms = (t.hour() * 3600 + t.minute() * 60 + t.second()) * 1000 + ms % 1000
+    ms - into_ms
+}
+
+fn sample_day(start int, peak int, sum int, n int, last HistSample, locks []HistLock, from_ms int, to_ms int) -> HistDay {
+    ro lo = if start < from_ms { from_ms } else { start }
+    ro end = start + DAY_MS
+    ro hi = if end > to_ms { to_ms } else { end }
+    {
+        start_ms: start,
+        peak,
+        avg_hundredths: (sum * 200 + n) / (n * 2),
+        locked_sec: history_locked_sec(locks, lo, hi),
+        resets_at_ms: last.resets_at_ms,
+        locked: last.locked,
+    }
+}
+
+/// The days of a window inside `[from, to)`, in order: a day belongs to the range
+/// when its noon does.
+export fn history_days(w HistWindow, from_ms int, to_ms int, zone TimeZone) -> []HistDay {
+    mut by_samples []HistDay = []
+    mut cur = -1
+    mut peak = 0
+    mut sum = 0
+    mut n = 0
+    mut last = HistSample{ at_ms: 0, percent: 0, resets_at_ms: 0, locked: false }
+    for s in w.samples {
+        if s.at_ms < from_ms || s.at_ms >= to_ms { continue }
+        ro d = history_local_midnight(s.at_ms, zone)
+        if d != cur {
+            if n > 0 && cur + DAY_MS / 2 >= from_ms && cur + DAY_MS / 2 < to_ms {
+                by_samples.push(sample_day(cur, peak, sum, n, last, w.locks, from_ms, to_ms))
+            }
+            cur = d
+            peak = 0
+            sum = 0
+            n = 0
+        }
+        if s.percent > peak { peak = s.percent }
+        sum += s.percent
+        n += 1
+        last = s
+    }
+    if n > 0 && cur + DAY_MS / 2 >= from_ms && cur + DAY_MS / 2 < to_ms {
+        by_samples.push(sample_day(cur, peak, sum, n, last, w.locks, from_ms, to_ms))
+    }
+
+    // Rollup days that no sample day covers, merged in order.
+    mut out []HistDay = []
+    mut i = 0
+    for r in w.rollups {
+        ro start = history_local_midnight(r.day * DAY_MS + DAY_MS / 2, zone)
+        ro noon = start + DAY_MS / 2
+        if noon < from_ms || noon >= to_ms { continue }
+        while i < by_samples.len() && by_samples[i].start_ms < start {
+            out.push(by_samples[i])
+            i += 1
+        }
+        if i < by_samples.len() && by_samples[i].start_ms == start { continue }
+        out.push(HistDay{ start_ms: start, peak: r.peak, avg_hundredths: r.avg_hundredths,
+                          locked_sec: r.locked_sec, resets_at_ms: 0, locked: false })
+    }
+    while i < by_samples.len() {
+        out.push(by_samples[i])
+        i += 1
+    }
+    out
+}
+
 // ── the answer of `by=account` ──────────────────────────────────────────────
 
 /// The live forecast of one window, as the snapshot holds it.
@@ -378,6 +476,14 @@ export type HistorySource fn(HistoryAsk) -> HistoryLoad
 type HistWirePoint value {
     ro at str
     ro percent int
+    // The three fields of a `step=day` point (01.3 section 3.6), ABSENT from every
+    // other point rather than `null`: a sample has no peak of its own.
+    #serde(skip_serializing_if = "is_none")
+    ro peak Option[int]
+    #serde(skip_serializing_if = "is_none")
+    ro avg Option[int]
+    #serde(skip_serializing_if = "is_none")
+    ro locked_sec Option[int]
     ro resets_at Option[str]
     ro locked bool
 }
@@ -534,6 +640,25 @@ fn avg_tenths(points []HistSample) -> int {
     (sum * 20 + points.len()) / (points.len() * 2)
 }
 
+/// The points a summary reads: the thinned samples, or one per day carrying the
+/// day's PEAK -- so the peak and the runs at 100 % are the same questions either way.
+fn summary_points(w HistWindow, a HistoryAsk, zone TimeZone, step_ms int) -> []HistSample {
+    if a.step_sec != 0 { return history_thin(w.samples, a.from_ms, a.to_ms, step_ms) }
+    mut out []HistSample = []
+    for d in history_days(w, a.from_ms, a.to_ms, zone) {
+        out.push(HistSample{ at_ms: d.start_ms, percent: d.peak, resets_at_ms: d.resets_at_ms, locked: d.locked })
+    }
+    out
+}
+
+/// The mean of the days' averages, to one decimal.
+fn day_avg_tenths(days []HistDay) -> int {
+    if days.len() == 0 { return 0 }
+    mut sum = 0
+    for d in days { sum += d.avg_hundredths }
+    (sum * 2 + days.len() * 10) / (days.len() * 20)
+}
+
 fn peak_of(points []HistSample) -> int {
     mut peak = 0
     for p in points { if p.percent > peak { peak = p.percent } }
@@ -584,8 +709,17 @@ export fn history_by_account(a HistoryAsk, st HistoryState) -> str {
     mut series []HistWireSeries = []
     for w in st.rows.windows {
         mut points []HistWirePoint = []
-        for s in history_thin(w.samples, a.from_ms, a.to_ms, step_ms) {
-            points.push({ at: moment_iso(s.at_ms), percent: s.percent, resets_at: iso_opt(s.resets_at_ms), locked: s.locked })
+        if a.step_sec == 0 {
+            for d in history_days(w, a.from_ms, a.to_ms, st.zone) {
+                points.push({ at: moment_iso(d.start_ms + DAY_MS / 2), percent: d.peak, peak: Some(d.peak),
+                              avg: Some((d.avg_hundredths + 50) / 100), locked_sec: Some(d.locked_sec),
+                              resets_at: iso_opt(d.resets_at_ms), locked: d.locked })
+            }
+        } else {
+            for s in history_thin(w.samples, a.from_ms, a.to_ms, step_ms) {
+                points.push({ at: moment_iso(s.at_ms), percent: s.percent, peak: None, avg: None, locked_sec: None,
+                              resets_at: iso_opt(s.resets_at_ms), locked: s.locked })
+            }
         }
         mut resets []str = []
         for r in history_resets(w.samples, a.from_ms, a.to_ms) { resets.push(moment_iso(r)) }
@@ -616,9 +750,9 @@ export fn history_by_account(a HistoryAsk, st HistoryState) -> str {
         mut locked = 0
         match session_of(st.rows, acc.id) {
             Some(w) => {
-                ro pts = history_thin(w.samples, a.from_ms, a.to_ms, step_ms)
+                ro pts = summary_points(w, a, st.zone, step_ms)
                 peak = peak_of(pts)
-                tenths = avg_tenths(pts)
+                tenths = if a.step_sec == 0 { day_avg_tenths(history_days(w, a.from_ms, a.to_ms, st.zone)) } else { avg_tenths(pts) }
                 locked = history_locked_sec(w.locks, a.from_ms, a.to_ms)
                 if pts.len() > 0 {
                     avg_sum += tenths
@@ -812,9 +946,6 @@ fn history_answer(src HistorySource, ask HistoryAskOr, ctx Ctx) -> ServerRespons
                 // Part 3 of T2.15 (01.5): occupancy segments. Refused by name rather
                 // than answered with the account shape under the folder's label.
                 return problem(ApiError.invalid_parameter("by=folder is not served yet"), ctx.request_id, ctx.instance)
-            }
-            if a.step_sec == 0 {
-                return problem(ApiError.invalid_parameter("step=day is not served yet"), ctx.request_id, ctx.instance)
             }
             match src(a) {
                 HistoryLoad.Failed(_) => problem(ApiError.internal(), ctx.request_id, ctx.instance)

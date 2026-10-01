@@ -10,7 +10,7 @@
 // a variant `Query(str)`, Polaris has a generic `Query[T]`, and the shared name drags
 // `Query[T]` instantiations from Polaris's own TEST file (`extract_test.nv`,
 // `SearchQuery`) into the C -- a CC-FAIL in code this package never wrote. Registry
-// 221.1 #1040's family; isolated in `probes/variant-named-like-generic/`. The handler
+// 221.1 #1527; isolated in `probes/variant-named-like-generic/`. The handler
 // needs Polaris, so the handler must not reach duckdb through its types.
 
 module storage.history_rows
@@ -42,6 +42,16 @@ export type HistPoll value {
     outcome str
 }
 
+/// One `daily_rollup` row: a day whose samples retention has already removed.
+export type HistRollup value {
+    /// The calendar day as days since 1970-01-01 (`day_on`, in the rollup's zone).
+    day int
+    peak int
+    /// Hundredths of a percent: `avg_percent` is DECIMAL(5,2).
+    avg_hundredths int
+    locked_sec int
+}
+
 /// One window with its rows of the range, samples in time order.
 export type HistWindow value {
     account_id str
@@ -50,6 +60,8 @@ export type HistWindow value {
     model str
     samples []HistSample
     locks []HistLock
+    /// Days of the range that only the rollup still knows, in day order.
+    rollups []HistRollup
 }
 
 /// One account that has a window with samples in the range.

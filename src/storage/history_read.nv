@@ -27,7 +27,7 @@ import duckdb.db_effect.{Db, ConnRef}
 import duckdb.errors.{DuckError}
 import duckdb.types.{Value}
 import claude_limits.storage.repo.{quote, moment}
-import claude_limits.storage.history_rows.{HistSample, HistLock, HistPoll, HistWindow, HistAccount, HistRows}
+import claude_limits.storage.history_rows.{HistSample, HistLock, HistPoll, HistWindow, HistAccount, HistRows, HistRollup}
 
 // ── the SQL ──────────────────────────────────────────────────────────────────
 
@@ -47,9 +47,15 @@ export fn history_in_sql(col str, ids []str) -> str {
 fn span_sql(col str, from_ms int, to_ms int) -> str =>
     "${col} >= ${moment(from_ms)} AND ${col} < ${moment(to_ms)}"
 
+/// The calendar days `[from, to)` touches, as DATE bounds. Wide by a day on each side
+/// on purpose: `day_on` is a date in the rollup's zone, the range is in UTC, and the
+/// caller keeps only the days whose noon falls inside the range.
+fn days_sql(col str, from_ms int, to_ms int) -> str =>
+    "${col} >= (${moment(from_ms)})::DATE - 1 AND ${col} <= (${moment(to_ms)})::DATE + 1"
+
 /// The windows with at least one sample in `[from, to)`, in id order.
 export fn history_windows_sql(from_ms int, to_ms int, accounts []str) -> str =>
-    "SELECT w.id::VARCHAR, w.account_id::VARCHAR, w.kind, w.model FROM limit_window w WHERE EXISTS (SELECT 1 FROM sample s WHERE s.window_id = w.id AND ${span_sql("s.sampled_at", from_ms, to_ms)})${history_in_sql("w.account_id", accounts)} ORDER BY w.id::VARCHAR"
+    "SELECT w.id::VARCHAR, w.account_id::VARCHAR, w.kind, w.model FROM limit_window w WHERE (EXISTS (SELECT 1 FROM sample s WHERE s.window_id = w.id AND ${span_sql("s.sampled_at", from_ms, to_ms)}) OR EXISTS (SELECT 1 FROM daily_rollup r WHERE r.window_id = w.id AND ${days_sql("r.day_on", from_ms, to_ms)}))${history_in_sql("w.account_id", accounts)} ORDER BY w.id::VARCHAR"
 
 /// The samples of one window in `[from, to)`, with their cycle's reset moment.
 export fn history_samples_sql(window_id str, from_ms int, to_ms int) -> str =>
@@ -62,7 +68,11 @@ export fn history_locks_sql(window_id str, from_ms int, to_ms int) -> str =>
 
 /// The accounts that own a window of the list, in id order.
 export fn history_accounts_sql(from_ms int, to_ms int, accounts []str) -> str =>
-    "SELECT a.id::VARCHAR, a.email, a.color_slot::BIGINT FROM account a WHERE EXISTS (SELECT 1 FROM limit_window w JOIN sample s ON s.window_id = w.id WHERE w.account_id = a.id AND ${span_sql("s.sampled_at", from_ms, to_ms)})${history_in_sql("a.id", accounts)} ORDER BY a.id::VARCHAR"
+    "SELECT a.id::VARCHAR, a.email, a.color_slot::BIGINT FROM account a WHERE (EXISTS (SELECT 1 FROM limit_window w JOIN sample s ON s.window_id = w.id WHERE w.account_id = a.id AND ${span_sql("s.sampled_at", from_ms, to_ms)}) OR EXISTS (SELECT 1 FROM limit_window w JOIN daily_rollup r ON r.window_id = w.id WHERE w.account_id = a.id AND ${days_sql("r.day_on", from_ms, to_ms)}))${history_in_sql("a.id", accounts)} ORDER BY a.id::VARCHAR"
+
+/// The rollup rows of one window on the days `[from, to)` touches.
+export fn history_rollups_sql(window_id str, from_ms int, to_ms int) -> str =>
+    "SELECT (r.day_on - DATE '1970-01-01')::BIGINT, r.peak_percent::BIGINT, (r.avg_percent * 100)::BIGINT, r.locked_sec::BIGINT FROM daily_rollup r WHERE r.window_id = ${quote(window_id)} AND ${days_sql("r.day_on", from_ms, to_ms)} ORDER BY r.day_on"
 
 /// The polls of one account in `[from, to)`.
 export fn history_polls_sql(account_id str, from_ms int, to_ms int) -> str =>
@@ -120,7 +130,11 @@ export fn read_history(conn ConnRef, from_ms int, to_ms int, accounts []str) Db 
         for l in cells_of(conn, history_locks_sql(id, from_ms, to_ms))? {
             locks.push(HistLock{ from_ms: int_of(l[0]), to_ms: int_of(l[1]), reason: text_of(l[2]), server_reason: text_of(l[3]) })
         }
-        windows.push(HistWindow{ account_id: text_of(w[1]), kind: text_of(w[2]), model: text_of(w[3]), samples, locks })
+        mut rollups []HistRollup = []
+        for r in cells_of(conn, history_rollups_sql(id, from_ms, to_ms))? {
+            rollups.push(HistRollup{ day: int_of(r[0]), peak: int_of(r[1]), avg_hundredths: int_of(r[2]), locked_sec: int_of(r[3]) })
+        }
+        windows.push(HistWindow{ account_id: text_of(w[1]), kind: text_of(w[2]), model: text_of(w[3]), samples, locks, rollups })
     }
     mut out_accounts []HistAccount = []
     for a in cells_of(conn, history_accounts_sql(from_ms, to_ms, accounts))? {

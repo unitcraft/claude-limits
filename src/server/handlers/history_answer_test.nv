@@ -15,7 +15,7 @@ module handlers.history_answer_test
 
 import history.{HistoryAsk, HistoryAskOr, HistoryState, HistoryLoad, HistoryEnv, HistPace}
 import history.{parse_history_query, parse_history_search, history_by_account, history_handler, history_search_handler}
-import claude_limits.storage.history_rows.{HistSample, HistLock, HistPoll, HistWindow, HistAccount, HistRows}
+import claude_limits.storage.history_rows.{HistSample, HistLock, HistPoll, HistWindow, HistAccount, HistRows, HistRollup}
 import claude_limits.server.routes.{HttpMethod, on, route, route_q, build}
 import polaris.{Router, serve_once}
 import std.time.civil.{TimeZone}
@@ -37,7 +37,7 @@ fn main_window() -> HistWindow {
         }
         i += 1
     }
-    HistWindow{ account_id: MAIN, kind: "session", model: "", samples: s, locks: [] }
+    HistWindow{ account_id: MAIN, kind: "session", model: "", samples: s, locks: [], rollups: [] }
 }
 
 fn work_window() -> HistWindow {
@@ -54,7 +54,7 @@ fn work_window() -> HistWindow {
         HistLock{ from_ms: NOW - 5 * H, to_ms: NOW - 4 * H, reason: "server", server_reason: "session_limit" },
         HistLock{ from_ms: NOW - H, to_ms: 0, reason: "percent_100", server_reason: "" },
     ]
-    HistWindow{ account_id: WORK, kind: "session", model: "", samples: s, locks }
+    HistWindow{ account_id: WORK, kind: "session", model: "", samples: s, locks, rollups: [] }
 }
 
 fn polls(gap bool) -> []HistPoll {
@@ -262,4 +262,86 @@ test "search takes step as a number too" {
         HistoryAskOr.Asked(a) => assert(a.step_sec == 3600)
         HistoryAskOr.Refused(e) => panic("refused: ${e.detail}")
     }
+}
+
+// ── step=day ────────────────────────────────────────────────────────────────
+//
+// Five days, 2026-09-02 .. 2026-09-06, read at UTC. 09-02 and 09-03 are known only to
+// the rollup; 09-04 has BOTH a rollup row and samples, and the samples must win; 09-05
+// holds a one-hour lock; 09-06 is cut by `to` at 16:47.
+//
+//   day    source   peak  avg (hundredths)          locked_sec
+//   09-02  rollup    40   2050                       600
+//   09-03  rollup    70   3000                         0
+//   09-04  samples   10   1000                         0
+//   09-05  samples  100   (100 + 23*20)/24 = 2333   3600
+//   09-06  samples   30   3000                         0
+
+const D0904 int = 1788480000000
+
+fn day_window() -> HistWindow {
+    mut s []HistSample = []
+    mut at = D0904
+    while at < NOW {
+        ro locked = at == D0904 + 34 * H
+        ro pct = if at < D0904 + 24 * H { 10 } else if at < D0904 + 48 * H { if locked { 100 } else { 20 } } else { 30 }
+        s.push(HistSample{ at_ms: at, percent: pct, resets_at_ms: at + 5 * H, locked })
+        at += H
+    }
+    ro locks = [
+        HistLock{ from_ms: D0904 - 2 * 24 * H + 5 * H, to_ms: D0904 - 2 * 24 * H + 5 * H + 600000, reason: "server", server_reason: "" },
+        HistLock{ from_ms: D0904 + 34 * H, to_ms: D0904 + 35 * H, reason: "percent_100", server_reason: "" },
+    ]
+    ro rollups = [
+        HistRollup{ day: 20698, peak: 40, avg_hundredths: 2050, locked_sec: 600 },
+        HistRollup{ day: 20699, peak: 70, avg_hundredths: 3000, locked_sec: 0 },
+        HistRollup{ day: 20700, peak: 99, avg_hundredths: 9900, locked_sec: 0 },
+    ]
+    HistWindow{ account_id: WORK, kind: "session", model: "", samples: s, locks, rollups }
+}
+
+fn day_state() -> HistoryState => {
+    rows: { accounts: [HistAccount{ id: WORK, email: "work@example.org", color_slot: 1, polls: [] }], windows: [day_window()] },
+    paces: [],
+    zone: TimeZone.Utc,
+}
+
+fn day_answer() -> str {
+    match history_ask_of_day() {
+        HistoryAskOr.Asked(a) => history_by_account(a, day_state())
+        HistoryAskOr.Refused(e) => panic("refused: ${e.detail}")
+    }
+}
+
+fn history_ask_of_day() -> HistoryAskOr =>
+    parse_history_query("/api/history?from=2026-09-01T16:47:00Z&to=2026-09-06T16:47:00Z&step=day", NOW, 30)
+
+test "a day point is drawn at noon with its peak, average and locked seconds" {
+    ro b = day_answer()
+    assert(has(b, "{\"at\":\"2026-09-02T12:00:00"))
+    assert(has(b, "\"percent\":40,\"peak\":40,\"avg\":21,\"locked_sec\":600,\"resets_at\":null,\"locked\":false}"))
+    assert(has(b, "\"percent\":70,\"peak\":70,\"avg\":30,\"locked_sec\":0,"))
+    assert(has(b, "\"percent\":100,\"peak\":100,\"avg\":23,\"locked_sec\":3600,"))
+    assert(has(b, "\"step_sec\":86400"))
+}
+
+test "five days, one point each, the samples winning over the rollup of their day" {
+    ro b = day_answer()
+    assert(count_of(b, "\"peak\":") == 5)
+    assert(has(b, "\"percent\":10,\"peak\":10,\"avg\":10,"))
+    // The rollup row of 09-04 said 99: had it been drawn, this would be there.
+    assert(count_of(b, "\"peak\":99") == 0)
+}
+
+test "the summary of a day answer reads the days" {
+    ro b = day_answer()
+    // Peak 100; the mean of the five averages (11383 / 5 hundredths) is 22.8; the
+    // two locks are 600 + 3600 seconds.
+    assert(has(b, "\"summary\":{\"peak_session\":100,\"avg_session\":22.8,\"locked_sec\":4200,"))
+}
+
+test "a sample point carries no day fields at all" {
+    ro b = history_by_account(day_ask(), state())
+    assert(count_of(b, "\"peak\":") == 0)
+    assert(count_of(b, "\"avg\":") == 0)
 }
