@@ -28,9 +28,15 @@ module handlers.history
 
 import claude_limits.server.errors.{ApiError}
 import claude_limits.usage.parse.{moment_ms, moment_iso}
-import std.encoding.url.{Url}
 import std.identifiers.uuid.{Uuid}
-import claude_limits.storage.history_read.{HistSample, HistPoll}
+import claude_limits.storage.history_rows.{HistSample, HistPoll, HistLock, HistWindow, HistAccount, HistRows}
+import claude_limits.server.errors.{FieldError}
+import polaris.{ServerRequest, ServerResponse}
+import claude_limits.server.routes.{Ctx, ApiHandler, problem}
+import claude_limits.server.dto.{opt}
+import std.encoding.serde.{json_encode, Serialize}
+import std.time.civil.{TimeZone}
+import std.encoding.json.{Json, JsonValue}
 
 export const HISTORY_MAX_POINTS int = 50000
 
@@ -78,6 +84,49 @@ fn history_pairs(target str) -> [](str, str) {
         }
     }
     out
+}
+
+fn history_hex_val(b u8) -> int {
+    ro c = b as int
+    if c >= 48 && c <= 57 { return c - 48 }
+    if c >= 65 && c <= 70 { return c - 55 }
+    if c >= 97 && c <= 102 { return c - 87 }
+    -1
+}
+
+/// `%XX` -> the byte, `+` -> space; `None` for a broken escape or a result that is
+/// not UTF-8.
+///
+/// HAND-WRITTEN, and not `Url.decode_query`: std's `Url` clashes with nova-http's
+/// own `Url` in one compilation unit (E_METHOD_REDEFINITION on `Url.to_str`), and
+/// importing nova-http's drags Polaris's `Query[T]` instantiations into this module,
+/// one of them built from a type in Polaris's own doc samples -- a CC-FAIL in code
+/// this package never wrote (registry 221.1 #1040's family, measured 2026-10-01).
+export fn history_pct_decode(s str) -> Option[str] {
+    ro bytes = s.bytes()
+    mut out []u8 = []
+    mut i = 0
+    while i < bytes.len() {
+        ro b = bytes[i]
+        if b == 37 {
+            if i + 2 >= bytes.len() { return None }
+            ro hi = history_hex_val(bytes[i + 1])
+            ro lo = history_hex_val(bytes[i + 2])
+            if hi < 0 || lo < 0 { return None }
+            out.push((hi * 16 + lo) as u8)
+            i += 3
+        } else if b == 43 {
+            out.push(32)
+            i += 1
+        } else {
+            out.push(b)
+            i += 1
+        }
+    }
+    match out.to_str() {
+        Ok(t) => Some(t)
+        Err(_) => None
+    }
 }
 
 fn history_known(k str) -> bool {
@@ -130,9 +179,9 @@ export fn parse_history_query(target str, now_ms int, keep_days int) -> HistoryA
     mut dirs []str = []
     for (k, raw) in history_pairs(target) {
         if !history_known(k) { return bad("unknown query parameter '${k}'") }
-        ro v = match Url.decode_query(raw) {
-            Ok(s) => s
-            Err(_) => return bad("parameter '${k}' is not percent-encoded correctly")
+        ro v = match history_pct_decode(raw) {
+            Some(s) => s
+            None => return bad("parameter '${k}' is not percent-encoded correctly")
         }
         if k == "login_dir_id" {
             if v.to_uuid().is_err() { return bad("login_dir_id must be a UUID") }
@@ -288,4 +337,515 @@ export fn history_gaps(polls []HistPoll) -> []HistGap {
     }
     if open { out.push(HistGap{ from_ms: start, to_ms: 0, cause }) }
     out
+}
+
+// ── the answer of `by=account` ──────────────────────────────────────────────
+
+/// The live forecast of one window, as the snapshot holds it.
+///
+/// The pace is NOT recomputed from history: `model/forecast.nv` already turns the
+/// current cycle into a rate for the snapshot, under the working-hours schedule, and
+/// a second computation here would be a second answer to one question.
+export type HistPace value {
+    account_id str
+    kind str
+    /// "" for the windows that are not per-model.
+    model str
+    rate_per_hour_milli int
+    /// "" when the window is not projected to run out before it resets.
+    runs_out_at str
+    label str
+}
+
+/// Everything the answer is built from.
+export type HistoryState value {
+    rows HistRows
+    paces []HistPace
+    /// The zone of the `when` labels: "Tue 14:20–16:00" is a wall-clock phrase.
+    zone TimeZone
+}
+
+/// What the source could give.
+export type HistoryLoad enum
+    | Loaded(HistoryState)
+    /// The database is not open, or a read failed: `500 internal`, the reason in the
+    /// log and not on the wire (01.3 §6).
+    | Failed(str)
+
+export type HistorySource fn(HistoryAsk) -> HistoryLoad
+
+#impl(Serialize)
+type HistWirePoint value {
+    ro at str
+    ro percent int
+    ro resets_at Option[str]
+    ro locked bool
+}
+
+#impl(Serialize)
+type HistWireLock value {
+    #serde(rename = "from")
+    ro from_at str
+    #serde(rename = "to")
+    ro to_at Option[str]
+    ro reason str
+    ro server_reason Option[str]
+}
+
+#impl(Serialize)
+type HistWireGap value {
+    #serde(rename = "from")
+    ro from_at str
+    #serde(rename = "to")
+    ro to_at Option[str]
+    ro cause str
+}
+
+#impl(Serialize)
+type HistWireSeries value {
+    ro account_id str
+    ro kind str
+    ro model Option[str]
+    ro points []HistWirePoint
+    ro resets []str
+    ro locks []HistWireLock
+    ro gaps []HistWireGap
+}
+
+#impl(Serialize)
+type HistWireSummary value {
+    ro peak_session int
+    ro avg_session f64
+    ro locked_sec int
+    ro pace_per_hour Option[f64]
+    ro runs_out_at Option[str]
+}
+
+#impl(Serialize)
+type HistWireAccount value {
+    ro id str
+    ro email str
+    ro color_slot int
+    ro summary HistWireSummary
+}
+
+#impl(Serialize)
+type HistWireRange value {
+    #serde(rename = "from")
+    ro from_at str
+    #serde(rename = "to")
+    ro to_at str
+    ro step_sec int
+}
+
+#impl(Serialize)
+type HistWireLockedTile value {
+    ro seconds int
+    ro account_id Option[str]
+    ro email Option[str]
+    ro when []str
+}
+
+#impl(Serialize)
+type HistWirePeakTile value {
+    ro percent int
+    ro account_id Option[str]
+    ro email Option[str]
+    ro times int
+}
+
+#impl(Serialize)
+type HistWireAvgTile value {
+    ro percent int
+    ro accounts int
+}
+
+#impl(Serialize)
+type HistWirePaceTile value {
+    ro rate_per_hour f64
+    ro account_id str
+    ro email str
+    ro model Option[str]
+    ro runs_out_at Option[str]
+    ro label str
+}
+
+#impl(Serialize)
+type HistWireTiles value {
+    ro locked HistWireLockedTile
+    ro peak_session HistWirePeakTile
+    ro avg_session HistWireAvgTile
+    ro pace Option[HistWirePaceTile]
+}
+
+#impl(Serialize)
+type HistWireByAccount value {
+    ro range HistWireRange
+    ro accounts []HistWireAccount
+    ro series []HistWireSeries
+    ro tiles HistWireTiles
+}
+
+fn iso_opt(ms int) -> Option[str] => if ms == 0 { None } else { Some(moment_iso(ms)) }
+
+fn two_digits(n int) -> str => if n < 10 { "0${n}" } else { "${n}" }
+
+fn clock_of(ms int, zone TimeZone) -> str {
+    ro t = ms.to_unix_millis().to_zoned(zone).datetime().time()
+    "${two_digits(t.hour())}:${two_digits(t.minute())}"
+}
+
+/// `Tue 14:20–16:00`, `Fri 19:00–now` (§3.6 `tiles.locked.when`).
+export fn history_lock_label(l HistLock, zone TimeZone) -> str {
+    ro day = l.from_ms.to_unix_millis().to_zoned(zone).datetime().weekday()
+    ro end = if l.to_ms == 0 { "now" } else { clock_of(l.to_ms, zone) }
+    "${day} ${clock_of(l.from_ms, zone)}–${end}"
+}
+
+/// Seconds a lock covers inside `[from, to]`; an open lock runs to `to`.
+export fn history_locked_sec(locks []HistLock, from_ms int, to_ms int) -> int {
+    mut total = 0
+    for l in locks {
+        ro a = if l.from_ms < from_ms { from_ms } else { l.from_ms }
+        ro raw_b = if l.to_ms == 0 { to_ms } else { l.to_ms }
+        ro b = if raw_b > to_ms { to_ms } else { raw_b }
+        if b > a { total += (b - a) / 1000 }
+    }
+    total
+}
+
+/// How many SEPARATE times the series sat at 100 %, not how many points did.
+export fn history_runs_at_full(points []HistSample) -> int {
+    mut runs = 0
+    mut was = false
+    for p in points {
+        ro full = p.percent >= 100
+        if full && !was { runs += 1 }
+        was = full
+    }
+    runs
+}
+
+/// The average of the points to one decimal, as the fixture states it (`31.5`).
+fn avg_tenths(points []HistSample) -> int {
+    if points.len() == 0 { return 0 }
+    mut sum = 0
+    for p in points { sum += p.percent }
+    (sum * 20 + points.len()) / (points.len() * 2)
+}
+
+fn peak_of(points []HistSample) -> int {
+    mut peak = 0
+    for p in points { if p.percent > peak { peak = p.percent } }
+    peak
+}
+
+fn session_of(rows HistRows, account_id str) -> Option[HistWindow] {
+    for w in rows.windows {
+        if w.account_id == account_id && w.kind == "session" { return Some(w) }
+    }
+    None
+}
+
+fn polls_of(rows HistRows, account_id str) -> []HistPoll {
+    for a in rows.accounts {
+        if a.id == account_id { return a.polls }
+    }
+    []
+}
+
+fn email_of(rows HistRows, account_id str) -> str {
+    for a in rows.accounts {
+        if a.id == account_id { return a.email }
+    }
+    ""
+}
+
+/// The fastest window of an account, or none.
+fn pace_of(paces []HistPace, account_id str) -> Option[HistPace] {
+    mut best Option[HistPace] = None
+    for p in paces {
+        if p.account_id != account_id { continue }
+        match best {
+            Some(b) => if p.rate_per_hour_milli > b.rate_per_hour_milli { best = Some(p) }
+            None => { best = Some(p) }
+        }
+    }
+    best
+}
+
+fn rate_of(milli int) -> f64 => (milli as f64) / 1000.0
+
+/// The whole answer of `by=account` as JSON.
+export fn history_by_account(a HistoryAsk, st HistoryState) -> str {
+    ro step_ms = if a.step_sec == 0 { DAY_MS } else { a.step_sec * 1000 }
+    ro (from_iso, to_iso, step_sec) = history_range_echo(a)
+
+    mut series []HistWireSeries = []
+    for w in st.rows.windows {
+        mut points []HistWirePoint = []
+        for s in history_thin(w.samples, a.from_ms, a.to_ms, step_ms) {
+            points.push({ at: moment_iso(s.at_ms), percent: s.percent, resets_at: iso_opt(s.resets_at_ms), locked: s.locked })
+        }
+        mut resets []str = []
+        for r in history_resets(w.samples, a.from_ms, a.to_ms) { resets.push(moment_iso(r)) }
+        mut locks []HistWireLock = []
+        for l in w.locks {
+            locks.push({ from_at: moment_iso(l.from_ms), to_at: iso_opt(l.to_ms), reason: l.reason, server_reason: opt(l.server_reason) })
+        }
+        mut gaps []HistWireGap = []
+        for g in history_gaps(polls_of(st.rows, w.account_id)) {
+            gaps.push({ from_at: moment_iso(g.from_ms), to_at: iso_opt(g.to_ms), cause: g.cause })
+        }
+        series.push({ account_id: w.account_id, kind: w.kind, model: opt(w.model), points, resets, locks, gaps })
+    }
+
+    mut accounts []HistWireAccount = []
+    mut locked_total = 0
+    mut locked_most = -1
+    mut locked_who = ""
+    mut locked_when []str = []
+    mut peak_all = -1
+    mut peak_who = ""
+    mut peak_times = 0
+    mut avg_sum = 0
+    mut avg_n = 0
+    for acc in st.rows.accounts {
+        mut peak = 0
+        mut tenths = 0
+        mut locked = 0
+        match session_of(st.rows, acc.id) {
+            Some(w) => {
+                ro pts = history_thin(w.samples, a.from_ms, a.to_ms, step_ms)
+                peak = peak_of(pts)
+                tenths = avg_tenths(pts)
+                locked = history_locked_sec(w.locks, a.from_ms, a.to_ms)
+                if pts.len() > 0 {
+                    avg_sum += tenths
+                    avg_n += 1
+                }
+                if peak > peak_all {
+                    peak_all = peak
+                    peak_who = acc.id
+                    peak_times = history_runs_at_full(pts)
+                }
+                if locked > locked_most {
+                    locked_most = locked
+                    locked_who = acc.id
+                    locked_when = []
+                    for l in w.locks { locked_when.push(history_lock_label(l, st.zone)) }
+                }
+            }
+            None => ()
+        }
+        locked_total += locked
+        ro pace = pace_of(st.paces, acc.id)
+        ro summary = match pace {
+            Some(p) => HistWireSummary{ peak_session: peak, avg_session: (tenths as f64) / 10.0, locked_sec: locked,
+                                    pace_per_hour: Some(rate_of(p.rate_per_hour_milli)), runs_out_at: opt(p.runs_out_at) }
+            None => HistWireSummary{ peak_session: peak, avg_session: (tenths as f64) / 10.0, locked_sec: locked,
+                                 pace_per_hour: None, runs_out_at: None }
+        }
+        accounts.push({ id: acc.id, email: acc.email, color_slot: acc.color_slot, summary })
+    }
+
+    // The fastest window of the accounts IN THE ANSWER, for the pace tile. The paces
+    // come from the live snapshot and cover every account; a `search` for one
+    // account must not name another in its tiles.
+    mut fastest Option[HistPace] = None
+    for p in st.paces {
+        if email_of(st.rows, p.account_id) == "" { continue }
+        match fastest {
+            Some(b) => if p.rate_per_hour_milli > b.rate_per_hour_milli { fastest = Some(p) }
+            None => { fastest = Some(p) }
+        }
+    }
+    ro pace_tile = match fastest {
+        Some(p) => Some(HistWirePaceTile{ rate_per_hour: rate_of(p.rate_per_hour_milli), account_id: p.account_id,
+                                      email: email_of(st.rows, p.account_id), model: opt(p.model),
+                                      runs_out_at: opt(p.runs_out_at), label: p.label })
+        None => None
+    }
+    // A tile with nobody in it names nobody: no locks is `account_id: null`, not the
+    // first account with zero seconds.
+    ro locked_tile = if locked_total > 0 {
+        HistWireLockedTile{ seconds: locked_total, account_id: Some(locked_who), email: opt(email_of(st.rows, locked_who)), when: locked_when }
+    } else {
+        HistWireLockedTile{ seconds: 0, account_id: None, email: None, when: [] }
+    }
+    ro peak_tile = if peak_all >= 0 {
+        HistWirePeakTile{ percent: peak_all, account_id: Some(peak_who), email: opt(email_of(st.rows, peak_who)), times: peak_times }
+    } else {
+        HistWirePeakTile{ percent: 0, account_id: None, email: None, times: 0 }
+    }
+    ro avg_pct = if avg_n == 0 { 0 } else { (avg_sum * 2 + avg_n * 10) / (avg_n * 20) }
+    ro body = HistWireByAccount{
+        range: { from_at: from_iso, to_at: to_iso, step_sec },
+        accounts,
+        series,
+        tiles: { locked: locked_tile, peak_session: peak_tile, avg_session: { percent: avg_pct, accounts: avg_n }, pace: pace_tile },
+    }
+    json_encode(body) ?? "{}"
+}
+
+// ── `POST /api/history/search` ───────────────────────────────────────────────
+//
+// The same fields as the query, plus `account_id`, and the two id fields are ARRAYS:
+// a string where an array belongs is `422`, not "an array of one" -- a caller who
+// sends a string has a different shape in mind, and guessing which is how a filter
+// silently selects nothing.
+
+fn search_field_known(k str) -> bool {
+    if k == "account_id" { return true }
+    history_known(k)
+}
+
+/// A scalar field as text: strings as they are, `step` may also be a number.
+fn scalar_of(k str, v JsonValue) -> Option[str] {
+    match v.str() {
+        Some(s) => return Some(s)
+        None => ()
+    }
+    if k == "step" {
+        match v.num() {
+            Some(n) => return Some("${n as int}")
+            None => ()
+        }
+    }
+    None
+}
+
+fn ids_of(k str, v JsonValue, mut errs []FieldError) -> []str {
+    mut out []str = []
+    match v.array() {
+        None => {
+            errs.push(FieldError.new(k, "not_an_array", "${k} must be an array of UUID strings"))
+        }
+        Some(items) => {
+            for it in items {
+                match it.str() {
+                    Some(s) => {
+                        if s.to_uuid().is_err() {
+                            errs.push(FieldError.new(k, "not_a_uuid", "${k} holds a value that is not a UUID"))
+                            return out
+                        }
+                        out.push(s)
+                    }
+                    None => {
+                        errs.push(FieldError.new(k, "not_a_string", "${k} must hold strings"))
+                        return out
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Read the body of §3.6 `search`.
+export fn parse_history_search(raw str, now_ms int, keep_days int) -> HistoryAskOr {
+    ro text = raw.trim_ascii()
+    if text == "" { return HistoryAskOr.Refused(ApiError.invalid_body("body must be a JSON object")) }
+    ro root = match Json.parse(text) {
+        Ok(v) => v
+        Err(_) => return HistoryAskOr.Refused(ApiError.invalid_body("body is not JSON"))
+    }
+    ro obj = match root.object() {
+        Some(o) => o
+        None => return HistoryAskOr.Refused(ApiError.invalid_body("body must be a JSON object"))
+    }
+    mut extra []FieldError = []
+    mut errs []FieldError = []
+    mut range = ""
+    mut from = ""
+    mut to = ""
+    mut by = ""
+    mut step = ""
+    mut dirs []str = []
+    mut accounts []str = []
+    mut it = obj.iter()
+    loop {
+        match it.next() {
+            None => break
+            Some((k, v)) => {
+                if !search_field_known(k) {
+                    extra.push(FieldError.new(k, "unknown_field", "unknown field '${k}'"))
+                } else if k == "account_id" {
+                    accounts = ids_of(k, v, errs)
+                } else if k == "login_dir_id" {
+                    dirs = ids_of(k, v, errs)
+                } else {
+                    match scalar_of(k, v) {
+                        None => errs.push(FieldError.new(k, "not_a_string", "${k} must be a string"))
+                        Some(s) => {
+                            if k == "range" { range = s } else if k == "from" { from = s } else if k == "to" { to = s } else if k == "by" { by = s } else { step = s }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if extra.len() > 0 { return HistoryAskOr.Refused(ApiError.extra_forbidden(extra)) }
+    if errs.len() > 0 { return HistoryAskOr.Refused(ApiError.invalid_request(errs)) }
+    history_ask_of(range, from, to, by, step, dirs, accounts, now_ms, keep_days)
+}
+
+// ── the handlers ─────────────────────────────────────────────────────────────
+
+/// What the ask is judged against: the clock that ends a `range`, and the
+/// `history.keep_days` that bounds a `from`/`to`.
+export type HistoryEnv value {
+    now_ms int
+    keep_days int
+}
+
+export type HistoryEnvSource fn() -> HistoryEnv
+
+fn history_json(body str) -> ServerResponse =>
+    ServerResponse.bytes(200, "application/json; charset=utf-8", body.bytes())
+
+fn history_answer(src HistorySource, ask HistoryAskOr, ctx Ctx) -> ServerResponse {
+    match ask {
+        HistoryAskOr.Refused(e) => problem(e, ctx.request_id, ctx.instance)
+        HistoryAskOr.Asked(a) => {
+            if a.by_folder {
+                // Part 3 of T2.15 (01.5): occupancy segments. Refused by name rather
+                // than answered with the account shape under the folder's label.
+                return problem(ApiError.invalid_parameter("by=folder is not served yet"), ctx.request_id, ctx.instance)
+            }
+            if a.step_sec == 0 {
+                return problem(ApiError.invalid_parameter("step=day is not served yet"), ctx.request_id, ctx.instance)
+            }
+            match src(a) {
+                HistoryLoad.Failed(_) => problem(ApiError.internal(), ctx.request_id, ctx.instance)
+                HistoryLoad.Loaded(st) => history_json(history_by_account(a, st))
+            }
+        }
+    }
+}
+
+// Hoisted and param-captured for the [M-16] reason named in `routes.nv`.
+fn history_get(clock HistoryEnvSource, src HistorySource, ctx Ctx) -> ServerResponse {
+    ro e = clock()
+    history_answer(src, parse_history_query(ctx.req.target(), e.now_ms, e.keep_days), ctx)
+}
+
+fn history_post(clock HistoryEnvSource, src HistorySource, ctx Ctx) -> ServerResponse {
+    ro e = clock()
+    ro raw = unsafe { ctx.req.body_bytes().to_str_unchecked() }
+    history_answer(src, parse_history_search(raw, e.now_ms, e.keep_days), ctx)
+}
+
+/// `GET /api/history`.
+export fn history_handler(clock HistoryEnvSource, src HistorySource) -> ApiHandler {
+    ro e = clock
+    ro s = src
+    fn(ctx Ctx) -> ServerResponse => history_get(e, s, ctx)
+}
+
+/// `POST /api/history/search`.
+export fn history_search_handler(clock HistoryEnvSource, src HistorySource) -> ApiHandler {
+    ro e = clock
+    ro s = src
+    fn(ctx Ctx) -> ServerResponse => history_post(e, s, ctx)
 }

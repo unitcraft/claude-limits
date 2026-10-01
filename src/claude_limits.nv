@@ -52,7 +52,10 @@ import claude_limits.storage.config_file.{load}
 import claude_limits.server.app.{api_router}
 import claude_limits.server.handlers.config.{base_url}
 import claude_limits.server.start.{real_paths_input, decide_start, sources_at_start, DbAtStart}
-import claude_limits.storage.startup.{migrations_in, bundled, open_for_serve, record_readings, Ready, StartFail}
+import claude_limits.storage.startup.{migrations_in, bundled, open_for_serve, record_readings, read_history_rows, Ready, StartFail}
+import claude_limits.storage.history_rows.{HistRows}
+import claude_limits.storage.paths.{Paths}
+import claude_limits.server.handlers.history.{HistoryAsk, HistoryLoad, HistPace}
 import claude_limits.storage.db.{owner_changed, owner_line}
 import duckdb.db_effect.{Db}
 import duckdb.db_real.{with_real_db}
@@ -210,6 +213,47 @@ fn orgs_of(v SnapshotView) -> []str {
     out
 }
 
+/// The live forecasts of the round, keyed by the HISTORY's account ids.
+///
+/// The snapshot and the database name an account differently -- the snapshot by its
+/// discovery id, the database by the row's UUID -- and both by the same e-mail, which
+/// the database stores lower-cased (01.2 section 3.6). So the join is by e-mail.
+fn paces_of(view SnapshotView, rows HistRows) -> []HistPace {
+    mut out []HistPace = []
+    for l in view.limits {
+        match l.forecast {
+            None => ()
+            Some(f) => {
+                mut email = ""
+                for a in view.accounts { if a.id == l.account_id { email = a.email.to_ascii_lower() } }
+                for a in rows.accounts {
+                    if email != "" && a.email == email {
+                        out.push(HistPace{ account_id: a.id, kind: l.kind, model: l.model,
+                                           rate_per_hour_milli: f.rate_per_hour_milli,
+                                           runs_out_at: f.runs_out_at, label: f.label })
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// `/api/history`'s source: the database, opened for the request and closed after.
+///
+/// A NAMED FUNCTION the route's lambda only calls: a handler installed inside a
+/// lambda body lost the lambda's locals on nova main (registry 221.1 #1453, fixed in
+/// 1d71ba01c; the CI compiler predates the fix).
+fn history_from_db(paths Paths, windows bool, view SnapshotView, a HistoryAsk) -> HistoryLoad {
+    ro got = with Fs = real_fs(), Random = real_random() {
+        with_real_db(fn() Db Fs Random -> Result[HistRows, str] => read_history_rows(paths, a.from_ms, a.to_ms, a.accounts, windows))
+    }
+    match got {
+        Ok(rows) => HistoryLoad.Loaded({ rows, paces: paces_of(view, rows), zone: TimeZone.Fixed(Offset.local()) })
+        Err(why) => HistoryLoad.Failed(why)
+    }
+}
+
 fn db_seen(r Ready, size int) -> DbAtStart =>
     { schema_version: r.opened.schema_version + r.applied, encrypted: true, size_bytes: size }
 
@@ -312,7 +356,8 @@ fn serve_mode(exe str, config_override str) Io Net Time Detach -> int {
                     }
                     // `!!`: the table is static, and `app_test` builds the same one -- a
                     // refusal here is a programming error, not a condition of this run.
-                    ro router = api_router(sources_at_start(cfg, paths, moment_iso(now), now, db_state, fn() -> SnapshotView => first))!!
+                    ro router = api_router(sources_at_start(cfg, paths, moment_iso(now), now, db_state, fn() -> SnapshotView => first,
+                        fn(a HistoryAsk) -> HistoryLoad => history_from_db(paths, win, first, a)))!!
                     println("claude-limits: listening on ${base_url(cfg)}/  (Ctrl+C to stop)")
                     serve_router(listener, router, ServerPolicy.new())
                     return EXIT_OK

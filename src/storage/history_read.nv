@@ -27,57 +27,7 @@ import duckdb.db_effect.{Db, ConnRef}
 import duckdb.errors.{DuckError}
 import duckdb.types.{Value}
 import claude_limits.storage.repo.{quote, moment}
-
-/// One stored sample of one window.
-export type HistSample value {
-    at_ms int
-    percent int
-    /// 0 when the sample's cycle has no reset moment.
-    resets_at_ms int
-    locked bool
-}
-
-/// One `lock_period` row overlapping the range.
-export type HistLock value {
-    from_ms int
-    /// 0 while the lock is still on.
-    to_ms int
-    /// `server` | `percent_100`.
-    reason str
-    /// The endpoint's own words from the first locked sample of the period, "" when
-    /// it gave none.
-    server_reason str
-}
-
-/// One `poll` row of the account, any outcome.
-export type HistPoll value {
-    at_ms int
-    outcome str
-}
-
-/// One window with its rows of the range, samples in time order.
-export type HistWindow value {
-    account_id str
-    kind str
-    /// "" for the windows that are not per-model.
-    model str
-    samples []HistSample
-    locks []HistLock
-}
-
-/// One account that has a window with samples in the range.
-export type HistAccount value {
-    id str
-    email str
-    color_slot int
-    /// Every poll of the range, in time order: the gaps are read from these.
-    polls []HistPoll
-}
-
-export type HistRows value {
-    accounts []HistAccount
-    windows []HistWindow
-}
+import claude_limits.storage.history_rows.{HistSample, HistLock, HistPoll, HistWindow, HistAccount, HistRows}
 
 // ── the SQL ──────────────────────────────────────────────────────────────────
 

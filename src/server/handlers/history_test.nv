@@ -6,7 +6,7 @@ module handlers.history_test
 
 import history.{HistoryAsk, HistoryAskOr, parse_history_query, history_ask_of, history_points, history_range_echo, HISTORY_MAX_POINTS}
 import history.{HistGap, history_thin, history_resets, history_gaps}
-import claude_limits.storage.history_read.{HistSample, HistPoll}
+import claude_limits.storage.history_rows.{HistSample, HistPoll}
 
 // 2026-09-06T16:47:00Z
 const NOW int = 1788713220000

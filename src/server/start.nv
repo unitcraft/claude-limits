@@ -41,6 +41,7 @@ import claude_limits.server.handlers.config.{ConfigState, tag_of}
 import claude_limits.server.handlers.folders.{ProbeState}
 import claude_limits.server.handlers.token.{TokenEndpointState}
 import claude_limits.server.handlers.exporter.{ExportState}
+import claude_limits.server.handlers.history.{HistoryAsk, HistoryLoad, HistoryEnv}
 import claude_limits.server.dto.{Disclosure, SnapshotView}
 import claude_limits.model.store.{Registry}
 import claude_limits.config.{render}
@@ -194,13 +195,22 @@ fn token_at_start(cfg Config, tag str) -> TokenEndpointState => { cfg, etag: tag
 
 fn export_at_start() -> ExportState => { from_day: "", to_day: "", rows: [], disclosure: Disclosure.Loopback }
 
+/// The clock and the bound the history ask is judged against.
+///
+/// `now_ms` is the START, like every other source here: the rounds do not repeat yet
+/// (`feed.one_round`), so nothing newer than the start is in the database, and a
+/// range ending at the start holds all of it. When the rounds repeat, this is the
+/// line that has to read the clock per request.
+fn history_env_at(cfg Config, now_ms int) -> HistoryEnv => { now_ms, keep_days: cfg.history.keep_days }
+
 /// Everything the router reads.
 ///
 /// `current` hands over the snapshot body as it stands -- in the binary, the store's
 /// (`store.view()`, computed by the poller at the moment of its round); in a test,
 /// whatever body the test wants the page to get. The settings and `health` are real;
 /// the folders and the history stay empty until discovery and the database are wired.
-export fn sources_at_start(cfg Config, paths Paths, started_at str, now_ms int, db DbAtStart, current fn() -> SnapshotView) -> Sources {
+export fn sources_at_start(cfg Config, paths Paths, started_at str, now_ms int, db DbAtStart, current fn() -> SnapshotView,
+                           history fn(HistoryAsk) -> HistoryLoad) -> Sources {
     ro tag = tag_of(render(cfg))
     Sources.new(
         fn() -> HealthState => health_at(cfg, paths, started_at, db),
@@ -211,5 +221,7 @@ export fn sources_at_start(cfg Config, paths Paths, started_at str, now_ms int, 
         fn() -> ProbeState => probe_at_start(now_ms),
         fn() -> TokenEndpointState => token_at_start(cfg, tag),
         fn() -> ExportState => export_at_start(),
+        history,
+        fn() -> HistoryEnv => history_env_at(cfg, now_ms),
     )
 }

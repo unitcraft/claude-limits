@@ -8,6 +8,7 @@
 module server.start_test
 
 import claude_limits.config.{Config, ConfigError}
+import claude_limits.server.handlers.history.{HistoryAsk, HistoryLoad}
 import claude_limits.storage.config_file.{Loaded}
 import claude_limits.storage.paths.{Paths}
 import start.{Start, decide_start, health_at, sources_at_start, DbAtStart}
@@ -111,10 +112,14 @@ test "health at start says what is true of this process" {
 
 fn wire_text(wire []u8) -> str => unsafe { wire.to_str_unchecked() }
 
+/// The history source of a process whose database did not answer.
+fn no_database(a HistoryAsk) -> HistoryLoad => HistoryLoad.Failed("no database in this test")
+
 fn ask(path str) Time Random -> str => ask_with(path, fn() -> SnapshotView => nothing_yet())
 
 fn ask_with(path str, current fn() -> SnapshotView) Time Random -> str {
-    ro r = api_router(sources_at_start(Config.defaults(), some_paths(), "2026-09-30T09:00:00Z", 1790758800000, DbAtStart.none(), current))!!
+    ro r = api_router(sources_at_start(Config.defaults(), some_paths(), "2026-09-30T09:00:00Z", 1790758800000, DbAtStart.none(), current,
+        fn(a HistoryAsk) -> HistoryLoad => no_database(a)))!!
     wire_text(serve_once(r, "GET ${path} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"))
 }
 
@@ -146,4 +151,18 @@ test "the snapshot the page gets is the body the source hands over, at request t
     assert(w.starts_with("HTTP/1.1 200"))
     assert(w.contains("2026-09-30T09:00:00Z"))
     assert(w.contains("+03:00"))
+}
+
+test "the history a start builds says 500 when the database does not answer" {
+    // `internal` and nothing about the inside (01.3 section 6): the reason is a log
+    // line, and a path or a DuckDB message on the wire would be a leak.
+    ro w = ask("/api/history?range=24h")
+    assert(w.starts_with("HTTP/1.1 500"))
+    assert(w.contains("internal"))
+    assert(!w.contains("no database in this test"))
+}
+
+test "the history a start builds refuses an account id in the URL before reading" {
+    ro w = ask("/api/history?account_id=0192a7f0-0000-7000-8000-000000000001")
+    assert(w.starts_with("HTTP/1.1 400"))
 }

@@ -1,0 +1,8 @@
+module handlers.zz_probe_test
+
+import polaris.{ServerRequest}
+import duckdb.types.{Value}
+
+test "probe" {
+    assert(true)
+}

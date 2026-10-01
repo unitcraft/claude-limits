@@ -1,0 +1,67 @@
+// history_rows.nv — the rows behind `GET /api/history`, as plain values (task T2.15).
+//
+// The reader (`history_read.nv`) fills them from DuckDB; the handler
+// (`server/handlers/history.nv`) draws them.
+//
+// ── Why the types are not in `history_read.nv` ──────────────────────────────
+//
+// THIS MODULE IMPORTS NOTHING FROM duckdb, and that is the point of it. A test module
+// that imports Polaris and `duckdb.errors` together does not compile: `DuckError` has
+// a variant `Query(str)`, Polaris has a generic `Query[T]`, and the shared name drags
+// `Query[T]` instantiations from Polaris's own TEST file (`extract_test.nv`,
+// `SearchQuery`) into the C -- a CC-FAIL in code this package never wrote. Registry
+// 221.1 #1040's family; isolated in `probes/variant-named-like-generic/`. The handler
+// needs Polaris, so the handler must not reach duckdb through its types.
+
+module storage.history_rows
+
+/// One stored sample of one window.
+export type HistSample value {
+    at_ms int
+    percent int
+    /// 0 when the sample's cycle has no reset moment.
+    resets_at_ms int
+    locked bool
+}
+
+/// One `lock_period` row overlapping the range.
+export type HistLock value {
+    from_ms int
+    /// 0 while the lock is still on.
+    to_ms int
+    /// `server` | `percent_100`.
+    reason str
+    /// The endpoint's own words from the first locked sample of the period, "" when
+    /// it gave none.
+    server_reason str
+}
+
+/// One `poll` row of the account, any outcome.
+export type HistPoll value {
+    at_ms int
+    outcome str
+}
+
+/// One window with its rows of the range, samples in time order.
+export type HistWindow value {
+    account_id str
+    kind str
+    /// "" for the windows that are not per-model.
+    model str
+    samples []HistSample
+    locks []HistLock
+}
+
+/// One account that has a window with samples in the range.
+export type HistAccount value {
+    id str
+    email str
+    color_slot int
+    /// Every poll of the range, in time order: the gaps are read from these.
+    polls []HistPoll
+}
+
+export type HistRows value {
+    accounts []HistAccount
+    windows []HistWindow
+}

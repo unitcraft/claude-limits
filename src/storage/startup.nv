@@ -22,6 +22,8 @@ import claude_limits.storage.backup.{take_backup}
 import claude_limits.storage.repo.{write_tick}
 import claude_limits.storage.tick.{tick_of, fresh_ids}
 import claude_limits.usage.poller.{Reading}
+import claude_limits.storage.history_read.{read_history}
+import claude_limits.storage.history_rows.{HistRows}
 
 /// The migration files, in the binary (01.2 §5: `embed_dir("migrations")`).
 /// `../../`: the path is relative to THIS file (`src/storage/`).
@@ -151,6 +153,39 @@ export fn record_readings(p Paths, rs []Reading, emails []str, orgs []str, windo
     Db.close_db(db)
     if failed != "" { return Err(StartFail.Migrate("a tick was not written: ${failed}")) }
     Ok(written)
+}
+
+/// The rows of `/api/history` for `[from, to)`, or the reason they are not there.
+///
+/// Opened, read and closed per request, like `record_readings` per round: the file is
+/// not held open by the server. The reason is a log line, never the answer's body
+/// (01.3 §6: a 500 says `internal` and nothing about the inside).
+export fn read_history_rows(p Paths, from_ms int, to_ms int, accounts []str, windows bool) Db Fs Random -> Result[HistRows, str] {
+    ro key = match ensure_key(p.key_file, dir_of(p.key_file, windows)) {
+        Ok(k) => k
+        Err(f) => return Err(f.message(p.key_file))
+    }
+    mut opts = DbOptions.defaults()
+    opts.encryption_key = key
+    opts.temp_dir = p.temp_dir
+    ro db = match Db.open(p.db_file, opts) {
+        Ok(d) => d
+        Err(e) => return Err("the database did not open: ${e.message()}")
+    }
+    ro conn = match Db.connect(db) {
+        Ok(c) => c
+        Err(e) => {
+            Db.close_db(db)
+            return Err("the database refused a connection: ${e.message()}")
+        }
+    }
+    ro got = read_history(conn, from_ms, to_ms, accounts)
+    Db.close_conn(conn)
+    Db.close_db(db)
+    match got {
+        Ok(rows) => Ok(rows)
+        Err(e) => Err("the history was not read: ${e.message()}")
+    }
 }
 
 fn org_for(email str, emails []str, orgs []str) -> str {

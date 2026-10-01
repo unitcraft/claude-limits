@@ -24,6 +24,8 @@ import claude_limits.server.handlers.config.{ConfigState}
 import claude_limits.server.handlers.folders.{ProbeState}
 import claude_limits.server.handlers.token.{TokenEndpointState}
 import claude_limits.server.handlers.exporter.{ExportState}
+import claude_limits.server.handlers.history.{HistoryAsk, HistoryLoad, HistoryEnv}
+import std.time.civil.{TimeZone}
 import polaris.{Router, serve_once}
 
 fn wire_str(wire []u8) -> str => unsafe { wire.to_str_unchecked() }
@@ -74,6 +76,9 @@ fn config_empty() -> ConfigState => { cfg: Config.defaults(), etag: "", path: ""
 fn probe_empty() -> ProbeState => { now_ms: 0, listed: [], known: [], disclosure: Disclosure.Loopback }
 fn token_empty() -> TokenEndpointState => { cfg: Config.defaults(), etag: "", disclosure: Disclosure.Loopback }
 fn export_empty() -> ExportState => { from_day: "", to_day: "", rows: [], disclosure: Disclosure.Loopback }
+fn history_empty(a HistoryAsk) -> HistoryLoad =>
+    HistoryLoad.Loaded({ rows: { accounts: [], windows: [] }, paces: [], zone: TimeZone.Utc })
+fn history_env_fixed() -> HistoryEnv => { now_ms: 1790758800000, keep_days: 30 }
 
 fn router() -> Router =>
     api_router(Sources.new(
@@ -85,6 +90,8 @@ fn router() -> Router =>
         fn() -> ProbeState => probe_empty(),
         fn() -> TokenEndpointState => token_empty(),
         fn() -> ExportState => export_empty(),
+        fn(a HistoryAsk) -> HistoryLoad => history_empty(a),
+        fn() -> HistoryEnv => history_env_fixed(),
     ))!!
 
 fn serve(path str) Time Random -> []u8 => serve_once(router(), get(path))
@@ -108,4 +115,14 @@ test "everything else is the page" {
     ro w = serve("/")
     assert(status_of(w).contains("200"))
     assert(wire_str(w).contains("text/html"))
+}
+
+test "the assembled router serves the history" {
+    ro w = serve("/api/history?range=24h")
+    assert(status_of(w).contains("200"))
+}
+
+test "the assembled router refuses an e-mail in the history query" {
+    ro w = serve("/api/history?email=main@example.com")
+    assert(status_of(w).contains("400"))
 }
