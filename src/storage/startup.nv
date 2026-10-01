@@ -18,7 +18,9 @@ import duckdb.db_effect.{Db, ConnRef}
 import duckdb.errors.{DbOptions, DuckError}
 import claude_limits.storage.paths.{Paths, dir_of}
 import claude_limits.storage.db.{Migration, Opened, OpenFail, pending, ensure_key, ensure_instance, open_and_read, apply_migration, claim}
-import claude_limits.storage.backup.{take_backup, list_names, weekly_due}
+import claude_limits.storage.backup.{take_backup, list_names, weekly_due, write_copy, fresh_path, swap_in_fresh}
+import claude_limits.storage.repo.{forget, Forgot}
+import std.fs.{try_exists}
 import claude_limits.storage.maintenance.{Policy, run_retention, zone_step, ZoneStep, set_zone_sql, zone_log_line}
 import duckdb.types.{Value}
 import claude_limits.storage.repo.{write_tick}
@@ -225,6 +227,73 @@ export fn record_found(p Paths, d Discovered, at_ms int, windows bool) Db Fs Ran
     match got {
         Ok(_) => Ok(d.dirs.len())
         Err(e) => Err(StartFail.Migrate("the discovery was not written: ${e.message()}"))
+    }
+}
+
+/// What `forget` did, for the person who asked.
+export type ForgetDone enum
+    /// There is no database yet: nothing was ever written about anyone.
+    | NoDatabase
+    /// No account has this address; nothing was touched.
+    | NoSuchAccount
+    /// Gone. The backup taken right after, and how many OLDER backups still hold the
+    /// address -- they are the owner's to delete; the command does not touch them.
+    | Forgotten(str, int)
+
+/// `claude-limits forget <email>` (01.2 section 3.15, task T2.7): the steps of
+/// `repo.forget`, then a fresh backup, then the COMPACTION the section requires --
+/// DuckDB frees deleted blocks without overwriting them, so the address stays in the
+/// file's bytes until the live rows are written to a new file that takes its place.
+///
+/// The order is `forget_test`'s, which holds it: forget, back up (a backup copies live
+/// rows only, so it is clean), copy, CLOSE, swap -- nothing may write after the copy.
+/// The backup is the "last backup" 01.2 section 3.15 searches; older ones are named, not
+/// deleted: removing a person's backups is not a decision a command makes on its own.
+export fn forget_account(p Paths, email str, now_ms int, keep int, windows bool) Db Fs Random -> Result[ForgetDone, StartFail] {
+    if !(try_exists(p.db_file.to_path()) ?? false) { return Ok(ForgetDone.NoDatabase) }
+    ro key = ensure_key(p.key_file, dir_of(p.key_file, windows)).map_err(fn(f OpenFail) -> StartFail => StartFail.Open(f))?
+    ro mine = ensure_instance(p.instance_file, dir_of(p.instance_file, windows))
+    mut opts = DbOptions.defaults()
+    opts.encryption_key = key
+    opts.temp_dir = p.temp_dir
+    ro db = Db.open(p.db_file, opts).map_err(fn(e DuckError) -> StartFail => StartFail.Open(OpenFail.DbRefused(e.message())))?
+    ro conn = match Db.connect(db) {
+        Ok(c) => c
+        Err(e) => {
+            Db.close_db(db)
+            return Err(StartFail.Open(OpenFail.DbRefused(e.message())))
+        }
+    }
+    ro older = list_names(p.backup_dir).len()
+    ro got = forget(conn, email, mine, now_ms)
+    mut backup = ""
+    mut fail = ""
+    match got {
+        Ok(Forgot.Forgotten(_)) => {
+            match take_backup(conn, p.backup_dir, now_ms, keep, windows, key) {
+                Ok(name) => { backup = name }
+                Err(e) => { fail = "the backup after forget failed: ${e.message()}" }
+            }
+            if fail == "" {
+                match write_copy(conn, fresh_path(p.db_file), key) {
+                    Ok(_) => ()
+                    Err(e) => { fail = "the compacted copy failed: ${e.message()}" }
+                }
+            }
+        }
+        _ => ()
+    }
+    Db.close_conn(conn)
+    Db.close_db(db)
+    match got {
+        Err(e) => return Err(StartFail.Migrate("forget stopped part-way, run it again to finish: ${e.message()}"))
+        Ok(Forgot.NoSuchAccount) => return Ok(ForgetDone.NoSuchAccount)
+        Ok(Forgot.Forgotten(_)) => ()
+    }
+    if fail != "" { return Err(StartFail.Migrate(fail)) }
+    match swap_in_fresh(p.db_file) {
+        Ok(_) => Ok(ForgetDone.Forgotten(backup, older))
+        Err(e) => Err(StartFail.Migrate("the compacted file did not take the old one's place: ${e.message()}"))
     }
 }
 

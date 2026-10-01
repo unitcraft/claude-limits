@@ -152,7 +152,14 @@ claude-limits --serve                  # the page at http://127.0.0.1:7391
 claude-limits --serve --config D:/x.toml
 claude-limits --once                   # one table in the terminal, no server
 claude-limits --install-autostart      # start --serve at login; --uninstall-autostart undoes it
+claude-limits forget work@example.org  # delete everything stored about one account
 ```
+
+`forget` removes the account's readings, windows, polls and its address in the
+settings history, then rewrites the database file so the deleted rows are not
+left in its bytes, and takes a fresh backup. Backups taken before it still hold
+the address: the command says how many there are and leaves them to you. Stop a
+running `--serve` first -- the file is replaced.
 
 A second copy on the same port refuses to start and says so. A settings file
 that asks for the network (`allow_lan = true`) is refused at the start: listening

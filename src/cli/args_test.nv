@@ -184,3 +184,37 @@ test "a misspelled autostart verb is refused, like every other unknown flag" {
     assert(r.err()!!.code == EXIT_CONFIG)
     assert(r.err()!!.message.contains("install-autostrat"))
 }
+
+// ── forget (01.2 section 3.15, task T2.7) ───────────────────────────────────
+
+test "forget is a verb with one e-mail, and keeps --config beside it" {
+    ro a = parse_args(["forget", "work@example.org", "--config", "C:/c.toml"])!!
+    assert(a.mode == Mode.Forget)
+    assert(a.email == "work@example.org")
+    assert(a.config == "C:/c.toml")
+    assert(a.dirs.len() == 0)
+}
+
+test "forget without an e-mail is a refusal, not a deletion of nothing" {
+    match parse_args(["forget"]) {
+        Ok(_) => panic("forget with no e-mail was accepted")
+        Err(c) => {
+            assert(c.code == EXIT_CONFIG)
+            assert(c.message.contains("e-mail"))
+        }
+    }
+}
+
+test "forget takes ONE e-mail: a second word is refused, not a second deletion" {
+    match parse_args(["forget", "a@example.org", "b@example.org"]) {
+        Ok(_) => panic("two e-mails were accepted")
+        Err(c) => assert(c.message.contains("b@example.org"))
+    }
+}
+
+test "a directory named forget after another one is still a directory" {
+    ro a = parse_args(["./accounts", "forget"])!!
+    assert(a.mode == Mode.Once)
+    assert(a.dirs.len() == 2)
+    assert(a.email == "")
+}

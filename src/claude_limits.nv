@@ -52,7 +52,7 @@ import claude_limits.storage.config_file.{load}
 import claude_limits.server.app.{api_router}
 import claude_limits.server.handlers.config.{base_url}
 import claude_limits.server.start.{real_paths_input, decide_start, sources_at_start, DbAtStart}
-import claude_limits.storage.startup.{migrations_in, bundled, open_for_serve, record_readings, read_history_rows, record_found, Ready, StartFail, Upkeep}
+import claude_limits.storage.startup.{migrations_in, bundled, open_for_serve, record_readings, read_history_rows, record_found, Ready, StartFail, Upkeep, forget_account, ForgetDone}
 import claude_limits.storage.maintenance.{machine_rollup_tz}
 import claude_limits.storage.discovery_write.{Discovered, discovered}
 import claude_limits.storage.history_rows.{HistRows, HistFolderRows}
@@ -74,6 +74,7 @@ import http.{Http}
 
 const USAGE = "usage: claude-limits [--once | --serve] [--config PATH] [--offline DIR] [--parent DIR] [--color auto|always|never] [DIR ...]"
 const USAGE_AUTOSTART = "       claude-limits --install-autostart | --uninstall-autostart"
+const USAGE_FORGET = "       claude-limits forget EMAIL [--config PATH]   delete everything stored about one account"
 
 /// One folder's worth of output, as lines, computed with the disk available.
 ///
@@ -293,6 +294,45 @@ fn announced(r Ready, db_file str) Io -> int {
     }
 }
 
+/// `forget EMAIL` (task T2.7): delete everything stored about one account.
+///
+/// The address is NOT printed back: the command exists to remove it, and echoing it
+/// into a terminal scroll-back or a redirected log is one more copy.
+fn forget_mode(exe str, config_override str, email str) Io Time -> int {
+    ro input = with Os = real_os(), Fs = real_fs() { real_paths_input(exe, config_override) }
+    ro paths = resolve(input)
+    ro loaded = with Fs = real_fs() { load(paths.config_file) }
+    ro keep = loaded.cfg.storage.backups_keep
+    ro now = Time.now().unix_millis()
+    ro win = input.windows
+    ro who = email
+    ro done = with Fs = real_fs(), Random = real_random() {
+        with_real_db(fn() Db Fs Random -> Result[ForgetDone, StartFail] => forget_account(paths, who, now, keep, win))
+    }
+    match done {
+        Ok(ForgetDone.NoDatabase) => {
+            println("claude-limits: no database at ${paths.db_file}; nothing is stored about anyone")
+            EXIT_OK
+        }
+        Ok(ForgetDone.NoSuchAccount) => {
+            println("claude-limits: no account with that address in ${paths.db_file}; nothing was changed")
+            EXIT_OK
+        }
+        Ok(ForgetDone.Forgotten(backup, older)) => {
+            println("claude-limits: the account is forgotten: its readings, windows, polls and the address in the settings history are deleted, and the file is compacted")
+            println("claude-limits: fresh backup ${backup}")
+            if older > 0 {
+                println("claude-limits: ${older} older backup(s) in ${paths.backup_dir} were taken before this and still hold the address; delete them if they must go too")
+            }
+            EXIT_OK
+        }
+        Err(f) => {
+            println("claude-limits: ${f.message(paths.key_file)}")
+            f.exit_code()
+        }
+    }
+}
+
 /// `--serve` (task T2.27): read the settings, refuse or go, listen, give the page.
 ///
 /// Every decision is in `server.start` and tested there; this is the printing and the
@@ -422,6 +462,7 @@ fn main() Io Net Time Detach {
                     println(version_line())
                     println(USAGE)
                     println(USAGE_AUTOSTART)
+                    println(USAGE_FORGET)
                 }
                 // THE PATH THE RECORD WILL START IS `all[0]`, the program name as the
                 // system handed it to us -- which is exactly what the system will hand
@@ -451,6 +492,11 @@ fn main() Io Net Time Detach {
                 Mode.Serve => {
                     ro exe = if all.len() > 0 { all[0] } else { "" }
                     ro code = serve_mode(exe, a.config)
+                    if code != EXIT_OK { exit(code, "") }
+                }
+                Mode.Forget => {
+                    ro exe = if all.len() > 0 { all[0] } else { "" }
+                    ro code = forget_mode(exe, a.config, a.email)
                     if code != EXIT_OK { exit(code, "") }
                 }
                 Mode.Once => {

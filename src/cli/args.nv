@@ -35,6 +35,7 @@ export type Mode enum
     | InstallAutostart  // --install-autostart   (plan 01 Ф.4, task T4.2)
     | UninstallAutostart // --uninstall-autostart
     | Serve             // --serve: listen, and give the page (plan 01.5, task T2.27)
+    | Forget            // forget EMAIL: delete one account's data (01.2 3.15, task T2.7)
 
 /// The canonical receiver inside a method body is `match @`, NOT `match @self`. The
 /// latter type-checks -- `nova check` prints `ok:` on it -- and then dies in codegen
@@ -49,6 +50,7 @@ export fn Mode @to_str() -> str =>
         Mode.InstallAutostart => "install-autostart"
         Mode.UninstallAutostart => "uninstall-autostart"
         Mode.Serve => "serve"
+        Mode.Forget => "forget"
     }
 
 /// The parsed command line. Empty string means "not given" throughout, matching the
@@ -62,6 +64,7 @@ export type Args value {
     ro dirs []str        // positional login directories
     ro color str         // auto | always | never
     ro bar_style str     // blocks | ascii -- the reference defaults to ascii
+    ro email str         // forget EMAIL; "" for every other mode
 }
 
 /// A refusal to parse, carrying the exit code that belongs to it.
@@ -73,8 +76,8 @@ export type Complaint value {
 export fn Complaint.new(message str, code int) -> Complaint => { message, code }
 
 export fn Args.new(mode Mode, config str, offline str, parent str, dirs []str,
-                  color str, bar_style str) -> Args =>
-    { mode, config, offline, parent, dirs, color, bar_style }
+                  color str, bar_style str, email str) -> Args =>
+    { mode, config, offline, parent, dirs, color, bar_style, email }
 
 const COLORS = "auto always never"
 const BAR_STYLES = "blocks ascii"
@@ -109,6 +112,8 @@ export fn parse_args(argv []str) -> Result[Args, Complaint] {
     mut color = "auto"
     mut bar_style = "ascii"
     mut dirs []str = []
+    mut email = ""
+    mut forget = false
     mut i = 0
 
     while i < argv.len() {
@@ -157,11 +162,27 @@ export fn parse_args(argv []str) -> Result[Args, Complaint] {
             }
         } else if a.starts_with("-") {
             return Err(Complaint.new("unknown option '${a}'", EXIT_CONFIG))
+        } else if !forget && dirs.len() == 0 && a == "forget" {
+            // A VERB, as 01.2 3.15 spells it (`claude-limits forget <email>`), and only in
+            // first place: `claude-limits ./a forget` still reads two directories, so a
+            // login directory that happens to be called `forget` is not swallowed.
+            forget = true
+        } else if forget && email == "" {
+            email = a
         } else {
             dirs.push(a)
         }
         i += 1
     }
 
-    return Ok(Args.new(mode, config, offline, parent, dirs, color, bar_style))
+    if forget {
+        if email == "" {
+            return Err(Complaint.new("forget needs the e-mail of the account to delete", EXIT_CONFIG))
+        }
+        if dirs.len() > 0 {
+            return Err(Complaint.new("forget takes one e-mail and nothing else, not '${dirs[0]}'", EXIT_CONFIG))
+        }
+        return Ok(Args.new(Mode.Forget, config, offline, parent, dirs, color, bar_style, email))
+    }
+    return Ok(Args.new(mode, config, offline, parent, dirs, color, bar_style, ""))
 }
