@@ -226,6 +226,27 @@ test "the previous text is kept, with the token gone" {
     assert(k.last_toml.contains("port = 7391"))
 }
 
+test "a save keeps the access token set by hand, and the history still hides it" {
+    // `render` leaves the token out by design, and the file writer used it: the first
+    // save from the panel deleted a token a person had set (found 2026-10-02).
+    mut fs = MemFs.new()
+    mut k = Kept.new()
+    ro after_text = with Fs = mock_fs(fs) {
+        ro _w = write_text(P.to_path(), with_token())
+        with ConfigHistory = keeping(k) {
+            ro before = load(P)
+            assert(before.cfg.server.access_token == "super-secret-value")
+            mut next = before.cfg
+            next.ui.time_bar = false
+            assert(save(P, before, next, FromUi).to_str() == "written")
+        }
+        read_text(P.to_path()) ?? ""
+    }
+    assert(after_text.contains("access_token = \"super-secret-value\""))
+    assert(after_text.contains("time_bar = false"))
+    assert(!k.last_toml.contains("super-secret-value"))
+}
+
 test "a first write has no previous version and stores no row" {
     // An empty history row would later read as "the file was empty", which is a
     // different and false statement.

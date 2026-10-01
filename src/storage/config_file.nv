@@ -34,7 +34,7 @@
 module storage.config_file
 
 import std.fs.{write_atomic, read_text, metadata, try_exists}
-import claude_limits.config.{Config, ConfigError, render, validate}
+import claude_limits.config.{Config, ConfigError, render_file, validate}
 // `parse` through the module name: three free `parse` of one arity live in the binary
 // (cli.args, usage.parse, config), and a bare call is refused as ambiguous (#1390).
 import claude_limits.config as settings
@@ -212,7 +212,7 @@ export fn save(path str, before Loaded, cfg Config, source Source) Fs ConfigHist
         ConfigHistory.save(redact(before.text), source.to_str())
     }
 
-    match write_atomic(path.to_path(), render(cfg).bytes()) {
+    match write_atomic(path.to_path(), render_file(cfg).bytes()) {
         Ok(_) => Written
         Err(_) => WriteFailed
     }

@@ -486,6 +486,11 @@ test "only_ui_changed: ui alone is live, anything beside it is not" {
     both.folders = ["C:/other"]
     assert(!only_ui_changed(before, both))
     assert(only_ui_changed(before, base_cfg()))
+    // The token is not in `render` -- and a new one moves the listener, so it must
+    // not pass for a ui change.
+    mut tok = base_cfg()
+    tok.server.access_token = "a-different-token"
+    assert(!only_ui_changed(before, tok))
 }
 
 // ── the pure parts ───────────────────────────────────────────────────────────

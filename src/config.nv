@@ -759,8 +759,20 @@ fn list_of(items []str) -> str {
 
 fn bool_of(b bool) -> str => if b { "true" } else { "false" }
 
-/// The whole config as canonical TOML.
-export fn render(cfg Config) -> str {
+/// The whole config as canonical TOML, WITHOUT the access token: what the tag is
+/// computed over and what a reader is shown. See `render_file` for the file itself.
+export fn render(cfg Config) -> str => render_text(cfg, false)
+
+/// The text the settings FILE gets: `render` plus the access token, when one is set.
+///
+/// A SECOND DOOR, AND IT HAS TO EXIST. `render` leaves the token out on purpose (the
+/// history row wants `***`), and the file writer used it -- so the first save from the
+/// panel silently deleted a token set by hand, found 2026-10-02 the day saving was
+/// wired. One body serves both, so the two texts cannot drift apart except by the one
+/// line that is the point.
+export fn render_file(cfg Config) -> str => render_text(cfg, true)
+
+fn render_text(cfg Config, secret bool) -> str {
     mut out = "# claude-limits.toml — settings. Written by the app on Save.\n"
     out = "${out}schema = ${cfg.schema}\n"
 
@@ -792,10 +804,12 @@ export fn render(cfg Config) -> str {
     out = "${out}bind = ${toml_quote(cfg.server.bind)}\n"
     out = "${out}port = ${cfg.server.port}\n"
     out = "${out}allow_lan = ${bool_of(cfg.server.allow_lan)}\n"
-    // THE TOKEN IS NEVER WRITTEN BY THIS FUNCTION. `render` serves both the file and
-    // the history row, and 01.2 §3.14 wants `***` in the latter — a serialiser that
-    // emits a secret for one caller emits it for both. The key is simply absent here;
-    // the token is written by the one place that owns it.
+    // THE TOKEN ONLY FOR THE FILE. `render` serves the tag and every reader, and
+    // 01.2 §3.14 wants `***` in the history -- the history takes the OLD file text
+    // through `config_file.redact`, never this function's output.
+    if secret && cfg.server.access_token != "" {
+        out = "${out}access_token = ${toml_quote(cfg.server.access_token)}\n"
+    }
     out = "${out}tls_cert = ${toml_quote(cfg.server.tls_cert)}\n"
     out = "${out}tls_key = ${toml_quote(cfg.server.tls_key)}\n"
 
