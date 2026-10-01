@@ -1,0 +1,58 @@
+﻿"""Probe: a failed git checkout during dependency resolution -- does `nova build` say WHY?
+
+Usage (from the claude-limits root, after renaming to run.py or as-is):
+    python probes/dep-error-drops-git-cause/run.py.txt scripts/nova_run.py [control]
+
+Builds a one-file package whose only dependency is nova-compress v0.1, with an EMPTY
+NOVA_HOME placed deep enough that the cache's checkout path plus compress's longest
+file (58 chars) passes Windows MAX_PATH (260), and core.longpaths forced off for this
+run. git then fails with "Filename too long". The question is whether that text
+reaches the user.
+
+Prints one verdict line:
+    CAUSE SHOWN   -- the build output carries git's own message
+    CAUSE DROPPED -- the build failed and git's message is not in its output
+"""
+import os, subprocess, sys, tempfile
+
+nova_run = os.path.abspath(sys.argv[1])
+# PROBE_TMP: where to make the throwaway package and cache (default: the system temp).
+# The directory is left behind -- git packs inside are read-only; remove it yourself.
+base = tempfile.mkdtemp(prefix="lp-", dir=os.environ.get("PROBE_TMP"))
+pkg = os.path.join(base, "pkg")
+os.makedirs(pkg)
+with open(os.path.join(pkg, "nova.toml"), "w", encoding="utf-8", newline="\n") as f:
+    f.write('[package]\nname = "lp"\nversion = "0.0.0"\n\n[lib]\nsrc = "."\n\n'
+            '[dependencies]\ncompress = { git = "https://github.com/nv-lang/nova-compress", version = "0.1" }\n')
+with open(os.path.join(pkg, "lp_main.nv"), "w", encoding="utf-8", newline="\n") as f:
+    f.write("module lp.lp_main\n\nfn main() Io {\n    println(\"built\")\n}\n")
+
+# checkout dir = NOVA_HOME + \git\co\nova-compress-<16 hex>\<40 hex>  (79 chars more)
+pad = max(1, 130 - len(base) - 1)
+home = os.path.join(base, "h" * pad)
+os.makedirs(home)
+print("NOVA_HOME length", len(home), "-> checkout dir length", len(home) + 79)
+
+# CONTROL: a second argument `control` turns core.longpaths ON -- the same build must
+# then succeed, which proves the failure above is the path length and nothing else.
+longpaths = "true" if sys.argv[2:] == ["control"] else "false"
+print("core.longpaths", longpaths)
+env = dict(os.environ, NOVA_HOME=home, NOVA_CACHE=home + "-c",
+           GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="core.longpaths", GIT_CONFIG_VALUE_0=longpaths)
+r = subprocess.run([sys.executable, nova_run, "build", "lp_main.nv", "-o", "lp.exe"], cwd=pkg, env=env,
+                   capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
+out = r.stdout + r.stderr
+print("exit", r.returncode)
+for line in out.strip().splitlines()[:6]:
+    print("|", line[:300])
+if longpaths == "true":
+    # The control judges the RESOLUTION step only: past it, MSVC meets the same deep
+    # path (C1083 on brotli's relative include) -- a later limit of the same depth.
+    print("CONTROL: dependency resolution",
+          "FAILED" if "dependency resolution" in out else "PASSED (git checkout succeeded)")
+elif r.returncode == 0:
+    print("NO FAILURE -- the path was not long enough to reproduce; raise the 130 (above ~140 git stops on '$GIT_DIR too big' whatever core.longpaths says)")
+elif "too long" in out:
+    print("CAUSE SHOWN")
+else:
+    print("CAUSE DROPPED")
