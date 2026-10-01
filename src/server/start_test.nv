@@ -217,6 +217,15 @@ test "the settings a start serves carry the folders inside config, as the contra
     assert(w.contains("C:/Users/me/.claude"))
 }
 
+test "the event stream opens with the snapshot the page would GET, not an empty object" {
+    // It opened with `{}`, and the page rendered that as "no logins found" on every
+    // open of the stream.
+    ro w = ask_with("/api/events", fn() -> SnapshotView => polled_body())
+    assert(w.contains("event: snapshot"))
+    assert(w.contains("2026-09-30T09:00:00Z"))
+    assert(!w.contains("data: {}"))
+}
+
 test "while health keeps what this process started on" {
     // A new port saved is in force from the next start; health describes the listener
     // that exists.

@@ -35,7 +35,7 @@ import claude_limits.storage.paths.{PathsInput, Paths, join, dir_of}
 import claude_limits.storage.config_file.{Loaded}
 import claude_limits.server.app.{Sources}
 import claude_limits.server.handlers.health.{HealthState}
-import claude_limits.server.handlers.snapshot.{SnapshotState}
+import claude_limits.server.handlers.snapshot.{SnapshotState, arrange}
 import claude_limits.server.handlers.refresh.{RefreshState}
 import claude_limits.server.handlers.events.{EventsState}
 import claude_limits.server.handlers.config.{ConfigState, ConfigCommit, FolderView, LoginDirView, AccountFound, tag_of}
@@ -44,7 +44,7 @@ import claude_limits.server.handlers.folders.{ProbeState}
 import claude_limits.server.handlers.token.{TokenEndpointState}
 import claude_limits.server.handlers.exporter.{ExportState}
 import claude_limits.server.handlers.history.{HistoryAsk, HistoryLoad, HistoryEnv}
-import claude_limits.server.dto.{Disclosure, SnapshotView}
+import claude_limits.server.dto.{Disclosure, SnapshotView, render_snapshot}
 import claude_limits.model.store.{Registry}
 import claude_limits.config.{render}
 import claude_limits.version.{version}
@@ -184,7 +184,16 @@ fn refresh_at_start(cfg Config, now_ms int) -> RefreshState => {
     now_ms, floor_sec: cfg.poll.min_interval_sec, targets: [],
 }
 
-fn events_at_start() -> EventsState => { reg: Registry.new(), snapshot_body: "{}", rest: [] }
+/// `/api/events` opens with the body `GET /api/snapshot` gives (01.3 §3.4: "тело §3.3
+/// целиком"), arranged by the same settings.
+///
+/// IT SENT `{}` UNTIL 2026-10-02, and the page took it at its word: every open of the
+/// stream replaced the accounts with an empty list ("no logins found") until the next
+/// poll, ten seconds later -- on load, and again on every reconnect. The stream still
+/// ends after this first event (the channel loop is T2.13's), so the page then polls,
+/// and says `polling`; what it shows is now the truth.
+fn events_now(s SnapshotState) -> EventsState =>
+    { reg: Registry.new(), snapshot_body: render_snapshot(arrange(s.view, s.order, s.hidden, false), s.disclosure), rest: [] }
 
 /// The snapshot's order and hidden list come from the settings AS THEY STAND: a saved
 /// `ui` change is live at once (01.3 §3.8), and a page that kept the start's order
@@ -315,7 +324,7 @@ export fn sources_at_start(cfg Config, paths Paths, started_at str, now_ms int, 
         fn() -> HealthState => health_at(cfg, paths, started_at, db),
         fn() -> SnapshotState => snapshot_now(current(), conf()),
         fn() -> RefreshState => refresh_at_start(cfg, now_ms),
-        fn() -> EventsState => events_at_start(),
+        fn() -> EventsState => events_now(snapshot_now(current(), conf())),
         fn() -> ConfigState => config_now(conf(), paths, current()),
         commit,
         fn() -> ProbeState => probe_at_start(now_ms),
