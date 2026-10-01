@@ -292,7 +292,8 @@ python scripts/claude_limits.py --parent C:/accounts # every child dir instead o
 - [x] reference script: discovery (default dir, `CLAUDE_CONFIG_DIR`, configured list, parent dir), same-account grouping, 429 backoff, daemon mode
 - [x] Nova core: same table as the script, byte-for-byte (`--once`)
 - [ ] local backend: `/api/snapshot`, `/api/events` (SSE), embedded page with one bar per account per window -- serves the page and one poll; repeating rounds wait on the compiler
-- [ ] threshold notifications, history
+- [ ] history: every round is recorded in the encrypted database (readings, lock periods, which login sat in which folder), and `/api/history` serves it by account or by folder, over 24 h / 7 d / 30 d, the statistics views read it -- done, but while the rounds do not repeat it holds only the rounds of each start
+- [ ] threshold notifications
 - [ ] after the first release: optional widget (`--widget`) — always-on-top window and tray icon on Windows and Linux (StatusNotifier)
 
 ## License
