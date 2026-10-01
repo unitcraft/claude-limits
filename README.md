@@ -106,7 +106,8 @@ A refresh costs one small request on that account's own limits, so:
   brings back the old behaviour -- report the stale login and leave it alone.
 
 By hand: `python scripts/refresh_token.py <dir>` or `--all`
-(`scriptsefresh-token.ps1` is a wrapper over it).
+(`scripts
+efresh-token.ps1` is a wrapper over it).
 
 ## Rules
 
@@ -216,17 +217,16 @@ restore, stop the tool and copy a backup over `claude-limits.duckdb`.
 
 ## Status
 
-**The Nova binary runs** (`--serve`): it finds the logins, asks the endpoint,
-serves the page and opens its encrypted database at the start. Two limits of this
-stage, both waiting on the compiler rather than on this code:
-
-- **It polls ONCE, at the start.** The repeating rounds are written and do not run
-  yet: a runtime defect of the compiler (nova registry #1406) loses a channel
-  wake-up while the server waits for a connection. Restart to refresh.
-- **TLS trusts the embedded Mozilla list, not the Windows certificate store.** A
-  TLS-inspecting antivirus that installs its own root can make some requests fail.
-  nova-tls 0.2 reads the OS store; moving to it waits on a compiler fix
-  (nova #1234).
+**The Nova binary runs** (`--serve`): it finds the logins, asks the endpoint
+every `[poll] interval_sec` (five minutes by default), serves the page, and writes
+every round to its encrypted database -- the readings, the lock periods, and which
+login sat in which folder -- which `/api/history` and the statistics views read.
+Once a day it rolls up and drops what is older than `[history] keep_days` and takes
+the weekly backup. TLS trusts the operating system's certificate store first (so a
+TLS-inspecting antivirus with its own root works); the start says which source it
+loaded. What is not here yet: the page's live stream (`/api/events`) sends the
+current snapshot and closes, so the page refreshes by polling and shows `polling`
+rather than `live`.
 
 `scripts/claude_limits.py` is a stdlib-only reference for the data path:
 it discovers config directories and prints one row per account and window, once
@@ -298,8 +298,8 @@ python scripts/claude_limits.py --parent C:/accounts # every child dir instead o
 
 - [x] reference script: discovery (default dir, `CLAUDE_CONFIG_DIR`, configured list, parent dir), same-account grouping, 429 backoff, daemon mode
 - [x] Nova core: same table as the script, byte-for-byte (`--once`)
-- [ ] local backend: `/api/snapshot`, `/api/events` (SSE), embedded page with one bar per account per window -- serves the page and one poll; repeating rounds wait on the compiler
-- [ ] history: every round is recorded in the encrypted database (readings, lock periods, which login sat in which folder), and `/api/history` serves it by account or by folder, over 24 h / 7 d / 30 d, the statistics views read it -- done, but while the rounds do not repeat it holds only the rounds of each start
+- [ ] local backend: `/api/snapshot`, `/api/events` (SSE), embedded page with one bar per account per window -- done but for the live SSE stream (the page polls instead)
+- [x] history: every round is recorded in the encrypted database (readings, lock periods, which login sat in which folder), and `/api/history` serves it by account or by folder, over 24 h / 7 d / 30 d; the statistics views read it
 - [ ] threshold notifications
 - [ ] after the first release: optional widget (`--widget`) — always-on-top window and tray icon on Windows and Linux (StatusNotifier)
 
