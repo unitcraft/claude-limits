@@ -1,0 +1,239 @@
+// Tests for handlers/history.nv — task T2.15, the ask of `GET /api/history`.
+//
+//   ./nova.sh test src/server/handlers/history_test.nv
+
+module handlers.history_test
+
+import history.{HistoryAsk, HistoryAskOr, parse_history_query, history_ask_of, history_points, history_range_echo, HISTORY_MAX_POINTS}
+import history.{HistGap, history_thin, history_resets, history_gaps}
+import claude_limits.storage.history_read.{HistSample, HistPoll}
+
+// 2026-09-06T16:47:00Z
+const NOW int = 1788713220000
+const DAY int = 86400000
+const DIR_A str = "0192a7f0-0000-7000-8000-000000001002"
+const DIR_B str = "0192a7f0-0000-7000-8000-000000001003"
+
+fn asked(target str) -> HistoryAsk {
+    match parse_history_query(target, NOW, 30) {
+        HistoryAskOr.Asked(a) => a
+        HistoryAskOr.Refused(e) => {
+            panic("refused '${target}': ${e.code} ${e.detail}")
+        }
+    }
+}
+
+/// The code of the refusal, "" when the ask was accepted.
+fn refusal(target str) -> str {
+    match parse_history_query(target, NOW, 30) {
+        HistoryAskOr.Asked(_) => ""
+        HistoryAskOr.Refused(e) => "${e.status} ${e.code}"
+    }
+}
+
+// ── defaults ────────────────────────────────────────────────────────────────
+
+test "no parameters is seven days by account at five minutes" {
+    ro a = asked("/api/history")
+    assert(a.to_ms == NOW)
+    assert(a.from_ms == NOW - 7 * DAY)
+    assert(a.step_sec == 300)
+    assert(!a.by_folder)
+    assert(a.login_dirs.len() == 0)
+    assert(a.accounts.len() == 0)
+}
+
+test "seven days at five minutes is 2016 points per series" {
+    assert(history_points(asked("/api/history?range=7d&step=300")) == 2016)
+}
+
+test "thirty days defaults to fifteen minutes" {
+    ro a = asked("/api/history?range=30d")
+    assert(a.step_sec == 900)
+    assert(history_points(a) == 2880)
+}
+
+test "a day at five minutes is 288 points" {
+    assert(history_points(asked("/api/history?range=24h")) == 288)
+}
+
+test "step day is one point per day and echoes 86400" {
+    ro a = asked("/api/history?range=30d&step=day")
+    assert(a.step_sec == 0)
+    assert(history_points(a) == 30)
+    ro (_, _, step) = history_range_echo(a)
+    assert(step == 86400)
+}
+
+test "from and to are read as UTC moments, percent-encoded or not" {
+    ro a = asked("/api/history?from=2026-08-30T16%3A47%3A00Z&to=2026-09-06T16:47:00Z")
+    assert(a.to_ms == NOW)
+    assert(a.from_ms == NOW - 7 * DAY)
+    ro (f, t, _) = history_range_echo(a)
+    assert(t.starts_with("2026-09-06T16:47:00"))
+    assert(f.starts_with("2026-08-30T16:47:00"))
+}
+
+test "by folder and repeated directories are kept" {
+    ro a = asked("/api/history?by=folder&login_dir_id=${DIR_A}&login_dir_id=${DIR_B}")
+    assert(a.by_folder)
+    assert(a.login_dirs.len() == 2)
+    assert(a.login_dirs[1] == DIR_B)
+}
+
+// ── refusals ────────────────────────────────────────────────────────────────
+
+test "an account id in the query is an unknown parameter" {
+    assert(refusal("/api/history?account_id=0192a7f0-0000-7000-8000-000000000001") == "400 invalid_parameter")
+    assert(refusal("/api/history?email=main@example.com") == "400 invalid_parameter")
+}
+
+test "range together with from and to is refused" {
+    assert(refusal("/api/history?range=7d&from=2026-08-30T16:47:00Z&to=2026-09-06T16:47:00Z") == "400 invalid_parameter")
+}
+
+test "from without to is refused" {
+    assert(refusal("/api/history?from=2026-08-30T16:47:00Z") == "400 invalid_parameter")
+}
+
+test "a moment with an offset instead of Z is refused" {
+    assert(refusal("/api/history?from=2026-08-30T16:47:00%2B03:00&to=2026-09-06T16:47:00Z") == "400 invalid_parameter")
+}
+
+test "from not before to is refused" {
+    assert(refusal("/api/history?from=2026-09-06T16:47:00Z&to=2026-09-06T16:47:00Z") == "400 invalid_parameter")
+}
+
+test "a span longer than keep_days is refused" {
+    assert(refusal("/api/history?from=2026-08-01T00:00:00Z&to=2026-09-06T00:00:00Z") == "400 invalid_parameter")
+}
+
+test "values outside the closed lists are refused" {
+    assert(refusal("/api/history?range=90d") == "400 invalid_parameter")
+    assert(refusal("/api/history?step=60") == "400 invalid_parameter")
+    assert(refusal("/api/history?by=email") == "400 invalid_parameter")
+    assert(refusal("/api/history?login_dir_id=dev") == "400 invalid_parameter")
+}
+
+test "a repeated single parameter is refused" {
+    assert(refusal("/api/history?range=7d&range=24h") == "400 invalid_parameter")
+    assert(refusal("/api/history?step=300&step=900") == "400 invalid_parameter")
+}
+
+test "more than 50000 points in a series is range_too_large" {
+    // A year at five minutes: 105 120 points. keep_days raised to 400 so the span
+    // itself is legal and the POINT limit is the one that answers.
+    ro r = history_ask_of("", "2025-09-06T16:47:00Z", "2026-09-06T16:47:00Z", "", "300", [], [], NOW, 400)
+    match r {
+        HistoryAskOr.Asked(_) => panic("a year at five minutes was accepted")
+        HistoryAskOr.Refused(e) => {
+            assert(e.status == 400)
+            assert(e.code == "range_too_large")
+            assert(e.detail.contains("raise step"))
+        }
+    }
+    // The same span at a day per point is 365 points and goes through.
+    match history_ask_of("", "2025-09-06T16:47:00Z", "2026-09-06T16:47:00Z", "", "day", [], [], NOW, 400) {
+        HistoryAskOr.Asked(a) => assert(history_points(a) == 365)
+        HistoryAskOr.Refused(e) => panic("a year by day was refused: ${e.detail}")
+    }
+    assert(HISTORY_MAX_POINTS == 50000)
+}
+
+// ── the series ──────────────────────────────────────────────────────────────
+
+const STEP int = 300000
+
+/// Seven days of samples, one every `every_ms`, starting `offset_ms` after `from`.
+/// The session resets every five hours from `from + 5h`.
+fn week(from_ms int, every_ms int, offset_ms int) -> []HistSample {
+    mut out []HistSample = []
+    mut at = from_ms + offset_ms
+    ro end = from_ms + 7 * DAY
+    ro five_h = 5 * 3600000
+    while at < end {
+        ro since = at - from_ms
+        ro resets = from_ms + (since / five_h + 1) * five_h
+        out.push(HistSample{ at_ms: at, percent: (since / STEP) % 100, resets_at_ms: resets, locked: false })
+        at += every_ms
+    }
+    out
+}
+
+test "seven days sampled every five minutes thin to 2016 points at step 300" {
+    ro from = NOW - 7 * DAY
+    ro pts = history_thin(week(from, STEP, 0), from, NOW, STEP)
+    assert(pts.len() == 2016)
+    assert(pts[0].at_ms == from)
+    assert(pts[2015].at_ms == NOW - STEP)
+}
+
+test "samples off the grid are taken as they are, not moved onto it" {
+    // Every sample 40 s late: each node still finds exactly one, at its own moment.
+    ro from = NOW - 7 * DAY
+    ro pts = history_thin(week(from, STEP, 40000), from, NOW, STEP)
+    assert(pts.len() == 2016)
+    assert(pts[0].at_ms == from + 40000)
+}
+
+test "a step of fifteen minutes takes the sample nearest each node" {
+    ro from = NOW - 7 * DAY
+    ro pts = history_thin(week(from, STEP, 0), from, NOW, 3 * STEP)
+    assert(pts.len() == 672)
+    assert(pts[1].at_ms == from + 3 * STEP)
+}
+
+test "an outage leaves nodes without a point, nothing is drawn across it" {
+    ro from = NOW - DAY
+    ro s = week(from, STEP, 0)
+    // Drop one hour: samples 12..23 of the day.
+    mut kept []HistSample = []
+    mut i = 0
+    while i < s.len() {
+        if i < 12 || i >= 24 { kept.push(s[i]) }
+        i += 1
+    }
+    ro pts = history_thin(kept, from, NOW, STEP)
+    assert(pts.len() == 288 - 12)
+    assert(pts[11].at_ms == from + 11 * STEP)
+    assert(pts[12].at_ms == from + 24 * STEP)
+}
+
+test "a sample exactly between two nodes is drawn once" {
+    ro from = NOW - DAY
+    ro s = [HistSample{ at_ms: from + STEP / 2, percent: 5, resets_at_ms: 0, locked: false }]
+    assert(history_thin(s, from, NOW, STEP).len() == 1)
+}
+
+test "resets inside the range are listed once each, the running cycle is not" {
+    ro from = NOW - 7 * DAY
+    ro r = history_resets(week(from, STEP, 0), from, NOW)
+    // 168 hours / 5 = 33.6: resets at 5h, 10h, ... 165h; the one at 170h is in the future.
+    assert(r.len() == 33)
+    assert(r[0] == from + 5 * 3600000)
+    assert(r[32] == from + 165 * 3600000)
+}
+
+test "a run of failed polls is one gap caused by its first outcome" {
+    ro polls = [
+        HistPoll{ at_ms: 1000, outcome: "ok" },
+        HistPoll{ at_ms: 2000, outcome: "http_401" },
+        HistPoll{ at_ms: 3000, outcome: "skipped_expired" },
+        HistPoll{ at_ms: 4000, outcome: "ok" },
+        HistPoll{ at_ms: 5000, outcome: "http_429" },
+    ]
+    ro g = history_gaps(polls)
+    assert(g.len() == 2)
+    assert(g[0].from_ms == 2000)
+    assert(g[0].to_ms == 4000)
+    assert(g[0].cause == "http_401")
+    // Still failing at the end of the range: the gap is open.
+    assert(g[1].from_ms == 5000)
+    assert(g[1].to_ms == 0)
+    assert(g[1].cause == "http_429")
+}
+
+test "no failed polls is no gaps" {
+    assert(history_gaps([HistPoll{ at_ms: 1, outcome: "ok" }]).len() == 0)
+    assert(history_gaps([]).len() == 0)
+}

@@ -1,0 +1,163 @@
+// history_read.nv against a LIVE database: what the history handler is given.
+//
+//   ./nova.sh test src/storage/history_read_live_test.nv
+//
+// The rows are written by the production writer (`repo.plan_sql`), not by INSERTs of
+// this file: a reader tested against rows its own test invented proves only that the
+// two agree with each other.
+
+module storage.history_read_live_test
+
+import std.fs.{real_fs, read_text, create_dir_all, remove_dir_all}
+import std.os.{real_os, temp_dir}
+import duckdb.db_effect.{Db, ConnRef}
+import duckdb.db_real.{with_real_db}
+import duckdb.errors.{DbOptions}
+import claude_limits.storage.repo.{Tick, WindowRow, Ids, plan_sql, lock_open_sql}
+import history_read.{HistRows, read_history}
+
+const INST = "01900000-0000-7000-8000-000000000001"
+const T0 int = 1757347622000
+const MIN5 int = 300000
+
+fn place(name str) Io -> str {
+    ro base = with Os = real_os() { temp_dir().display().replace("\\", "/") }
+    ro dir = "${base}/claude-limits-histread-${name}"
+    with Fs = real_fs() {
+        ro _ = remove_dir_all(dir.to_path())
+        ro _ = create_dir_all(dir.to_path())
+    }
+    dir
+}
+
+fn init_sql() Io -> str =>
+    with Fs = real_fs() {
+        read_text("migrations/0001_init.sql".to_path()) ?? ""
+    }
+
+fn win(kind str, percent int) -> WindowRow =>
+    WindowRow.new(kind, "", percent, false, "", "", 1757340000000, 1757358000000)
+
+fn tick(at_ms int, outcome str, windows []WindowRow) -> Tick => {
+    instance: INST, at_ms, email: "work@example.org", org: "Tech Center",
+    outcome, http_status: if outcome == "ok" { 200 } else { 429 }, retry_after_sec: 0,
+    latency_ms: 120, error: "", windows,
+}
+
+fn ids(n int) -> Ids {
+    ro p = "01900000-0000-7000-8000-000000${n}"
+    Ids.new("${p}a1", "${p}01", ["${p}11", "${p}12"], ["${p}21", "${p}22"], ["${p}31", "${p}32"])
+}
+
+/// Five polls five minutes apart; the fourth is a 429 with no windows. A lock opens on
+/// the session window at the second tick and is still on.
+fn history_sql() -> []str {
+    ro two = [win("session", 74), win("weekly_all", 41)]
+    mut all []str = []
+    for s in plan_sql(tick(T0, "ok", two), ids(1000)) { all.push(s) }
+    for s in plan_sql(tick(T0 + MIN5, "ok", two), ids(2000)) { all.push(s) }
+    all.push(lock_open_sql(tick(T0 + MIN5, "ok", two), "01900000-0000-7000-8000-0000000000f1",
+        "01900000-0000-7000-8000-000000100011", "01900000-0000-7000-8000-000000100021", "percent_100"))
+    for s in plan_sql(tick(T0 + 2 * MIN5, "ok", two), ids(3000)) { all.push(s) }
+    for s in plan_sql(tick(T0 + 3 * MIN5, "http_429", []), ids(4000)) { all.push(s) }
+    for s in plan_sql(tick(T0 + 4 * MIN5, "ok", two), ids(5000)) { all.push(s) }
+    all
+}
+
+/// The rows flattened to one comparable line.
+fn line_of(r HistRows) -> str {
+    mut s = "w=${r.windows.len()}"
+    for w in r.windows {
+        s = "${s} ${w.kind}:${w.samples.len()}/${w.locks.len()}"
+        for l in w.locks { s = "${s}[${l.reason} open=${l.to_ms == 0}]" }
+    }
+    s = "${s} a=${r.accounts.len()}"
+    for a in r.accounts {
+        s = "${s} ${a.email} slot=${a.color_slot} p=${a.polls.len()}"
+        for p in a.polls { s = "${s},${p.outcome}" }
+    }
+    s
+}
+
+fn read_line(conn ConnRef, from_ms int, to_ms int, accounts []str) Db -> str =>
+    match read_history(conn, from_ms, to_ms, accounts) {
+        Ok(r) => line_of(r)
+        Err(e) => "READ ${e.message()}"
+    }
+
+/// Write the history into a fresh file, then read each `(from, to, accounts)`.
+fn run(name str, asks [](int, int, []str)) Io -> []str {
+    ro path = "${place(name)}/db.duckdb"
+    mut setup = [init_sql()]
+    for s in history_sql() { setup.push(s) }
+    ro todo = asks
+    ro steps = setup
+    with_real_db(fn() Db -> []str => {
+        mut out []str = []
+        match Db.open(path, DbOptions.defaults()) {
+            Err(e) => out.push("OPEN ${e.message()}")
+            Ok(db) => match Db.connect(db) {
+                Err(e) => {
+                    Db.close_db(db)
+                    out.push("CONNECT ${e.message()}")
+                }
+                Ok(conn) => {
+                    mut ok = true
+                    for s in steps {
+                        if !ok { break }
+                        match Db.exec(conn, s) {
+                            Ok(_) => ()
+                            Err(e) => {
+                                out.push("EXEC ${e.message()}")
+                                ok = false
+                            }
+                        }
+                    }
+                    if ok {
+                        for (f, t, acc) in todo { out.push(read_line(conn, f, t, acc)) }
+                    }
+                    Db.close_conn(conn)
+                    Db.close_db(db)
+                }
+            }
+        }
+        out
+    })
+}
+
+fn same(label str, want str, got str) -> bool {
+    if want == got { return true }
+    panic("${label}:\n  want [${want}]\n  got  [${got}]")
+}
+
+test "the whole range: two windows, four samples each, five polls, one open lock" {
+    ro got = run("whole", [(T0 - 60000, T0 + 5 * MIN5, [])])
+    assert(same("whole",
+        "w=2 session:4/1[percent_100 open=true] weekly_all:4/0 a=1 work@example.org slot=0 p=5,ok,ok,ok,http_429,ok",
+        got[0]))
+}
+
+test "a narrower range keeps only its own rows, and a lock begun before it" {
+    ro got = run("narrow", [
+        (T0 + MIN5 - 1000, T0 + 2 * MIN5 + 1000, []),
+        (T0 + 3 * MIN5, T0 + 5 * MIN5, []),
+    ])
+    assert(same("narrow", "w=2 session:2/1[percent_100 open=true] weekly_all:2/0 a=1 work@example.org slot=0 p=2,ok,ok", got[0]))
+    // The lock began at T0+5m, before this range, and has not ended: it is drawn.
+    assert(same("late", "w=2 session:1/1[percent_100 open=true] weekly_all:1/0 a=1 work@example.org slot=0 p=2,http_429,ok", got[1]))
+}
+
+test "an unknown account id is an empty answer, not an error" {
+    ro got = run("unknown", [(T0 - 60000, T0 + 5 * MIN5, ["01900000-0000-7000-8000-00000000dead"])])
+    assert(same("unknown", "w=0 a=0", got[0]))
+}
+
+test "the account filter keeps the account it names" {
+    ro got = run("named", [(T0 - 60000, T0 + 5 * MIN5, ["01900000-0000-7000-8000-0000001000a1"])])
+    assert(same("named", "w=2 session:4/1[percent_100 open=true] weekly_all:4/0 a=1 work@example.org slot=0 p=5,ok,ok,ok,http_429,ok", got[0]))
+}
+
+test "a range with no samples is empty" {
+    ro got = run("empty", [(T0 - 10 * MIN5, T0 - 5 * MIN5, [])])
+    assert(same("empty", "w=0 a=0", got[0]))
+}

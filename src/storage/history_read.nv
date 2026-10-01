@@ -1,0 +1,185 @@
+// history_read.nv — the rows behind `GET /api/history` (task T2.15).
+//
+//   ./nova.sh test src/storage/history_read_live_test.nv
+//
+// Source: 01.2 §4 (the queries of `/api/history?by=account`), §3.16 (gaps come from
+// `poll`, not from a missing sample).
+//
+// ── Its own module, not a section of `repo.nv` ──────────────────────────────
+//
+// The card names `storage/repo.nv` as the home of these selections. `repo.nv` is the
+// WRITE side -- one tick, one transaction, a spy that checks statement order -- and
+// nothing in it reads. These types are what the history handler is built from, so
+// the handler imports this module; putting them in `repo.nv` would make the server
+// import the writer to read.
+//
+// ── One query per window, on purpose ───────────────────────────────────────
+//
+// A machine has a handful of accounts and three windows each (01.2 §3.7), so the
+// answer is a dozen small queries. One query over every sample, regrouped by window
+// id in the caller, saves those round-trips at the price of a merge that has to
+// agree with SQL about how UUIDs sort -- a second ordering rule to keep true. The
+// queries are in-process; the round-trips cost microseconds.
+
+module storage.history_read
+
+import duckdb.db_effect.{Db, ConnRef}
+import duckdb.errors.{DuckError}
+import duckdb.types.{Value}
+import claude_limits.storage.repo.{quote, moment}
+
+/// One stored sample of one window.
+export type HistSample value {
+    at_ms int
+    percent int
+    /// 0 when the sample's cycle has no reset moment.
+    resets_at_ms int
+    locked bool
+}
+
+/// One `lock_period` row overlapping the range.
+export type HistLock value {
+    from_ms int
+    /// 0 while the lock is still on.
+    to_ms int
+    /// `server` | `percent_100`.
+    reason str
+    /// The endpoint's own words from the first locked sample of the period, "" when
+    /// it gave none.
+    server_reason str
+}
+
+/// One `poll` row of the account, any outcome.
+export type HistPoll value {
+    at_ms int
+    outcome str
+}
+
+/// One window with its rows of the range, samples in time order.
+export type HistWindow value {
+    account_id str
+    kind str
+    /// "" for the windows that are not per-model.
+    model str
+    samples []HistSample
+    locks []HistLock
+}
+
+/// One account that has a window with samples in the range.
+export type HistAccount value {
+    id str
+    email str
+    color_slot int
+    /// Every poll of the range, in time order: the gaps are read from these.
+    polls []HistPoll
+}
+
+export type HistRows value {
+    accounts []HistAccount
+    windows []HistWindow
+}
+
+// ── the SQL ──────────────────────────────────────────────────────────────────
+
+/// ` AND <col> IN ('a', 'b')`, or "" for no filter. An empty list is NO filter --
+/// the caller decides "every account" by passing nothing, never by passing a list
+/// that happens to be empty after a lookup.
+export fn history_in_sql(col str, ids []str) -> str {
+    if ids.len() == 0 { return "" }
+    mut list = ""
+    for id in ids {
+        if list != "" { list = "${list}, " }
+        list = "${list}${quote(id)}"
+    }
+    " AND ${col}::VARCHAR IN (${list})"
+}
+
+fn span_sql(col str, from_ms int, to_ms int) -> str =>
+    "${col} >= ${moment(from_ms)} AND ${col} < ${moment(to_ms)}"
+
+/// The windows with at least one sample in `[from, to)`, in id order.
+export fn history_windows_sql(from_ms int, to_ms int, accounts []str) -> str =>
+    "SELECT w.id::VARCHAR, w.account_id::VARCHAR, w.kind, w.model FROM limit_window w WHERE EXISTS (SELECT 1 FROM sample s WHERE s.window_id = w.id AND ${span_sql("s.sampled_at", from_ms, to_ms)})${history_in_sql("w.account_id", accounts)} ORDER BY w.id::VARCHAR"
+
+/// The samples of one window in `[from, to)`, with their cycle's reset moment.
+export fn history_samples_sql(window_id str, from_ms int, to_ms int) -> str =>
+    "SELECT epoch_ms(s.sampled_at), s.percent::BIGINT, epoch_ms(c.resets_at), s.locked FROM sample s JOIN window_cycle c ON c.id = s.cycle_id WHERE s.window_id = ${quote(window_id)} AND ${span_sql("s.sampled_at", from_ms, to_ms)} ORDER BY s.sampled_at"
+
+/// The lock periods of one window that OVERLAP `[from, to)` -- a lock that began
+/// before the range and is still on is part of the picture.
+export fn history_locks_sql(window_id str, from_ms int, to_ms int) -> str =>
+    "SELECT epoch_ms(lp.started_at), coalesce(epoch_ms(lp.ended_at), 0), lp.reason, coalesce((SELECT s.locked_reason FROM sample s WHERE s.window_id = lp.window_id AND s.sampled_at >= lp.started_at AND s.locked AND s.locked_reason IS NOT NULL ORDER BY s.sampled_at LIMIT 1), '') FROM lock_period lp WHERE lp.window_id = ${quote(window_id)} AND lp.started_at < ${moment(to_ms)} AND (lp.ended_at IS NULL OR lp.ended_at > ${moment(from_ms)}) ORDER BY lp.started_at"
+
+/// The accounts that own a window of the list, in id order.
+export fn history_accounts_sql(from_ms int, to_ms int, accounts []str) -> str =>
+    "SELECT a.id::VARCHAR, a.email, a.color_slot::BIGINT FROM account a WHERE EXISTS (SELECT 1 FROM limit_window w JOIN sample s ON s.window_id = w.id WHERE w.account_id = a.id AND ${span_sql("s.sampled_at", from_ms, to_ms)})${history_in_sql("a.id", accounts)} ORDER BY a.id::VARCHAR"
+
+/// The polls of one account in `[from, to)`.
+export fn history_polls_sql(account_id str, from_ms int, to_ms int) -> str =>
+    "SELECT epoch_ms(polled_at), outcome FROM poll WHERE account_id = ${quote(account_id)} AND ${span_sql("polled_at", from_ms, to_ms)} ORDER BY polled_at"
+
+// ── reading ──────────────────────────────────────────────────────────────────
+
+fn cells_of(conn ConnRef, sql str) Db -> Result[[][]Value, DuckError] {
+    ro rows = Db.query(conn, sql)?
+    mut out [][]Value = []
+    mut going = true
+    while going {
+        match Db.next(rows) {
+            Ok(Some(cells)) => out.push(cells)
+            Ok(None) => { going = false }
+            Err(e) => {
+                Db.close_result(rows)
+                return Err(e)
+            }
+        }
+    }
+    Db.close_result(rows)
+    Ok(out)
+}
+
+fn int_of(v Value) -> int =>
+    match v {
+        Value.Int(n) => n as int
+        Value.UInt(n) => n as int
+        _ => 0
+    }
+
+fn text_of(v Value) -> str =>
+    match v {
+        Value.Text(s) => s
+        _ => ""
+    }
+
+fn bool_of(v Value) -> bool =>
+    match v {
+        Value.Bool(b) => b
+        _ => false
+    }
+
+/// Everything `by=account` draws for `[from, to)`. `accounts` empty is every account.
+export fn read_history(conn ConnRef, from_ms int, to_ms int, accounts []str) Db -> Result[HistRows, DuckError] {
+    mut windows []HistWindow = []
+    for w in cells_of(conn, history_windows_sql(from_ms, to_ms, accounts))? {
+        ro id = text_of(w[0])
+        mut samples []HistSample = []
+        for s in cells_of(conn, history_samples_sql(id, from_ms, to_ms))? {
+            samples.push(HistSample{ at_ms: int_of(s[0]), percent: int_of(s[1]), resets_at_ms: int_of(s[2]), locked: bool_of(s[3]) })
+        }
+        mut locks []HistLock = []
+        for l in cells_of(conn, history_locks_sql(id, from_ms, to_ms))? {
+            locks.push(HistLock{ from_ms: int_of(l[0]), to_ms: int_of(l[1]), reason: text_of(l[2]), server_reason: text_of(l[3]) })
+        }
+        windows.push(HistWindow{ account_id: text_of(w[1]), kind: text_of(w[2]), model: text_of(w[3]), samples, locks })
+    }
+    mut out_accounts []HistAccount = []
+    for a in cells_of(conn, history_accounts_sql(from_ms, to_ms, accounts))? {
+        ro id = text_of(a[0])
+        mut polls []HistPoll = []
+        for p in cells_of(conn, history_polls_sql(id, from_ms, to_ms))? {
+            polls.push(HistPoll{ at_ms: int_of(p[0]), outcome: text_of(p[1]) })
+        }
+        out_accounts.push(HistAccount{ id, email: text_of(a[1]), color_slot: int_of(a[2]), polls })
+    }
+    Ok(HistRows{ accounts: out_accounts, windows })
+}

@@ -1,0 +1,291 @@
+// handlers/history.nv — `GET /api/history`, `POST /api/history/search` (task T2.15).
+//
+// Source: 01.3 §3.6 (the closed parameter list, the defaults, the refusals), §8 п. 6;
+// 01.2 §4 (what the database answers it with).
+//
+// Imports are PACKAGE-PREFIXED and every exported name carries the module's word
+// (`history_`): two handler modules with one private name collapse into one C symbol
+// (registry 221.1 #1097).
+//
+// ── This file is the ASK, not the answer ────────────────────────────────────
+//
+// What is parsed here is everything the caller can get wrong, and every refusal of
+// §3.6 is decided before the database is touched: an unknown parameter, `range`
+// together with `from`/`to`, a span longer than `history.keep_days`, a step outside
+// the four, and a request that would come back with more than 50 000 points. The
+// database is asked only a question that is already known to be answerable.
+//
+// ── The point limit counts ONE SERIES, and that is a decision ──────────────
+//
+// §3.6 says "> 50 000 points -> 400 range_too_large, raise `step`". A whole answer's
+// size is series x points, and the number of series is not known until the database
+// has said how many windows there are -- refusing on it would mean doing the work and
+// then throwing it away. Per series, the count is `span / step`, known from the ask
+// alone, and it is the number `step` actually changes: the advice in the refusal is
+// right for it. With the shipped `keep_days` (30) and the finest step (300) a series
+// has 8 640 points, so the limit bites only a `from`/`to` under a raised `keep_days`.
+module handlers.history
+
+import claude_limits.server.errors.{ApiError}
+import claude_limits.usage.parse.{moment_ms, moment_iso}
+import std.encoding.url.{Url}
+import std.identifiers.uuid.{Uuid}
+import claude_limits.storage.history_read.{HistSample, HistPoll}
+
+export const HISTORY_MAX_POINTS int = 50000
+
+const DAY_MS int = 86400000
+
+/// What the caller asked for, every default already applied.
+export type HistoryAsk value {
+    from_ms int
+    to_ms int
+    /// 300, 900 or 3600; 0 is `day` -- one `daily_rollup` row per day.
+    step_sec int
+    by_folder bool
+    /// Empty is every directory.
+    login_dirs []str
+    /// Empty is every account. Only `search` fills it: an account id never travels
+    /// in a URL (01.2 §10).
+    accounts []str
+}
+
+export type HistoryAskOr enum
+    | Asked(HistoryAsk)
+    | Refused(ApiError)
+
+/// Points one series of this ask carries: the grid of `step` over `[from, to)`.
+export fn history_points(a HistoryAsk) -> int {
+    ro span = a.to_ms - a.from_ms
+    ro step_ms = if a.step_sec == 0 { DAY_MS } else { a.step_sec * 1000 }
+    (span + step_ms - 1) / step_ms
+}
+
+// ── the closed parameter list ────────────────────────────────────────────────
+
+fn history_pairs(target str) -> [](str, str) {
+    ro q = match target.find("?") {
+        Some(i) => target[i + 1..]
+        None    => ""
+    }
+    mut out = [](str, str).new()
+    if q == "" { return out }
+    for part in q.split("&") {
+        if part == "" { continue }
+        match part.find("=") {
+            Some(i) => out.push((part[..i], part[i + 1..]))
+            None    => out.push((part, ""))
+        }
+    }
+    out
+}
+
+fn history_known(k str) -> bool {
+    if k == "range" { return true }
+    if k == "from" { return true }
+    if k == "to" { return true }
+    if k == "by" { return true }
+    if k == "step" { return true }
+    k == "login_dir_id"
+}
+
+fn bad(detail str) -> HistoryAskOr => HistoryAskOr.Refused(ApiError.invalid_parameter(detail))
+
+/// `24h` / `7d` / `30d` -> milliseconds, 0 for anything else.
+fn range_ms(v str) -> int {
+    if v == "24h" { return DAY_MS }
+    if v == "7d" { return 7 * DAY_MS }
+    if v == "30d" { return 30 * DAY_MS }
+    0
+}
+
+/// `300` / `900` / `3600` / `day` -> seconds (0 for `day`), -1 for anything else.
+fn step_of(v str) -> int {
+    if v == "300" { return 300 }
+    if v == "900" { return 900 }
+    if v == "3600" { return 3600 }
+    if v == "day" { return 0 }
+    -1
+}
+
+/// A moment of §3.6: ISO 8601 that ENDS IN `Z`. An offset is refused rather than
+/// converted -- the page always sends UTC, and a second spelling of one moment is a
+/// second thing to test.
+fn moment_of(v str) -> int {
+    if !v.ends_with("Z") { return 0 }
+    moment_ms(v)
+}
+
+/// Read the query of §3.6 for `GET /api/history`.
+///
+/// `now_ms` ends a `range`; `keep_days` bounds a `from`/`to`. `login_dir_id` MAY
+/// repeat, nothing else may. `account_id` and `email` are refused as unknown, and
+/// that refusal is what keeps a person's identifier out of the URL.
+export fn parse_history_query(target str, now_ms int, keep_days int) -> HistoryAskOr {
+    mut range = ""
+    mut from = ""
+    mut to = ""
+    mut by = ""
+    mut step = ""
+    mut dirs []str = []
+    for (k, raw) in history_pairs(target) {
+        if !history_known(k) { return bad("unknown query parameter '${k}'") }
+        ro v = match Url.decode_query(raw) {
+            Ok(s) => s
+            Err(_) => return bad("parameter '${k}' is not percent-encoded correctly")
+        }
+        if k == "login_dir_id" {
+            if v.to_uuid().is_err() { return bad("login_dir_id must be a UUID") }
+            dirs.push(v)
+            continue
+        }
+        ro seen = if k == "range" { range } else if k == "from" { from } else if k == "to" { to } else if k == "by" { by } else { step }
+        if seen != "" { return bad("parameter '${k}' may not repeat") }
+        if v == "" { return bad("parameter '${k}' is empty") }
+        if k == "range" { range = v } else if k == "from" { from = v } else if k == "to" { to = v } else if k == "by" { by = v } else { step = v }
+    }
+    history_ask_of(range, from, to, by, step, dirs, [], now_ms, keep_days)
+}
+
+/// The rules of §3.6 over values already read -- shared by the query and by the
+/// `search` body, which carries the same fields.
+export fn history_ask_of(range str, from str, to str, by str, step str, dirs []str, accounts []str, now_ms int, keep_days int) -> HistoryAskOr {
+    if range != "" && (from != "" || to != "") {
+        return bad("range cannot be combined with from/to")
+    }
+    if (from == "") != (to == "") { return bad("from and to come together") }
+    mut from_ms = 0
+    mut to_ms = 0
+    mut long = false
+    if from != "" {
+        from_ms = moment_of(from)
+        to_ms = moment_of(to)
+        if from_ms == 0 { return bad("from must be an ISO 8601 moment in UTC (…Z)") }
+        if to_ms == 0 { return bad("to must be an ISO 8601 moment in UTC (…Z)") }
+        if from_ms >= to_ms { return bad("from must be before to") }
+        if to_ms - from_ms > keep_days * DAY_MS {
+            return bad("from..to is longer than history.keep_days (${keep_days} days)")
+        }
+        long = to_ms - from_ms > 7 * DAY_MS
+    } else {
+        ro r = if range == "" { "7d" } else { range }
+        ro span = range_ms(r)
+        if span == 0 { return bad("range must be 24h, 7d or 30d") }
+        to_ms = now_ms
+        from_ms = now_ms - span
+        long = r == "30d"
+    }
+    mut by_folder = false
+    if by == "folder" {
+        by_folder = true
+    } else if by != "" && by != "account" {
+        return bad("by must be account or folder")
+    }
+    mut step_sec = if long { 900 } else { 300 }
+    if step != "" {
+        step_sec = step_of(step)
+        if step_sec < 0 { return bad("step must be 300, 900, 3600 or day") }
+    }
+    ro ask = HistoryAsk{ from_ms, to_ms, step_sec, by_folder, login_dirs: dirs, accounts }
+    ro n = history_points(ask)
+    if n > HISTORY_MAX_POINTS {
+        return HistoryAskOr.Refused(ApiError.range_too_large(
+            "${n} points per series, the limit is ${HISTORY_MAX_POINTS}: raise step"))
+    }
+    HistoryAskOr.Asked(ask)
+}
+
+/// The range echoed in the answer (`range` of §3.6): `step_sec` is 86400 for `day`.
+export fn history_range_echo(a HistoryAsk) -> (str, str, int) =>
+    (moment_iso(a.from_ms), moment_iso(a.to_ms), if a.step_sec == 0 { 86400 } else { a.step_sec })
+
+// ── the series, from rows the database already selected ─────────────────────
+//
+// Everything below is pure: the source (the database, in production; a list, in a
+// test) hands over the rows of the range, and the shape of §3.6 is built here. The
+// thinning is done HERE and not by `time_bucket` in SQL, because "the sample nearest
+// to the grid" is a rule about distances, and `time_bucket` + `last()` answers a
+// different question (the LAST sample of a bucket), which drifts a point by up to a
+// whole step.
+
+/// The sample nearest to each grid node `from + k*step` inside `[from, to)`.
+///
+/// A node takes a sample from `[node - step/2, node + step - step/2)` -- half-open,
+/// so a sample exactly between two nodes belongs to ONE of them and is never drawn
+/// twice. A node with no sample in its cell has no point: the line breaks, and the
+/// page shows a break, not a straight line across an outage.
+export fn history_thin(samples []HistSample, from_ms int, to_ms int, step_ms int) -> []HistSample {
+    mut out []HistSample = []
+    ro n = samples.len()
+    ro half = step_ms / 2
+    mut i = 0
+    mut node = from_ms
+    while node < to_ms {
+        ro lo = node - half
+        ro hi = node + step_ms - half
+        while i < n && samples[i].at_ms < lo { i += 1 }
+        mut best = -1
+        mut best_d = 0
+        mut j = i
+        while j < n && samples[j].at_ms < hi {
+            ro d = (samples[j].at_ms - node).abs()
+            if best < 0 || d < best_d {
+                best = j
+                best_d = d
+            }
+            j += 1
+        }
+        if best >= 0 { out.push(samples[best]) }
+        node += step_ms
+    }
+    out
+}
+
+/// Reset moments inside `[from, to]`, each once, in order.
+///
+/// A sample's `resets_at` is a FUTURE moment while its cycle runs; it becomes a reset
+/// that happened only once the range has passed it. So the current cycle's moment,
+/// past `to`, is not drawn.
+export fn history_resets(samples []HistSample, from_ms int, to_ms int) -> []int {
+    mut out []int = []
+    for s in samples {
+        ro r = s.resets_at_ms
+        if r == 0 || r < from_ms || r > to_ms { continue }
+        if out.len() > 0 && out[out.len() - 1] == r { continue }
+        out.push(r)
+    }
+    out
+}
+
+/// A run of polls that brought no data.
+export type HistGap value {
+    from_ms int
+    /// 0 while the run has not ended.
+    to_ms int
+    /// The outcome of the FIRST poll of the run: what started the outage.
+    cause str
+}
+
+/// Gaps of an account: a run of non-`ok` polls starts at its first poll and ends at
+/// the next `ok` one. The cause is the first poll's outcome -- a 401 that turns into
+/// `skipped_expired` is one outage that began with a 401.
+export fn history_gaps(polls []HistPoll) -> []HistGap {
+    mut out []HistGap = []
+    mut open = false
+    mut start = 0
+    mut cause = ""
+    for p in polls {
+        if p.outcome == "ok" {
+            if open {
+                out.push(HistGap{ from_ms: start, to_ms: p.at_ms, cause })
+                open = false
+            }
+        } else if !open {
+            open = true
+            start = p.at_ms
+            cause = p.outcome
+        }
+    }
+    if open { out.push(HistGap{ from_ms: start, to_ms: 0, cause }) }
+    out
+}
