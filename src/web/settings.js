@@ -587,6 +587,21 @@ export function showErrors(panel, errors) {
   return painted;
 }
 
+/**
+ * What a successful save has to SAY, or null (01.3 sec.3.8, `applied`).
+ *
+ * Silence is right only when the change is in force: the server applies `ui.*` at
+ * once and everything else -- the poll interval, the folders, the port -- at the next
+ * start, and says so with `restart_required`. A panel that closed silently on that
+ * reply would let a person believe a new interval was running.
+ */
+export function savedNote(reply) {
+  const a = (reply && reply.applied) || {};
+  if (a.restart_required) return 'saved · takes effect when claude-limits is restarted';
+  if (a.listener_reopened && a.new_base_url) return `saved · the server now listens at ${a.new_base_url}`;
+  return null;
+}
+
 /** Unmatched errors still have to be shown: a silent 422 looks like a save. */
 export function unmatchedErrors(panel, errors) {
   const paths = new Set(Array.from(panel.querySelectorAll('[data-path]')).map((n) => n.dataset.path));

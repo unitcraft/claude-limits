@@ -15,7 +15,7 @@ installDocument({});
 const {
   renderSettings, collect, bodyOf, diffConfig, isEmptyDiff, folderRef,
   folderNote, showErrors, unmatchedErrors, probeSummary, BROWSER_ONLY,
-  showConflict, clearConflict, conflictCurrent, syncFolders,
+  showConflict, clearConflict, conflictCurrent, syncFolders, savedNote,
 } = await import('../src/web/settings.js');
 
 let passed = 0;
@@ -357,6 +357,29 @@ test('EDITS ELSEWHERE IN THE PANEL SURVIVE the refresh', () => {
 test('a panel with no folder list at all is left alone rather than crashing', () => {
   const bare = new Node('div');
   assert.equal(syncFolders(bare, withFolders([])), false);
+});
+
+console.log('what a save says (01.3 §3.8 applied)');
+
+test('a save in force now says nothing', () => {
+  assert.equal(savedNote({ applied: { restart_required: false, listener_reopened: false, new_base_url: null } }), null);
+});
+
+test('a save that waits for a restart SAYS so', () => {
+  // The panel used to close silently on every 200 -- a new poll interval then looked
+  // as if it were running.
+  const note = savedNote({ applied: { restart_required: true, listener_reopened: false, new_base_url: null } });
+  assert.ok(note && note.includes('restarted'), `got ${note}`);
+});
+
+test('a moved listener names where it went', () => {
+  const note = savedNote({ applied: { restart_required: false, listener_reopened: true, new_base_url: 'http://127.0.0.1:7400' } });
+  assert.ok(note && note.includes('http://127.0.0.1:7400'), `got ${note}`);
+});
+
+test('a reply with no body, or no applied, says nothing rather than throwing', () => {
+  assert.equal(savedNote(null), null);
+  assert.equal(savedNote({}), null);
 });
 
 console.log(`\n${passed} passed${process.exitCode ? ', SOME FAILED' : ''}`);

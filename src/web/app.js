@@ -18,7 +18,8 @@ import { renderStats, RANGES } from './stats.js';
 import { renderFolders } from './folders.js';
 import {
   renderSettings, bodyOf, isEmptyDiff, showErrors, unmatchedErrors, probeSummary,
-  showConflict, clearConflict, conflictCurrent, syncFolders, collectBrowser, saveBrowser } from './settings.js';
+  showConflict, clearConflict, conflictCurrent, syncFolders, collectBrowser, saveBrowser,
+  savedNote } from './settings.js';
 
 const VIEWS = ['list', 'cards', 'stats'];
 // The transport's own numbers (10 s degraded poll, 30 s reconnect, 90 s silence)
@@ -581,7 +582,11 @@ async function saveSettings() {
   }
 
   if (res.ok) {
+    let reply = null;
+    try { reply = await res.json(); } catch { /* a 200 with no body is still a save */ }
     closeSettings();
+    const note = savedNote(reply);
+    if (note) toast(note);
     fetchSnapshot();
     return;
   }
@@ -607,7 +612,9 @@ async function saveSettings() {
     showConflict(panel, problem.current || null);
     return;
   }
-  toast(problem.detail || `save refused (${res.status})`);
+  // `title` before the bare status: a 500 `config_readonly` carries no detail (the path
+  // stays in the log), and "Settings file is read-only" is the sentence a person needs.
+  toast(problem.detail || problem.title || `save refused (${res.status})`);
 }
 
 // ---------------------------------------------------------------- refresh ---
