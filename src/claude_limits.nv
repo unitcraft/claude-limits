@@ -249,7 +249,8 @@ fn rounds_recorded(rx ChanRx[Envelope], rounds Rounds, paths Paths, win bool) Ht
 fn record_round(at Paths, windows bool, view SnapshotView, readings []Reading, folders []str) Io Dirs Creds Time -> () {
     // LOCALS for the lambdas below: two lambdas capturing one PARAMETER emitted a
     // `_box_<name>` the C never declared (measured 2026-10-01 on nova main); a local
-    // captured the same way is the shape `serve_mode` already has, and it builds.
+    // captured the same way is the shape `serve_mode` already has, and it builds
+    // (registry 221.1 #1559, `probes/record-param-two-with-lambdas/`).
     ro paths = at
     ro win = windows
     ro emails = emails_of(view)

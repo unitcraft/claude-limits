@@ -1,0 +1,23 @@
+// w6: ONE lambda under `with` capturing the record parameter.
+module hcap.w6_one_lambda_with
+
+type Where value {
+    ro dir str
+    ro file str
+}
+
+type Ask effect {
+    ask() -> int
+}
+
+fn forty() -> Effect[Ask] => effect Ask { ask() -> int { 40 } }
+
+fn run_ask(f fn() Ask -> int) -> int => f()
+
+fn one(at Where) -> int =>
+    with Ask = forty() { run_ask(fn() Ask -> int => Ask.ask() + at.dir.byte_len()) }
+
+fn main() Io {
+    ro w = Where{ dir: "ab", file: "cde" }
+    println("w6 ${one(w)}")
+}

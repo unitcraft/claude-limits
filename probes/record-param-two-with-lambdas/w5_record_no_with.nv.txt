@@ -1,0 +1,22 @@
+// w5: the record parameter and the two lambdas of w3, WITHOUT the `with` blocks.
+module hcap.w5_record_no_with
+
+type Where value {
+    ro dir str
+    ro file str
+}
+
+fn apply(f fn() -> int) -> int => f()
+
+fn both(at Where, flag bool) -> int {
+    ro n = 2
+    ro a = apply(fn() -> int => at.dir.byte_len() + n + (if flag { 1 } else { 0 }))
+    ro m = 3
+    ro b = apply(fn() -> int => at.file.byte_len() + m + (if flag { 1 } else { 0 }))
+    a + b
+}
+
+fn main() Io {
+    ro w = Where{ dir: "ab", file: "cde" }
+    println("w5 ${both(w, true)}")
+}
