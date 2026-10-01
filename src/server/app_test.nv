@@ -40,7 +40,7 @@ fn body_of(wire []u8) -> str {
     match s.find("\r\n\r\n") { Some(i) => s[i + 4..], None => "" }
 }
 
-fn get(path str) -> []u8 => "GET ${path} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"
+fn get(path str) -> []u8 => "GET ${path} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n".bytes().clone()
 
 fn health_state() -> HealthState => {
     app_version: "0.3.0", started_at: "2026-09-30T09:00:00Z", uptime_sec: 60,

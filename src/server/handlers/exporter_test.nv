@@ -13,7 +13,7 @@ import claude_limits.server.json.{quote}
 
 fn wire_str(wire []u8) -> str => unsafe { wire.to_str_unchecked() }
 
-fn get(target str) -> []u8 => "GET ${target} HTTP/1.1\r\nHost: x\r\n\r\n"
+fn get(target str) -> []u8 => "GET ${target} HTTP/1.1\r\nHost: x\r\n\r\n".bytes().clone()
 
 fn status_of(s str) -> str {
     match s.find("\r\n") { Some(i) => s[..i], None => s }
