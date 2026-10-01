@@ -139,6 +139,36 @@ def main(argv):
         except ValueError:
             check("snapshot", False, f"{status} not JSON: {body[:120]}")
 
+        # THE HISTORY (T2.15), read back from the database this start wrote. The fixture's
+        # login is expired, so no tick is written -- but the round's DISCOVERY is: the
+        # directory, and a journal row saying its token is stale with nobody valid in it.
+        # That row is the only live proof that discovery reaches the file at all.
+        status, _, body = get(base + "/api/history?range=24h")
+        try:
+            h = json.loads(body)
+            fine = status == 200 and all(k in h for k in ("range", "accounts", "series", "tiles"))
+            check("history", fine, f"{status} {body[:200]}")
+        except ValueError:
+            check("history", False, f"{status} not JSON: {body[:120]}")
+
+        status, _, body = get(base + "/api/history?account_id=0192a7f0-0000-7000-8000-000000000001")
+        check("history refuses an account id in the URL", status == 400 and "invalid_parameter" in body,
+              f"{status} {body[:160]}")
+
+        status, _, body = get(base + "/api/history?range=7d&by=folder")
+        try:
+            f = json.loads(body)
+            folders = f.get("folders", [])
+            occ = f.get("occupancy", [])
+            dry = (f.get("tiles") or {}).get("days_without_login") or {}
+            fine = (status == 200 and len(folders) == 1 and folders[0].get("name") == "work"
+                    and folders[0].get("now") is None and len(occ) == 1
+                    and occ[0].get("token_state") == "stale" and occ[0].get("account_id") is None
+                    and dry.get("reason") == "token_expired")
+            check("history by folder: discovery reached the database", fine, f"{status} {body[:300]}")
+        except ValueError:
+            check("history by folder: discovery reached the database", False, f"{status} not JSON: {body[:120]}")
+
         second = subprocess.run([exe, "--serve", "--config", ok_cfg], capture_output=True, text=True, timeout=60, env=env)
         check("busy port", second.returncode == 1 and "address already in use" in second.stdout,
               f"exit {second.returncode}: {second.stdout.strip()[:160]}")

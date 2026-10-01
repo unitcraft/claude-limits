@@ -28,6 +28,7 @@
 module server.start
 
 import std.os.{env, home_dir}
+import std.time.duration.{Timestamp}
 import std.fs.{try_exists}
 import claude_limits.config.{Config, ConfigError, validate, repair_for_start}
 import claude_limits.storage.paths.{PathsInput, Paths, join, dir_of}
@@ -195,13 +196,20 @@ fn token_at_start(cfg Config, tag str) -> TokenEndpointState => { cfg, etag: tag
 
 fn export_at_start() -> ExportState => { from_day: "", to_day: "", rows: [], disclosure: Disclosure.Loopback }
 
-/// The clock and the bound the history ask is judged against.
+/// The clock and the bound the history ask is judged against -- read PER REQUEST.
 ///
-/// `now_ms` is the START, like every other source here: the rounds do not repeat yet
-/// (`feed.one_round`), so nothing newer than the start is in the database, and a
-/// range ending at the start holds all of it. When the rounds repeat, this is the
-/// line that has to read the clock per request.
-fn history_env_at(cfg Config, now_ms int) -> HistoryEnv => { now_ms, keep_days: cfg.history.keep_days }
+/// It was the START until 2026-10-01, on the reasoning that nothing newer than the
+/// start was in the database. That was wrong the moment the round wrote anything: the
+/// round runs AFTER the start moment is taken, so its ticks and its discovery are all
+/// newer than it, and a range ending at the start excluded every row the first round
+/// wrote. The smoke caught it: the directory was in the database, its journal row was
+/// not in the answer.
+///
+/// `Time` is declared here and the route's lambda only calls this function; the
+/// module imports `std.time.duration` for it -- without that import `Time.now()`
+/// panics in codegen (`E_CODEGEN_TYPE_UNKNOWN ... method=now`) instead of naming
+/// what is missing.
+fn history_env_now(keep_days int) Time -> HistoryEnv => { now_ms: Time.now().unix_millis() as int, keep_days }
 
 /// Everything the router reads.
 ///
@@ -212,6 +220,7 @@ fn history_env_at(cfg Config, now_ms int) -> HistoryEnv => { now_ms, keep_days: 
 export fn sources_at_start(cfg Config, paths Paths, started_at str, now_ms int, db DbAtStart, current fn() -> SnapshotView,
                            history fn(HistoryAsk) -> HistoryLoad) -> Sources {
     ro tag = tag_of(render(cfg))
+    ro keep = cfg.history.keep_days
     Sources.new(
         fn() -> HealthState => health_at(cfg, paths, started_at, db),
         fn() -> SnapshotState => snapshot_around(current(), cfg, tag),
@@ -222,6 +231,6 @@ export fn sources_at_start(cfg Config, paths Paths, started_at str, now_ms int, 
         fn() -> TokenEndpointState => token_at_start(cfg, tag),
         fn() -> ExportState => export_at_start(),
         history,
-        fn() -> HistoryEnv => history_env_at(cfg, now_ms),
+        fn() -> HistoryEnv => history_env_now(keep),
     )
 }
