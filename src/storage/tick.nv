@@ -94,10 +94,12 @@ export fn fresh_ids(t Tick) Random -> Ids {
     mut windows []str = []
     mut cycles []str = []
     mut samples []str = []
+    mut locks []str = []
     for _ in t.windows {
         windows.push(Uuid.v7().to_str())
         cycles.push(Uuid.v7().to_str())
         samples.push(Uuid.v7().to_str())
+        locks.push(Uuid.v7().to_str())
     }
-    Ids.new(Uuid.v7().to_str(), Uuid.v7().to_str(), windows, cycles, samples)
+    Ids.new(Uuid.v7().to_str(), Uuid.v7().to_str(), windows, cycles, samples, locks)
 }

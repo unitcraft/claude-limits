@@ -67,7 +67,7 @@ fn tick(at_ms int) -> Tick => {
 /// caller mints fresh ids every time (`storage/tick.nv`), so the test does too.
 fn ids(n int) -> Ids {
     ro p = "01900000-0000-7000-8000-000000${n}"
-    Ids.new("${p}a1", "${p}01", ["${p}11", "${p}12"], ["${p}21", "${p}22"], ["${p}31", "${p}32"])
+    Ids.new("${p}a1", "${p}01", ["${p}11", "${p}12"], ["${p}21", "${p}22"], ["${p}31", "${p}32"], ["${p}41", "${p}42"])
 }
 
 fn two_ticks() -> []str {
@@ -122,4 +122,52 @@ test "every reference names a row that exists" {
     assert(a[0] == "0")
     assert(a[1] == "0")
     assert(a[2] == "0")
+}
+
+// ── lock periods, written by the tick itself ────────────────────────────────
+
+fn tick_of_session(at_ms int, percent int) -> Tick => {
+    instance: INST, at_ms, email: "work@example.org", org: "Tech Center",
+    outcome: "ok", http_status: 200, retry_after_sec: 0, latency_ms: 120, error: "",
+    windows: [win("session", percent), win("weekly_all", 41)],
+}
+
+/// 74, 100, 100, 40 five minutes apart -- with the second tick written TWICE.
+fn lock_ticks() -> []str {
+    mut all []str = []
+    for s in plan_sql(tick_of_session(1757347622000, 74), ids(1000)) { all.push(s) }
+    for s in plan_sql(tick_of_session(1757347922000, 100), ids(2000)) { all.push(s) }
+    for s in plan_sql(tick_of_session(1757347922000, 100), ids(2100)) { all.push(s) }
+    for s in plan_sql(tick_of_session(1757348222000, 100), ids(3000)) { all.push(s) }
+    for s in plan_sql(tick_of_session(1757348522000, 40), ids(4000)) { all.push(s) }
+    all
+}
+
+test "74, 100, 100, 40 writes ONE percent_100 period, opened at the first 100 and closed at the 40" {
+    ro a = run(lock_ticks(), [
+        "SELECT count(*)::VARCHAR FROM lock_period",
+        "SELECT reason FROM lock_period",
+        "SELECT (epoch_ms(started_at) = 1757347922000)::VARCHAR FROM lock_period",
+        "SELECT (epoch_ms(ended_at) = 1757348522000)::VARCHAR FROM lock_period",
+        "SELECT count(*)::VARCHAR FROM lock_period lp JOIN limit_window w ON w.id = lp.window_id WHERE w.kind = 'session'",
+    ])
+    assert(a[0] == "1")
+    assert(a[1] == "percent_100")
+    assert(a[2] == "true")
+    assert(a[3] == "true")
+    assert(a[4] == "1")
+}
+
+test "a reading still locked leaves the period open -- the control" {
+    // Without it, the test above is equally true of a writer that closes every
+    // period it opens on the next tick.
+    mut all []str = []
+    for s in plan_sql(tick_of_session(1757347622000, 100), ids(1000)) { all.push(s) }
+    for s in plan_sql(tick_of_session(1757347922000, 100), ids(2000)) { all.push(s) }
+    ro a = run(all, [
+        "SELECT count(*)::VARCHAR FROM lock_period",
+        "SELECT (ended_at IS NULL)::VARCHAR FROM lock_period",
+    ])
+    assert(a[0] == "1")
+    assert(a[1] == "true")
 }

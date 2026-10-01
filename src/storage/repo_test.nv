@@ -17,7 +17,7 @@
 
 module storage.repo_test
 
-import repo.{Tick, WindowRow, Ids, quote, sql_opt, moment, plan_sql, write_tick, upsert_account_sql, Seen, OpenRow, OccupancyStep, occupancy_step, occupancy_sql, two_open_sql, db_token_state, LockStep, lock_step, lock_open_sql, lock_close_sql}
+import repo.{Tick, WindowRow, Ids, quote, sql_opt, moment, plan_sql, write_tick, upsert_account_sql, Seen, OpenRow, OccupancyStep, occupancy_step, occupancy_sql, two_open_sql, db_token_state, LockStep, lock_step, lock_open_sql, lock_close_sql, lock_sql}
 import duckdb.db_effect.{Db, DbRef, ConnRef, ResultRef}
 import duckdb.errors.{DuckError}
 
@@ -54,7 +54,7 @@ fn tick_with_email(e str) -> Tick => {
 
 fn ids() -> Ids =>
     Ids.new("id-account", "id-poll", ["id-w1", "id-w2"], ["id-c1", "id-c2"],
-           ["id-s1", "id-s2"])
+           ["id-s1", "id-s2"], ["id-l1", "id-l2"])
 
 /// What the handler saw, and what it should refuse.
 type Spy {
@@ -143,9 +143,9 @@ test "a moment goes in as microseconds, not as formatted text" {
 
 // ── what a tick writes, and in what order ────────────────────────────────────
 
-test "a tick with two windows plans eight statements" {
-    // account + (window, cycle, sample) x 2 + poll.
-    assert(plan_sql(tick(), ids()).len() == 8)
+test "a tick with two windows plans ten statements" {
+    // account + (window, cycle, sample, lock) x 2 + poll.
+    assert(plan_sql(tick(), ids()).len() == 10)
 }
 
 test "the journal entry is written LAST" {
@@ -209,10 +209,10 @@ test "a tick is wrapped in BEGIN and COMMIT, and ends with CHECKPOINT" {
     assert(index_of(s, "COMMIT") < index_of(s, "CHECKPOINT"))
 }
 
-test "eleven calls for a two-window tick: begin, eight statements, commit, checkpoint" {
+test "thirteen calls for a two-window tick: begin, ten statements, commit, checkpoint" {
     mut s = Spy.new()
     ro _ = with Db = spied(s) { write_tick(ConnRef.new(1 as CConnHandle), tick(), ids()) }
-    assert(s.calls == 11)
+    assert(s.calls == 13)
 }
 
 // ── the injected failure: the line that needs a mock ─────────────────────────
@@ -241,8 +241,8 @@ test "a failure mid-tick leaves NO journal entry -- the card's own line" {
 test "a failure on the LAST statement also rolls back" {
     // The other end of the same rule: the journal itself failing must not leave the
     // samples behind without it.
-    // Call 9 of 11: begin is 1, the eight statements are 2..9, the journal is 9.
-    mut s = Spy.failing(9)
+    // Call 11 of 13: begin is 1, the ten statements are 2..11, the journal is 11.
+    mut s = Spy.failing(11)
     ro got = with Db = spied(s) {
         write_tick(ConnRef.new(1 as CConnHandle), tick(), ids())
     }
@@ -444,4 +444,46 @@ test "closing names the period, opening names the window and the cycle" {
     ro close = lock_close_sql(tick(), "lock-1")
     assert(close.contains("UPDATE lock_period SET ended_at"))
     assert(close.contains("'lock-1'"))
+}
+
+// ── lock periods inside the tick (01.2 section 3.12) ────────────────────────
+//
+// T2.5 wrote `lock_step` and the two statements; nothing called them, so a live
+// database never had a single `lock_period` row and the history's `locks` were always
+// empty (found 2026-10-01 while mounting /api/history). The tick now carries one lock
+// statement per window, and these hold its shape; repo_live_test holds what DuckDB
+// does with it.
+
+fn win_at(percent int, locked bool, reason str) -> WindowRow =>
+    WindowRow.new("session", "", percent, locked, reason, "", 1757340000000, 1757358000000)
+
+test "a locked reading plans an open-if-none, with the server's reason" {
+    ro sql = lock_sql(tick(), win_at(100, true, "session_limit"), "id-l1")
+    assert(sql.contains("INSERT INTO lock_period"))
+    assert(sql.contains("WHERE NOT EXISTS"))
+    assert(sql.contains("ended_at IS NULL"))
+    assert(sql.contains("'server'"))
+    assert(sql.contains("'id-l1'"))
+}
+
+test "a bare 100 percent opens a percent_100 period" {
+    ro sql = lock_sql(tick(), win_at(100, false, ""), "id-l1")
+    assert(sql.contains("INSERT INTO lock_period"))
+    assert(sql.contains("'percent_100'"))
+}
+
+test "an unlocked reading plans a close of the open period, never an insert" {
+    ro sql = lock_sql(tick(), win_at(40, false, ""), "id-l1")
+    assert(sql.contains("UPDATE lock_period SET ended_at"))
+    assert(sql.contains("ended_at IS NULL"))
+    assert(sql.contains("started_at <="))
+    assert(!sql.contains("INSERT"))
+}
+
+test "the lock statement comes after its window's sample and before the journal" {
+    ro steps = plan_sql(tick(), ids())
+    assert(steps[3].contains("INSERT INTO sample"))
+    assert(steps[4].contains("lock_period"))
+    assert(steps[8].contains("lock_period"))
+    assert(steps[9].contains("INSERT INTO poll"))
 }

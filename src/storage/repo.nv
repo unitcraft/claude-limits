@@ -204,10 +204,14 @@ export type Ids value {
     ro windows []str
     ro cycles []str
     ro samples []str
+    /// One per window: the id of the lock period the tick OPENS, if it opens one.
+    /// Minted whether or not it is used -- the caller cannot know which window will
+    /// open a period without reading the database, and an unused id costs nothing.
+    ro locks []str
 }
 
-export fn Ids.new(account str, poll str, windows []str, cycles []str, samples []str) -> Ids =>
-    { account, poll, windows, cycles, samples }
+export fn Ids.new(account str, poll str, windows []str, cycles []str, samples []str, locks []str) -> Ids =>
+    { account, poll, windows, cycles, samples, locks }
 
 /// Write one tick, or write nothing at all.
 ///
@@ -263,9 +267,11 @@ export fn plan_sql(t Tick, ids Ids) -> []str {
         ro wid = if i < ids.windows.len() { ids.windows[i] } else { "" }
         ro cid = if i < ids.cycles.len() { ids.cycles[i] } else { "" }
         ro sid = if i < ids.samples.len() { ids.samples[i] } else { "" }
+        ro lid = if i < ids.locks.len() { ids.locks[i] } else { "" }
         out.push(upsert_window_sql(t, w, wid))
         out.push(upsert_cycle_sql(t, w, cid))
         out.push(insert_sample_sql(t, w, sid))
+        out.push(lock_sql(t, w, lid))
         i += 1
     }
     out.push(insert_poll_sql(t, ids.poll))
@@ -412,6 +418,29 @@ export fn lock_step(period_open bool, percent int, locked bool, locked_reason st
     }
     if period_open { return CloseLock }
     NoChange
+}
+
+/// The lock-period statement of one window of a tick (01.2 section 3.12): open a
+/// period if the reading is locked and none is open, close the open one if it is not.
+///
+/// THE REASON is `lock_step`'s, asked as if no period were open -- the same rule the
+/// T2.5 tests hold. WHETHER one is open is the database's, asked INSIDE the tick's
+/// transaction (`NOT EXISTS`, `ended_at IS NULL`): reading it before the tick would
+/// be a second, unlocked read of a fact the tick itself changes.
+///
+/// Both statements are no-ops when there is nothing to do, so a repeated tick writes
+/// nothing new -- the "twice in a row" line of T2.4 holds for locks too. A close never
+/// lands before its own start (`started_at <= at`): a late tick does not end a period
+/// that began after it.
+export fn lock_sql(t Tick, w WindowRow, id str) -> str {
+    ro at = moment(t.at_ms)
+    ro inst = quote(t.instance)
+    match lock_step(false, w.percent, w.locked, w.locked_reason) {
+        LockStep.OpenLock(reason) =>
+            "INSERT INTO lock_period (id, created_at, updated_at, created_by, updated_by, window_id, cycle_id, started_at, ended_at, reason) SELECT ${quote(id)}, ${at}, ${at}, ${inst}, ${inst}, ${window_ref(t, w)}, ${cycle_ref(t, w)}, ${at}, NULL, ${quote(reason)} WHERE NOT EXISTS (SELECT 1 FROM lock_period lp WHERE lp.window_id = ${window_ref(t, w)} AND lp.ended_at IS NULL)"
+        _ =>
+            "UPDATE lock_period SET ended_at = ${at}, updated_at = ${at}, updated_by = ${inst} WHERE window_id = ${window_ref(t, w)} AND ended_at IS NULL AND started_at <= ${at}"
+    }
 }
 
 export fn lock_open_sql(t Tick, id str, window_id str, cycle_id str, reason str) -> str {

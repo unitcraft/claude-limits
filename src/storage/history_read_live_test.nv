@@ -13,7 +13,7 @@ import std.os.{real_os, temp_dir}
 import duckdb.db_effect.{Db, ConnRef}
 import duckdb.db_real.{with_real_db}
 import duckdb.errors.{DbOptions}
-import claude_limits.storage.repo.{Tick, WindowRow, Ids, plan_sql, lock_open_sql}
+import claude_limits.storage.repo.{Tick, WindowRow, Ids, plan_sql}
 import history_read.{read_history}
 import history_rows.{HistRows}
 
@@ -47,21 +47,21 @@ fn tick(at_ms int, outcome str, windows []WindowRow) -> Tick => {
 
 fn ids(n int) -> Ids {
     ro p = "01900000-0000-7000-8000-000000${n}"
-    Ids.new("${p}a1", "${p}01", ["${p}11", "${p}12"], ["${p}21", "${p}22"], ["${p}31", "${p}32"])
+    Ids.new("${p}a1", "${p}01", ["${p}11", "${p}12"], ["${p}21", "${p}22"], ["${p}31", "${p}32"], ["${p}41", "${p}42"])
 }
 
-/// Five polls five minutes apart; the fourth is a 429 with no windows. A lock opens on
-/// the session window at the second tick and is still on.
+/// Five polls five minutes apart; the fourth is a 429 with no windows. The session
+/// reaches 100 % at the second tick and stays there, so the WRITER opens a lock period
+/// then and none of the later ticks closes it (the 429 carries no window to close it).
 fn history_sql() -> []str {
     ro two = [win("session", 74), win("weekly_all", 41)]
+    ro full = [win("session", 100), win("weekly_all", 41)]
     mut all []str = []
     for s in plan_sql(tick(T0, "ok", two), ids(1000)) { all.push(s) }
-    for s in plan_sql(tick(T0 + MIN5, "ok", two), ids(2000)) { all.push(s) }
-    all.push(lock_open_sql(tick(T0 + MIN5, "ok", two), "01900000-0000-7000-8000-0000000000f1",
-        "01900000-0000-7000-8000-000000100011", "01900000-0000-7000-8000-000000100021", "percent_100"))
-    for s in plan_sql(tick(T0 + 2 * MIN5, "ok", two), ids(3000)) { all.push(s) }
+    for s in plan_sql(tick(T0 + MIN5, "ok", full), ids(2000)) { all.push(s) }
+    for s in plan_sql(tick(T0 + 2 * MIN5, "ok", full), ids(3000)) { all.push(s) }
     for s in plan_sql(tick(T0 + 3 * MIN5, "http_429", []), ids(4000)) { all.push(s) }
-    for s in plan_sql(tick(T0 + 4 * MIN5, "ok", two), ids(5000)) { all.push(s) }
+    for s in plan_sql(tick(T0 + 4 * MIN5, "ok", full), ids(5000)) { all.push(s) }
     all
 }
 
