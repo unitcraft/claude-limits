@@ -129,9 +129,15 @@ There are no prebuilt binaries yet; the tool is built from source with the
 [Nova](https://nv-lang.org) toolchain. On Windows (Linux cannot link the database
 yet -- see below):
 
-1. Build the `nova` compiler (Rust 1.85+) from `nv-lang/nova`, and Boehm GC
-   (`vcpkg install bdwgc:x64-windows-static`).
-2. Build the database library once: check out `nv-lang/nova-duckdb` at `v0.2.1`
+Keep the three checkouts side by side -- `nova/`, `nova-duckdb/` and this
+repository in one parent directory; `./nova.sh` finds the compiler there. Elsewhere,
+set `NOVA_MAIN_REPO` to the root of the nova checkout (the directory holding
+`nova-cli/`), and give `nova.override.toml` an absolute path.
+
+1. Build the `nova` compiler (Rust 1.85+) from `nv-lang/nova` at the commit named
+   by `NOVA_REF` in `.github/workflows/ci.yml` or newer (`cd nova/nova-cli && cargo
+   build --release`), and Boehm GC (`vcpkg install bdwgc:x64-windows-static`).
+2. Build the database library once: check out `nv-lang/nova-duckdb` at `v0.2.2`
    with submodules and run `scripts/build-duckdb.ps1` (40-60 minutes the first
    time; Visual Studio 2022 and LLVM are needed).
 3. In this repository, point `duckdb` at that checkout in a `nova.override.toml`
@@ -142,11 +148,19 @@ yet -- see below):
    duckdb = { path = "../nova-duckdb" }
    ```
 
-4. `nova build src/claude_limits.nv -o target/claude-limits.exe`
+4. `./nova.sh build src/claude_limits.nv -o target/claude-limits.exe` -- about two
+   minutes the first time (the runtime libraries are built once), under a minute
+   after. Warnings from the dependencies (`[new-then-cap]` in nova-compress) are
+   expected.
 
+`./nova.sh` runs a copy of the compiler (in `target/nova-bin/`), never the binary in
+the `nova` checkout, so a rebuild of the compiler is never blocked by a build here.
 The CI workflow (`.github/workflows/ci.yml`) is the same recipe, step by step.
 
 ## Run
+
+The binary is `target/claude-limits.exe`; below it is called `claude-limits`.
+`--serve` runs until Ctrl+C.
 
 ```
 claude-limits --serve                  # the page at http://127.0.0.1:7391
@@ -227,6 +241,14 @@ TLS-inspecting antivirus with its own root works); the start says which source i
 loaded. What is not here yet: the page's live stream (`/api/events`) sends the
 current snapshot and closes, so the page refreshes by polling and shows `polling`
 rather than `live`.
+
+**Known issue: a path with non-ASCII characters breaks the start on Windows.** The
+Nova runtime reads the command line and the environment in the system's ANSI code
+page, so a data or settings directory under, for example, a Cyrillic user name
+arrives garbled and the first start fails with a misleading "no database key".
+Until the runtime is fixed, use `--config` with an ASCII path and set
+`LOCALAPPDATA`/`APPDATA` to ASCII directories, or start from an ASCII 8.3 short
+path. Tracked in nova; the probe is `probes/windows-args-env-ansi/`.
 
 `scripts/claude_limits.py` is a stdlib-only reference for the data path:
 it discovers config directories and prints one row per account and window, once

@@ -1,0 +1,10 @@
+"""Run u2 in an empty directory, then ask the file system itself what name it got."""
+import os, subprocess, sys, tempfile
+exe = os.path.abspath(sys.argv[1])
+d = tempfile.mkdtemp(prefix="u2-")
+r = subprocess.run([exe], cwd=d, capture_output=True)
+print(r.stdout.decode("utf-8", "replace").strip().replace("\n", " | "))
+names = os.listdir(d)
+want = "u2_Евг.txt"
+print("on disk:", [n.encode("unicode_escape").decode() for n in names])
+print("the right name on disk:", want in names)

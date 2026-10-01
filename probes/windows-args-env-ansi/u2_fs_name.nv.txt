@@ -1,0 +1,21 @@
+// u2: a file whose NAME is Cyrillic, written and read through std.fs. The name comes
+// from this source text (UTF-8), not from argv or the environment -- so only the
+// file system's path conversion is under test.
+module hcap.u2_fs_name
+
+import std.fs.{real_fs, write_text, read_text, try_exists}
+
+fn main() Io {
+    ro name = "u2_Евг.txt"
+    with Fs = real_fs() {
+        match write_text(name.to_path(), "u2 payload") {
+            Ok(_) => println("write ok")
+            Err(e) => println("write failed: ${e}")
+        }
+        println("exists ${try_exists(name.to_path()) ?? false}")
+        match read_text(name.to_path()) {
+            Ok(s) => println("read ${s}")
+            Err(e) => println("read failed: ${e}")
+        }
+    }
+}
