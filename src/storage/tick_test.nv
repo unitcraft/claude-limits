@@ -8,7 +8,7 @@
 module storage.tick_test
 
 import std.fs.{real_fs, read_text}
-import std.testing.handlers.{seeded}
+import std.testing.handlers.{seeded, fixed_ms}
 import duckdb.{Database, DbOptions}
 import duckdb.types.{Value}
 import claude_limits.usage.poller.{Reading}
@@ -109,7 +109,13 @@ test "a window without a reset has no cycle and is not written" {
 
 test "fresh ids: one account, one poll, and a window, cycle and sample per row, all distinct" {
     ro t = tick_of(reading(200, AccountState.Ok, "", two_windows(), PollOutcome.Parsed, NOW), "", INST)
-    ro ids = with Random = seeded(3 as u64) { fresh_ids(t) }
+    // `Time` IS GIVEN, not left to the default handler: `Uuid.v7()` reads the clock,
+    // and the default handler sits in a thread-local slot the GC does not see --
+    // 0xC0000005 in `Nova_Time_now` on CI (registry 221.1 #1420, fixed in nova
+    // 8d4a24967; CI pins an older compiler). The prefix below proves the given clock
+    // is the one read: a v7 id starts with its milliseconds.
+    ro ids = with Random = seeded(3 as u64), Time = fixed_ms(NOW as u64) { fresh_ids(t) }
+    assert(ids.account.starts_with("01a0f18a-ca80"))
     assert(ids.windows.len() == 2)
     assert(ids.cycles.len() == 2)
     assert(ids.samples.len() == 2)
@@ -146,7 +152,7 @@ fn counts(stmts []str) Io -> str {
 
 fn planned(at int, seed int) -> []str {
     ro t = tick_of(reading(200, AccountState.Ok, "", two_windows(), PollOutcome.Parsed, at), "Example Inc", INST)
-    ro ids = with Random = seeded(seed as u64) { fresh_ids(t) }
+    ro ids = with Random = seeded(seed as u64), Time = fixed_ms(at as u64) { fresh_ids(t) }
     plan_sql(t, ids)
 }
 
