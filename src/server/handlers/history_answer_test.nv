@@ -15,10 +15,12 @@ module handlers.history_answer_test
 
 import history.{HistoryAsk, HistoryAskOr, HistoryState, HistoryLoad, HistoryEnv, HistPace}
 import history.{parse_history_query, parse_history_search, history_by_account, history_handler, history_search_handler}
-import claude_limits.storage.history_rows.{HistSample, HistLock, HistPoll, HistWindow, HistAccount, HistRows, HistRollup}
+import history.{history_by_folder, HISTORY_FOLDER_NOTE}
+import claude_limits.storage.history_rows.{HistSample, HistLock, HistPoll, HistWindow, HistAccount, HistRows, HistRollup, HistDir, HistOcc}
 import claude_limits.server.routes.{HttpMethod, on, route, route_q, build}
 import polaris.{Router, serve_once}
 import std.time.civil.{TimeZone}
+import claude_limits.server.dto.{Disclosure}
 
 // 2026-09-06T16:47:00Z, a Sunday.
 const NOW int = 1788713220000
@@ -84,7 +86,7 @@ fn paces() -> []HistPace => [
     HistPace{ account_id: WORK, kind: "session", model: "", rate_per_hour_milli: 900, runs_out_at: "", label: "" },
 ]
 
-fn state() -> HistoryState => { rows: rows(), paces: paces(), zone: TimeZone.Utc }
+fn state() -> HistoryState => { rows: rows(), paces: paces(), zone: TimeZone.Utc, dirs: [], occupancy: [], disclosure: Disclosure.Loopback }
 
 fn day_ask() -> HistoryAsk {
     match parse_history_query("/api/history?range=24h", NOW, 30) {
@@ -157,7 +159,7 @@ test "the tiles name who, how much and when" {
 }
 
 test "no rows is an answer with empty lists and tiles naming nobody" {
-    ro empty = HistoryState{ rows: { accounts: [], windows: [] }, paces: [], zone: TimeZone.Utc }
+    ro empty = HistoryState{ rows: { accounts: [], windows: [] }, paces: [], zone: TimeZone.Utc, dirs: [], occupancy: [], disclosure: Disclosure.Loopback }
     ro b = history_by_account(day_ask(), empty)
     assert(has(b, "\"accounts\":[],\"series\":[]"))
     assert(has(b, "\"locked\":{\"seconds\":0,\"account_id\":null"))
@@ -179,7 +181,7 @@ fn filtered(a HistoryAsk) -> HistoryLoad {
     for w in all.windows {
         for id in a.accounts { if id == w.account_id { win.push(w) } }
     }
-    HistoryLoad.Loaded({ rows: { accounts: acc, windows: win }, paces: paces(), zone: TimeZone.Utc })
+    HistoryLoad.Loaded({ rows: { accounts: acc, windows: win }, paces: paces(), zone: TimeZone.Utc, dirs: [], occupancy: [], disclosure: Disclosure.Loopback })
 }
 
 fn fixed_env() -> HistoryEnv => { now_ms: NOW, keep_days: 30 }
@@ -304,6 +306,9 @@ fn day_state() -> HistoryState => {
     rows: { accounts: [HistAccount{ id: WORK, email: "work@example.org", color_slot: 1, polls: [] }], windows: [day_window()] },
     paces: [],
     zone: TimeZone.Utc,
+    dirs: [],
+    occupancy: [],
+    disclosure: Disclosure.Loopback,
 }
 
 fn day_answer() -> str {
@@ -344,4 +349,75 @@ test "a sample point carries no day fields at all" {
     ro b = history_by_account(day_ask(), state())
     assert(count_of(b, "\"peak\":") == 0)
     assert(count_of(b, "\"avg\":") == 0)
+}
+
+// ── by=folder ───────────────────────────────────────────────────────────────
+//
+// The same day of `main` and `work`, now seen through two directories:
+//
+//   dev  main  ok       now-24h .. now-10h   -> 168 points, closed
+//        work  ok       now-10h .. (open)    -> 120 points, open; both work locks inside
+//   ops  work  expired  now-24h .. now-20h   ->  48 points; nothing after
+//
+// so: one switch (dev, main -> work); dev holds two e-mails; work was locked 3600 +
+// 3600 s while in dev; ops had no valid login all day (expired, then nothing).
+
+const DEV str = "0192a7f0-0000-7000-8000-000000001002"
+const OPS str = "0192a7f0-0000-7000-8000-000000001003"
+
+fn folder_state(d Disclosure) -> HistoryState => {
+    rows: rows(),
+    paces: [],
+    zone: TimeZone.Utc,
+    dirs: [HistDir{ id: DEV, path: "C:/accounts/dev", name: "dev" }, HistDir{ id: OPS, path: "C:/accounts/ops", name: "ops" }],
+    occupancy: [
+        HistOcc{ login_dir_id: DEV, account_id: MAIN, email: "main@example.com", token_state: "ok", from_ms: NOW - 24 * H, to_ms: NOW - 10 * H },
+        HistOcc{ login_dir_id: DEV, account_id: WORK, email: "work@example.org", token_state: "ok", from_ms: NOW - 10 * H, to_ms: 0 },
+        HistOcc{ login_dir_id: OPS, account_id: WORK, email: "work@example.org", token_state: "expired", from_ms: NOW - 24 * H, to_ms: NOW - 20 * H },
+    ],
+    disclosure: d,
+}
+
+fn folder_answer(d Disclosure) -> str {
+    match parse_history_query("/api/history?range=24h&by=folder", NOW, 30) {
+        HistoryAskOr.Asked(a) => history_by_folder(a, folder_state(d))
+        HistoryAskOr.Refused(e) => panic("refused: ${e.detail}")
+    }
+}
+
+test "a folder says who sits in it now, and a folder nobody valid sits in says null" {
+    ro b = folder_answer(Disclosure.Loopback)
+    assert(has(b, "{\"id\":\"${DEV}\",\"path\":\"C:/accounts/dev\",\"name\":\"dev\",\"now\":{\"account_id\":\"${WORK}\",\"email\":\"work@example.org\",\"since\":\"2026-09-06T06:47:00"))
+    assert(has(b, "{\"id\":\"${OPS}\",\"path\":\"C:/accounts/ops\",\"name\":\"ops\",\"now\":null}"))
+}
+
+test "the journal is flat and speaks the page's token words" {
+    ro b = folder_answer(Disclosure.Loopback)
+    assert(count_of(b, "\"token_state\":") == 3)
+    assert(has(b, "\"token_state\":\"stale\""))
+    assert(count_of(b, "\"token_state\":\"expired\"") == 0)
+}
+
+test "a series is one account's stretch in one folder, and the line breaks at the switch" {
+    ro b = folder_answer(Disclosure.Loopback)
+    // Three stretches with an account, one session window each.
+    assert(count_of(b, "\"kind\":\"session\"") == 3)
+    assert(count_of(b, "\"percent\":") == 168 + 120 + 48)
+    // dev/main is closed at the switch; dev/work runs on.
+    assert(has(b, "\"login_dir_id\":\"${DEV}\",\"account_id\":\"${MAIN}\",\"email\":\"main@example.com\",\"kind\":\"session\",\"model\":null,\"from\":\"2026-09-05T16:47:00"))
+    assert(has(b, "\"to\":\"2026-09-06T06:47:00"))
+}
+
+test "the folder tiles count switches, locks in place, logins and dry days" {
+    ro b = folder_answer(Disclosure.Loopback)
+    assert(has(b, "\"tiles\":{\"switches\":1,\"locked_seconds\":7200,"))
+    assert(has(b, "\"busiest_folder\":{\"id\":\"${DEV}\",\"name\":\"dev\",\"chain\":[\"main@example.com\",\"work@example.org\"]}"))
+    assert(has(b, "\"days_without_login\":{\"days\":1,\"folder\":{\"id\":\"${OPS}\",\"name\":\"ops\"},\"reason\":\"token_expired\"}"))
+    assert(has(b, "\"note\":\"${HISTORY_FOLDER_NOTE}\""))
+}
+
+test "over LAN a folder's path is null" {
+    ro b = folder_answer(Disclosure.Lan)
+    assert(count_of(b, "C:/accounts") == 0)
+    assert(has(b, "\"path\":null"))
 }

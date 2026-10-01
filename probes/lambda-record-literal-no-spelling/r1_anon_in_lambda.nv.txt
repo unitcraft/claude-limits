@@ -1,0 +1,16 @@
+// r1: an anonymous record literal as the body of a lambda whose return type names it.
+module hcap.r1_anon_in_lambda
+
+type Pair value {
+    ro a int
+    ro b int
+}
+
+fn main() Io {
+    ro r Result[int, str] = Ok(1)
+    ro m = r.map(fn(x int) -> Pair => { a: x, b: 2 })
+    match m {
+        Ok(p) => println("r1 ${p.a} ${p.b}")
+        Err(_) => println("r1 err")
+    }
+}

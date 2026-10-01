@@ -22,8 +22,8 @@ import claude_limits.storage.backup.{take_backup}
 import claude_limits.storage.repo.{write_tick}
 import claude_limits.storage.tick.{tick_of, fresh_ids}
 import claude_limits.usage.poller.{Reading}
-import claude_limits.storage.history_read.{read_history}
-import claude_limits.storage.history_rows.{HistRows}
+import claude_limits.storage.history_read.{read_history, read_folder_history}
+import claude_limits.storage.history_rows.{HistRows, HistFolderRows}
 import claude_limits.storage.discovery_write.{Discovered, DiscoveryIds, record_discovery}
 import std.identifiers.uuid.{Uuid}
 
@@ -196,7 +196,11 @@ export fn record_found(p Paths, d Discovered, at_ms int, windows bool) Db Fs Ran
 /// Opened, read and closed per request, like `record_readings` per round: the file is
 /// not held open by the server. The reason is a log line, never the answer's body
 /// (01.3 §6: a 500 says `internal` and nothing about the inside).
-export fn read_history_rows(p Paths, from_ms int, to_ms int, accounts []str, windows bool) Db Fs Random -> Result[HistRows, str] {
+///
+/// `by_folder` reads the directories and their journal too, and the accounts' history
+/// for the accounts the journal names (`read_folder_history`); otherwise `dirs` and
+/// `occupancy` come back empty.
+export fn read_history_rows(p Paths, from_ms int, to_ms int, accounts []str, dirs []str, by_folder bool, windows bool) Db Fs Random -> Result[HistFolderRows, str] {
     ro key = match ensure_key(p.key_file, dir_of(p.key_file, windows)) {
         Ok(k) => k
         Err(f) => return Err(f.message(p.key_file))
@@ -215,7 +219,11 @@ export fn read_history_rows(p Paths, from_ms int, to_ms int, accounts []str, win
             return Err("the database refused a connection: ${e.message()}")
         }
     }
-    ro got = read_history(conn, from_ms, to_ms, accounts)
+    ro got = if by_folder {
+        read_folder_history(conn, from_ms, to_ms, dirs)
+    } else {
+        read_history(conn, from_ms, to_ms, accounts).map(fn(r HistRows) -> HistFolderRows => accounts_only(r))
+    }
     Db.close_conn(conn)
     Db.close_db(db)
     match got {
@@ -223,6 +231,12 @@ export fn read_history_rows(p Paths, from_ms int, to_ms int, accounts []str, win
         Err(e) => Err("the history was not read: ${e.message()}")
     }
 }
+
+/// A `by=account` read in the shape both reads share. A named function: an anonymous
+/// record literal inside the lambda is refused by codegen ("without spread not
+/// supported"), and a typed one is refused by the checker as a redundant prefix --
+/// no spelling compiles there (`probes/lambda-record-literal-no-spelling/`).
+fn accounts_only(r HistRows) -> HistFolderRows => { dirs: [], occupancy: [], rows: r }
 
 fn org_for(email str, emails []str, orgs []str) -> str {
     mut i = 0

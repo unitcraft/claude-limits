@@ -29,11 +29,11 @@ module handlers.history
 import claude_limits.server.errors.{ApiError}
 import claude_limits.usage.parse.{moment_ms, moment_iso}
 import std.identifiers.uuid.{Uuid}
-import claude_limits.storage.history_rows.{HistSample, HistPoll, HistLock, HistWindow, HistAccount, HistRows, HistRollup}
+import claude_limits.storage.history_rows.{HistSample, HistPoll, HistLock, HistWindow, HistAccount, HistRows, HistRollup, HistDir, HistOcc}
 import claude_limits.server.errors.{FieldError}
 import polaris.{ServerRequest, ServerResponse}
 import claude_limits.server.routes.{Ctx, ApiHandler, problem}
-import claude_limits.server.dto.{opt}
+import claude_limits.server.dto.{opt, Disclosure, shown_path}
 import std.encoding.serde.{json_encode, Serialize}
 import std.time.civil.{TimeZone}
 import std.encoding.json.{Json, JsonValue}
@@ -461,6 +461,12 @@ export type HistoryState value {
     paces []HistPace
     /// The zone of the `when` labels: "Tue 14:20–16:00" is a wall-clock phrase.
     zone TimeZone
+    /// `by=folder` only: the directories and their journal. Empty for `by=account`.
+    dirs []HistDir
+    occupancy []HistOcc
+    /// Who asks: a directory path is personal data and goes out on loopback only
+    /// (01.3 section 3.6 "path в LAN — null").
+    disclosure Disclosure
 }
 
 /// What the source could give.
@@ -942,14 +948,9 @@ fn history_answer(src HistorySource, ask HistoryAskOr, ctx Ctx) -> ServerRespons
     match ask {
         HistoryAskOr.Refused(e) => problem(e, ctx.request_id, ctx.instance)
         HistoryAskOr.Asked(a) => {
-            if a.by_folder {
-                // Part 3 of T2.15 (01.5): occupancy segments. Refused by name rather
-                // than answered with the account shape under the folder's label.
-                return problem(ApiError.invalid_parameter("by=folder is not served yet"), ctx.request_id, ctx.instance)
-            }
             match src(a) {
                 HistoryLoad.Failed(_) => problem(ApiError.internal(), ctx.request_id, ctx.instance)
-                HistoryLoad.Loaded(st) => history_json(history_by_account(a, st))
+                HistoryLoad.Loaded(st) => history_json(if a.by_folder { history_by_folder(a, st) } else { history_by_account(a, st) })
             }
         }
     }
@@ -979,4 +980,260 @@ export fn history_search_handler(clock HistoryEnvSource, src HistorySource) -> A
     ro e = clock
     ro s = src
     fn(ctx Ctx) -> ServerResponse => history_post(e, s, ctx)
+}
+
+// ── the answer of `by=folder` ───────────────────────────────────────────────
+//
+// 01.3 section 3.6, the second example: `folders[]`, a FLAT `occupancy[]` and a FLAT
+// `series[]`, all joined by `login_dir_id`. A series is one window of ONE account for
+// the stretch it sat in the directory, so the line breaks where the login changed --
+// the break is a property of the data, not something the page computes (01.1 7.4).
+
+/// The code's word for a database token state (01.5 open question 5): the page and
+/// the snapshot speak `ok | stale | no_token`; `rejected` has no file-side word and
+/// passes as it is.
+export fn history_wire_token_state(db str) -> str {
+    if db == "expired" { return "stale" }
+    if db == "none" { return "no_token" }
+    db
+}
+
+#impl(Serialize)
+type HistWireNow value {
+    ro account_id str
+    ro email str
+    ro since str
+}
+
+#impl(Serialize)
+type HistWireFolder value {
+    ro id str
+    ro path Option[str]
+    ro name str
+    ro now Option[HistWireNow]
+}
+
+#impl(Serialize)
+type HistWireOcc value {
+    ro login_dir_id str
+    ro account_id Option[str]
+    ro email Option[str]
+    ro token_state str
+    #serde(rename = "from")
+    ro from_at str
+    #serde(rename = "to")
+    ro to_at Option[str]
+}
+
+#impl(Serialize)
+type HistWireSegment value {
+    ro login_dir_id str
+    ro account_id str
+    ro email str
+    ro kind str
+    ro model Option[str]
+    #serde(rename = "from")
+    ro from_at str
+    #serde(rename = "to")
+    ro to_at Option[str]
+    ro points []HistWirePoint
+}
+
+#impl(Serialize)
+type HistWireDirRef value {
+    ro id str
+    ro name str
+}
+
+#impl(Serialize)
+type HistWireBusiest value {
+    ro id str
+    ro name str
+    /// The e-mails in the order they sat there, a repeat only after someone else.
+    ro chain []str
+}
+
+#impl(Serialize)
+type HistWireDry value {
+    ro days int
+    ro folder HistWireDirRef
+    /// `token_expired` when a stale token was part of it, else `no_login`.
+    ro reason str
+}
+
+#impl(Serialize)
+type HistWireFolderTiles value {
+    ro switches int
+    ro locked_seconds int
+    ro busiest_folder Option[HistWireBusiest]
+    ro days_without_login Option[HistWireDry]
+}
+
+#impl(Serialize)
+type HistWireByFolder value {
+    ro range HistWireRange
+    ro folders []HistWireFolder
+    ro occupancy []HistWireOcc
+    ro series []HistWireSegment
+    ro tiles HistWireFolderTiles
+    ro note str
+}
+
+export const HISTORY_FOLDER_NOTE str = "the endpoint counts per login: folders sharing one login show the same curve"
+
+fn occ_end(o HistOcc, to_ms int) -> int => if o.to_ms == 0 || o.to_ms > to_ms { to_ms } else { o.to_ms }
+
+fn occ_start(o HistOcc, from_ms int) -> int => if o.from_ms < from_ms { from_ms } else { o.from_ms }
+
+/// The points of one window inside `[lo, hi)`, on the RANGE's grid: thinned (or
+/// rolled into days) over the whole range first, so two segments of one directory sit
+/// on one grid and a switch does not shift the nodes.
+fn segment_points(w HistWindow, a HistoryAsk, zone TimeZone, lo int, hi int) -> []HistWirePoint {
+    mut points []HistWirePoint = []
+    if a.step_sec == 0 {
+        for d in history_days(w, a.from_ms, a.to_ms, zone) {
+            ro noon = d.start_ms + DAY_MS / 2
+            if noon < lo || noon >= hi { continue }
+            points.push({ at: moment_iso(noon), percent: d.peak, peak: Some(d.peak),
+                          avg: Some((d.avg_hundredths + 50) / 100), locked_sec: Some(d.locked_sec),
+                          resets_at: iso_opt(d.resets_at_ms), locked: d.locked })
+        }
+    } else {
+        for s in history_thin(w.samples, a.from_ms, a.to_ms, a.step_sec * 1000) {
+            if s.at_ms < lo || s.at_ms >= hi { continue }
+            points.push({ at: moment_iso(s.at_ms), percent: s.percent, peak: None, avg: None, locked_sec: None,
+                          resets_at: iso_opt(s.resets_at_ms), locked: s.locked })
+        }
+    }
+    points
+}
+
+/// E-mail changes in a directory during the range: consecutive rows WITH an account
+/// whose e-mails differ, counted when the later one starts inside the range. A gap
+/// with nobody in between is not a change -- `main -> (none) -> main` is no switch.
+export fn history_switches(occ []HistOcc, dir_id str, from_ms int) -> int {
+    mut n = 0
+    mut last = ""
+    for o in occ {
+        if o.login_dir_id != dir_id || o.email == "" { continue }
+        if last != "" && o.email != last && o.from_ms >= from_ms { n += 1 }
+        last = o.email
+    }
+    n
+}
+
+/// The e-mails of a directory in order, a repeat only after someone else.
+export fn history_chain(occ []HistOcc, dir_id str) -> []str {
+    mut out []str = []
+    for o in occ {
+        if o.login_dir_id != dir_id || o.email == "" { continue }
+        if out.len() > 0 && out[out.len() - 1] == o.email { continue }
+        out.push(o.email)
+    }
+    out
+}
+
+fn distinct_emails(occ []HistOcc, dir_id str) -> int {
+    mut seen []str = []
+    for o in occ {
+        if o.login_dir_id != dir_id || o.email == "" { continue }
+        mut known = false
+        for s in seen { if s == o.email { known = true } }
+        if !known { seen.push(o.email) }
+    }
+    seen.len()
+}
+
+/// Milliseconds of `[from, to)` a directory spent WITHOUT a valid login: no row, a row
+/// with nobody, or a token that is not `ok` (01.1 7.2 "stale or empty").
+export fn history_dry_ms(occ []HistOcc, dir_id str, from_ms int, to_ms int) -> int {
+    mut good = 0
+    for o in occ {
+        if o.login_dir_id != dir_id || o.account_id == "" || o.token_state != "ok" { continue }
+        ro lo = occ_start(o, from_ms)
+        ro hi = occ_end(o, to_ms)
+        if hi > lo { good += hi - lo }
+    }
+    (to_ms - from_ms) - good
+}
+
+fn dry_reason(occ []HistOcc, dir_id str) -> str {
+    for o in occ {
+        if o.login_dir_id == dir_id && o.token_state == "expired" { return "token_expired" }
+    }
+    "no_login"
+}
+
+fn window_of(rows HistRows, account_id str, kind str) -> []HistWindow {
+    mut out []HistWindow = []
+    for w in rows.windows {
+        if w.account_id == account_id && (kind == "" || w.kind == kind) { out.push(w) }
+    }
+    out
+}
+
+/// The whole answer of `by=folder` as JSON.
+export fn history_by_folder(a HistoryAsk, st HistoryState) -> str {
+    ro (from_iso, to_iso, step_sec) = history_range_echo(a)
+
+    mut folders []HistWireFolder = []
+    for d in st.dirs {
+        mut now Option[HistWireNow] = None
+        for o in st.occupancy {
+            if o.login_dir_id == d.id && o.to_ms == 0 && o.account_id != "" && o.token_state == "ok" {
+                now = Some(HistWireNow{ account_id: o.account_id, email: o.email, since: moment_iso(o.from_ms) })
+            }
+        }
+        folders.push({ id: d.id, path: shown_path(st.disclosure, d.path), name: d.name, now })
+    }
+
+    mut occupancy []HistWireOcc = []
+    mut series []HistWireSegment = []
+    mut locked_seconds = 0
+    for o in st.occupancy {
+        occupancy.push({ login_dir_id: o.login_dir_id, account_id: opt(o.account_id), email: opt(o.email),
+                         token_state: history_wire_token_state(o.token_state),
+                         from_at: moment_iso(o.from_ms), to_at: iso_opt(o.to_ms) })
+        if o.account_id == "" { continue }
+        ro lo = occ_start(o, a.from_ms)
+        ro hi = occ_end(o, a.to_ms)
+        for w in window_of(st.rows, o.account_id, "") {
+            series.push({ login_dir_id: o.login_dir_id, account_id: o.account_id, email: o.email,
+                          kind: w.kind, model: opt(w.model), from_at: moment_iso(lo),
+                          to_at: if o.to_ms == 0 { None } else { Some(moment_iso(hi)) },
+                          points: segment_points(w, a, st.zone, lo, hi) })
+        }
+        for w in window_of(st.rows, o.account_id, "session") {
+            locked_seconds += history_locked_sec(w.locks, lo, hi)
+        }
+    }
+
+    mut switches = 0
+    mut busiest Option[HistWireBusiest] = None
+    mut busiest_n = 0
+    mut dry Option[HistWireDry] = None
+    mut dry_days = 0
+    for d in st.dirs {
+        switches += history_switches(st.occupancy, d.id, a.from_ms)
+        ro n = distinct_emails(st.occupancy, d.id)
+        if n > busiest_n {
+            busiest_n = n
+            busiest = Some(HistWireBusiest{ id: d.id, name: d.name, chain: history_chain(st.occupancy, d.id) })
+        }
+        ro days = history_dry_ms(st.occupancy, d.id, a.from_ms, a.to_ms) / DAY_MS
+        if days > dry_days {
+            dry_days = days
+            dry = Some(HistWireDry{ days, folder: { id: d.id, name: d.name }, reason: dry_reason(st.occupancy, d.id) })
+        }
+    }
+
+    ro body = HistWireByFolder{
+        range: { from_at: from_iso, to_at: to_iso, step_sec },
+        folders,
+        occupancy,
+        series,
+        tiles: { switches, locked_seconds, busiest_folder: busiest, days_without_login: dry },
+        note: HISTORY_FOLDER_NOTE,
+    }
+    json_encode(body) ?? "{}"
 }

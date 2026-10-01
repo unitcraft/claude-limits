@@ -77,3 +77,31 @@ export type HistRows value {
     accounts []HistAccount
     windows []HistWindow
 }
+
+/// One login directory of `by=folder` (01.3 section 3.6 `folders[]`).
+export type HistDir value {
+    id str
+    path str
+    name str
+}
+
+/// One `occupancy` row overlapping the range: who sat in a directory, and when.
+export type HistOcc value {
+    login_dir_id str
+    /// "" when nobody did (no login, or a forgotten account).
+    account_id str
+    email str
+    /// The database's word: `ok | expired | rejected | none`.
+    token_state str
+    from_ms int
+    /// 0 while the row is open.
+    to_ms int
+}
+
+/// Everything `by=folder` draws: the directories, their journal, and the history of
+/// every account the journal names.
+export type HistFolderRows value {
+    dirs []HistDir
+    occupancy []HistOcc
+    rows HistRows
+}

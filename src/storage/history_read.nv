@@ -27,7 +27,7 @@ import duckdb.db_effect.{Db, ConnRef}
 import duckdb.errors.{DuckError}
 import duckdb.types.{Value}
 import claude_limits.storage.repo.{quote, moment}
-import claude_limits.storage.history_rows.{HistSample, HistLock, HistPoll, HistWindow, HistAccount, HistRows, HistRollup}
+import claude_limits.storage.history_rows.{HistSample, HistLock, HistPoll, HistWindow, HistAccount, HistRows, HistRollup, HistDir, HistOcc, HistFolderRows}
 
 // ── the SQL ──────────────────────────────────────────────────────────────────
 
@@ -146,4 +146,41 @@ export fn read_history(conn ConnRef, from_ms int, to_ms int, accounts []str) Db 
         out_accounts.push(HistAccount{ id, email: text_of(a[1]), color_slot: int_of(a[2]), polls })
     }
     Ok(HistRows{ accounts: out_accounts, windows })
+}
+
+// ── `by=folder` ─────────────────────────────────────────────────────────────
+
+/// The login directories `by=folder` shows: every live one, and a removed one whose
+/// journal still reaches into the range -- its history did not stop being true.
+export fn history_dirs_sql(from_ms int, to_ms int, dirs []str) -> str =>
+    "SELECT l.id::VARCHAR, l.path, l.name FROM login_dir l WHERE (l.deleted_at IS NULL OR EXISTS (SELECT 1 FROM occupancy o WHERE o.login_dir_id = l.id AND o.started_at < ${moment(to_ms)} AND (o.ended_at IS NULL OR o.ended_at > ${moment(from_ms)})))${history_in_sql("l.id", dirs)} ORDER BY l.name, l.id::VARCHAR"
+
+/// The journal rows overlapping `[from, to)`, with the e-mail of who sat there.
+export fn history_occupancy_sql(from_ms int, to_ms int, dirs []str) -> str =>
+    "SELECT o.login_dir_id::VARCHAR, coalesce(o.account_id::VARCHAR, ''), coalesce(a.email, ''), o.token_state, epoch_ms(o.started_at), coalesce(epoch_ms(o.ended_at), 0) FROM occupancy o LEFT JOIN account a ON a.id = o.account_id WHERE o.started_at < ${moment(to_ms)} AND (o.ended_at IS NULL OR o.ended_at > ${moment(from_ms)})${history_in_sql("o.login_dir_id", dirs)} ORDER BY o.login_dir_id::VARCHAR, o.started_at"
+
+/// Everything `by=folder` draws for `[from, to)`. `dirs` empty is every directory.
+///
+/// The accounts' history is read through `read_history` with the accounts the
+/// journal NAMES -- and with none named, it is not read at all: an empty filter there
+/// means "every account", which is the opposite of what an empty journal says.
+export fn read_folder_history(conn ConnRef, from_ms int, to_ms int, dirs []str) Db -> Result[HistFolderRows, DuckError] {
+    mut out_dirs []HistDir = []
+    for d in cells_of(conn, history_dirs_sql(from_ms, to_ms, dirs))? {
+        out_dirs.push(HistDir{ id: text_of(d[0]), path: text_of(d[1]), name: text_of(d[2]) })
+    }
+    mut occ []HistOcc = []
+    mut named []str = []
+    for o in cells_of(conn, history_occupancy_sql(from_ms, to_ms, dirs))? {
+        ro acc = text_of(o[1])
+        occ.push(HistOcc{ login_dir_id: text_of(o[0]), account_id: acc, email: text_of(o[2]), token_state: text_of(o[3]),
+                          from_ms: int_of(o[4]), to_ms: int_of(o[5]) })
+        if acc != "" {
+            mut seen = false
+            for n in named { if n == acc { seen = true } }
+            if !seen { named.push(acc) }
+        }
+    }
+    ro rows = if named.len() == 0 { HistRows{ accounts: [], windows: [] } } else { read_history(conn, from_ms, to_ms, named)? }
+    Ok(HistFolderRows{ dirs: out_dirs, occupancy: occ, rows })
 }

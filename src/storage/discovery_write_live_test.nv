@@ -17,6 +17,7 @@ import duckdb.errors.{DbOptions}
 import duckdb.types.{Value}
 import claude_limits.storage.repo.{Tick, WindowRow, Ids, plan_sql, two_open_sql}
 import discovery_write.{SeenFolder, SeenDir, DiscoveryIds, record_discovery, layout_of}
+import history_read.{read_folder_history}
 
 const INST = "01900000-0000-7000-8000-000000000001"
 const T0 int = 1757347622000
@@ -95,8 +96,23 @@ fn scenario(conn ConnRef, steps []SeenDir, queries []str) Db -> []str {
         }
         n += 1
     }
+    out.push(folder_line(conn))
     out
 }
+
+/// What `by=folder` reads back after the discoveries, flattened.
+fn folder_line(conn ConnRef) Db -> str =>
+    match read_folder_history(conn, T0 - 3600000, T0 + 3600000 * 24, []) {
+        Err(e) => "READ ${e.message()}"
+        Ok(f) => {
+            mut s = "dirs=${f.dirs.len()}"
+            for d in f.dirs { s = "${s} ${d.name}" }
+            s = "${s} occ=${f.occupancy.len()}"
+            for o in f.occupancy { s = "${s} ${if o.email == "" { "-" } else { o.email }}:${o.token_state}:${if o.to_ms == 0 { "open" } else { "closed" }}" }
+            s = "${s} windows=${f.rows.windows.len()}"
+            s
+        }
+    }
 
 fn run(name str, steps []SeenDir, queries []str) Io -> []str {
     ro path = "${place(name)}/db.duckdb"
@@ -172,4 +188,14 @@ test "the layout is default when the two files sit in different directories" {
     assert(layout_of("C:/u/.claude.json", "C:/u/.claude/.credentials.json") == "default")
     assert(layout_of("C:/a/dev/.claude.json", "C:/a/dev/.credentials.json") == "config_dir")
     assert(layout_of("", "C:/a/dev/.credentials.json") == "config_dir")
+}
+
+test "by=folder reads back the directory, its journal in order, and the account's windows" {
+    ro got = run("folder-read", [dir_as("work@example.org", "ok"), dir_as("work@example.org", "expired")], [ROWS])
+    assert(same("read", "dirs=1 dev occ=2 work@example.org:ok:closed work@example.org:expired:open windows=1", got[2]))
+}
+
+test "a journal naming nobody reads no account history -- an empty filter is not every account" {
+    ro got = run("folder-nobody", [dir_as("", "none")], [ROWS])
+    assert(same("nobody", "dirs=1 dev occ=1 -:none:open windows=0", got[1]))
 }

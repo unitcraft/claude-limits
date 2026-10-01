@@ -1,0 +1,18 @@
+// r3: CONTROL -- the same literal in a named function the lambda calls.
+module hcap.r3_named_fn
+
+type Pair value {
+    ro a int
+    ro b int
+}
+
+fn pair_of(x int) -> Pair => { a: x, b: 2 }
+
+fn main() Io {
+    ro r Result[int, str] = Ok(1)
+    ro m = r.map(fn(x int) -> Pair => pair_of(x))
+    match m {
+        Ok(p) => println("r3 ${p.a} ${p.b}")
+        Err(_) => println("r3 err")
+    }
+}

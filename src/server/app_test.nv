@@ -77,7 +77,7 @@ fn probe_empty() -> ProbeState => { now_ms: 0, listed: [], known: [], disclosure
 fn token_empty() -> TokenEndpointState => { cfg: Config.defaults(), etag: "", disclosure: Disclosure.Loopback }
 fn export_empty() -> ExportState => { from_day: "", to_day: "", rows: [], disclosure: Disclosure.Loopback }
 fn history_empty(a HistoryAsk) -> HistoryLoad =>
-    HistoryLoad.Loaded({ rows: { accounts: [], windows: [] }, paces: [], zone: TimeZone.Utc })
+    HistoryLoad.Loaded({ rows: { accounts: [], windows: [] }, paces: [], zone: TimeZone.Utc, dirs: [], occupancy: [], disclosure: Disclosure.Loopback })
 fn history_env_fixed() -> HistoryEnv => { now_ms: 1790758800000, keep_days: 30 }
 
 fn router() -> Router =>
