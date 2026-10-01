@@ -17,6 +17,11 @@ import claude_limits.model.live.{Known, view_of}
 import claude_limits.model.snapshot.{SeverityBounds}
 import claude_limits.model.snapshot.{AccountState}
 import feed.{Found, stable_id, found_in, poll_round, expiry_text}
+import feed.{Rounds, RoundLog, store_and_poll}
+import claude_limits.model.store_fiber.{Envelope, Store}
+import claude_limits.server.dto.{SnapshotView}
+import std.concurrency.nvchan.{Chan}
+import std.testing.handlers.{fixed_ms}
 
 // 2026-09-30 09:00:00 UTC; the live token expires a day later, the dead one a day ago.
 const NOW_MS = 1790758800000
@@ -190,4 +195,46 @@ test "no folders at all: an empty round and an empty body, not a crash" {
     assert(a.n == 0)
     ro view = view_of(known, SeverityBounds.new(70, 90), now, now + 300000, "+00:00", TimeZone.Utc)
     assert(view.accounts.len() == 0)
+}
+
+// ── the repeating loop (T2.27, 2026-10-01) ───────────────────────────────────
+
+/// What the loop said through `RoundLog`.
+type Said {
+    mut rounds int
+    mut accounts int
+}
+
+fn Said.new() -> Said => { rounds: 0, accounts: 0 }
+
+/// The loop over a store whose channel holds ONE `Tick` and is then closed: the first
+/// round runs at once, the tick runs a second, and the closed channel ends the loop --
+/// so `store_and_poll` returns and the count can be read.
+fn loop_with_one_tick() -> Said {
+    mut said = Said.new()
+    mut a = Asked.new()
+    ro pair = Chan[Envelope].new(4)
+    ro store = Store.new(pair.tx)
+    assert(store.tick())
+    pair.tx.close()
+    ro rounds = Rounds.new(["/acc"], 300, SeverityBounds.new(70, 90), TimeZone.Utc, "+00:00")
+    ro now = NOW_MS
+    with Time = fixed_ms(now as u64), RoundLog = effect RoundLog {
+        done(view SnapshotView) -> () {
+            said.rounds += 1
+            said.accounts = view.accounts.len()
+        }
+    } {
+        on_disk(fn() Dirs Creds -> () => endpoint(a, reply_ok(), fn() Http PollLog Creds -> () => store_and_poll(pair.rx, rounds)))
+    }
+    said
+}
+
+test "the loop runs a round at once and one per tick, saying each through RoundLog" {
+    ro said = loop_with_one_tick()
+    // Two: the first round (the page must not wait a whole interval for accounts) and
+    // the tick's. A loop that forgot `RoundLog.done` after either would write that
+    // round to nobody -- the database would miss every second round, or the first.
+    assert(said.rounds == 2)
+    assert(said.accounts > 0)
 }

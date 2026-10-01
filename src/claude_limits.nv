@@ -62,7 +62,9 @@ import claude_limits.server.dto.{Disclosure}
 import claude_limits.storage.db.{owner_changed, owner_line}
 import duckdb.db_effect.{Db}
 import duckdb.db_real.{with_real_db}
-import claude_limits.server.feed.{Rounds, one_round}
+import claude_limits.server.feed.{Rounds, one_round, RoundLog, store_and_poll, tick_every}
+import claude_limits.model.store_fiber.{Envelope, Store}
+import std.concurrency.nvchan.{Chan, ChanRx}
 import claude_limits.model.snapshot.{SeverityBounds}
 import claude_limits.server.dto.{SnapshotView}
 import claude_limits.accounts.discover.{Dirs}
@@ -207,6 +209,68 @@ fn collect_round(rounds Rounds) Http Dirs Creds Time -> Round {
     // discovery to ASK, this reads it to RECORD, and the two can differ by a file that
     // appeared in between -- the record should say what is there when it is written.
     round_of(view, got.items, discovered(rounds.folders, Time.now().unix_millis()))
+}
+
+/// The rounds, with the real disk, network and database: `--serve`'s main fiber.
+fn run_rounds(rx ChanRx[Envelope], rounds Rounds, paths Paths, win bool) Io Net Time -> () {
+    with_real_disk(fn() Dirs Creds -> () {
+        with Http = real_http() { rounds_recorded(rx, rounds, paths, win) }
+    })
+}
+
+/// The loop, with a `PollLog` that gathers each round's readings and a `RoundLog` that
+/// writes them once the round is over. A NAMED FUNCTION for the reason `collect_round`
+/// is one: a handler capturing a local inside a lambda lost it (registry 221.1 #1453).
+fn rounds_recorded(rx ChanRx[Envelope], rounds Rounds, paths Paths, win bool) Http Dirs Creds Time Io -> () {
+    mut got = Collected.new()
+    // LOCALS, not the parameters themselves: a handler literal capturing a PARAMETER
+    // emits a `_box_<name>` the C never declares (measured 2026-10-01 on nova main).
+    ro where = paths
+    ro on_windows = win
+    ro folders = rounds.folders
+    with PollLog = effect PollLog {
+        // Not logged: a log line would carry the e-mail, which 01.2 section 10 keeps
+        // out of logs. The journal is `poll`, written from the readings.
+        record(email str, state str, message str, at_ms int) -> () {}
+        reading(r Reading) -> () { got.items.push(r) }
+    }, RoundLog = effect RoundLog {
+        done(view SnapshotView) -> () {
+            record_round(where, on_windows, view, got.items, folders)
+            got.items = []
+        }
+    } {
+        store_and_poll(rx, rounds)
+    }
+}
+
+/// Write one round: its readings as ticks, then what discovery found (an occupancy row
+/// names its account, and the ticks create the account rows). Neither stops the server:
+/// a failure is a log line, and the next round tries again.
+fn record_round(at Paths, windows bool, view SnapshotView, readings []Reading, folders []str) Io Dirs Creds Time -> () {
+    // LOCALS for the lambdas below: two lambdas capturing one PARAMETER emitted a
+    // `_box_<name>` the C never declared (measured 2026-10-01 on nova main); a local
+    // captured the same way is the shape `serve_mode` already has, and it builds.
+    ro paths = at
+    ro win = windows
+    ro emails = emails_of(view)
+    ro orgs = orgs_of(view)
+    ro rs = readings
+    ro recorded = with Fs = real_fs(), Random = real_random() {
+        with_real_db(fn() Db Fs Random -> Result[int, StartFail] => record_readings(paths, rs, emails, orgs, win))
+    }
+    match recorded {
+        Ok(_) => ()
+        Err(f) => println("claude-limits: the history was not written: ${f.message(paths.key_file)}")
+    }
+    ro found_at = Time.now().unix_millis()
+    ro found = discovered(folders, found_at)
+    ro noted = with Fs = real_fs(), Random = real_random() {
+        with_real_db(fn() Db Fs Random -> Result[int, StartFail] => record_found(paths, found, found_at, win))
+    }
+    match noted {
+        Ok(_) => ()
+        Err(f) => println("claude-limits: the folders were not written: ${f.message(paths.key_file)}")
+    }
 }
 
 /// E-mails and organisations of the accounts discovery found, as the two parallel
@@ -389,18 +453,11 @@ fn serve_mode(exe str, config_override str) Io Net Time Detach -> int {
                     }
                     ro bounds = SeverityBounds.new(cfg.thresholds.warning, cfg.thresholds.critical)
                     ro rounds = Rounds.new(cfg.folders, cfg.poll.interval_sec, bounds, TimeZone.Fixed(Offset.local()), Offset.local().to_iso())
-                    // The round's readings are COLLECTED here and written as ticks after
-                    // it (below): the database is not held open across a network round.
-                    ro done = with_real_disk(fn() Dirs Creds -> Round {
-                        with Http = real_http() { collect_round(rounds) }
-                    })
-                    ro first = done.view
                     if loaded.missing {
                         println("claude-limits: no settings file yet, running on the defaults (${paths.config_file})")
                     } else {
                         println("claude-limits: settings ${paths.config_file}")
                     }
-                    println("claude-limits: ${first.accounts.len()} account(s) found in ${cfg.folders.len()} folder(s)")
                     // Where the TLS roots came from (nova-tls 0.2: the OS store, a system
                     // bundle, or the embedded list). The first thing to read when a poll
                     // fails with a certificate error -- plan 01.5 question 9 was exactly that.
@@ -408,34 +465,28 @@ fn serve_mode(exe str, config_override str) Io Net Time Detach -> int {
                         Ok(r) => println("claude-limits: TLS roots: ${r.source} (${r.detail}), ${r.count}")
                         Err(e) => println("claude-limits: TLS roots could not be loaded: ${e}")
                     }
-                    ro emails = emails_of(first)
-                    ro orgs = orgs_of(first)
-                    ro readings = done.readings
-                    ro recorded = with Fs = real_fs(), Random = real_random() {
-                        with_real_db(fn() Db Fs Random -> Result[int, StartFail] => record_readings(paths, readings, emails, orgs, win))
-                    }
-                    // NOT fatal: the page can be served without a history line.
-                    match recorded {
-                        Ok(n) => { if n > 0 { println("claude-limits: ${n} reading(s) written to the history") } }
-                        Err(f) => println("claude-limits: the history was not written: ${f.message(paths.key_file)}")
-                    }
-                    // AFTER the readings: an occupancy row names its account, and the
-                    // ticks above are what create the account rows. Not fatal either.
-                    ro found = done.found
-                    ro found_at = Time.now().unix_millis()
-                    ro noted = with Fs = real_fs(), Random = real_random() {
-                        with_real_db(fn() Db Fs Random -> Result[int, StartFail] => record_found(paths, found, found_at, win))
-                    }
-                    match noted {
-                        Ok(_) => ()
-                        Err(f) => println("claude-limits: the folders were not written: ${f.message(paths.key_file)}")
-                    }
+                    // THE ROUNDS REPEAT (T2.27, 2026-10-01). The store with its poller runs
+                    // in THIS fiber (`feed.store_and_poll`: D446 refuses the poll in a
+                    // `spawn`); the server and the timer run beside it. Every reader asks
+                    // the store, so the page shows the latest round, and every round is
+                    // written to the database by `RoundLog`. The two runtime defects that
+                    // kept this to one round at the start -- a channel wake lost while a
+                    // fiber sits in Net (registry 221.1 #1406) and the default handler
+                    // freed by the GC (#1420) -- are fixed in the compiler this builds with.
+                    ro pair = Chan[Envelope].new(64)
+                    ro store = Store.new(pair.tx)
                     // `!!`: the table is static, and `app_test` builds the same one -- a
                     // refusal here is a programming error, not a condition of this run.
-                    ro router = api_router(sources_at_start(cfg, paths, moment_iso(now), now, db_state, fn() -> SnapshotView => first,
-                        fn(a HistoryAsk) -> HistoryLoad => history_from_db(paths, win, first, a)))!!
+                    ro router = api_router(sources_at_start(cfg, paths, moment_iso(now), now, db_state, fn() -> SnapshotView => store.view(),
+                        fn(a HistoryAsk) -> HistoryLoad => history_from_db(paths, win, store.view(), a)))!!
                     println("claude-limits: listening on ${base_url(cfg)}/  (Ctrl+C to stop)")
-                    serve_router(listener, router, ServerPolicy.new())
+                    ro every = cfg.poll.interval_sec
+                    ro rx = pair.rx
+                    supervised {
+                        spawn consume listener { serve_router(listener, router, ServerPolicy.new()) }
+                        spawn { tick_every(store, every) }
+                        run_rounds(rx, rounds, paths, win)
+                    }
                     return EXIT_OK
                 }
             }

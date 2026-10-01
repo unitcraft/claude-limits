@@ -41,7 +41,8 @@ import claude_limits.accounts.group.{group}
 import claude_limits.cli.table.{short_name}
 import claude_limits.server.dto.{DirView, SnapshotView}
 import claude_limits.model.live.{Known, view_of}
-import claude_limits.model.store_fiber.{Envelope, StoreState, step}
+import claude_limits.model.store_fiber.{Envelope, StoreState, step, Store}
+import std.time.duration.{Duration}
 import claude_limits.model.store.{Snapshot}
 import std.concurrency.nvchan.{ChanRx}
 import claude_limits.window.{Window}
@@ -217,6 +218,26 @@ export fn one_round(r Rounds) Http PollLog Creds Dirs Time -> SnapshotView {
     st.view
 }
 
+/// What a round leaves behind, said once the store holds it: `--serve` writes the
+/// round's readings and what discovery found to the database here (01.2 section 4:
+/// one transaction per tick, written after the round, not during it -- the database is
+/// not held open across a network round).
+export type RoundLog effect {
+    done(view SnapshotView) -> ()
+}
+
+/// The timer fiber: a `Tick` every `interval_sec`, until the store is gone.
+///
+/// Its own fiber because the store loop is busy answering requests between rounds; a
+/// `recv` with a timeout would tie the poll interval to the arrival of requests.
+export fn tick_every(store Store, interval_sec int) Time -> () {
+    ro every = if interval_sec < 1 { 1 } else { interval_sec }
+    loop {
+        Time.sleep(every.to_seconds())
+        if !store.tick() { break }
+    }
+}
+
 /// The store's loop, WITH the poller: `--serve` runs it in its main fiber.
 ///
 /// WHY ONE LOOP AND NOT A POLLER FIBER BESIDE THE STORE. The checker refuses the poll in
@@ -228,15 +249,19 @@ export fn one_round(r Rounds) Http PollLog Creds Dirs Time -> SnapshotView {
 ///
 /// The first round runs at once: a page opened right after the start shows accounts,
 /// not "nothing yet" for a whole interval.
-export fn store_and_poll(rx ChanRx[Envelope], r Rounds) Http PollLog Creds Dirs Time -> () {
+export fn store_and_poll(rx ChanRx[Envelope], r Rounds) Http PollLog RoundLog Creds Dirs Time -> () {
     mut st = StoreState.new(Snapshot.empty())
     mut before = round(st, [], r)
+    RoundLog.done(st.view)
     mut going = true
     while going {
         match rx.recv() {
             None => { going = false }
             Some(env) => match env.req {
-                StoreAsk.Tick => { before = round(st, before, r) }
+                StoreAsk.Tick => {
+                    before = round(st, before, r)
+                    RoundLog.done(st.view)
+                }
                 _ => step(st, env.req)
             }
         }
