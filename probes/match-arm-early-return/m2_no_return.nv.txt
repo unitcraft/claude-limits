@@ -1,0 +1,32 @@
+// m2: CONTROL for m1 -- the same block arm WITHOUT the early return.
+// value at its end -- nova-duckdb `QueryResult @value`.
+module hcap.m2_no_return
+
+type Val enum
+    | Flag(bool)
+    | Num(int)
+
+fn read(k int) -> Result[Val, str] {
+    Ok(match k {
+        0 => {
+            mut v = 1
+            v = v + 1
+
+            Val.Flag(v != 0)
+        }
+        _ => Val.Num(k)
+    })
+}
+
+fn show(v Val) -> str =>
+    match v {
+        Val.Flag(b) => "flag ${b}"
+        Val.Num(n) => "num ${n}"
+    }
+
+fn main() Io {
+    match read(0) {
+        Ok(v) => println("m2 ${show(v)}")
+        Err(e) => println("m2 err ${e}")
+    }
+}
