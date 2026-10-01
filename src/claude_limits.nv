@@ -71,6 +71,7 @@ import claude_limits.usage.poller.{PollLog, Reading}
 import std.time.civil.{TimeZone, Offset}
 import http.transport.{real_http}
 import http.{Http}
+import tls.{system_roots}
 
 const USAGE = "usage: claude-limits [--once | --serve] [--config PATH] [--offline DIR] [--parent DIR] [--color auto|always|never] [DIR ...]"
 const USAGE_AUTOSTART = "       claude-limits --install-autostart | --uninstall-autostart"
@@ -400,6 +401,13 @@ fn serve_mode(exe str, config_override str) Io Net Time Detach -> int {
                         println("claude-limits: settings ${paths.config_file}")
                     }
                     println("claude-limits: ${first.accounts.len()} account(s) found in ${cfg.folders.len()} folder(s)")
+                    // Where the TLS roots came from (nova-tls 0.2: the OS store, a system
+                    // bundle, or the embedded list). The first thing to read when a poll
+                    // fails with a certificate error -- plan 01.5 question 9 was exactly that.
+                    match system_roots() {
+                        Ok(r) => println("claude-limits: TLS roots: ${r.source} (${r.detail}), ${r.count}")
+                        Err(e) => println("claude-limits: TLS roots could not be loaded: ${e}")
+                    }
                     ro emails = emails_of(first)
                     ro orgs = orgs_of(first)
                     ro readings = done.readings
