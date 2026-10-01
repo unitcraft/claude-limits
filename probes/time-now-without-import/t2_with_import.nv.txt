@@ -1,0 +1,13 @@
+// t2: CONTROL -- the same with an import from std.time.
+module hcap.t2_with_import
+
+import std.time.duration.{Timestamp}
+
+fn stamp() Time -> int => Time.now().unix_millis() as int
+
+fn main() Io {
+    ro f = fn() -> int => stamp()
+    ro a = f()
+    ro b = f()
+    println("t2 ${a > 0} ${b >= a}")
+}

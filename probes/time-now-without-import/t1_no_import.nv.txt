@@ -1,0 +1,12 @@
+// t1: Time.now() in a module that imports nothing from std.time.
+module hcap.t1_no_import
+
+
+fn stamp() Time -> int => Time.now().unix_millis() as int
+
+fn main() Io {
+    ro f = fn() -> int => stamp()
+    ro a = f()
+    ro b = f()
+    println("t1 ${a > 0} ${b >= a}")
+}

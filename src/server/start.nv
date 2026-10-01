@@ -208,7 +208,7 @@ fn export_at_start() -> ExportState => { from_day: "", to_day: "", rows: [], dis
 /// `Time` is declared here and the route's lambda only calls this function; the
 /// module imports `std.time.duration` for it -- without that import `Time.now()`
 /// panics in codegen (`E_CODEGEN_TYPE_UNKNOWN ... method=now`) instead of naming
-/// what is missing.
+/// what is missing (registry 221.1 #1537, `probes/time-now-without-import/`).
 fn history_env_now(keep_days int) Time -> HistoryEnv => { now_ms: Time.now().unix_millis() as int, keep_days }
 
 /// Everything the router reads.
