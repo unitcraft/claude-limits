@@ -14,7 +14,7 @@ import std.testing.handlers.{seeded}
 import duckdb.db_real.{with_real_db}
 import claude_limits.storage.paths.{Paths}
 import claude_limits.storage.db.{Migration, KNOWN_SCHEMA}
-import startup.{version_of, migrations_in, bundled, open_for_serve, record_readings, Ready, StartFail}
+import startup.{version_of, migrations_in, bundled, open_for_serve, record_readings, Ready, StartFail, Upkeep}
 import duckdb.{Database, DbOptions}
 import duckdb.types.{Value}
 import claude_limits.usage.poller.{Reading}
@@ -77,15 +77,29 @@ fn place(name str) Io -> Paths {
 const T0 = 1790758800000
 
 fn start(p Paths, all []Migration, seed int) Io -> str {
-    ro now = T0
-    ro r = with Fs = real_fs(), Random = seeded(seed as u64) {
-        with_real_db(fn() Db Fs Random -> Result[Ready, StartFail] => open_for_serve(p, all, now, 5, true))
-    }
-    match r {
+    match start_at(p, all, seed, T0, "Etc/GMT-3") {
         Ok(ready) => "first=${ready.opened.first_start} schema=${ready.opened.schema_version} applied=${ready.applied} backup=${ready.backup != ""}"
         Err(f) => "FAIL ${f.message(p.key_file)}"
     }
 }
+
+fn start_at(p Paths, all []Migration, seed int, at_ms int, tz str) Io -> Result[Ready, StartFail] {
+    ro now = at_ms
+    ro care = Upkeep.new(30, 400, 20, tz)
+    with Fs = real_fs(), Random = seeded(seed as u64) {
+        with_real_db(fn() Db Fs Random -> Result[Ready, StartFail] => open_for_serve(p, all, now, 5, true, care))
+    }
+}
+
+/// What the upkeep of one start did, flattened.
+fn upkeep_line(p Paths, all []Migration, seed int, at_ms int, tz str) Io -> str {
+    match start_at(p, all, seed, at_ms, tz) {
+        Ok(r) => "zone=[${r.upkeep.zone}] retention=[${r.upkeep.retention_fail}] weekly=${r.upkeep.weekly != ""} weekly_fail=[${r.upkeep.weekly_fail}]"
+        Err(f) => "FAIL ${f.message(p.key_file)}"
+    }
+}
+
+const WEEK int = 7 * 86400000
 
 fn is_on_disk(path str) Io -> bool => with Fs = real_fs() { try_exists(path.to_path()) ?? false }
 
@@ -189,3 +203,31 @@ test "the round's readings become ticks in the encrypted file, twice over" {
     assert(same("rows", "1/Example Inc/2/4/2", rows(p)))
 }
 
+// ── the upkeep of a start (01.2 section 5) ──────────────────────────────────
+//
+// Written in T2.6 and called by nothing until 2026-10-01: no rollup zone, no retention
+// pass, no weekly backup ever ran. A start now does all three; the pass itself is
+// proven in maintenance_test, this holds that a START runs it and says what it did.
+
+test "a first start writes the rollup zone, passes the retention and takes no weekly backup" {
+    ro p = place("upkeep-first")
+    assert(same("first", "zone=[rollup zone set to Etc/GMT-3] retention=[] weekly=false weekly_fail=[]",
+                upkeep_line(p, migrations_in(bundled()), 7, T0, "Etc/GMT-3")))
+}
+
+test "the next start takes the weekly backup, a start in the same week does not, a week later does" {
+    ro p = place("upkeep-weekly")
+    ro all = migrations_in(bundled())
+    ro _ = upkeep_line(p, all, 7, T0, "Etc/GMT-3")
+    assert(same("second", "zone=[] retention=[] weekly=true weekly_fail=[]", upkeep_line(p, all, 8, T0 + 60000, "Etc/GMT-3")))
+    assert(same("same week", "zone=[] retention=[] weekly=false weekly_fail=[]", upkeep_line(p, all, 9, T0 + 3 * 86400000, "Etc/GMT-3")))
+    assert(same("a week on", "zone=[] retention=[] weekly=true weekly_fail=[]", upkeep_line(p, all, 10, T0 + WEEK + 120000, "Etc/GMT-3")))
+}
+
+test "a machine that moved its zone moves the rollup zone, and the log says how many rollups stay" {
+    ro p = place("upkeep-zone")
+    ro all = migrations_in(bundled())
+    ro _ = upkeep_line(p, all, 7, T0, "Etc/GMT-3")
+    ro got = upkeep_line(p, all, 8, T0 + 60000, "Etc/GMT+5")
+    assert(got.starts_with("zone=[rollup zone moved from Etc/GMT-3 to Etc/GMT+5; 0 stored daily rollup(s) stay in Etc/GMT-3]"))
+}

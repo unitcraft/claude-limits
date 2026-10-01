@@ -18,7 +18,9 @@ import duckdb.db_effect.{Db, ConnRef}
 import duckdb.errors.{DbOptions, DuckError}
 import claude_limits.storage.paths.{Paths, dir_of}
 import claude_limits.storage.db.{Migration, Opened, OpenFail, pending, ensure_key, ensure_instance, open_and_read, apply_migration, claim}
-import claude_limits.storage.backup.{take_backup}
+import claude_limits.storage.backup.{take_backup, list_names, weekly_due}
+import claude_limits.storage.maintenance.{Policy, run_retention, zone_step, ZoneStep, set_zone_sql, zone_log_line}
+import duckdb.types.{Value}
 import claude_limits.storage.repo.{write_tick}
 import claude_limits.storage.tick.{tick_of, fresh_ids}
 import claude_limits.usage.poller.{Reading}
@@ -67,7 +69,36 @@ export type Ready value {
     ro applied int
     /// The backup taken before them, or "" when there was nothing to lose.
     ro backup str
+    /// What the start's upkeep did, for the log.
+    ro upkeep Upkept
 }
+
+/// The settings a start's upkeep obeys: `[history]` and the machine's rollup zone
+/// (`maintenance.machine_rollup_tz`).
+export type Upkeep value {
+    ro keep_days int
+    ro rollup_keep_days int
+    ro config_versions_keep int
+    ro tz str
+}
+
+export fn Upkeep.new(keep_days int, rollup_keep_days int, config_versions_keep int, tz str) -> Upkeep =>
+    { keep_days, rollup_keep_days, config_versions_keep, tz }
+
+/// What it did. Every field "" is "nothing to say"; none of them stops the start.
+export type Upkept value {
+    /// The rollup zone written or moved (01.2 section 3.13), as a log line.
+    ro zone str
+    /// Why the retention pass did not run to its end.
+    ro retention_fail str
+    /// The weekly backup taken, by name.
+    ro weekly str
+    /// Why the weekly backup was not taken.
+    ro weekly_fail str
+}
+
+fn upkept(zone str, retention_fail str, weekly str, weekly_fail str) -> Upkept =>
+    { zone, retention_fail, weekly, weekly_fail }
 
 /// Why the database is not ready. The key and the schema keep `OpenFail`'s own
 /// exit codes and texts; a failed backup or migration is 5, as a refusal is.
@@ -96,7 +127,13 @@ export fn StartFail @message(key_path str) -> str =>
 /// THE BACKUP ONLY WHEN THERE IS SOMETHING TO LOSE: an existing database with
 /// migrations pending. A first start has no data, and a current schema has nothing
 /// to migrate.
-export fn open_for_serve(p Paths, all []Migration, now_ms int, keep int, windows bool) Db Fs Random -> Result[Ready, StartFail] {
+///
+/// After the migrations and the claim, the UPKEEP of 01.2 section 5 runs here, because
+/// a start is the one moment the server is sure to have (found 2026-10-01: the
+/// functions were written in T2.6 and nothing called them -- no rollup, no retention,
+/// no weekly backup, ever). It never stops the start: a failed pass is a log line, and
+/// the history it would have tidied is still there to read.
+export fn open_for_serve(p Paths, all []Migration, now_ms int, keep int, windows bool, u Upkeep) Db Fs Random -> Result[Ready, StartFail] {
     ro key = ensure_key(p.key_file, dir_of(p.key_file, windows)).map_err(fn(f OpenFail) -> StartFail => StartFail.Open(f))?
     ro mine = ensure_instance(p.instance_file, dir_of(p.instance_file, windows))
     // DuckDB creates the file, not its directory.
@@ -115,7 +152,7 @@ export fn open_for_serve(p Paths, all []Migration, now_ms int, keep int, windows
             return Err(StartFail.Open(OpenFail.DbRefused(e.message())))
         }
     }
-    ro r = migrate_and_claim(conn, opened, todo, p, now_ms, keep, windows, key, mine)
+    ro r = migrate_and_claim(conn, opened, todo, p, now_ms, keep, windows, key, mine, u)
     Db.close_conn(conn)
     Db.close_db(db)
     r
@@ -247,7 +284,7 @@ fn org_for(email str, emails []str, orgs []str) -> str {
     ""
 }
 
-fn migrate_and_claim(conn ConnRef, opened Opened, todo []Migration, p Paths, now_ms int, keep int, windows bool, key str, mine str) Db Fs -> Result[Ready, StartFail] {
+fn migrate_and_claim(conn ConnRef, opened Opened, todo []Migration, p Paths, now_ms int, keep int, windows bool, key str, mine str, u Upkeep) Db Fs -> Result[Ready, StartFail] {
     mut backup = ""
     if !opened.first_start && todo.len() > 0 {
         match take_backup(conn, p.backup_dir, now_ms, keep, windows, key) {
@@ -265,5 +302,58 @@ fn migrate_and_claim(conn ConnRef, opened Opened, todo []Migration, p Paths, now
         Ok(_) => ()
         Err(e) => return Err(StartFail.Migrate("claim: ${e.message()}"))
     }
-    Ok({ opened, applied: todo.len(), backup })
+    ro done = upkeep_at_start(conn, opened.first_start, p, u, now_ms, keep, windows, key, mine)
+    Ok({ opened, applied: todo.len(), backup, upkeep: done })
+}
+
+fn first_text(conn ConnRef, sql str) Db -> str {
+    ro rows = match Db.query(conn, sql) {
+        Ok(r) => r
+        Err(_) => return ""
+    }
+    ro got = match Db.next(rows) {
+        Ok(Some(cells)) => if cells.len() > 0 { match cells[0] { Value.Text(s) => s, _ => "" } } else { "" }
+        _ => ""
+    }
+    Db.close_result(rows)
+    got
+}
+
+/// The upkeep of 01.2 section 5 that a start can do: the rollup zone, one retention
+/// pass, and the weekly backup when one is due.
+///
+/// The pass is IDEMPOTENT (maintenance_test: twice in a row changes nothing) and works
+/// in whole days, so running it at every start rather than "once a day after midnight"
+/// costs one transaction that finds nothing to do. When the rounds repeat, the daily
+/// schedule is a timer around this same call.
+fn upkeep_at_start(conn ConnRef, first bool, p Paths, u Upkeep, now_ms int, keep int, windows bool, key str, mine str) Db Fs -> Upkept {
+    mut zone = ""
+    ro stored = first_text(conn, "SELECT value FROM schema_meta WHERE key = 'rollup_tz'")
+    match zone_step(stored, u.tz) {
+        ZoneStep.Same => ()
+        ZoneStep.Moved(from, to) => {
+            match Db.exec(conn, set_zone_sql(to)) {
+                Err(e) => { zone = "rollup zone NOT written (${to}): ${e.message()}" }
+                Ok(_) => {
+                    ro kept = first_text(conn, "SELECT count(*)::VARCHAR FROM daily_rollup").to_int() ?? 0
+                    zone = if from == "" { "rollup zone set to ${to}" } else { zone_log_line(from, to, kept) }
+                }
+            }
+        }
+    }
+    ro policy = Policy.new(u.keep_days, u.rollup_keep_days, u.config_versions_keep, u.tz)
+    ro retention_fail = match run_retention(conn, policy, now_ms, mine) {
+        Ok(_) => ""
+        Err(e) => e.message()
+    }
+    mut weekly = ""
+    mut weekly_fail = ""
+    // Not on a first start: a backup of an empty file protects nothing.
+    if !first && weekly_due(list_names(p.backup_dir), now_ms) {
+        match take_backup(conn, p.backup_dir, now_ms, keep, windows, key) {
+            Ok(name) => { weekly = name }
+            Err(e) => { weekly_fail = e.message() }
+        }
+    }
+    upkept(zone, retention_fail, weekly, weekly_fail)
 }

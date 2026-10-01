@@ -52,7 +52,8 @@ import claude_limits.storage.config_file.{load}
 import claude_limits.server.app.{api_router}
 import claude_limits.server.handlers.config.{base_url}
 import claude_limits.server.start.{real_paths_input, decide_start, sources_at_start, DbAtStart}
-import claude_limits.storage.startup.{migrations_in, bundled, open_for_serve, record_readings, read_history_rows, record_found, Ready, StartFail}
+import claude_limits.storage.startup.{migrations_in, bundled, open_for_serve, record_readings, read_history_rows, record_found, Ready, StartFail, Upkeep}
+import claude_limits.storage.maintenance.{machine_rollup_tz}
 import claude_limits.storage.discovery_write.{Discovered, discovered}
 import claude_limits.storage.history_rows.{HistRows, HistFolderRows}
 import claude_limits.storage.paths.{Paths}
@@ -277,6 +278,10 @@ fn announced(r Ready, db_file str) Io -> int {
     } else if r.applied > 0 {
         println("claude-limits: database migrated to schema ${r.opened.schema_version + r.applied} (backup ${r.backup})")
     }
+    if r.upkeep.zone != "" { println("claude-limits: ${r.upkeep.zone}") }
+    if r.upkeep.retention_fail != "" { println("claude-limits: the retention pass did not run: ${r.upkeep.retention_fail}") }
+    if r.upkeep.weekly != "" { println("claude-limits: weekly backup ${r.upkeep.weekly}") }
+    if r.upkeep.weekly_fail != "" { println("claude-limits: the weekly backup was not taken: ${r.upkeep.weekly_fail}") }
     if owner_changed(r.opened.previous_owner, r.opened.instance_id) {
         println("claude-limits: ${owner_line(r.opened.previous_owner, r.opened.instance_id)}")
     }
@@ -328,8 +333,10 @@ fn serve_mode(exe str, config_override str) Io Net Time Detach -> int {
                     ro all = migrations_in(bundled())
                     ro keep = cfg.storage.backups_keep
                     ro win = input.windows
+                    ro h = cfg.history
+                    ro care = Upkeep.new(h.keep_days, h.rollup_keep_days, h.config_versions_keep, machine_rollup_tz(Offset.local().to_iso()))
                     ro opened = with Fs = real_fs(), Random = real_random() {
-                        with_real_db(fn() Db Fs Random -> Result[Ready, StartFail] => open_for_serve(paths, all, now, keep, win))
+                        with_real_db(fn() Db Fs Random -> Result[Ready, StartFail] => open_for_serve(paths, all, now, keep, win, care))
                     }
                     // NOT `db`: a module of that name is in the unit, and the name resolved to it (registry 221.1 #1400).
                     ro db_state = match opened {

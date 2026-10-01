@@ -18,7 +18,7 @@ module storage.maintenance_test
 import std.fs.{real_fs, read_text}
 import duckdb.{Database, DbOptions}
 import duckdb.types.{Value}
-import claude_limits.storage.maintenance.{Policy, retention_sql, anonymise_sql, zone_step, ZoneStep, set_zone_sql, zone_log_line}
+import claude_limits.storage.maintenance.{Policy, retention_sql, anonymise_sql, zone_step, ZoneStep, set_zone_sql, zone_log_line, machine_rollup_tz}
 import claude_limits.storage.repo.{moment}
 
 const INST = "01900000-0000-7000-8000-000000000001"
@@ -282,4 +282,49 @@ test "a moment is the instant it names, whatever the session zone" {
     ro new_york = session(in_new_york, [q])
     assert(same("Moscow session", "1790758800", moscow[0]))
     assert(same("New York session", "1790758800", new_york[0]))
+}
+
+// ── the machine's zone, as DuckDB names it ──────────────────────────────────
+
+test "a whole-hour offset is an Etc zone with the POSIX sign" {
+    assert(same("msk", "Etc/GMT-3", machine_rollup_tz("+03:00")))
+    assert(same("ny", "Etc/GMT+5", machine_rollup_tz("-05:00")))
+    assert(same("utc", "Etc/GMT", machine_rollup_tz("+00:00")))
+    assert(same("z", "Etc/GMT", machine_rollup_tz("Z")))
+    assert(same("kiritimati", "Etc/GMT-14", machine_rollup_tz("+14:00")))
+}
+
+test "a fractional offset is a city of that offset, an unknown one is UTC" {
+    assert(same("india", "Asia/Kolkata", machine_rollup_tz("+05:30")))
+    assert(same("nepal", "Asia/Kathmandu", machine_rollup_tz("+05:45")))
+    assert(same("odd", "UTC", machine_rollup_tz("+05:15")))
+    assert(same("junk", "UTC", machine_rollup_tz("local")))
+}
+
+/// Every name `machine_rollup_tz` can return, by the offsets that produce them.
+fn every_offset() -> []str {
+    mut out []str = []
+    mut h = 0
+    while h <= 14 {
+        out.push(if h < 10 { "+0${h}:00" } else { "+${h}:00" })
+        if h <= 12 { out.push(if h < 10 { "-0${h}:00" } else { "-${h}:00" }) }
+        h += 1
+    }
+    for f in ["+03:30", "+04:30", "+05:30", "+05:45", "+06:30", "+08:45", "+09:30", "+10:30", "+12:45", "-03:30", "-09:30"] {
+        out.push(f)
+    }
+    out
+}
+
+test "DuckDB accepts every zone the machine can be given, and Etc/GMT-3 is three hours AHEAD" {
+    // The engine is the judge of a zone name: `session` panics with the refusal if any
+    // name is unknown -- which is exactly what `+03:00` itself gets.
+    mut qs []str = []
+    for off in every_offset() {
+        qs.push("SELECT (TIMESTAMPTZ '2026-10-01 22:30:00+00' AT TIME ZONE '${machine_rollup_tz(off)}')::VARCHAR")
+    }
+    ro got = session([], qs)
+    assert(got.len() == every_offset().len())
+    // +03:00 is the first "+" after +00/-00: index 6 of the list (+00 -00 +01 -01 +02 -02 +03).
+    assert(same("ahead", "2026-10-02 01:30:00", got[6]))
 }

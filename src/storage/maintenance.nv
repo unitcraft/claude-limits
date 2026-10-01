@@ -181,3 +181,45 @@ export fn set_zone_sql(tz str) -> str =>
 /// The log line of a move: which zones, and how many stored rollups keep the old one.
 export fn zone_log_line(from str, to str, rollups_kept int) -> str =>
     "rollup zone moved from ${from} to ${to}; ${rollups_kept} stored daily rollup(s) stay in ${from}"
+
+/// The machine's zone as DuckDB names it, from the offset `Offset.local().to_iso()`
+/// gives (`+03:00`).
+///
+/// THE OFFSET ITSELF IS REFUSED: `AT TIME ZONE '+03:00'` answers "Unknown TimeZone"
+/// (measured 2026-10-01 on the vendored 1.5.5, beside `Etc/GMT-3` and `Europe/Moscow`,
+/// both accepted). std gives no IANA name of the machine's zone, only its offset, so a
+/// whole-hour offset becomes `Etc/GMT∓h` -- POSIX writes the sign INVERTED, `+03:00`
+/// is `Etc/GMT-3` -- and the few fractional offsets that exist become a city of that
+/// offset. For the rollup a zone matters only as "where midnight is", so any zone with
+/// the machine's offset draws the same days.
+///
+/// The cost, named: no daylight saving. A machine that moves its clock twice a year
+/// is a zone that moves twice a year here, and `zone_step` writes and logs each move
+/// (01.2 §3.13). An offset this table does not know is `UTC`, said in the log by the
+/// caller, rather than a guess.
+export fn machine_rollup_tz(offset_iso str) -> str {
+    if offset_iso == "Z" || offset_iso == "+00:00" || offset_iso == "-00:00" { return "Etc/GMT" }
+    if offset_iso.byte_len() != 6 { return "UTC" }
+    ro sign = offset_iso[..1]
+    ro hours = offset_iso[1..3].to_int() ?? -1
+    ro minutes = offset_iso[4..6].to_int() ?? -1
+    if hours < 0 || minutes < 0 || (sign != "+" && sign != "-") { return "UTC" }
+    if minutes == 0 {
+        if sign == "+" && hours <= 14 { return "Etc/GMT-${hours}" }
+        if sign == "-" && hours <= 12 { return "Etc/GMT+${hours}" }
+        return "UTC"
+    }
+    // Every fractional offset in use today, one city each.
+    if offset_iso == "+03:30" { return "Asia/Tehran" }
+    if offset_iso == "+04:30" { return "Asia/Kabul" }
+    if offset_iso == "+05:30" { return "Asia/Kolkata" }
+    if offset_iso == "+05:45" { return "Asia/Kathmandu" }
+    if offset_iso == "+06:30" { return "Asia/Yangon" }
+    if offset_iso == "+08:45" { return "Australia/Eucla" }
+    if offset_iso == "+09:30" { return "Australia/Darwin" }
+    if offset_iso == "+10:30" { return "Australia/Lord_Howe" }
+    if offset_iso == "+12:45" { return "Pacific/Chatham" }
+    if offset_iso == "-03:30" { return "America/St_Johns" }
+    if offset_iso == "-09:30" { return "Pacific/Marquesas" }
+    "UTC"
+}
