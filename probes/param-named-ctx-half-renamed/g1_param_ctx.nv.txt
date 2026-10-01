@@ -1,0 +1,16 @@
+// g1: a value-record parameter named `ctx`, its fields read in the body. On nova main
+// 9712b306f the signature says `nv_ctx` and the body still reads `(*ctx).a`.
+module hcap.g1_param_ctx
+
+type Ctx value {
+    ro a str
+    ro b str
+}
+
+fn joined(sep str, ctx Ctx) -> str => "${ctx.a}${sep}${ctx.b}"
+
+fn sample() -> Ctx => { a: "x", b: "y" }
+
+fn main() Io {
+    println("g1 ${joined("-", sample())}")
+}

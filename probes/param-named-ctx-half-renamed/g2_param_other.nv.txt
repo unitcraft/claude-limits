@@ -1,0 +1,15 @@
+// g2: CONTROL for g1 -- the same, with the parameter named `c`.
+module hcap.g2_param_other
+
+type Ctx value {
+    ro a str
+    ro b str
+}
+
+fn joined(sep str, c Ctx) -> str => "${c.a}${sep}${c.b}"
+
+fn sample() -> Ctx => { a: "x", b: "y" }
+
+fn main() Io {
+    println("g2 ${joined("-", sample())}")
+}
