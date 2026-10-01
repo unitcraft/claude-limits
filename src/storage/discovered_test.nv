@@ -1,0 +1,53 @@
+// discovery_write.discovered over fixtures/dirs -- what a round would write.
+//
+//   ./nova.sh test src/storage/discovered_test.nv
+
+module storage.discovered_test
+
+import claude_limits.accounts.real_dirs.{with_real_disk}
+import claude_limits.accounts.discover.{Dirs}
+import claude_limits.accounts.login.{Creds}
+import discovery_write.{Discovered, discovered}
+
+// 2026-09-30: the fixtures' live tokens expire in 2100, the expired one in 2020.
+const NOW int = 1790758800000
+
+fn seen(folders []str) Io -> str {
+    ro fs = folders
+    // A local, not `NOW` itself: a module const read inside a lambda does not build
+    // (registry 221.1 #1399).
+    ro now = NOW
+    ro d = with_real_disk(fn() Dirs Creds -> Discovered => discovered(fs, now))
+    mut s = ""
+    for f in d.folders { s = "${s}F ${f.path} ${f.kind};" }
+    for x in d.dirs { s = "${s}D ${x.path} ${x.name} ${x.layout} ${x.email} ${x.token_state};" }
+    s
+}
+
+fn all_kinds() Io -> str =>
+    seen(["fixtures/dirs/default-layout", "fixtures/dirs/config-dir-layout", "fixtures/dirs/expired", "fixtures/dirs/no-login", "fixtures/dirs/not-there"])
+
+fn has(hay str, needle str) -> bool {
+    if hay.contains(needle) { return true }
+    panic("missing [${needle}] in [${hay}]")
+}
+
+test "every configured folder is written with its kind, the missing one too" {
+    ro s = all_kinds()
+    assert(has(s, "F fixtures/dirs/default-layout single;"))
+    assert(has(s, "F fixtures/dirs/config-dir-layout parent;"))
+    assert(has(s, "F fixtures/dirs/no-login empty;"))
+    assert(has(s, "F fixtures/dirs/not-there missing;"))
+}
+
+test "a login directory carries its layout, e-mail and the FILE's token state" {
+    ro s = all_kinds()
+    assert(has(s, "D fixtures/dirs/default-layout default-layout default solo@example.com ok;"))
+    assert(has(s, "D fixtures/dirs/config-dir-layout/work work config_dir work@example.org ok;"))
+    // `stale` in the code's words is `expired` in the database's (repo.db_token_state).
+    assert(has(s, "D fixtures/dirs/expired expired config_dir stale@example.com expired;"))
+}
+
+test "a folder without a login writes no directory" {
+    assert(seen(["fixtures/dirs/no-login"]) == "F fixtures/dirs/no-login empty;")
+}

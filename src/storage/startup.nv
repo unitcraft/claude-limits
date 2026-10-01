@@ -24,6 +24,8 @@ import claude_limits.storage.tick.{tick_of, fresh_ids}
 import claude_limits.usage.poller.{Reading}
 import claude_limits.storage.history_read.{read_history}
 import claude_limits.storage.history_rows.{HistRows}
+import claude_limits.storage.discovery_write.{Discovered, DiscoveryIds, record_discovery}
+import std.identifiers.uuid.{Uuid}
 
 /// The migration files, in the binary (01.2 §5: `embed_dir("migrations")`).
 /// `../../`: the path is relative to THIS file (`src/storage/`).
@@ -153,6 +155,40 @@ export fn record_readings(p Paths, rs []Reading, emails []str, orgs []str, windo
     Db.close_db(db)
     if failed != "" { return Err(StartFail.Migrate("a tick was not written: ${failed}")) }
     Ok(written)
+}
+
+/// Write what the round's discovery found: folders, login directories, and who sits
+/// in each (01.2 section 3.4-3.7). After `record_readings`, on purpose: an occupancy
+/// row names its account, and the account row is written by the round's ticks.
+export fn record_found(p Paths, d Discovered, at_ms int, windows bool) Db Fs Random -> Result[int, StartFail] {
+    ro key = ensure_key(p.key_file, dir_of(p.key_file, windows)).map_err(fn(f OpenFail) -> StartFail => StartFail.Open(f))?
+    ro mine = ensure_instance(p.instance_file, dir_of(p.instance_file, windows))
+    mut opts = DbOptions.defaults()
+    opts.encryption_key = key
+    opts.temp_dir = p.temp_dir
+    ro db = Db.open(p.db_file, opts).map_err(fn(e DuckError) -> StartFail => StartFail.Open(OpenFail.DbRefused(e.message())))?
+    ro conn = match Db.connect(db) {
+        Ok(c) => c
+        Err(e) => {
+            Db.close_db(db)
+            return Err(StartFail.Open(OpenFail.DbRefused(e.message())))
+        }
+    }
+    mut folders []str = []
+    for _ in d.folders { folders.push(Uuid.v7().to_str()) }
+    mut dirs []str = []
+    mut occupancy []str = []
+    for _ in d.dirs {
+        dirs.push(Uuid.v7().to_str())
+        occupancy.push(Uuid.v7().to_str())
+    }
+    ro got = record_discovery(conn, mine, at_ms, d.folders, d.dirs, DiscoveryIds{ folders, dirs, occupancy })
+    Db.close_conn(conn)
+    Db.close_db(db)
+    match got {
+        Ok(_) => Ok(d.dirs.len())
+        Err(e) => Err(StartFail.Migrate("the discovery was not written: ${e.message()}"))
+    }
 }
 
 /// The rows of `/api/history` for `[from, to)`, or the reason they are not there.

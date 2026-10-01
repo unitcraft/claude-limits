@@ -1,0 +1,175 @@
+// discovery_write.nv against a LIVE database.
+//
+//   ./nova.sh test src/storage/discovery_write_live_test.nv
+//
+// The occupancy RULE is tested in repo_test (T2.5); this file holds what only a real
+// file can say: the upserts by path go through a second time, the open row is read
+// inside the transaction, and the invariant "never two open rows for a directory"
+// survives a sequence of discoveries.
+
+module storage.discovery_write_live_test
+
+import std.fs.{real_fs, read_text, create_dir_all, remove_dir_all}
+import std.os.{real_os, temp_dir}
+import duckdb.db_effect.{Db, ConnRef}
+import duckdb.db_real.{with_real_db}
+import duckdb.errors.{DbOptions}
+import duckdb.types.{Value}
+import claude_limits.storage.repo.{Tick, WindowRow, Ids, plan_sql, two_open_sql}
+import discovery_write.{SeenFolder, SeenDir, DiscoveryIds, record_discovery, layout_of}
+
+const INST = "01900000-0000-7000-8000-000000000001"
+const T0 int = 1757347622000
+
+fn place(name str) Io -> str {
+    ro base = with Os = real_os() { temp_dir().display().replace("\\", "/") }
+    ro dir = "${base}/claude-limits-discovery-${name}"
+    with Fs = real_fs() {
+        ro _ = remove_dir_all(dir.to_path())
+        ro _ = create_dir_all(dir.to_path())
+    }
+    dir
+}
+
+fn init_sql() Io -> str =>
+    with Fs = real_fs() {
+        read_text("migrations/0001_init.sql".to_path()) ?? ""
+    }
+
+/// One poll of work@example.org, so its account row exists.
+fn account_tick() -> []str {
+    ro t = Tick{ instance: INST, at_ms: T0, email: "work@example.org", org: "", outcome: "ok", http_status: 200,
+                 retry_after_sec: 0, latency_ms: 1, error: "",
+                 windows: [WindowRow.new("session", "", 10, false, "", "", 1757340000000, 1757358000000)] }
+    plan_sql(t, Ids.new("01900000-0000-7000-8000-0000000000a1", "01900000-0000-7000-8000-0000000000b1",
+                        ["01900000-0000-7000-8000-0000000000c1"], ["01900000-0000-7000-8000-0000000000d1"],
+                        ["01900000-0000-7000-8000-0000000000e1"], ["01900000-0000-7000-8000-0000000000f1"]))
+}
+
+const FOLDER = "C:/accounts"
+const DIR = "C:/accounts/dev"
+
+fn dir_as(email str, token_state str) -> SeenDir =>
+    { folder_path: FOLDER, path: DIR, name: "dev", layout: "default", email, token_state }
+
+/// Ids for discovery number `n`: distinct every time, as the caller mints them.
+fn ids(n int) -> DiscoveryIds => {
+    folders: ["01900000-0000-7000-8000-000000${n}10"],
+    dirs: ["01900000-0000-7000-8000-000000${n}20"],
+    occupancy: ["01900000-0000-7000-8000-000000${n}30"],
+}
+
+fn text_of(v Value) -> str =>
+    match v {
+        Value.Text(s) => s
+        _ => "<non-text>"
+    }
+
+fn one(conn ConnRef, sql str) Db -> str {
+    match Db.query(conn, sql) {
+        Err(e) => "QUERY ${e.message()}"
+        Ok(rows) => {
+            ro got = match Db.next(rows) {
+                Ok(Some(cells)) => if cells.len() > 0 { text_of(cells[0]) } else { "<empty>" }
+                _ => "<none>"
+            }
+            Db.close_result(rows)
+            got
+        }
+    }
+}
+
+/// Migrate, poll once, then run the discoveries; after each, answer the queries.
+fn scenario(conn ConnRef, steps []SeenDir, queries []str) Db -> []str {
+    mut out []str = []
+    ro f = SeenFolder{ path: FOLDER, kind: "single" }
+    mut n = 1000
+    for d in steps {
+        match record_discovery(conn, INST, T0 + n * 1000, [f], [d], ids(n)) {
+            Err(e) => out.push("WRITE ${e.message()}")
+            Ok(_) => {
+                mut line = ""
+                for q in queries { line = "${line}${one(conn, q)};" }
+                out.push(line)
+            }
+        }
+        n += 1
+    }
+    out
+}
+
+fn run(name str, steps []SeenDir, queries []str) Io -> []str {
+    ro path = "${place(name)}/db.duckdb"
+    mut setup = [init_sql()]
+    for s in account_tick() { setup.push(s) }
+    ro todo = steps
+    ro qs = queries
+    ro pre = setup
+    with_real_db(fn() Db -> []str => {
+        match Db.open(path, DbOptions.defaults()) {
+            Err(e) => ["OPEN ${e.message()}"]
+            Ok(db) => match Db.connect(db) {
+                Err(e) => {
+                    Db.close_db(db)
+                    ["CONNECT ${e.message()}"]
+                }
+                Ok(conn) => {
+                    mut failed = ""
+                    for s in pre {
+                        if failed == "" {
+                            match Db.exec(conn, s) {
+                                Ok(_) => ()
+                                Err(e) => { failed = "SETUP ${e.message()}" }
+                            }
+                        }
+                    }
+                    ro got = if failed == "" { scenario(conn, todo, qs) } else { [failed] }
+                    Db.close_conn(conn)
+                    Db.close_db(db)
+                    got
+                }
+            }
+        }
+    })
+}
+
+fn same(label str, want str, got str) -> bool {
+    if want == got { return true }
+    panic("${label}: want [${want}] got [${got}]")
+}
+
+const ROWS = "SELECT (SELECT count(*) FROM folder)::VARCHAR || '/' || (SELECT count(*) FROM login_dir)::VARCHAR || '/' || (SELECT count(*) FROM occupancy)::VARCHAR || '/' || (SELECT count(*) FROM occupancy WHERE ended_at IS NULL)::VARCHAR"
+const OPEN = "SELECT coalesce((SELECT a.email FROM account a WHERE a.id = o.account_id), '-') || ':' || o.token_state FROM occupancy o WHERE o.ended_at IS NULL"
+
+test "a first discovery writes the folder, the directory and one open occupancy row" {
+    ro got = run("first", [dir_as("work@example.org", "ok")], [ROWS, OPEN])
+    assert(same("first", "1/1/1/1;work@example.org:ok;", got[0]))
+}
+
+test "the same discovery again changes nothing -- the upserts by path go through" {
+    ro got = run("again", [dir_as("work@example.org", "ok"), dir_as("work@example.org", "ok")], [ROWS])
+    assert(same("again", "1/1/1/1;", got[1]))
+}
+
+test "ok -> expired on the same account closes the row and opens another" {
+    ro got = run("stale", [dir_as("work@example.org", "ok"), dir_as("work@example.org", "expired")], [ROWS, OPEN, "SELECT count(*)::VARCHAR FROM (${two_open_sql()})"])
+    // The invariant as a COUNT: the query itself returns a UUID column, which the
+    // reader here does not take as text -- a row would have read as nothing.
+    assert(same("stale", "1/1/2/1;work@example.org:expired;0;", got[1]))
+}
+
+test "a new e-mail with no account row yet is an occupancy with NO account" {
+    ro got = run("other", [dir_as("work@example.org", "ok"), dir_as("someone@example.org", "ok")], [ROWS, OPEN])
+    assert(same("other", "1/1/2/1;-:ok;", got[1]))
+}
+
+test "a directory without a login is an occupancy with state none" {
+    ro got = run("none", [dir_as("", "none")], [ROWS, OPEN])
+    assert(same("none", "1/1/1/1;-:none;", got[0]))
+}
+
+test "the layout is default when the two files sit in different directories" {
+    assert(layout_of("C:/u/.claude.json", "C:/u/.claude/.credentials.json") == "default")
+    assert(layout_of("C:/a/dev/.claude.json", "C:/a/dev/.credentials.json") == "config_dir")
+    assert(layout_of("", "C:/a/dev/.credentials.json") == "config_dir")
+}

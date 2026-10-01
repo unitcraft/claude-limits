@@ -1,0 +1,199 @@
+// discovery_write.nv — what discovery found, written to the database (01.2 §3.4–§3.7).
+//
+//   ./nova.sh test src/storage/discovery_write_live_test.nv
+//
+// ── Why this file exists (found 2026-10-01) ─────────────────────────────────
+//
+// The schema has `folder`, `login_dir` and `occupancy` since T2.3, and T2.5 wrote the
+// occupancy TRANSITION (`repo.occupancy_step`, `repo.occupancy_sql`). Nothing wrote a
+// folder or a login directory, so the transition had nothing to run against and a
+// live database never held a single row of the three. `/api/history?by=folder` is
+// built from exactly those rows.
+//
+// ── One discovery, one transaction ──────────────────────────────────────────
+//
+// Folders and login directories are upserted by PATH (their natural keys, 01.2 §3.4,
+// §3.5), then each directory's open `occupancy` row is read INSIDE the transaction
+// and handed to `occupancy_step` -- the rule T2.5 tests -- whose statements close the
+// old row and open the new one. Between the close and the open there are two open
+// rows or none; 01.2 §3.7 asks for one transaction for exactly that reason.
+
+module storage.discovery_write
+
+import duckdb.db_effect.{Db, ConnRef}
+import duckdb.errors.{DuckError}
+import duckdb.types.{Value}
+import claude_limits.storage.repo.{Tick, Seen, OpenRow, OccupancyStep, occupancy_step, occupancy_sql, quote, moment, db_token_state}
+import claude_limits.accounts.discover.{Dirs, scan}
+import claude_limits.accounts.login.{Creds, read_login, state_of}
+
+/// One configured folder as discovery saw it.
+export type SeenFolder value {
+    path str
+    /// `single | parent | empty | missing` (01.2 §3.4).
+    kind str
+}
+
+/// One login directory as discovery saw it.
+export type SeenDir value {
+    folder_path str
+    path str
+    name str
+    /// `default` (`.claude.json` BESIDE the directory) or `config_dir` (inside it).
+    layout str
+    /// Lower-cased; "" when the directory has no identity file.
+    email str
+    /// The DATABASE's vocabulary (`repo.db_token_state`).
+    token_state str
+}
+
+/// Ids minted by the application (01.2 §3.1), one per row the discovery may create.
+export type DiscoveryIds value {
+    folders []str
+    dirs []str
+    /// One per directory: the occupancy row it opens, if it opens one.
+    occupancy []str
+}
+
+/// One discovery: every configured folder, and every login directory inside them.
+export type Discovered value {
+    folders []SeenFolder
+    dirs []SeenDir
+}
+
+/// Scan the configured folders the way the round does, and say what each one is.
+///
+/// The token state is read FROM THE FILE (`state_of`), not from the endpoint: this is
+/// what the directory holds, which is what `occupancy` records (01.2 section 3.7).
+export fn discovered(folders []str, now_ms int) Dirs Creds -> Discovered {
+    mut fs []SeenFolder = []
+    mut ds []SeenDir = []
+    for p in folders {
+        ro f = scan(p)
+        fs.push(SeenFolder{ path: f.path, kind: f.kind.to_str() })
+        for d in f.logins {
+            ro login = read_login(d.path, d.name, d.identity, d.credentials)
+            ds.push(SeenDir{ folder_path: f.path, path: d.path, name: d.name, layout: layout_of(d.identity, d.credentials),
+                             email: login.email, token_state: db_token_state(state_of(login, now_ms).to_str()) })
+        }
+    }
+    { folders: fs, dirs: ds }
+}
+
+/// `config_dir` when the identity and the credentials sit in ONE directory (the
+/// `CLAUDE_CONFIG_DIR` shape), `default` when they do not -- `.claude.json` beside
+/// `.claude/`, the credentials inside it. Decided by the two FILES, not by the login
+/// directory's own path: discovery names the default layout by its parent, so "is the
+/// identity inside the directory" is true of both shapes (measured on fixtures/dirs).
+/// No identity file at all is `config_dir`: nothing sits beside anything.
+export fn layout_of(identity_path str, credentials_path str) -> str {
+    if identity_path == "" || credentials_path == "" { return "config_dir" }
+    if parent_of(identity_path) == parent_of(credentials_path) { return "config_dir" }
+    "default"
+}
+
+fn parent_of(path str) -> str =>
+    match path.rsplit_once("/") {
+        Some(pair) => pair.0
+        None => ""
+    }
+
+export fn folder_upsert_sql(instance str, at_ms int, f SeenFolder, id str) -> str {
+    ro at = moment(at_ms)
+    ro inst = quote(instance)
+    "INSERT INTO folder (id, created_at, updated_at, created_by, updated_by, path, kind, source, first_seen_at, last_seen_at) VALUES (${quote(id)}, ${at}, ${at}, ${inst}, ${inst}, ${quote(f.path)}, ${quote(f.kind)}, 'config', ${at}, ${at}) ON CONFLICT (path) DO UPDATE SET kind = excluded.kind, last_seen_at = excluded.last_seen_at, updated_at = excluded.updated_at, updated_by = excluded.updated_by, deleted_at = NULL, deleted_reason = NULL"
+}
+
+export fn login_dir_upsert_sql(instance str, at_ms int, d SeenDir, id str) -> str {
+    ro at = moment(at_ms)
+    ro inst = quote(instance)
+    ro folder = "(SELECT id FROM folder WHERE path = ${quote(d.folder_path)})"
+    "INSERT INTO login_dir (id, created_at, updated_at, created_by, updated_by, folder_id, path, name, layout, first_seen_at, last_seen_at) VALUES (${quote(id)}, ${at}, ${at}, ${inst}, ${inst}, ${folder}, ${quote(d.path)}, ${quote(d.name)}, ${quote(d.layout)}, ${at}, ${at}) ON CONFLICT (path) DO UPDATE SET folder_id = excluded.folder_id, name = excluded.name, layout = excluded.layout, last_seen_at = excluded.last_seen_at, updated_at = excluded.updated_at, updated_by = excluded.updated_by, deleted_at = NULL, deleted_reason = NULL"
+}
+
+/// The directory's id, the account its e-mail names ("" when none), and its open
+/// occupancy row (id, account, token state -- "" when there is no open row).
+export fn dir_state_sql(d SeenDir) -> str =>
+    "SELECT l.id::VARCHAR, coalesce((SELECT a.id::VARCHAR FROM account a WHERE a.email = ${quote(d.email)}), ''), coalesce(o.id::VARCHAR, ''), coalesce(o.account_id::VARCHAR, ''), coalesce(o.token_state, '') FROM login_dir l LEFT JOIN occupancy o ON o.login_dir_id = l.id AND o.ended_at IS NULL WHERE l.path = ${quote(d.path)}"
+
+fn text_of(v Value) -> str =>
+    match v {
+        Value.Text(s) => s
+        _ => ""
+    }
+
+fn discovery_exec_each(conn ConnRef, sqls []str) Db -> Result[(), DuckError] {
+    for s in sqls { ro _ = Db.exec(conn, s)? }
+    Ok(())
+}
+
+fn first_row(conn ConnRef, sql str) Db -> Result[[]Value, DuckError] {
+    ro rows = Db.query(conn, sql)?
+    ro got = Db.next(rows)
+    Db.close_result(rows)
+    match got? {
+        Some(cells) => Ok(cells)
+        None => Ok([])
+    }
+}
+
+/// The occupancy statements of one directory, read and decided inside the transaction.
+fn occupancy_of(conn ConnRef, instance str, at_ms int, d SeenDir, new_id str) Db -> Result[[]str, DuckError] {
+    ro cells = first_row(conn, dir_state_sql(d))?
+    if cells.len() < 5 { return Ok([]) }
+    ro dir_id = text_of(cells[0])
+    // An e-mail with no account row yet (never polled) is written as NO account
+    // rather than guessed: `account_id` is a reference, and a reference to nothing is
+    // what NULL means here (01.2 §3.7).
+    ro account = if d.email == "" { "" } else { text_of(cells[1]) }
+    ro open_id = text_of(cells[2])
+    ro open Option[OpenRow] = if open_id == "" { None } else { Some(OpenRow.new(open_id, text_of(cells[3]), text_of(cells[4]))) }
+    ro seen = Seen.new(dir_id, account, d.token_state)
+    ro tick = Tick{ instance, at_ms, email: "", org: "", outcome: "", http_status: 0, retry_after_sec: 0,
+                    latency_ms: 0, error: "", windows: [] }
+    match occupancy_step(open, seen) {
+        OccupancyStep.Unchanged => Ok([])
+        OccupancyStep.OpenFirst => Ok(occupancy_sql(tick, seen, new_id, ""))
+        OccupancyStep.CloseAndOpen(close_id) => Ok(occupancy_sql(tick, seen, new_id, close_id))
+    }
+}
+
+fn discovery_rows(conn ConnRef, instance str, at_ms int, folders []SeenFolder, dirs []SeenDir, ids DiscoveryIds) Db -> Result[(), DuckError] {
+    mut i = 0
+    while i < folders.len() {
+        ro _ = Db.exec(conn, folder_upsert_sql(instance, at_ms, folders[i], ids.folders[i]))?
+        i += 1
+    }
+    i = 0
+    while i < dirs.len() {
+        ro _ = Db.exec(conn, login_dir_upsert_sql(instance, at_ms, dirs[i], ids.dirs[i]))?
+        ro steps = occupancy_of(conn, instance, at_ms, dirs[i], ids.occupancy[i])?
+        ro _ = discovery_exec_each(conn, steps)?
+        i += 1
+    }
+    Ok(())
+}
+
+/// Write one discovery, or nothing at all.
+export fn record_discovery(conn ConnRef, instance str, at_ms int, folders []SeenFolder, dirs []SeenDir, ids DiscoveryIds) Db -> Result[(), DuckError] {
+    if ids.folders.len() < folders.len() || ids.dirs.len() < dirs.len() || ids.occupancy.len() < dirs.len() {
+        return Err(DuckError.Bind("discovery ids: fewer than the rows they name"))
+    }
+    ro _ = Db.exec(conn, "BEGIN TRANSACTION")?
+    match discovery_rows(conn, instance, at_ms, folders, dirs, ids) {
+        Err(e) => {
+            ro _ = Db.exec(conn, "ROLLBACK")
+            Err(e)
+        }
+        Ok(_) => match Db.exec(conn, "COMMIT") {
+            Err(e) => {
+                ro _ = Db.exec(conn, "ROLLBACK")
+                Err(e)
+            }
+            Ok(_) => {
+                ro _ = Db.exec(conn, "CHECKPOINT")
+                Ok(())
+            }
+        }
+    }
+}

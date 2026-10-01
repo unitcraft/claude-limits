@@ -52,7 +52,8 @@ import claude_limits.storage.config_file.{load}
 import claude_limits.server.app.{api_router}
 import claude_limits.server.handlers.config.{base_url}
 import claude_limits.server.start.{real_paths_input, decide_start, sources_at_start, DbAtStart}
-import claude_limits.storage.startup.{migrations_in, bundled, open_for_serve, record_readings, read_history_rows, Ready, StartFail}
+import claude_limits.storage.startup.{migrations_in, bundled, open_for_serve, record_readings, read_history_rows, record_found, Ready, StartFail}
+import claude_limits.storage.discovery_write.{Discovered, discovered}
 import claude_limits.storage.history_rows.{HistRows}
 import claude_limits.storage.paths.{Paths}
 import claude_limits.server.handlers.history.{HistoryAsk, HistoryLoad, HistPace}
@@ -175,9 +176,11 @@ fn Collected.new() -> Collected => { items: [] }
 type Round {
     view SnapshotView
     readings []Reading
+    /// The folders and directories the round scanned, for the database.
+    found Discovered
 }
 
-fn round_of(view SnapshotView, readings []Reading) -> Round => { view, readings }
+fn round_of(view SnapshotView, readings []Reading, found Discovered) -> Round => { view, readings, found }
 
 /// One round, and the readings behind it.
 ///
@@ -196,7 +199,10 @@ fn collect_round(rounds Rounds) Http Dirs Creds Time -> Round {
     } {
         one_round(rounds)
     }
-    round_of(view, got.items)
+    // A second scan rather than a field threaded out of `one_round`: the round reads
+    // discovery to ASK, this reads it to RECORD, and the two can differ by a file that
+    // appeared in between -- the record should say what is there when it is written.
+    round_of(view, got.items, discovered(rounds.folders, Time.now().unix_millis()))
 }
 
 /// E-mails and organisations of the accounts discovery found, as the two parallel
@@ -353,6 +359,17 @@ fn serve_mode(exe str, config_override str) Io Net Time Detach -> int {
                     match recorded {
                         Ok(n) => { if n > 0 { println("claude-limits: ${n} reading(s) written to the history") } }
                         Err(f) => println("claude-limits: the history was not written: ${f.message(paths.key_file)}")
+                    }
+                    // AFTER the readings: an occupancy row names its account, and the
+                    // ticks above are what create the account rows. Not fatal either.
+                    ro found = done.found
+                    ro found_at = Time.now().unix_millis()
+                    ro noted = with Fs = real_fs(), Random = real_random() {
+                        with_real_db(fn() Db Fs Random -> Result[int, StartFail] => record_found(paths, found, found_at, win))
+                    }
+                    match noted {
+                        Ok(_) => ()
+                        Err(f) => println("claude-limits: the folders were not written: ${f.message(paths.key_file)}")
                     }
                     // `!!`: the table is static, and `app_test` builds the same one -- a
                     // refusal here is a programming error, not a condition of this run.
