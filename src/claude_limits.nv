@@ -52,7 +52,7 @@ import claude_limits.storage.config_file.{load}
 import claude_limits.server.app.{api_router}
 import claude_limits.server.handlers.config.{base_url}
 import claude_limits.server.start.{real_paths_input, decide_start, sources_at_start, DbAtStart}
-import claude_limits.storage.startup.{migrations_in, bundled, open_for_serve, record_readings, read_history_rows, record_found, Ready, StartFail, Upkeep, forget_account, ForgetDone}
+import claude_limits.storage.startup.{migrations_in, bundled, open_for_serve, record_readings, read_history_rows, record_found, Ready, StartFail, Upkeep, Upkept, forget_account, ForgetDone, upkeep_daily}
 import claude_limits.storage.maintenance.{machine_rollup_tz}
 import claude_limits.storage.discovery_write.{Discovered, discovered}
 import claude_limits.storage.history_rows.{HistRows, HistFolderRows}
@@ -212,17 +212,21 @@ fn collect_round(rounds Rounds) Http Dirs Creds Time -> Round {
 }
 
 /// The rounds, with the real disk, network and database: `--serve`'s main fiber.
-fn run_rounds(rx ChanRx[Envelope], rounds Rounds, paths Paths, win bool) Io Net Time -> () {
+fn run_rounds(rx ChanRx[Envelope], rounds Rounds, paths Paths, win bool, care Upkeep, keep int) Io Net Time -> () {
     with_real_disk(fn() Dirs Creds -> () {
-        with Http = real_http() { rounds_recorded(rx, rounds, paths, win) }
+        with Http = real_http() { rounds_recorded(rx, rounds, paths, win, care, keep) }
     })
 }
 
 /// The loop, with a `PollLog` that gathers each round's readings and a `RoundLog` that
 /// writes them once the round is over. A NAMED FUNCTION for the reason `collect_round`
 /// is one: a handler capturing a local inside a lambda lost it (registry 221.1 #1453).
-fn rounds_recorded(rx ChanRx[Envelope], rounds Rounds, paths Paths, win bool) Http Dirs Creds Time Io -> () {
+fn rounds_recorded(rx ChanRx[Envelope], rounds Rounds, paths Paths, win bool, care Upkeep, keep int) Http Dirs Creds Time Io -> () {
     mut got = Collected.new()
+    // The local day of the last upkeep: the start ran one, so today is done.
+    mut upkept_on = local_day(Time.now().unix_millis())
+    ro how = care
+    ro backups = keep
     // LOCALS, not the parameters themselves: a handler literal capturing a PARAMETER
     // emits a `_box_<name>` the C never declares (measured 2026-10-01 on nova main).
     ro where = paths
@@ -237,9 +241,39 @@ fn rounds_recorded(rx ChanRx[Envelope], rounds Rounds, paths Paths, win bool) Ht
         done(view SnapshotView) -> () {
             record_round(where, on_windows, view, got.items, folders)
             got.items = []
+            ro today = local_day(Time.now().unix_millis())
+            if today != upkept_on {
+                upkeep_round(where, on_windows, how, backups)
+                upkept_on = today
+            }
         }
     } {
         store_and_poll(rx, rounds)
+    }
+}
+
+/// The machine's calendar day of a moment, `YYYY-MM-DD`: the day the upkeep counts in.
+fn local_day(ms int) -> str => ms.to_unix_millis().to_zoned(TimeZone.Fixed(Offset.local())).datetime().date().to_iso()
+
+/// Once a local day, after a round: the upkeep of 01.2 section 5 on the running server.
+/// The start runs it too; between starts, this is what makes "once a day" true.
+fn upkeep_round(at Paths, windows bool, u Upkeep, keep int) Io Time -> () {
+    ro paths = at
+    ro win = windows
+    ro how = u
+    ro backups = keep
+    ro now = Time.now().unix_millis()
+    ro r = with Fs = real_fs(), Random = real_random() {
+        with_real_db(fn() Db Fs Random -> Result[Upkept, StartFail] => upkeep_daily(paths, how, now, backups, win))
+    }
+    match r {
+        Err(f) => println("claude-limits: the daily upkeep did not run: ${f.message(paths.key_file)}")
+        Ok(d) => {
+            if d.zone != "" { println("claude-limits: ${d.zone}") }
+            if d.retention_fail != "" { println("claude-limits: the retention pass did not run: ${d.retention_fail}") }
+            if d.weekly != "" { println("claude-limits: weekly backup ${d.weekly}") }
+            if d.weekly_fail != "" { println("claude-limits: the weekly backup was not taken: ${d.weekly_fail}") }
+        }
     }
 }
 
@@ -486,7 +520,7 @@ fn serve_mode(exe str, config_override str) Io Net Time Detach -> int {
                     supervised {
                         spawn consume listener { serve_router(listener, router, ServerPolicy.new()) }
                         spawn { tick_every(store, every) }
-                        run_rounds(rx, rounds, paths, win)
+                        run_rounds(rx, rounds, paths, win, care, keep)
                     }
                     return EXIT_OK
                 }

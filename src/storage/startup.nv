@@ -199,6 +199,29 @@ export fn record_readings(p Paths, rs []Reading, emails []str, orgs []str, windo
 /// Write what the round's discovery found: folders, login directories, and who sits
 /// in each (01.2 section 3.4-3.7). After `record_readings`, on purpose: an occupancy
 /// row names its account, and the account row is written by the round's ticks.
+/// The upkeep of a running server, once a local day (01.2 section 5: "once a day after
+/// midnight"): the same pass a start runs, on the database the start already opened
+/// and migrated -- so never as a first start, and the weekly backup only when due.
+export fn upkeep_daily(p Paths, u Upkeep, now_ms int, keep int, windows bool) Db Fs Random -> Result[Upkept, StartFail] {
+    ro key = ensure_key(p.key_file, dir_of(p.key_file, windows)).map_err(fn(f OpenFail) -> StartFail => StartFail.Open(f))?
+    ro mine = ensure_instance(p.instance_file, dir_of(p.instance_file, windows))
+    mut opts = DbOptions.defaults()
+    opts.encryption_key = key
+    opts.temp_dir = p.temp_dir
+    ro db = Db.open(p.db_file, opts).map_err(fn(e DuckError) -> StartFail => StartFail.Open(OpenFail.DbRefused(e.message())))?
+    ro conn = match Db.connect(db) {
+        Ok(c) => c
+        Err(e) => {
+            Db.close_db(db)
+            return Err(StartFail.Open(OpenFail.DbRefused(e.message())))
+        }
+    }
+    ro done = upkeep_at_start(conn, false, p, u, now_ms, keep, windows, key, mine)
+    Db.close_conn(conn)
+    Db.close_db(db)
+    Ok(done)
+}
+
 export fn record_found(p Paths, d Discovered, at_ms int, windows bool) Db Fs Random -> Result[int, StartFail] {
     ro key = ensure_key(p.key_file, dir_of(p.key_file, windows)).map_err(fn(f OpenFail) -> StartFail => StartFail.Open(f))?
     ro mine = ensure_instance(p.instance_file, dir_of(p.instance_file, windows))
