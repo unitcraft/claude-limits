@@ -18,7 +18,7 @@ import claude_limits.model.snapshot.{SeverityBounds}
 import claude_limits.model.snapshot.{AccountState}
 import feed.{Found, stable_id, found_in, poll_round, expiry_text}
 import feed.{Rounds, RoundLog, store_and_poll}
-import claude_limits.model.store_fiber.{Envelope, Store}
+import claude_limits.model.store_fiber.{Envelope, Store, ConfNow}
 import claude_limits.server.dto.{SnapshotView}
 import std.concurrency.nvchan.{Chan}
 import std.testing.handlers.{fixed_ms}
@@ -203,9 +203,10 @@ test "no folders at all: an empty round and an empty body, not a crash" {
 type Said {
     mut rounds int
     mut accounts int
+    mut looked int
 }
 
-fn Said.new() -> Said => { rounds: 0, accounts: 0 }
+fn Said.new() -> Said => { rounds: 0, accounts: 0, looked: 0 }
 
 /// The loop over a store whose channel holds ONE `Tick` and is then closed: the first
 /// round runs at once, the tick runs a second, and the closed channel ends the loop --
@@ -224,6 +225,10 @@ fn loop_with_one_tick() -> Said {
             said.rounds += 1
             said.accounts = view.accounts.len()
         }
+        settings(held ConfNow) -> ConfNow {
+            said.looked += 1
+            held
+        }
     } {
         on_disk(fn() Dirs Creds -> () => endpoint(a, reply_ok(), fn() Http PollLog Creds -> () => store_and_poll(pair.rx, rounds)))
     }
@@ -237,4 +242,12 @@ test "the loop runs a round at once and one per tick, saying each through RoundL
     // round to nobody -- the database would miss every second round, or the first.
     assert(said.rounds == 2)
     assert(said.accounts > 0)
+}
+
+test "after every round the loop looks at the settings file, the first round included" {
+    // 01.2 section 2.2: a hand edit is picked up on the next tick. A loop that looked
+    // only on ticks would leave the first interval blind; one that never looked would
+    // keep a hand-edited file unseen until the first save collided with it.
+    ro said = loop_with_one_tick()
+    assert(said.looked == said.rounds)
 }

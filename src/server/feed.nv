@@ -41,7 +41,7 @@ import claude_limits.accounts.group.{group}
 import claude_limits.cli.table.{short_name}
 import claude_limits.server.dto.{DirView, SnapshotView}
 import claude_limits.model.live.{Known, view_of}
-import claude_limits.model.store_fiber.{Envelope, StoreState, step, Store}
+import claude_limits.model.store_fiber.{Envelope, StoreState, step, Store, ConfNow}
 import std.time.duration.{Duration}
 import claude_limits.model.store.{Snapshot}
 import std.concurrency.nvchan.{ChanRx}
@@ -224,6 +224,14 @@ export fn one_round(r Rounds) Http PollLog Creds Dirs Time -> SnapshotView {
 /// not held open across a network round).
 export type RoundLog effect {
     done(view SnapshotView) -> ()
+    // Between rounds: the settings as they should stand, given what the store holds
+    // (01.2 §2.2, "при каждом тике опроса: если `mtime` файла изменился --
+    // перечитать"). The answer goes straight into the store's state.
+    //
+    // AN OPERATION OF THE LOOP, NOT A REQUEST TO THE STORE: the loop IS the store, and
+    // a request it sent itself would wait for a reply only it could give. (Plain
+    // comments: the parser takes no doc comment on an effect operation.)
+    settings(held ConfNow) -> ConfNow
 }
 
 /// The timer fiber: a `Tick` every `interval_sec`, until the store is gone.
@@ -231,7 +239,7 @@ export type RoundLog effect {
 /// Its own fiber because the store loop is busy answering requests between rounds; a
 /// `recv` with a timeout would tie the poll interval to the arrival of requests.
 export fn tick_every(store Store, interval_sec int) Time -> () {
-    ro every = if interval_sec < 1 { 1 } else { interval_sec }
+    ro every = interval_sec.max(1)
     loop {
         Time.sleep(every.to_seconds())
         if !store.tick() { break }
@@ -253,6 +261,7 @@ export fn store_and_poll(rx ChanRx[Envelope], r Rounds) Http PollLog RoundLog Cr
     mut st = StoreState.new(Snapshot.empty())
     mut before = round(st, [], r)
     RoundLog.done(st.view)
+    st.conf = RoundLog.settings(st.conf)
     mut going = true
     while going {
         match rx.recv() {
@@ -261,6 +270,7 @@ export fn store_and_poll(rx ChanRx[Envelope], r Rounds) Http PollLog RoundLog Cr
                 StoreAsk.Tick => {
                     before = round(st, before, r)
                     RoundLog.done(st.view)
+                    st.conf = RoundLog.settings(st.conf)
                 }
                 _ => step(st, env.req)
             }

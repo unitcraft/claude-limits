@@ -165,6 +165,12 @@ fn mtime_of(path str) Fs -> i64 =>
 // its own source), and the parse error it gives points at the CALL, not the name.
 fn file_there(path str) Fs -> bool => try_exists(path.to_path()) ?? false
 
+/// Has the file on disk moved since `before` was read? `changed`, asked of the disk.
+///
+/// The poll loop asks this between rounds (01.2 §2.2): a stat, not a read -- the file
+/// is read again only when this says it moved.
+export fn on_disk_changed(path str, before Loaded) Fs -> bool => changed(before, mtime_of(path), file_there(path))
+
 /// Read the file, or report the defaults when there is none.
 ///
 /// A MISSING FILE IS NOT AN ERROR (01.2 §2.2: a first start has no file and must come

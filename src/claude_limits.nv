@@ -48,7 +48,7 @@ import polaris.net.{ServerPolicy}
 import polaris.serve.{serve_router}
 import claude_limits.config.{Config, listen_addr}
 import claude_limits.storage.paths.{resolve}
-import claude_limits.storage.config_file.{load, save, ConfigHistory, FromUi}
+import claude_limits.storage.config_file.{load, save, ConfigHistory, FromUi, on_disk_changed}
 import claude_limits.server.app.{api_router}
 import claude_limits.server.handlers.config.{base_url, Committed, only_ui_changed}
 import claude_limits.server.start.{real_paths_input, decide_start, sources_at_start, conf_at_start, DbAtStart}
@@ -238,6 +238,12 @@ fn rounds_recorded(rx ChanRx[Envelope], rounds Rounds, paths Paths, win bool, ca
         record(email str, state str, message str, at_ms int) -> () {}
         reading(r Reading) -> () { got.items.push(r) }
     }, RoundLog = effect RoundLog {
+        settings(held ConfNow) -> ConfNow {
+            match settings_if_moved(where, held) {
+                Some(next) => next
+                None => held
+            }
+        }
         done(view SnapshotView) -> () {
             record_round(where, on_windows, view, got.items, folders)
             got.items = []
@@ -424,6 +430,22 @@ fn commit_settings(paths Paths, windows bool, store Store, after Config) Time ->
     { saved, live: only_ui_changed(was.cfg, after) }
 }
 
+/// Between rounds: re-read the settings file if it moved (01.2 §2.2).
+///
+/// Before the start has handed the store its settings (`tag` empty) there is nothing to
+/// compare against, and the start's own read is about to arrive -- so nothing is done.
+///
+/// `None` for "keep what you hold", and the handler hands `held` back itself: returning
+/// the `ro` parameter from here would be refused (E_READONLY_COERCE, D246), and a record
+/// has no `clone`.
+fn settings_if_moved(paths Paths, held ConfNow) -> Option[ConfNow] {
+    if held.tag == "" { return None }
+    ro moved = with Fs = real_fs() { on_disk_changed(paths.config_file, held.loaded) }
+    if !moved { return None }
+    println("claude-limits: the settings file changed on disk and was read again")
+    Some(taken_from_disk(paths, held))
+}
+
 /// The settings after a hand edit: the file as it is now, judged as a start judges it.
 ///
 /// WITHOUT THIS A HAND EDIT LOCKS THE PANEL OUT. The store would keep the old read, the
@@ -438,7 +460,11 @@ fn taken_from_disk(paths Paths, was ConfNow) -> ConfNow {
     ro reread = with Fs = real_fs() { load(paths.config_file) }
     match decide_start(reread) {
         Start.Go(cfg, _) => conf_at_start(cfg, reread)
-        Start.Refuse(_) => conf_at_start(was.cfg, reread)
+        Start.Refuse(lines) => {
+            println("claude-limits: the settings file has errors; the previous values stay in force:")
+            for l in lines { println("  ${l}") }
+            conf_at_start(was.cfg, reread)
+        }
     }
 }
 
