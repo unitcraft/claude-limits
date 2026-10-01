@@ -50,8 +50,8 @@ import claude_limits.config.{Config, listen_addr}
 import claude_limits.storage.paths.{resolve}
 import claude_limits.storage.config_file.{load, save, ConfigHistory, FromUi, on_disk_changed}
 import claude_limits.server.app.{api_router}
-import claude_limits.server.handlers.config.{base_url, Committed, only_ui_changed}
-import claude_limits.server.start.{real_paths_input, decide_start, sources_at_start, conf_at_start, DbAtStart}
+import claude_limits.server.handlers.config.{base_url, Committed, only_ui_changed, render_state}
+import claude_limits.server.start.{real_paths_input, decide_start, sources_at_start, conf_at_start, config_now, DbAtStart}
 import claude_limits.storage.startup.{migrations_in, bundled, open_for_serve, record_readings, read_history_rows, record_found, Ready, StartFail, Upkeep, Upkept, forget_account, ForgetDone, upkeep_daily, record_config_version}
 import claude_limits.storage.maintenance.{machine_rollup_tz}
 import claude_limits.storage.discovery_write.{Discovered, discovered}
@@ -62,8 +62,10 @@ import claude_limits.server.dto.{Disclosure}
 import claude_limits.storage.db.{owner_changed, owner_line}
 import duckdb.db_effect.{Db}
 import duckdb.db_real.{with_real_db}
-import claude_limits.server.feed.{Rounds, one_round, RoundLog, store_and_poll, tick_every}
-import claude_limits.model.store_fiber.{Envelope, Store, ConfNow}
+import claude_limits.server.feed.{Rounds, one_round, RoundLog, Settled, store_and_poll, tick_every, ping_every}
+import claude_limits.model.store_fiber.{Envelope, Store, ConfNow, Follower}
+import claude_limits.model.store.{Event}
+import claude_limits.server.handlers.events.{Live}
 import std.concurrency.nvchan.{Chan, ChanRx}
 import claude_limits.model.snapshot.{SeverityBounds}
 import claude_limits.server.dto.{SnapshotView}
@@ -238,10 +240,10 @@ fn rounds_recorded(rx ChanRx[Envelope], rounds Rounds, paths Paths, win bool, ca
         record(email str, state str, message str, at_ms int) -> () {}
         reading(r Reading) -> () { got.items.push(r) }
     }, RoundLog = effect RoundLog {
-        settings(held ConfNow) -> ConfNow {
+        settings(held ConfNow, view SnapshotView) -> Settled {
             match settings_if_moved(where, held) {
-                Some(next) => next
-                None => held
+                Some(next) => Settled.new(next, render_state(config_now(next, where, view)))
+                None => Settled.new(held, "")
             }
         }
         done(view SnapshotView) -> () {
@@ -417,8 +419,13 @@ fn commit_settings(paths Paths, windows bool, store Store, after Config) Time ->
     }
     if saved.ok() {
         ro reread = with Fs = real_fs() { load(paths.config_file) }
+        ro now_conf = conf_at_start(after, reread)
         // nova:allow W_RESULT_DISCARDED -- a store that is gone cannot be told; the file is written either way
-        ro _ = store.set_conf(conf_at_start(after, reread))
+        ro _ = store.set_conf(now_conf)
+        // Every open page hears it (01.3 §3.4 `config`): another tab's panel and order
+        // would otherwise keep showing the settings this save replaced.
+        // nova:allow W_RESULT_DISCARDED -- a store that is gone has no streams to tell
+        ro _e = store.publish("config", render_state(config_now(now_conf, paths, store.view())))
     }
     match saved {
         Saved.Conflict => {
@@ -466,6 +473,17 @@ fn taken_from_disk(paths Paths, was ConfNow) -> ConfNow {
             conf_at_start(was.cfg, reread)
         }
     }
+}
+
+/// `/api/events`' live stream: a channel of its own, handed to the store.
+///
+/// 128 deep: a client coming back with `Last-Event-ID` may be owed the whole ring of
+/// a hundred, and the store never waits on a reader -- a stream whose channel refuses
+/// is dropped, so the depth decides who survives a burst.
+fn open_live(store Store, after int) -> Live {
+    ro p = Chan[Event].new(128)
+    ro got = store.follow(after, Follower.unregistered(p.tx, p.rx))
+    Live.new(got.id, got.fresh, got.snapshot_id, p.rx)
 }
 
 fn db_seen(r Ready, size int) -> DbAtStart =>
@@ -621,13 +639,15 @@ fn serve_mode(exe str, config_override str) Io Net Time Detach -> int {
                     ro router = api_router(sources_at_start(cfg, paths, moment_iso(now), now, db_state, fn() -> SnapshotView => store.view(),
                         fn(a HistoryAsk) -> HistoryLoad => history_from_db(paths, win, store.view(), a),
                         fn() -> ConfNow => store.conf(),
-                        fn(c Config) -> Committed => commit_settings(paths, win, store, c)))!!
+                        fn(c Config) -> Committed => commit_settings(paths, win, store, c),
+                        fn(a int) -> Option[Live] => Some(open_live(store, a))))!!
                     println("claude-limits: listening on ${base_url(cfg)}/  (Ctrl+C to stop)")
                     ro every = cfg.poll.interval_sec
                     ro rx = pair.rx
                     supervised {
                         spawn consume listener { serve_router(listener, router, ServerPolicy.new()) }
                         spawn { tick_every(store, every) }
+                        spawn { ping_every(store, 30) }
                         run_rounds(rx, rounds, paths, win, care, keep)
                     }
                     return EXIT_OK

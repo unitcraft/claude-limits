@@ -19,7 +19,7 @@ import claude_limits.model.store.{Registry}
 import claude_limits.server.handlers.health.{HealthState}
 import claude_limits.server.handlers.snapshot.{SnapshotState}
 import claude_limits.server.handlers.refresh.{RefreshState}
-import claude_limits.server.handlers.events.{EventsState}
+import claude_limits.server.handlers.events.{EventsState, Live}
 import claude_limits.server.handlers.config.{ConfigState, Committed}
 import claude_limits.storage.config_file.{Saved}
 import claude_limits.server.handlers.folders.{ProbeState}
@@ -72,7 +72,8 @@ fn view_of_nothing() -> SnapshotView => {
 // inline, every one of these became a `Router` in C.
 fn snap_empty() -> SnapshotState => { view: view_of_nothing(), order: [], hidden: [], config_etag: "", disclosure: Disclosure.Loopback }
 fn refresh_empty() -> RefreshState => { now_ms: 0, floor_sec: 60, targets: [] }
-fn events_empty() -> EventsState => { reg: Registry.new(), snapshot_body: "{}", rest: [] }
+fn no_store(after int) -> Option[Live] => None
+fn events_empty() -> EventsState => { reg: Registry.new(), snapshot_body: "{}", rest: [], follow: fn(a int) -> Option[Live] => no_store(a) }
 fn config_empty() -> ConfigState => { cfg: Config.defaults(), etag: "", path: "", portable: false, folders: [], accounts_found: [], disclosure: Disclosure.Loopback }
 fn never_written() -> Committed => { saved: Saved.WriteFailed, live: false }
 fn probe_empty() -> ProbeState => { now_ms: 0, listed: [], known: [], disclosure: Disclosure.Loopback }

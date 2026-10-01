@@ -24,7 +24,8 @@ module handlers.events
 import claude_limits.server.routes.{Ctx, ApiHandler, problem}
 import claude_limits.server.errors.{ApiError}
 import claude_limits.model.store.{Event, Registry, since, missed, MAX_SUBSCRIBERS}
-import polaris.{ServerResponse, StreamBody}
+import polaris.{ServerResponse, StreamBody, stream_body}
+import std.concurrency.nvchan.{ChanRx}
 
 /// At most this many at once (§3.4). The thirty-third is told no.
 
@@ -132,6 +133,23 @@ export fn opening_bytes(op Opening, next_id int, snapshot_body str) -> str {
     }
 }
 
+/// The stream the store opened for one client (T2.13).
+export type Live value {
+    /// -1: the registry is full, and the answer is 503.
+    ro id int
+    /// Open with a whole `snapshot` carrying `snapshot_id`; otherwise the missed
+    /// events are already waiting in `rx`.
+    ro fresh bool
+    ro snapshot_id int
+    ro rx ChanRx[Event]
+}
+
+export fn Live.new(id int, fresh bool, snapshot_id int, rx ChanRx[Event]) -> Live => { id, fresh, snapshot_id, rx }
+
+/// Open a live stream for a client that has seen everything up to the given id (-1:
+/// nothing). `None`: there is no store to follow -- a test, which streams `rest`.
+export type Follow fn(int) -> Option[Live]
+
 /// Everything the handler needs, read fresh on every request.
 export type EventsState value {
     reg Registry
@@ -142,13 +160,43 @@ export type EventsState value {
     /// channel loop; in a test it is a finite list, which is what makes the wire
     /// comparable at all.
     rest []Event
+    follow Follow
 }
 
 export type EventsSource fn() -> EventsState
 
+// Hoisted: calling a captured fn value by identifier is the [M-16] mis-codegen.
+fn follow_now(f Follow, after int) -> Option[Live] => f(after)
+
+/// The opening, then whatever the store sends, frame by frame, until it closes the
+/// channel (it does when the client stops reading: see `store_fiber.ping`).
+fn tail(first str, rx ChanRx[Event]) -> StreamBody {
+    mut opened = first == ""
+    stream_body(|| {
+        if !opened {
+            opened = true
+            Some(first.bytes().clone())
+        } else {
+            match rx.recv() {
+                Some(e) => Some(frame(e).bytes().clone())
+                None => None
+            }
+        }
+    })
+}
+
 // Hoisted and param-captured for the [M-16] reason named in `routes.nv`.
 fn run(src EventsSource, ctx Ctx) -> ServerResponse {
     ro st = src()
+    ro after = last_seen(header_of(ctx, "last-event-id")) ?? -1
+    match follow_now(st.follow, after) {
+        Some(live) => {
+            if live.id < 0 { return problem(ApiError.too_many_subscribers(), ctx.request_id, ctx.instance) }
+            ro first = if live.fresh { frame(Event.new(live.snapshot_id, "snapshot", st.snapshot_body)) } else { "" }
+            return ServerResponse.sse(tail(first, live.rx))
+        }
+        None => ()
+    }
     ro op = opening(st.reg, header_of(ctx, "last-event-id"))
     match op {
         Opening.Refused(e) => problem(e, ctx.request_id, ctx.instance)

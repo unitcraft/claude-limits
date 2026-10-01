@@ -12,7 +12,7 @@
 module model.store_fiber_test
 
 import std.concurrency.nvchan.{Chan}
-import store_fiber.{Envelope, Store, ConfNow, run}
+import store_fiber.{Envelope, Store, ConfNow, Follower, Followed, STALE_BACKLOG, run}
 import claude_limits.config.{Config}
 import store.{Snapshot, AccountSlot, Event}
 import claude_limits.server.dto.{SnapshotView}
@@ -208,4 +208,91 @@ test "the settings start empty-tagged, and a set is what the next reader gets" {
     })
     assert(got.tag == "\"t-120\"")
     assert(got.cfg.poll.interval_sec == 120)
+}
+
+// -- live streams (T2.13): the store hands each stream its own channel --
+
+fn stream_pair() -> Follower {
+    ro p = Chan[Event].new(128)
+    Follower.unregistered(p.tx, p.rx)
+}
+
+type Opened value { ro got Followed, ro first Event, ro snap_id_reused bool }
+fn Opened.new(got Followed, first Event, snap_id_reused bool) -> Opened => { got, first, snap_id_reused }
+
+test "a new stream opens fresh, its snapshot id is its own, and later events reach it" {
+    ro o = with_store(Snapshot.empty(), fn(s Store) -> Opened {
+        ro f = stream_pair()
+        ro got = s.follow(-1, f)
+        ro ev = s.publish("snapshot", "{\"n\":1}") ?? Event.new(0, "", "")
+        Opened.new(got, f.rx.try_recv() ?? Event.new(0, "", ""), ev.id == got.snapshot_id)
+    })
+    assert(o.got.id > 0)
+    assert(o.got.fresh)
+    // An opening snapshot that shared its id with the next event would make a client
+    // returning with that id skip the event.
+    assert(!o.snap_id_reused)
+    assert(o.first.name == "snapshot")
+    assert(o.first.data == "{\"n\":1}")
+}
+
+test "a stream that comes back with Last-Event-ID is caught up from the ring, not refreshed" {
+    ro o = with_store(Snapshot.empty(), fn(s Store) -> Opened {
+        ro a = s.publish("snapshot", "1") ?? Event.new(0, "", "")
+        ro _b = s.publish("config", "2")
+        ro _c = s.publish("snapshot", "3")
+        ro f = stream_pair()
+        ro got = s.follow(a.id, f)
+        Opened.new(got, f.rx.try_recv() ?? Event.new(0, "", ""), false)
+    })
+    assert(!o.got.fresh)
+    assert(o.first.name == "config")
+    assert(o.first.data == "2")
+}
+
+type Ids2 value { ro last int, ro after_reap int }
+fn Ids2.new(last int, after_reap int) -> Ids2 => { last, after_reap }
+
+test "the thirty-third stream is refused, and streams nobody reads are dropped by the pings" {
+    // Polaris has no "client went away" hook. A closed tab stops reading; four pings
+    // unread drop it. Without that, 32 closed tabs would lock the page out with 503.
+    ro r = with_store(Snapshot.empty(), fn(s Store) -> Ids2 {
+        mut i = 0
+        while i < 32 {
+            ro _ = s.follow(-1, stream_pair())
+            i += 1
+        }
+        ro over = s.follow(-1, stream_pair())
+        mut k = 0
+        while k < STALE_BACKLOG + 1 {
+            assert(s.ping("2026-10-02T00:00:00Z"))
+            k += 1
+        }
+        ro again = s.follow(-1, stream_pair())
+        Ids2.new(over.id, again.id)
+    })
+    assert(r.last == -1)
+    assert(r.after_reap > 0)
+}
+
+test "a stream that reads is not dropped by the pings" {
+    ro alive = with_store(Snapshot.empty(), fn(s Store) -> bool {
+        ro f = stream_pair()
+        ro _ = s.follow(-1, f)
+        mut k = 0
+        mut got_all = true
+        while k < STALE_BACKLOG + 2 {
+            assert(s.ping("2026-10-02T00:00:00Z"))
+            // The store answers in order, so a reply to this request means the ping
+            // before it has been delivered.
+            ro _v = s.view()
+            match f.rx.try_recv() {
+                Some(e) => { if e.name != "ping" { got_all = false } }
+                None => { got_all = false }
+            }
+            k += 1
+        }
+        got_all && !f.rx.is_closed()
+    })
+    assert(alive)
 }

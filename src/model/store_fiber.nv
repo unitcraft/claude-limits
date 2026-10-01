@@ -32,6 +32,38 @@ import claude_limits.server.dto.{SnapshotView}
 import claude_limits.config.{Config}
 import claude_limits.storage.config_file.{Loaded}
 
+/// One live event stream (T2.13): its id in the registry and the channel its
+/// connection reads.
+///
+/// `rx` IS KEPT HERE TOO, only to be measured. Polaris pulls a stream while it can
+/// write and has no "the client went away" hook, so a closed tab is noticed by what it
+/// stops doing: it stops reading. Its channel then fills, and `Ping` drops a stream
+/// with `STALE_BACKLOG` unread events -- which is what keeps a page opened and closed
+/// thirty-two times from locking everyone out with `503`.
+export type Follower value {
+    ro id int
+    ro tx ChanTx[Event]
+    ro rx ChanRx[Event]
+}
+
+/// What `Follow` answered.
+export type Followed value {
+    /// The stream's id, or -1: the registry is full (§3.4: the thirty-third gets 503).
+    ro id int
+    /// `true`: open with a whole `snapshot` carrying `snapshot_id`. `false`: the events
+    /// the client missed are already in its channel.
+    ro fresh bool
+    /// An id the store gave THIS opening snapshot and nobody else -- taking `next_id`
+    /// without consuming it would hand the next real event the same id, and a client
+    /// coming back with it would skip that event.
+    ro snapshot_id int
+}
+
+/// Unread events at which a stream counts as abandoned, judged at each `Ping`. A
+/// reading client drains its channel in milliseconds; four pings unread is two minutes
+/// of a tab that is gone.
+export const STALE_BACKLOG = 4
+
 /// The settings this process runs on, and the file they came from (01.2 §2.2).
 ///
 /// HELD BY THE STORE, for the reason the snapshot is: connection fibers run beside
@@ -93,6 +125,12 @@ export type StoreAsk enum
     | GetConf(ChanTx[ConfNow])
     /// Replace them: a save went to disk. No reply, like `SetView`.
     | SetConf(ConfNow)
+    /// Open a live stream: register the channel, put into it what the client missed
+    /// after `after` (-1: it has seen nothing), and say how the stream opens.
+    | Follow(int, Follower, ChanTx[Followed])
+    /// Thirty seconds have passed (§3.4): a `ping` to every stream, with the moment;
+    /// abandoned streams are dropped here. No reply.
+    | Ping(str)
     /// Time for a poll round. Sent by a timer fiber; acted on by the loop that owns the
     /// poller, because the poll cannot run in a spawned fiber (D446 refuses the chain).
     | Tick
@@ -173,6 +211,7 @@ export type StoreState {
     mut reg Registry
     mut view SnapshotView
     mut conf ConfNow
+    mut followers []Follower
 }
 
 /// The state a store starts in. See `run` for why the snapshot is replayed, not copied.
@@ -181,7 +220,7 @@ export fn StoreState.new(start Snapshot) -> StoreState {
     for slot in start.accounts { merge(snap, slot) }
     snap.fetched_at_ms = start.fetched_at_ms
     snap.restored = start.restored
-    { snap, reg: Registry.new(), view: nothing_yet(), conf: ConfNow.none() }
+    { snap, reg: Registry.new(), view: nothing_yet(), conf: ConfNow.none(), followers: [] }
 }
 
 /// Answer one request. `Tick` is not answered here: it asks for a poll round, which
@@ -197,8 +236,13 @@ export fn step(mut st StoreState, ask StoreAsk) -> () {
         StoreAsk.Unsubscribe(id) => { unsubscribe(st.reg, id) }
         StoreAsk.Publish(name, data, reply) => {
             // nova:allow W_RESULT_DISCARDED -- the asker is gone; there is nothing to do and nobody to tell
-            ro _ = reply.send(publish(st.reg, name, data))
+            ro _ = reply.send(announce(st, name, data))
         }
+        StoreAsk.Follow(after, f, reply) => {
+            // nova:allow W_RESULT_DISCARDED -- the asker is gone; its stream was never opened
+            ro _ = reply.send(follow(st, after, f))
+        }
+        StoreAsk.Ping(at) => { ping(st, at) }
         // nova:allow W_RESULT_DISCARDED -- the asker is gone; there is nothing to do and nobody to tell
         StoreAsk.Since(after, reply) => { ro _ = reply.send(Events.new(since(st.reg, after))) }
         // nova:allow W_RESULT_DISCARDED -- the asker is gone; there is nothing to do and nobody to tell
@@ -211,6 +255,75 @@ export fn step(mut st StoreState, ask StoreAsk) -> () {
         StoreAsk.SetConf(c) => { st.conf = c }
         StoreAsk.Tick => ()
     }
+}
+
+// ── the live streams ─────────────────────────────────────────────────────────
+
+/// Publish an event: into the ring, and to every live stream.
+///
+/// `try_send`, NEVER `send`: the store must not wait on a reader. A stream whose
+/// channel refuses (full, or closed) is dropped -- the client comes back with
+/// `Last-Event-ID` and is caught up by replay, or by a snapshot if it fell off the ring.
+export fn announce(mut st StoreState, name str, data str) -> Event {
+    ro ev = publish(st.reg, name, data)
+    mut keep []Follower = []
+    for f in st.followers {
+        if f.tx.try_send(ev) {
+            keep.push(f)
+        } else {
+            unsubscribe(st.reg, f.id)
+            f.tx.close()
+        }
+    }
+    st.followers = keep
+    ev
+}
+
+fn follower_of(id int, f Follower) -> Follower => { id, tx: f.tx, rx: f.rx }
+
+/// A stream's channel pair, before the store has given it an id.
+export fn Follower.unregistered(tx ChanTx[Event], rx ChanRx[Event]) -> Follower => { id: 0, tx, rx }
+
+/// Open a stream (§3.4): the limit first, then replay or a snapshot.
+export fn follow(mut st StoreState, after int, f Follower) -> Followed {
+    ro id = subscribe(st.reg)
+    if id < 0 {
+        f.tx.close()
+        return { id: -1, fresh: true, snapshot_id: 0 }
+    }
+    ro pending = if after < 0 { []Event.new() } else { since(st.reg, after) }
+    ro fresh = after < 0 || missed(st.reg, after) || pending.len() == 0
+    mut snapshot_id = 0
+    if fresh {
+        snapshot_id = st.reg.next_id
+        st.reg.next_id += 1
+    } else {
+        // nova:allow W_RESULT_DISCARDED -- the channel is new and sized for the whole ring
+        for e in pending { ro _ = f.tx.try_send(e) }
+    }
+    // The id is the REGISTRY's, not the caller's: the caller cannot know it before
+    // asking, and a stream dropped under a wrong id would leave the real one counted.
+    st.followers.push(follower_of(id, f))
+    { id, fresh, snapshot_id }
+}
+
+/// A `ping` to every stream; one that has stopped reading is dropped.
+///
+/// The ping does NOT take an id (§3.4 numbers what can be replayed, and a ping cannot
+/// be): it carries the last one published, so a client that reconnects after a ping
+/// asks for exactly what it has not seen.
+export fn ping(mut st StoreState, at str) -> () {
+    ro ev = Event.new(st.reg.next_id - 1, "ping", "{\"at\":\"${at}\"}")
+    mut keep []Follower = []
+    for f in st.followers {
+        if f.rx.len() < STALE_BACKLOG && f.tx.try_send(ev) {
+            keep.push(f)
+        } else {
+            unsubscribe(st.reg, f.id)
+            f.tx.close()
+        }
+    }
+    st.followers = keep
 }
 
 // ── the caller's side ────────────────────────────────────────────────────────
@@ -311,6 +424,20 @@ export fn Store @conf() -> ConfNow {
     // nova:allow W_RESULT_DISCARDED -- a failed send surfaces as `None` below, answered with the empty settings
     ro _ = @tx.send(Envelope.new(StoreAsk.GetConf(pair.tx)))
     pair.rx.recv() ?? ConfNow.none()
+}
+
+/// Open a live stream for a client that has seen everything up to `after` (-1: nothing).
+/// With the store gone, a refusal (`id` -1): there is nothing to stream from.
+export fn Store @follow(after int, f Follower) -> Followed {
+    ro pair = Chan[Followed].new(1)
+    // nova:allow W_RESULT_DISCARDED -- a failed send surfaces as `None` below, answered with a refusal
+    ro _ = @tx.send(Envelope.new(StoreAsk.Follow(after, f, pair.tx)))
+    pair.rx.recv() ?? { id: -1, fresh: true, snapshot_id: 0 }
+}
+
+/// The ping timer's request. `false` means the store is gone.
+export fn Store @ping(at str) -> bool {
+    @tx.send(Envelope.new(StoreAsk.Ping(at)))
 }
 
 /// Ask for a poll round. `false` means the store is gone -- the timer's cue to stop.

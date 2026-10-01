@@ -37,7 +37,7 @@ import claude_limits.server.app.{Sources}
 import claude_limits.server.handlers.health.{HealthState}
 import claude_limits.server.handlers.snapshot.{SnapshotState, arrange}
 import claude_limits.server.handlers.refresh.{RefreshState}
-import claude_limits.server.handlers.events.{EventsState}
+import claude_limits.server.handlers.events.{EventsState, Follow}
 import claude_limits.server.handlers.config.{ConfigState, ConfigCommit, FolderView, LoginDirView, AccountFound, tag_of}
 import claude_limits.model.store_fiber.{ConfNow}
 import claude_limits.server.handlers.folders.{ProbeState}
@@ -192,15 +192,15 @@ fn refresh_at_start(cfg Config, now_ms int) -> RefreshState => {
 /// poll, ten seconds later -- on load, and again on every reconnect. The stream still
 /// ends after this first event (the channel loop is T2.13's), so the page then polls,
 /// and says `polling`; what it shows is now the truth.
-fn events_now(s SnapshotState) -> EventsState =>
-    { reg: Registry.new(), snapshot_body: render_snapshot(arrange(s.view, s.order, s.hidden, false), s.disclosure), rest: [] }
+fn events_now(s SnapshotState, follow Follow) -> EventsState =>
+    { reg: Registry.new(), snapshot_body: render_snapshot(arrange(s.view, s.order, s.hidden, false), s.disclosure), rest: [], follow }
 
 /// The snapshot's order and hidden list come from the settings AS THEY STAND: a saved
 /// `ui` change is live at once (01.3 §3.8), and a page that kept the start's order
 /// after a `200` would contradict the reply it just got.
 fn snapshot_now(v SnapshotView, c ConfNow) -> SnapshotState => snapshot_around(v, c.cfg, c.tag)
 
-fn config_now(c ConfNow, paths Paths, v SnapshotView) -> ConfigState => {
+export fn config_now(c ConfNow, paths Paths, v SnapshotView) -> ConfigState => {
     cfg: c.cfg, etag: c.tag, path: paths.config_file, portable: paths.portable,
     folders: folders_seen(c.cfg, v), accounts_found: accounts_seen(c.cfg, v),
     disclosure: Disclosure.Loopback,
@@ -318,13 +318,14 @@ fn history_env_now(keep_days int) Time -> HistoryEnv => { now_ms: Time.now().uni
 /// (the reply said `restart_required`), and `health` reporting the new port would
 /// describe a listener that does not exist.
 export fn sources_at_start(cfg Config, paths Paths, started_at str, now_ms int, db DbAtStart, current fn() -> SnapshotView,
-                           history fn(HistoryAsk) -> HistoryLoad, conf fn() -> ConfNow, commit ConfigCommit) -> Sources {
+                           history fn(HistoryAsk) -> HistoryLoad, conf fn() -> ConfNow, commit ConfigCommit,
+                           follow Follow) -> Sources {
     ro keep = cfg.history.keep_days
     Sources.new(
         fn() -> HealthState => health_at(cfg, paths, started_at, db),
         fn() -> SnapshotState => snapshot_now(current(), conf()),
         fn() -> RefreshState => refresh_at_start(cfg, now_ms),
-        fn() -> EventsState => events_now(snapshot_now(current(), conf())),
+        fn() -> EventsState => events_now(snapshot_now(current(), conf()), follow),
         fn() -> ConfigState => config_now(conf(), paths, current()),
         commit,
         fn() -> ProbeState => probe_at_start(now_ms),

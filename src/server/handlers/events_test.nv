@@ -17,7 +17,8 @@ import claude_limits.server.routes.{HttpMethod, on, route, build}
 import claude_limits.model.store.{Registry, Event, publish, subscribe}
 import polaris.{Router, serve_once}
 import std.testing.handlers as th
-import events.{EventsState, Opening, frame, frames, last_seen, opening, opening_bytes, events_handler}
+import events.{EventsState, Opening, frame, frames, last_seen, opening, opening_bytes, events_handler, Live}
+import std.concurrency.nvchan.{Chan}
 
 fn wire_str(wire []u8) -> str => unsafe { wire.to_str_unchecked() }
 
@@ -79,7 +80,9 @@ fn with_events(n int) -> Registry {
     reg
 }
 
-fn state_of(reg Registry, rest []Event) -> EventsState => { reg, snapshot_body: SNAP, rest }
+fn no_store(after int) -> Option[Live] => None
+
+fn state_of(reg Registry, rest []Event) -> EventsState => { reg, snapshot_body: SNAP, rest, follow: fn(a int) -> Option[Live] => no_store(a) }
 
 fn app(reg Registry, rest []Event) -> Router {
     ro r = reg
@@ -275,4 +278,53 @@ test "a fresh opening numbers the snapshot with the next id, not zero" {
     // whole ring on the next reconnect.
     ro reg = with_events(10)
     assert(opening_bytes(Opening.Fresh, reg.next_id, SNAP).starts_with("id: 11\nevent: snapshot"))
+}
+
+// -- the live tail (T2.13): what the store opened, streamed frame by frame --
+
+/// A live stream whose channel already holds `evs` and is then closed, so `serve_once`
+/// drains it to the end.
+fn live_with(id int, fresh bool, snapshot_id int, evs []Event) -> Live {
+    ro p = Chan[Event].new(16)
+    // nova:allow W_RESULT_DISCARDED -- a fresh channel of 16 takes these few
+    for e in evs { ro _ = p.tx.try_send(e) }
+    p.tx.close()
+    Live.new(id, fresh, snapshot_id, p.rx)
+}
+
+fn live_state(l Live) -> EventsState {
+    ro got = l
+    { reg: Registry.new(), snapshot_body: SNAP, rest: [], follow: fn(a int) -> Option[Live] => Some(got) }
+}
+
+fn serve_live(l Live, raw []u8) Time Random -> []u8 {
+    ro st = live_state(l)
+    serve_once(build([route("/api/events", [on(HttpMethod.Get, events_handler(fn() -> EventsState => st))])])!!, raw)
+}
+
+test "a live stream opens with the snapshot under the store's id, then streams what the store sends" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro w = serve_live(live_with(4, true, 9, [Event.new(10, "snapshot", "{\"n\":2}"), Event.new(11, "config", "{}")]), req())
+        assert(status_of(w) == "HTTP/1.1 200 OK")
+        ro b = body_of(w)
+        assert(b.contains("id: 9\nevent: snapshot\ndata: ${SNAP}"))
+        assert(b.contains("id: 10\nevent: snapshot\ndata: {\"n\":2}"))
+        assert(b.contains("id: 11\nevent: config"))
+    }
+}
+
+test "a live stream caught up by replay opens with no snapshot at all" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro b = body_of(serve_live(live_with(4, false, 0, [Event.new(6, "config", "{}")]), req_last("5")))
+        assert(!b.contains("event: snapshot"))
+        assert(b.contains("id: 6\nevent: config"))
+    }
+}
+
+test "a stream the store refused is 503 too_many_subscribers with Retry-After" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro w = serve_live(live_with(-1, true, 0, []), req())
+        assert(status_of(w).contains("503"))
+        assert(body_of(w).contains("too_many_subscribers"))
+    }
 }

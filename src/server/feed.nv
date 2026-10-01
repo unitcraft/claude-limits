@@ -41,7 +41,9 @@ import claude_limits.accounts.group.{group}
 import claude_limits.cli.table.{short_name}
 import claude_limits.server.dto.{DirView, SnapshotView}
 import claude_limits.model.live.{Known, view_of}
-import claude_limits.model.store_fiber.{Envelope, StoreState, step, Store, ConfNow}
+import claude_limits.model.store_fiber.{Envelope, StoreState, step, Store, ConfNow, announce}
+import claude_limits.server.handlers.snapshot.{arrange}
+import claude_limits.server.dto.{render_snapshot, Disclosure}
 import std.time.duration.{Duration}
 import claude_limits.model.store.{Snapshot}
 import std.concurrency.nvchan.{ChanRx}
@@ -49,7 +51,7 @@ import claude_limits.window.{Window}
 import claude_limits.model.snapshot.{AccountState, SeverityBounds, stale_message, rate_limited_badge, network_badge}
 import claude_limits.usage.outcome.{Outcome}
 import claude_limits.usage.poller.{PollTarget, PollLog, poll_once}
-import claude_limits.usage.parse.{PollOutcome}
+import claude_limits.usage.parse.{PollOutcome, moment_iso}
 import http.{Http}
 
 /// The endpoint (README §Endpoint; the header it needs is in `usage.fetch`).
@@ -230,8 +232,46 @@ export type RoundLog effect {
     //
     // AN OPERATION OF THE LOOP, NOT A REQUEST TO THE STORE: the loop IS the store, and
     // a request it sent itself would wait for a reply only it could give. (Plain
-    // comments: the parser takes no doc comment on an effect operation.)
-    settings(held ConfNow) -> ConfNow
+    // comments: the parser takes no doc comment on an effect operation.) With the
+    // settings comes the `config` event's body when they changed, "" when not:
+    // rendering it needs the folders view, which lives a layer up.
+    settings(held ConfNow, view SnapshotView) -> Settled
+}
+
+/// The settings after a look at the file, and the `config` event to publish ("" for none).
+export type Settled value {
+    ro conf ConfNow
+    ro config_body str
+}
+
+export fn Settled.new(conf ConfNow, config_body str) -> Settled => { conf, config_body }
+
+/// The body of a `snapshot` event: `GET /api/snapshot`'s, ordered by the settings the
+/// store holds (01.3 §3.4: "тело §3.3 целиком").
+fn snapshot_body(st StoreState) -> str =>
+    render_snapshot(arrange(st.view, st.conf.cfg.ui.accounts_order, st.conf.cfg.ui.hidden_accounts, false), Disclosure.Loopback)
+
+/// What follows every round: write it, look at the settings file, tell the streams.
+fn after_round(mut st StoreState) RoundLog -> () {
+    RoundLog.done(st.view)
+    ro s = RoundLog.settings(st.conf, st.view)
+    st.conf = s.conf
+    // nova:allow W_RESULT_DISCARDED -- the event's id matters to the streams, not here
+    ro _ = announce(st, "snapshot", snapshot_body(st))
+    if s.config_body != "" {
+        // nova:allow W_RESULT_DISCARDED -- as above
+        ro _c = announce(st, "config", s.config_body)
+    }
+}
+
+/// The ping timer (01.3 §3.4: "раз в 30 с"): a `Ping` to the store every `every_sec`,
+/// until the store is gone. The store sends it to every stream and drops the streams
+/// nobody reads any more.
+export fn ping_every(store Store, every_sec int) Time -> () {
+    loop {
+        Time.sleep(every_sec.max(1).to_seconds())
+        if !store.ping(moment_iso(Time.now().unix_millis())) { break }
+    }
 }
 
 /// The timer fiber: a `Tick` every `interval_sec`, until the store is gone.
@@ -260,8 +300,7 @@ export fn tick_every(store Store, interval_sec int) Time -> () {
 export fn store_and_poll(rx ChanRx[Envelope], r Rounds) Http PollLog RoundLog Creds Dirs Time -> () {
     mut st = StoreState.new(Snapshot.empty())
     mut before = round(st, [], r)
-    RoundLog.done(st.view)
-    st.conf = RoundLog.settings(st.conf)
+    after_round(st)
     mut going = true
     while going {
         match rx.recv() {
@@ -269,8 +308,7 @@ export fn store_and_poll(rx ChanRx[Envelope], r Rounds) Http PollLog RoundLog Cr
             Some(env) => match env.req {
                 StoreAsk.Tick => {
                     before = round(st, before, r)
-                    RoundLog.done(st.view)
-                    st.conf = RoundLog.settings(st.conf)
+                    after_round(st)
                 }
                 _ => step(st, env.req)
             }

@@ -17,7 +17,7 @@ import claude_limits.model.live.{Known, view_of}
 import claude_limits.model.snapshot.{SeverityBounds}
 import claude_limits.model.snapshot.{AccountState}
 import feed.{Found, stable_id, found_in, poll_round, expiry_text}
-import feed.{Rounds, RoundLog, store_and_poll}
+import feed.{Rounds, RoundLog, Settled, store_and_poll}
 import claude_limits.model.store_fiber.{Envelope, Store, ConfNow}
 import claude_limits.server.dto.{SnapshotView}
 import std.concurrency.nvchan.{Chan}
@@ -225,9 +225,9 @@ fn loop_with_one_tick() -> Said {
             said.rounds += 1
             said.accounts = view.accounts.len()
         }
-        settings(held ConfNow) -> ConfNow {
+        settings(held ConfNow, view SnapshotView) -> Settled {
             said.looked += 1
-            held
+            Settled.new(held, "")
         }
     } {
         on_disk(fn() Dirs Creds -> () => endpoint(a, reply_ok(), fn() Http PollLog Creds -> () => store_and_poll(pair.rx, rounds)))
