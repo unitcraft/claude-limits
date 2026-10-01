@@ -191,6 +191,14 @@ export fn insert_poll_sql(t Tick, id str) -> str {
     "INSERT INTO poll (id, created_at, updated_at, created_by, updated_by, account_id, polled_at, outcome, http_status, retry_after_sec, latency_ms, error) VALUES (${quote(id)}, ${at}, ${at}, ${quote(t.instance)}, ${quote(t.instance)}, ${account_ref(t)}, ${at}, ${quote(t.outcome)}, ${t.http_status}, ${t.retry_after_sec}, ${t.latency_ms}, ${sql_opt(t.error)}) ON CONFLICT (account_id, polled_at) DO NOTHING"
 }
 
+/// One previous version of the settings file (01.2 §3.14), kept before a save
+/// overwrites it. `toml` arrives already redacted (`config_file.redact`); `source` is
+/// one of the four words of the table's `CHECK`, spelled by `config_file.Source`.
+export fn config_history_sql(id str, at_ms int, instance str, source str, toml str) -> str {
+    ro at = moment(at_ms)
+    "INSERT INTO config_history (id, created_at, updated_at, created_by, updated_by, source, toml) VALUES (${quote(id)}, ${at}, ${at}, ${quote(instance)}, ${quote(instance)}, ${quote(source)}, ${quote(toml)})"
+}
+
 // ── the tick ─────────────────────────────────────────────────────────────────
 
 /// Ids the caller supplies, so the write stays deterministic in a test.

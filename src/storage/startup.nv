@@ -23,7 +23,7 @@ import claude_limits.storage.repo.{forget, Forgot}
 import std.fs.{try_exists}
 import claude_limits.storage.maintenance.{Policy, run_retention, zone_step, ZoneStep, set_zone_sql, zone_log_line}
 import duckdb.types.{Value}
-import claude_limits.storage.repo.{write_tick}
+import claude_limits.storage.repo.{write_tick, config_history_sql}
 import claude_limits.storage.tick.{tick_of, fresh_ids}
 import claude_limits.usage.poller.{Reading}
 import claude_limits.storage.history_read.{read_history, read_folder_history}
@@ -253,6 +253,36 @@ export fn record_found(p Paths, d Discovered, at_ms int, windows bool) Db Fs Ran
     }
 }
 
+/// Keep one previous version of the settings file (01.2 §3.14), before a save
+/// overwrites it. `toml` is already redacted -- `config_file.save` hands it over that
+/// way, so no caller can keep a token by forgetting to.
+///
+/// Its own open and close, like every write here: the server's fiber calls it, and the
+/// database is not held open across requests.
+export fn record_config_version(p Paths, toml str, source str, at_ms int, windows bool) Db Fs Random -> Result[(), str] {
+    ro key_file = p.key_file
+    ro key = ensure_key(key_file, dir_of(key_file, windows)).map_err(fn(f OpenFail) -> str => f.message(key_file))?
+    ro mine = ensure_instance(p.instance_file, dir_of(p.instance_file, windows))
+    mut opts = DbOptions.defaults()
+    opts.encryption_key = key
+    opts.temp_dir = p.temp_dir
+    ro db = Db.open(p.db_file, opts).map_err(fn(e DuckError) -> str => "the database did not open: ${e.message()}")?
+    ro conn = match Db.connect(db) {
+        Ok(c) => c
+        Err(e) => {
+            Db.close_db(db)
+            return Err("the database refused a connection: ${e.message()}")
+        }
+    }
+    ro got = Db.exec(conn, config_history_sql(Uuid.v7().to_str(), at_ms, mine, source, toml))
+    Db.close_conn(conn)
+    Db.close_db(db)
+    match got {
+        Ok(_) => Ok(())
+        Err(e) => Err("the previous settings were not kept: ${e.message()}")
+    }
+}
+
 /// What `forget` did, for the person who asked.
 export type ForgetDone enum
     /// There is no database yet: nothing was ever written about anyone.
@@ -330,17 +360,12 @@ export fn forget_account(p Paths, email str, now_ms int, keep int, windows bool)
 /// for the accounts the journal names (`read_folder_history`); otherwise `dirs` and
 /// `occupancy` come back empty.
 export fn read_history_rows(p Paths, from_ms int, to_ms int, accounts []str, dirs []str, by_folder bool, windows bool) Db Fs Random -> Result[HistFolderRows, str] {
-    ro key = match ensure_key(p.key_file, dir_of(p.key_file, windows)) {
-        Ok(k) => k
-        Err(f) => return Err(f.message(p.key_file))
-    }
+    ro key_file = p.key_file
+    ro key = ensure_key(key_file, dir_of(key_file, windows)).map_err(fn(f OpenFail) -> str => f.message(key_file))?
     mut opts = DbOptions.defaults()
     opts.encryption_key = key
     opts.temp_dir = p.temp_dir
-    ro db = match Db.open(p.db_file, opts) {
-        Ok(d) => d
-        Err(e) => return Err("the database did not open: ${e.message()}")
-    }
+    ro db = Db.open(p.db_file, opts).map_err(fn(e DuckError) -> str => "the database did not open: ${e.message()}")?
     ro conn = match Db.connect(db) {
         Ok(c) => c
         Err(e) => {

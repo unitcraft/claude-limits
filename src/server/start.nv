@@ -38,7 +38,8 @@ import claude_limits.server.handlers.health.{HealthState}
 import claude_limits.server.handlers.snapshot.{SnapshotState}
 import claude_limits.server.handlers.refresh.{RefreshState}
 import claude_limits.server.handlers.events.{EventsState}
-import claude_limits.server.handlers.config.{ConfigState, tag_of}
+import claude_limits.server.handlers.config.{ConfigState, ConfigCommit, tag_of}
+import claude_limits.model.store_fiber.{ConfNow}
 import claude_limits.server.handlers.folders.{ProbeState}
 import claude_limits.server.handlers.token.{TokenEndpointState}
 import claude_limits.server.handlers.exporter.{ExportState}
@@ -185,6 +186,20 @@ fn refresh_at_start(cfg Config, now_ms int) -> RefreshState => {
 
 fn events_at_start() -> EventsState => { reg: Registry.new(), snapshot_body: "{}", rest: [] }
 
+/// The snapshot's order and hidden list come from the settings AS THEY STAND: a saved
+/// `ui` change is live at once (01.3 §3.8), and a page that kept the start's order
+/// after a `200` would contradict the reply it just got.
+fn snapshot_now(v SnapshotView, c ConfNow) -> SnapshotState => snapshot_around(v, c.cfg, c.tag)
+
+fn config_now(c ConfNow, paths Paths) -> ConfigState => config_at_start(c.cfg, c.tag, paths)
+
+/// The settings a start hands the store: what `decide_start` let through, tagged the
+/// way `GET /api/config` tags them, with the file they were read from -- the next save
+/// compares its `mtime_ns` and keeps its text.
+export fn conf_at_start(cfg Config, loaded Loaded) -> ConfNow => ConfNow.new(cfg, tag_of(render(cfg)), loaded)
+
+fn token_now(c ConfNow) -> TokenEndpointState => token_at_start(c.cfg, c.tag)
+
 fn config_at_start(cfg Config, tag str, paths Paths) -> ConfigState => {
     cfg, etag: tag, path: paths.config_file, portable: paths.portable, folders: [],
     accounts_found: [], disclosure: Disclosure.Loopback,
@@ -215,20 +230,27 @@ fn history_env_now(keep_days int) Time -> HistoryEnv => { now_ms: Time.now().uni
 ///
 /// `current` hands over the snapshot body as it stands -- in the binary, the store's
 /// (`store.view()`, computed by the poller at the moment of its round); in a test,
-/// whatever body the test wants the page to get. The settings and `health` are real;
-/// the folders and the history stay empty until discovery and the database are wired.
+/// whatever body the test wants the page to get.
+///
+/// TWO KINDS OF SETTINGS, ON PURPOSE. `conf` is the settings as they stand -- in the
+/// binary, the store's, which a saved `PUT /api/config` replaces -- and every reader of
+/// the person's choices reads it per request: the settings, the snapshot's order, the
+/// token endpoint's tag. `cfg` is what this process STARTED on, and `health` and the
+/// refresh floor keep it: a new port or poll interval is in force from the next start
+/// (the reply said `restart_required`), and `health` reporting the new port would
+/// describe a listener that does not exist.
 export fn sources_at_start(cfg Config, paths Paths, started_at str, now_ms int, db DbAtStart, current fn() -> SnapshotView,
-                           history fn(HistoryAsk) -> HistoryLoad) -> Sources {
-    ro tag = tag_of(render(cfg))
+                           history fn(HistoryAsk) -> HistoryLoad, conf fn() -> ConfNow, commit ConfigCommit) -> Sources {
     ro keep = cfg.history.keep_days
     Sources.new(
         fn() -> HealthState => health_at(cfg, paths, started_at, db),
-        fn() -> SnapshotState => snapshot_around(current(), cfg, tag),
+        fn() -> SnapshotState => snapshot_now(current(), conf()),
         fn() -> RefreshState => refresh_at_start(cfg, now_ms),
         fn() -> EventsState => events_at_start(),
-        fn() -> ConfigState => config_at_start(cfg, tag, paths),
+        fn() -> ConfigState => config_now(conf(), paths),
+        commit,
         fn() -> ProbeState => probe_at_start(now_ms),
-        fn() -> TokenEndpointState => token_at_start(cfg, tag),
+        fn() -> TokenEndpointState => token_now(conf()),
         fn() -> ExportState => export_at_start(),
         history,
         fn() -> HistoryEnv => history_env_now(keep),

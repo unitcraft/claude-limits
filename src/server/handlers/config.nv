@@ -20,12 +20,13 @@
 //
 // ── Not here ─────────────────────────────────────────────────────────────────
 //
-//   * Writing the file. `config.render()` produces the canonical text (T1.2) and
-//     `apply` produces the config to render; the atomic write and the
-//     `config_history` row are T2.8, and that one needs the database.
-//   * Reopening the listener. The response says `listener_reopened` and
-//     `new_base_url` because a client needs to know where to reconnect; doing it is
-//     the listener's, and there is no listener yet.
+//   * Writing the file. This handler decides WHAT the settings become; the caller's
+//     `ConfigCommit` writes them (`config_file.save`: the previous text into
+//     `config_history`, then the atomic write) and says what it managed. A handler
+//     that wrote files itself could not be tested without a disk.
+//   * Reopening the listener. The response says `listener_reopened` only when the
+//     commit says the change is LIVE -- a reply claiming a reopen nobody performed
+//     sends the page to reconnect to a port nothing listens on.
 //   * `folders[]` by `id`. An id comes from the database (01.2 §3.1) and there is
 //     no database; a folder given by `path` works, which is the half §3.8 calls
 //     "новая".
@@ -37,7 +38,8 @@ import claude_limits.server.errors.{ApiError, FieldError, to_json, field_errors_
 import claude_limits.server.etag.{etag_of}
 import claude_limits.server.dto.{Disclosure, opt, shown_path}
 import std.encoding.serde.{json_encode, Serialize}
-import claude_limits.config.{Config, validate, render, listen_addr}
+import claude_limits.config.{Config, Ui, validate, render, listen_addr}
+import claude_limits.storage.config_file.{Saved}
 import polaris.{ServerRequest, ServerResponse}
 import std.encoding.json.{Json, JsonValue}
 
@@ -81,6 +83,36 @@ export type ConfigState value {
 }
 
 export type ConfigSource fn() -> ConfigState
+
+/// What saving a change did (§3.8: "пишет файл атомарно и применяет").
+export type Committed value {
+    ro saved Saved
+    /// The change is in force in this process now. `false` on a written save means
+    /// it takes effect at the next start -- the reply says `restart_required` rather
+    /// than pretending.
+    ro live bool
+}
+
+/// Write the settings the merge produced, and say what happened. The binary's writes
+/// the file and the history row; a test's answers whatever the test needs.
+export type ConfigCommit fn(Config) -> Committed
+
+/// `c` with `u` in place of its `ui`. A named function: a record literal inside a
+/// closure is typed as the enclosing literal's type (registry 221.1 #1392).
+fn with_ui(c Config, u Ui) -> Config => {
+    schema: c.schema, folders: c.folders, poll: c.poll, thresholds: c.thresholds,
+    forecast: c.forecast, server: c.server, ui: u, widget: c.widget, history: c.history,
+    storage: c.storage,
+}
+
+/// Did the change touch nothing but `ui`? §3.8: "Изменения только `ui.*` не трогают
+/// поллеры" -- those are read per request, so they are live the moment they are stored.
+///
+/// COMPARED THROUGH THE CANONICAL TEXT, not field by field: a field added to `Config`
+/// tomorrow is covered the day it is rendered, and a hand-written comparison would
+/// silently call a change to it "ui only".
+export fn only_ui_changed(before Config, after Config) -> bool =>
+    render(with_ui(after, before.ui)) == render(before)
 
 /// The tag of a settings text. One function, so `GET`, `If-Match` and the tag of a
 /// freshly written file cannot be computed three different ways.
@@ -750,7 +782,7 @@ fn problem_with_current(e ApiError, request_id str, instance str, current str) -
     with_member(to_json(e, request_id, instance), "current", current)
 }
 
-fn run_put(src ConfigSource, ctx Ctx) -> ServerResponse {
+fn run_put(src ConfigSource, commit ConfigCommit, ctx Ctx) -> ServerResponse {
     ro st = src()
     ro if_match = header_of(ctx, "if-match")
     if if_match == "" { return problem(ApiError.precondition_required(), ctx.request_id, ctx.instance) }
@@ -769,7 +801,17 @@ fn run_put(src ConfigSource, ctx Ctx) -> ServerResponse {
                 if bad.len() > 0 {
                     return problem(ApiError.invalid_config(field_errors_of(bad)), ctx.request_id, ctx.instance)
                 }
-                accepted(st, merged.cfg)
+                ro done = commit(merged.cfg)
+                match done.saved {
+                    Saved.Written => accepted(st, merged.cfg, done.live)
+                    // The file changed under us (a hand edit, another tab): the same
+                    // answer as a stale `If-Match`, with the settings as they are NOW.
+                    Saved.Conflict => stale(ctx, src())
+                    Saved.WriteFailed => problem(ApiError.config_readonly(), ctx.request_id, ctx.instance)
+                    // Validated above with the same `validate`; reaching this is a bug
+                    // in this file, and the answer says nothing about the inside.
+                    Saved.Invalid => problem(ApiError.internal(), ctx.request_id, ctx.instance)
+                }
             }
         }
     }
@@ -781,7 +823,7 @@ fn run_put(src ConfigSource, ctx Ctx) -> ServerResponse {
 /// request body: two different partial trees can mean the same settings, and a tag
 /// that depended on how a client spelled its request would make an unchanged
 /// resource look changed.
-fn accepted(before ConfigState, after Config) -> ServerResponse {
+fn accepted(before ConfigState, after Config, live bool) -> ServerResponse {
     ro text = render(after)
     ro tag = tag_of(text)
     // Built rather than copied-and-patched, for the same reason as in `apply`:
@@ -796,18 +838,22 @@ fn accepted(before ConfigState, after Config) -> ServerResponse {
         accounts_found: before.accounts_found,
         disclosure: before.disclosure,
     }
-    ro moved = listener_moved(before.cfg, after)
+    // What the change NEEDS (a reopen) and what was DONE (`live`) are two facts, and
+    // the reply is their conjunction: a change that needs a reopen and was not made
+    // live is a restart, not a reconnect.
+    ro reopened = listener_moved(before.cfg, after) && live
     ro base = render_state(next)
     ro applied = ConfApplied{
-        restart_required: false,
-        listener_reopened: moved,
-        new_base_url: if moved { Some(base_url(after)) } else { None },
+        restart_required: !live,
+        listener_reopened: reopened,
+        new_base_url: if reopened { Some(base_url(after)) } else { None },
     }
     ro body = with_member(base, "applied", json_encode(applied) ?? "null")
     json_ok(200, body, tag)
 }
 
-export fn config_put_handler(src ConfigSource) -> ApiHandler {
+export fn config_put_handler(src ConfigSource, commit ConfigCommit) -> ApiHandler {
     ro inner = src
-    fn(ctx Ctx) -> ServerResponse => run_put(inner, ctx)
+    ro write = commit
+    fn(ctx Ctx) -> ServerResponse => run_put(inner, write, ctx)
 }

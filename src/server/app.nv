@@ -29,7 +29,7 @@ import claude_limits.server.handlers.health.{HealthSource, health_handler}
 import claude_limits.server.handlers.snapshot.{SnapshotSource, snapshot_handler}
 import claude_limits.server.handlers.refresh.{RefreshSource, refresh_handler}
 import claude_limits.server.handlers.events.{EventsSource, events_handler}
-import claude_limits.server.handlers.config.{ConfigSource, config_get_handler, config_put_handler}
+import claude_limits.server.handlers.config.{ConfigSource, ConfigCommit, config_get_handler, config_put_handler}
 import claude_limits.server.handlers.folders.{ProbeSource, probe_handler}
 import claude_limits.server.handlers.token.{TokenSource, token_handler}
 import claude_limits.server.handlers.exporter.{ExportSource, export_handler}
@@ -49,6 +49,10 @@ export type Sources value {
     refresh RefreshSource
     events EventsSource
     config ConfigSource
+    /// Writes what `PUT /api/config` accepted. Beside the source rather than inside
+    /// it: reading the settings and changing them are two doors, and a test that only
+    /// reads should not have to build a writer.
+    config_commit ConfigCommit
     probe ProbeSource
     token TokenSource
     // NOT named `export`: that is a keyword, and the parse error points at the FIELD
@@ -59,10 +63,10 @@ export type Sources value {
 }
 
 export fn Sources.new(health HealthSource, snapshot SnapshotSource, refresh RefreshSource,
-                     events EventsSource, config ConfigSource, probe ProbeSource,
-                     token TokenSource, exporter ExportSource, history HistorySource,
-                     history_env HistoryEnvSource) -> Sources =>
-    { health, snapshot, refresh, events, config, probe, token, exporter, history, history_env }
+                     events EventsSource, config ConfigSource, config_commit ConfigCommit,
+                     probe ProbeSource, token TokenSource, exporter ExportSource,
+                     history HistorySource, history_env HistoryEnvSource) -> Sources =>
+    { health, snapshot, refresh, events, config, config_commit, probe, token, exporter, history, history_env }
 
 // ── query parameters, from 01.3 and nowhere else ─────────────────────────────
 //
@@ -94,7 +98,7 @@ export fn api_routes(s Sources) -> []Route => [
     route("/api/events", [on(HttpMethod.Get, events_handler(s.events))]),
     route("/api/snapshot/refresh", [on(HttpMethod.Post, refresh_handler(s.refresh))]),
     route("/api/config", [on(HttpMethod.Get, config_get_handler(s.config)),
-                          on(HttpMethod.Put, config_put_handler(s.config))]),
+                          on(HttpMethod.Put, config_put_handler(s.config, s.config_commit))]),
     route("/api/folders/probe", [on(HttpMethod.Post, probe_handler(s.probe))]),
     route("/api/config/token", [on(HttpMethod.Post, token_handler(s.token))]),
     route_q("/api/export", [on(HttpMethod.Get, export_handler(s.exporter))], q_export()),

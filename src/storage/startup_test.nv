@@ -14,7 +14,7 @@ import std.testing.handlers.{seeded}
 import duckdb.db_real.{with_real_db}
 import claude_limits.storage.paths.{Paths}
 import claude_limits.storage.db.{Migration, KNOWN_SCHEMA}
-import startup.{version_of, migrations_in, bundled, open_for_serve, record_readings, Ready, StartFail, Upkeep, Upkept, forget_account, ForgetDone, upkeep_daily}
+import startup.{version_of, migrations_in, bundled, open_for_serve, record_readings, Ready, StartFail, Upkeep, Upkept, forget_account, ForgetDone, upkeep_daily, record_config_version}
 import duckdb.{Database, DbOptions}
 import duckdb.types.{Value}
 import claude_limits.usage.poller.{Reading}
@@ -328,4 +328,54 @@ test "the daily upkeep runs the start's pass on the open database, weekly backup
     assert(same("day 2", "zone=[] retention=[] weekly=true weekly_fail=[]", daily_line(p, T0 + 86400000, 8)))
     // The next day the backup is not due again.
     assert(same("day 3", "zone=[] retention=[] weekly=false weekly_fail=[]", daily_line(p, T0 + 2 * 86400000, 9)))
+}
+
+// -- the previous settings, kept before a save (01.2 section 3.14, task T2.14) --
+
+fn keep_version(p Paths, toml str, at_ms int, seed int) Io -> str {
+    ro text = toml
+    ro at = at_ms
+    ro r = with Fs = real_fs(), Random = seeded(seed as u64) {
+        with_real_db(fn() Db Fs Random -> Result[(), str] => record_config_version(p, text, "ui", at, true))
+    }
+    match r {
+        Ok(_) => "kept"
+        Err(e) => "FAIL ${e}"
+    }
+}
+
+/// Every kept version, oldest first: `source|toml` joined by ` ; `.
+fn versions(p Paths) Io -> str {
+    ro key = with Fs = real_fs() { (read_text(p.key_file.to_path()) ?? "").trim_ascii() }
+    mut opts = DbOptions.defaults()
+    opts.encryption_key = key
+    mut out = "<none>"
+    with Fail[DuckError] = |e| { out = "REFUSED ${e.message()}" } {
+        consume db = Database.open(p.db_file, opts)!! {
+            consume con = db.connect()!! {
+                consume r = con.query("SELECT coalesce(string_agg(source || '|' || toml, ' ; ' ORDER BY created_at), '') FROM config_history")!! {
+                    match r.value(0, 0)!! {
+                        Value.Text(s) => { out = s }
+                        _ => ()
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+test "a kept version lands in config_history with its source, as it was handed over" {
+    ro p = place("config-version")
+    ro _ = start(p, migrations_in(bundled()), 7)
+    assert(same("first", "kept", keep_version(p, "schema = 1\naccess_token = \"***\"", T0, 8)))
+    assert(same("second", "kept", keep_version(p, "schema = 1", T0 + 60000, 9)))
+    assert(same("rows", "ui|schema = 1\naccess_token = \"***\" ; ui|schema = 1", versions(p)))
+}
+
+test "keeping a version with no database refuses, and says why" {
+    // The key is created on demand, the file is not: `Db.open` of a file that was never
+    // started would CREATE an empty database without the schema, and the insert fails.
+    ro p = place("config-version-none")
+    assert(keep_version(p, "schema = 1", T0, 8).starts_with("FAIL "))
 }

@@ -11,6 +11,8 @@ import std.encoding.json.{Json}
 import polaris.{Router, serve_once}
 import std.testing.handlers as th
 import config.{ConfigState, FolderView, LoginDirView, AccountFound, apply, tag_of, render_state, listener_moved, base_url, config_get_handler, config_put_handler}
+import config.{Committed, ConfigCommit, only_ui_changed}
+import claude_limits.storage.config_file.{Saved}
 
 fn wire_str(wire []u8) -> str => unsafe { wire.to_str_unchecked() }
 
@@ -103,15 +105,33 @@ fn state_from(c Config) -> ConfigState => {
     disclosure: Disclosure.Loopback,
 }
 
-fn app(st ConfigState) -> Router {
+// What a commit reports. Named functions, not literals in the lambdas (registry 221.1
+// #1392).
+fn written_live() -> Committed => { saved: Saved.Written, live: true }
+fn written_for_next_start() -> Committed => { saved: Saved.Written, live: false }
+fn conflicted() -> Committed => { saved: Saved.Conflict, live: false }
+fn write_failed() -> Committed => { saved: Saved.WriteFailed, live: false }
+
+/// A commit that must never be reached: a refused PUT that got as far as the disk
+/// would write settings the reply called wrong.
+fn never_commit() -> Committed {
+    panic("a refused PUT reached the commit")
+    { saved: Saved.Invalid, live: false }
+}
+
+fn app_with(st ConfigState, commit ConfigCommit) -> Router {
     ro s = st
     build([route("/api/config", [
         on(HttpMethod.Get, config_get_handler(fn() -> ConfigState => s)),
-        on(HttpMethod.Put, config_put_handler(fn() -> ConfigState => s)),
+        on(HttpMethod.Put, config_put_handler(fn() -> ConfigState => s, commit)),
     ])])!!
 }
 
+fn app(st ConfigState) -> Router => app_with(st, fn(c Config) -> Committed => written_live())
+
 fn serve(st ConfigState, raw []u8) Time Random -> []u8 => serve_once(app(st), raw)
+
+fn serve_with(st ConfigState, commit ConfigCommit, raw []u8) Time Random -> []u8 => serve_once(app_with(st, commit), raw)
 
 fn current() -> ConfigState => state_from(base_cfg())
 
@@ -402,6 +422,70 @@ test "changing only ui does not move the listener" {
         ro b = body_of(serve(st, put_req(st.etag, "{\"ui\":{\"time_bar\":false}}")))
         assert(b.contains("\"listener_reopened\":false"))
     }
+}
+
+// -- PUT: what the commit managed (the file is written by the caller) --
+
+test "a save in force only from the next start says restart_required, and no reconnect" {
+    // The port moved, so the listener NEEDS a reopen -- and nobody performed one. A
+    // reply saying `listener_reopened` would send the page to a port nothing listens on.
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro st = current()
+        ro w = serve_with(st, fn(c Config) -> Committed => written_for_next_start(), put_req(st.etag, "{\"server\":{\"port\":7400}}"))
+        assert(status_of(w) == "HTTP/1.1 200 OK")
+        ro b = body_of(w)
+        assert(b.contains("\"restart_required\":true"))
+        assert(b.contains("\"listener_reopened\":false"))
+        assert(b.contains("\"new_base_url\":null"))
+    }
+}
+
+test "a file changed on disk since it was read is 412 with the settings as they are" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro st = current()
+        ro w = serve_with(st, fn(c Config) -> Committed => conflicted(), put_req(st.etag, "{\"poll\":{\"interval_sec\":120}}"))
+        assert(status_of(w) == "HTTP/1.1 412 Precondition Failed")
+        assert(body_of(w).contains("\"current\":{"))
+    }
+}
+
+test "a file that could not be written is 500 config_readonly, and names no path" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro st = current()
+        ro w = serve_with(st, fn(c Config) -> Committed => write_failed(), put_req(st.etag, "{\"poll\":{\"interval_sec\":120}}"))
+        assert(status_of(w).starts_with("HTTP/1.1 500"))
+        ro b = body_of(w)
+        assert(b.contains("\"code\":\"config_readonly\""))
+        assert(!b.contains("AppData"))
+    }
+}
+
+test "a refused PUT never reaches the commit" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro st = current()
+        ro no fn(Config) -> Committed = fn(c Config) -> Committed => never_commit()
+        assert(status_of(serve_with(st, no, put_req("", "{}"))).contains("428"))
+        assert(status_of(serve_with(st, no, put_req("\"0000000000000000\"", "{}"))).contains("412"))
+        assert(status_of(serve_with(st, no, put_req(st.etag, "{\"poll\":{\"intervalSec\":1}}"))).contains("422"))
+        assert(status_of(serve_with(st, no, put_req(st.etag, "{\"poll\":{\"interval_sec\":1}}"))).contains("422"))
+        assert(status_of(serve_with(st, no, put_req(st.etag, "not json"))).contains("400"))
+    }
+}
+
+test "only_ui_changed: ui alone is live, anything beside it is not" {
+    ro before = base_cfg()
+    mut ui_only = base_cfg()
+    ui_only.ui.accounts_order = ["work@example.org"]
+    ui_only.ui.time_bar = false
+    assert(only_ui_changed(before, ui_only))
+    mut poll = base_cfg()
+    poll.poll.interval_sec = 120
+    assert(!only_ui_changed(before, poll))
+    mut both = base_cfg()
+    both.ui.time_bar = false
+    both.folders = ["C:/other"]
+    assert(!only_ui_changed(before, both))
+    assert(only_ui_changed(before, base_cfg()))
 }
 
 // ── the pure parts ───────────────────────────────────────────────────────────

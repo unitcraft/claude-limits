@@ -12,7 +12,8 @@
 module model.store_fiber_test
 
 import std.concurrency.nvchan.{Chan}
-import store_fiber.{Envelope, Store, run}
+import store_fiber.{Envelope, Store, ConfNow, run}
+import claude_limits.config.{Config}
 import store.{Snapshot, AccountSlot, Event}
 import claude_limits.server.dto.{SnapshotView}
 
@@ -186,4 +187,25 @@ test "a body set by the poller is the body the next reader gets" {
     })
     // The LATER one: a store that kept the first would show a page five minutes old.
     assert(at == "2026-09-30T09:05:00Z")
+}
+
+// -- the settings (T2.14: `PUT /api/config` changes what every reader sees) --
+
+fn conf_with_interval(n int) -> ConfNow {
+    mut c = Config.defaults()
+    c.poll.interval_sec = n
+    ConfNow.new(c, "\"t-${n}\"", ConfNow.none().loaded)
+}
+
+test "the settings start empty-tagged, and a set is what the next reader gets" {
+    // The empty tag is the point of `none`: no `If-Match` equals it, so a save cannot
+    // pass against a store that was never handed the real settings.
+    ro first = with_store(Snapshot.empty(), fn(s Store) -> ConfNow => s.conf())
+    assert(first.tag == "")
+    ro got = with_store(Snapshot.empty(), fn(s Store) -> ConfNow {
+        assert(s.set_conf(conf_with_interval(120)))
+        s.conf()
+    })
+    assert(got.tag == "\"t-120\"")
+    assert(got.cfg.poll.interval_sec == 120)
 }

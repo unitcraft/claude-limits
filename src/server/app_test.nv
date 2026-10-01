@@ -20,7 +20,8 @@ import claude_limits.server.handlers.health.{HealthState}
 import claude_limits.server.handlers.snapshot.{SnapshotState}
 import claude_limits.server.handlers.refresh.{RefreshState}
 import claude_limits.server.handlers.events.{EventsState}
-import claude_limits.server.handlers.config.{ConfigState}
+import claude_limits.server.handlers.config.{ConfigState, Committed}
+import claude_limits.storage.config_file.{Saved}
 import claude_limits.server.handlers.folders.{ProbeState}
 import claude_limits.server.handlers.token.{TokenEndpointState}
 import claude_limits.server.handlers.exporter.{ExportState}
@@ -73,6 +74,7 @@ fn snap_empty() -> SnapshotState => { view: view_of_nothing(), order: [], hidden
 fn refresh_empty() -> RefreshState => { now_ms: 0, floor_sec: 60, targets: [] }
 fn events_empty() -> EventsState => { reg: Registry.new(), snapshot_body: "{}", rest: [] }
 fn config_empty() -> ConfigState => { cfg: Config.defaults(), etag: "", path: "", portable: false, folders: [], accounts_found: [], disclosure: Disclosure.Loopback }
+fn never_written() -> Committed => { saved: Saved.WriteFailed, live: false }
 fn probe_empty() -> ProbeState => { now_ms: 0, listed: [], known: [], disclosure: Disclosure.Loopback }
 fn token_empty() -> TokenEndpointState => { cfg: Config.defaults(), etag: "", disclosure: Disclosure.Loopback }
 fn export_empty() -> ExportState => { from_day: "", to_day: "", rows: [], disclosure: Disclosure.Loopback }
@@ -87,6 +89,7 @@ fn router() -> Router =>
         fn() -> RefreshState => refresh_empty(),
         fn() -> EventsState => events_empty(),
         fn() -> ConfigState => config_empty(),
+        fn(c Config) -> Committed => never_written(),
         fn() -> ProbeState => probe_empty(),
         fn() -> TokenEndpointState => token_empty(),
         fn() -> ExportState => export_empty(),

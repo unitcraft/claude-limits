@@ -29,6 +29,32 @@ import std.concurrency.nvchan.{Chan, ChanTx, ChanRx}
 import claude_limits.model.store.{Registry, Snapshot, AccountSlot, Event, subscribe, unsubscribe, publish, since, missed, merge}
 import claude_limits.model.live.{nothing_yet}
 import claude_limits.server.dto.{SnapshotView}
+import claude_limits.config.{Config}
+import claude_limits.storage.config_file.{Loaded}
+
+/// The settings this process runs on, and the file they came from (01.2 §2.2).
+///
+/// HELD BY THE STORE, for the reason the snapshot is: connection fibers run beside
+/// each other, and `PUT /api/config` changes what `GET /api/config` and the snapshot's
+/// order read. One owner serialises the change; two copies would let a page read the
+/// old order after a save that answered `200`.
+///
+/// `loaded` is kept beside `cfg` because the next save needs it: its `mtime_ns` is
+/// what a hand edit since the last read is detected by, and its `text` is what goes
+/// into `config_history` before the file is overwritten.
+export type ConfNow value {
+    ro cfg Config
+    /// `tag_of(render(cfg))` -- what `If-Match` is compared against.
+    ro tag str
+    ro loaded Loaded
+}
+
+export fn ConfNow.new(cfg Config, tag str, loaded Loaded) -> ConfNow => { cfg, tag, loaded }
+
+/// Before the binary hands the store its settings: the defaults, from no file. Never
+/// seen by a request in the binary -- `--serve` sends the real one before it listens.
+export fn ConfNow.none() -> ConfNow =>
+    { cfg: Config.defaults(), tag: "", loaded: { cfg: Config.defaults(), mtime_ns: 0, text: "", errors: [], missing: true } }
 
 /// One thing to ask of the store.
 ///
@@ -63,6 +89,10 @@ export type StoreAsk enum
     | SetView(SnapshotView)
     /// Give me that body.
     | GetView(ChanTx[SnapshotView])
+    /// The settings as they stand.
+    | GetConf(ChanTx[ConfNow])
+    /// Replace them: a save went to disk. No reply, like `SetView`.
+    | SetConf(ConfNow)
     /// Time for a poll round. Sent by a timer fiber; acted on by the loop that owns the
     /// poller, because the poll cannot run in a spawned fiber (D446 refuses the chain).
     | Tick
@@ -142,6 +172,7 @@ export type StoreState {
     mut snap Snapshot
     mut reg Registry
     mut view SnapshotView
+    mut conf ConfNow
 }
 
 /// The state a store starts in. See `run` for why the snapshot is replayed, not copied.
@@ -150,7 +181,7 @@ export fn StoreState.new(start Snapshot) -> StoreState {
     for slot in start.accounts { merge(snap, slot) }
     snap.fetched_at_ms = start.fetched_at_ms
     snap.restored = start.restored
-    { snap, reg: Registry.new(), view: nothing_yet() }
+    { snap, reg: Registry.new(), view: nothing_yet(), conf: ConfNow.none() }
 }
 
 /// Answer one request. `Tick` is not answered here: it asks for a poll round, which
@@ -175,6 +206,9 @@ export fn step(mut st StoreState, ask StoreAsk) -> () {
         StoreAsk.SetView(v) => { st.view = v }
         // nova:allow W_RESULT_DISCARDED -- the asker is gone; there is nothing to do and nobody to tell
         StoreAsk.GetView(reply) => { ro _ = reply.send(st.view) }
+        // nova:allow W_RESULT_DISCARDED -- the asker is gone; there is nothing to do and nobody to tell
+        StoreAsk.GetConf(reply) => { ro _ = reply.send(st.conf) }
+        StoreAsk.SetConf(c) => { st.conf = c }
         StoreAsk.Tick => ()
     }
 }
@@ -262,6 +296,21 @@ export fn Store @view() -> SnapshotView {
     // nova:allow W_RESULT_DISCARDED -- a failed send surfaces as `None` below, answered with the empty body
     ro _ = @tx.send(Envelope.new(StoreAsk.GetView(pair.tx)))
     pair.rx.recv() ?? nothing_yet()
+}
+
+/// Replace the settings. `false` means the store is gone.
+export fn Store @set_conf(c ConfNow) -> bool {
+    @tx.send(Envelope.new(StoreAsk.SetConf(c)))
+}
+
+/// The settings as they stand. With the store gone, `ConfNow.none()` -- an empty tag
+/// that no `If-Match` equals, so a save cannot slip through on a store that is not
+/// there to record it.
+export fn Store @conf() -> ConfNow {
+    ro pair = Chan[ConfNow].new(1)
+    // nova:allow W_RESULT_DISCARDED -- a failed send surfaces as `None` below, answered with the empty settings
+    ro _ = @tx.send(Envelope.new(StoreAsk.GetConf(pair.tx)))
+    pair.rx.recv() ?? ConfNow.none()
 }
 
 /// Ask for a poll round. `false` means the store is gone -- the timer's cue to stop.
