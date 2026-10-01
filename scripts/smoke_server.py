@@ -11,6 +11,10 @@ Checks, one line each:
   page         GET / is 200 text/html
   snapshot     GET /api/snapshot lists the fixture's one account as `stale`,
                with the 01.1 text and no rows
+  settings     GET /api/config carries the configured folder INSIDE `config`, as the
+               page reads it, with the login the round found there
+  save         PUT /api/config of `ui` is 200, written to the file, and the folder
+               list survives it -- the save that once replaced every folder
   busy port    a second copy on the same port exits 1 and says "address already in use"
   lan          `allow_lan = true` refuses the start with exit 2 and names the field
 
@@ -52,6 +56,19 @@ def get(url, timeout=5):
         return e.code, e.headers.get("Content-Type", ""), e.read().decode("utf-8", "replace")
     except Exception as e:  # noqa: BLE001 -- any failure to answer is the same finding
         return 0, "", str(e)
+
+
+def put_json(url, body, if_match, timeout=10):
+    """(status, body) of a JSON PUT with `If-Match`; (0, error text) when nothing answered."""
+    req = urllib.request.Request(url, data=json.dumps(body).encode(), method="PUT",
+                                 headers={"Content-Type": "application/json", "If-Match": if_match})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.status, r.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        return e.code, e.read().decode("utf-8", "replace")
+    except Exception as e:  # noqa: BLE001
+        return 0, str(e)
 
 
 def write(path, text):
@@ -168,6 +185,35 @@ def main(argv):
             check("history by folder: discovery reached the database", fine, f"{status} {body[:300]}")
         except ValueError:
             check("history by folder: discovery reached the database", False, f"{status} not JSON: {body[:120]}")
+
+        # THE SETTINGS, in the shape the PAGE reads (01.3 section 3.7): `config.folders`.
+        # The server put them beside `config` until 2026-10-02 -- every handler test
+        # passed, the page found no folders, and its first save replaced the list.
+        status, _, body = get(base + "/api/config")
+        try:
+            c = json.loads(body)
+            fs = (c.get("config") or {}).get("folders") or []
+            one = fs[0] if len(fs) == 1 else {}
+            dirs = [d.get("name") for d in one.get("login_dirs") or []]
+            fine = (status == 200 and "folders" not in c and one.get("kind") == "parent" and dirs == ["work"]
+                    and [a.get("email") for a in c.get("accounts_found") or []] == ["smoke@example.org"])
+            check("settings", fine, f"{status} {body[:300]}")
+            etag = c.get("etag", "")
+        except ValueError:
+            check("settings", False, f"{status} not JSON: {body[:120]}")
+            etag = ""
+
+        status, body = put_json(base + "/api/config", {"ui": {"accounts_order": ["smoke@example.org"]}}, etag)
+        _, _, after = get(base + "/api/config")
+        try:
+            kept = len(((json.loads(after).get("config") or {}).get("folders")) or [])
+        except ValueError:
+            kept = -1
+        with open(ok_cfg, encoding="utf-8") as fh:
+            on_disk = fh.read()
+        fine = (status == 200 and kept == 1 and 'accounts_order = ["smoke@example.org"]' in on_disk
+                and "[[folders]]" in on_disk)
+        check("save", fine, f"{status} folders after={kept} {body[:160]}")
 
         second = subprocess.run([exe, "--serve", "--config", ok_cfg], capture_output=True, text=True, timeout=60, env=env)
         check("busy port", second.returncode == 1 and "address already in use" in second.stdout,

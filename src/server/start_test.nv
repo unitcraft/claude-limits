@@ -11,7 +11,8 @@ import claude_limits.config.{Config, ConfigError}
 import claude_limits.server.handlers.history.{HistoryAsk, HistoryLoad}
 import claude_limits.storage.config_file.{Loaded}
 import claude_limits.storage.paths.{Paths}
-import start.{Start, decide_start, health_at, sources_at_start, conf_at_start, DbAtStart}
+import start.{Start, decide_start, health_at, sources_at_start, conf_at_start, folders_seen, accounts_seen, DbAtStart}
+import claude_limits.server.dto.{AccountView, DirView}
 import claude_limits.model.store_fiber.{ConfNow}
 import claude_limits.server.handlers.config.{Committed}
 import claude_limits.storage.config_file.{Saved}
@@ -151,6 +152,69 @@ test "the settings a start serves are read per request, not frozen at the start"
     assert(w.contains("work@example.org"))
     assert(w.contains(reordered().tag))
     assert(!w.contains(tag_of(render(Config.defaults()))))
+}
+
+// -- the folders and accounts GET /api/config reports (01.3 section 3.7) --
+
+fn dir(path str, name str) -> DirView => { id: "d-${name}", path, name }
+
+fn account(email str, dirs []DirView) -> AccountView => {
+    id: "a-${email}", email, org: "Org", dirs, state: "ok", message: "", polled_at: "",
+    next_poll_at: "", locked: false, at_100: false,
+}
+
+fn seen_view(accounts []AccountView) -> SnapshotView => {
+    fetched_at: "2026-10-02T01:00:00Z", next_poll_at: "", tz: "+03:00", restored: false,
+    worst: None, accounts, limits: [],
+}
+
+fn three_folders() -> Config {
+    mut c = Config.defaults()
+    c.folders = ["C:/accounts", "C:/Users/me/.claude", "D:/old"]
+    c.ui.hidden_accounts = ["Work@Example.org"]
+    c
+}
+
+fn round_view() -> SnapshotView => seen_view([
+    account("main@example.com", [dir("C:\\accounts\\nv-lang", "nv-lang"), dir("C:/Users/me/.claude", ".claude")]),
+    account("work@example.org", [dir("C:/accounts/dev", "dev")]),
+])
+
+test "every configured folder is reported, with what the last round found in it" {
+    // The binary reported NO folders until 2026-10-02, and the page then offered an
+    // empty list whose first save replaced every configured folder.
+    ro fs = folders_seen(three_folders(), round_view())
+    assert(fs.len() == 3)
+    assert(same("parent", "parent", fs[0].kind))
+    assert(fs[0].login_dirs.len() == 2)
+    assert(same("single", "single", fs[1].kind))
+    assert(same("single dir", ".claude", fs[1].login_dirs[0].name))
+    assert(same("empty", "empty", fs[2].kind))
+    assert(same("problem", "no .credentials.json here", fs[2].problem))
+    // The page refers to a folder by path when there is no id -- the form PUT accepts.
+    assert(same("id", "", fs[0].id))
+    assert(same("path kept as configured", "C:/accounts", fs[0].path))
+}
+
+test "before the first round no folder is called empty" {
+    ro fs = folders_seen(three_folders(), nothing_yet())
+    assert(fs.len() == 3)
+    assert(same("no claim", "", fs[2].problem))
+}
+
+test "accounts_found lists every account, the hidden one marked whatever its case" {
+    ro found = accounts_seen(three_folders(), round_view())
+    assert(found.len() == 2)
+    assert(!found[0].hidden)
+    assert(found[1].hidden)
+    assert(found[0].dirs.len() == 2)
+}
+
+test "the settings a start serves carry the folders inside config, as the contract has them" {
+    ro c = three_folders()
+    ro w = ask_conf("/api/config", fn() -> SnapshotView => round_view(), fn() -> ConfNow => conf_at_start(c, found(c)))
+    assert(w.contains("\"config\":{\"folders\":[{"))
+    assert(w.contains("C:/Users/me/.claude"))
 }
 
 test "while health keeps what this process started on" {

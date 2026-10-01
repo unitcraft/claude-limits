@@ -227,6 +227,11 @@ type ConfStorage value {
 
 #impl(Serialize)
 type ConfTree value {
+    // INSIDE the tree, first, as 01.3 §3.7 draws it. It sat beside `config` until
+    // 2026-10-02: the page reads `config.folders` (and so does the contract's
+    // fixture), found nothing, and showed an empty list -- after which adding one
+    // folder sent a list of one, and the save replaced every configured folder with it.
+    ro folders []ConfFolder
     ro poll ConfPoll
     ro thresholds ConfThresholds
     ro forecast ConfForecast
@@ -242,7 +247,6 @@ type ConfState value {
     ro etag str
     ro path Option[str]
     ro portable bool
-    ro folders []ConfFolder
     ro config ConfTree
     ro accounts_found []ConfAccount
 }
@@ -273,7 +277,8 @@ fn conf_account(a AccountFound) -> ConfAccount =>
     { id: a.id, email: a.email, org: a.org, dirs: conf_dirs(a.dirs), hidden: a.hidden }
 
 /// The settings tree itself (section 3.7).
-fn conf_tree(c Config) -> ConfTree => {
+fn conf_tree(c Config, folders []ConfFolder) -> ConfTree => {
+    folders,
     poll: { interval_sec: c.poll.interval_sec, min_interval_sec: c.poll.min_interval_sec,
             request_timeout_sec: c.poll.request_timeout_sec },
     thresholds: { warning: c.thresholds.warning, critical: c.thresholds.critical },
@@ -315,8 +320,7 @@ fn conf_state(st ConfigState) -> ConfState {
         etag: st.etag,
         path: shown_path(st.disclosure, st.path),
         portable: st.portable,
-        folders,
-        config: conf_tree(st.cfg),
+        config: conf_tree(st.cfg, folders),
         accounts_found: found,
     }
 }
