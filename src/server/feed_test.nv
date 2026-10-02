@@ -22,6 +22,7 @@ import claude_limits.model.store_fiber.{Envelope, Store, ConfNow}
 import claude_limits.server.dto.{SnapshotView}
 import std.concurrency.nvchan.{Chan}
 import std.testing.handlers.{fixed_ms}
+import claude_limits.config.{Refresh}
 
 // 2026-09-30 09:00:00 UTC; the live token expires a day later, the dead one a day ago.
 const NOW_MS = 1790758800000
@@ -204,25 +205,35 @@ type Said {
     mut rounds int
     mut accounts int
     mut looked int
+    mut renewed int
 }
 
-fn Said.new() -> Said => { rounds: 0, accounts: 0, looked: 0 }
+fn Said.new() -> Said => { rounds: 0, accounts: 0, looked: 0, renewed: 0 }
+
+/// `[refresh]` as the start reads it from the file.
+fn refresh_cfg(enabled bool) -> Refresh =>
+    { enabled, all_expired: false, claude_model: "m", timeout_sec: 120, cooldown_sec: 3600 }
 
 /// The loop over a store whose channel holds ONE `Tick` and is then closed: the first
 /// round runs at once, the tick runs a second, and the closed channel ends the loop --
 /// so `store_and_poll` returns and the count can be read.
-fn loop_with_one_tick() -> Said {
+fn loop_with_one_tick() -> Said => loop_with_refresh(refresh_cfg(true))
+
+fn loop_with_refresh(start Refresh) -> Said {
     mut said = Said.new()
     mut a = Asked.new()
     ro pair = Chan[Envelope].new(4)
     ro store = Store.new(pair.tx)
     assert(store.tick())
     pair.tx.close()
-    ro rounds = Rounds.new(["/acc"], 300, SeverityBounds.new(70, 90), TimeZone.Utc, "+00:00")
+    ro rounds = Rounds.new(["/acc"], 300, SeverityBounds.new(70, 90), TimeZone.Utc, "+00:00", start)
     ro now = NOW_MS
     with Time = fixed_ms(now as u64), Renew = effect Renew {
         kimi(path str, name str, cooldown_sec int) -> bool { false }
-        claude(path str, name str, model str, timeout_sec int, cooldown_sec int) -> bool { false }
+        claude(path str, name str, model str, timeout_sec int, cooldown_sec int) -> bool {
+            said.renewed += 1
+            false
+        }
     }, RoundLog = effect RoundLog {
         done(view SnapshotView, conf ConfNow) -> SnapshotView {
             said.rounds += 1
@@ -246,6 +257,15 @@ test "the loop runs a round at once and one per tick, saying each through RoundL
     // round to nobody -- the database would miss every second round, or the first.
     assert(said.rounds == 2)
     assert(said.accounts > 0)
+}
+
+test "the FIRST round obeys the start's [refresh], before the settings reach the store" {
+    // `/acc/old` holds an expired token. With renewal switched off in the file, no round
+    // may start Claude Code -- the first one read the store's empty settings, the
+    // defaults, and renewed anyway (the stand, 2026-10-02).
+    assert(loop_with_refresh(refresh_cfg(false)).renewed == 0)
+    // The control: switched on, the expired login is renewed.
+    assert(loop_with_refresh(refresh_cfg(true)).renewed > 0)
 }
 
 test "after every round the loop looks at the settings file, the first round included" {

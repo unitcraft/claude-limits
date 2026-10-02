@@ -836,7 +836,7 @@ fn serve_mode(exe str, config_override str) Io Net Time Detach -> int {
                         }
                     }
                     ro bounds = SeverityBounds.new(cfg.thresholds.warning, cfg.thresholds.critical)
-                    ro rounds = Rounds.new(cfg.folders, cfg.poll.interval_sec, bounds, TimeZone.Fixed(Offset.local()), Offset.local().to_iso())
+                    ro rounds = Rounds.new(cfg.folders, cfg.poll.interval_sec, bounds, TimeZone.Fixed(Offset.local()), Offset.local().to_iso(), cfg.refresh)
                     if loaded.missing {
                         println("claude-limits: no settings file yet, running on the defaults (${paths.config_file})")
                     } else {

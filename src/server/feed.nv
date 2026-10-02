@@ -234,10 +234,11 @@ export type Rounds value {
     ro bounds SeverityBounds
     ro zone TimeZone
     ro tz str
+    ro refresh Refresh
 }
 
-export fn Rounds.new(folders []str, interval_sec int, bounds SeverityBounds, zone TimeZone, tz str) -> Rounds =>
-    { folders, interval_sec, bounds, zone, tz }
+export fn Rounds.new(folders []str, interval_sec int, bounds SeverityBounds, zone TimeZone, tz str, refresh Refresh) -> Rounds =>
+    { folders, interval_sec, bounds, zone, tz, refresh }
 
 /// One round: find the accounts, ask about them, and put the snapshot body -- computed
 /// AT THIS MOMENT -- into the store's state. The folders are found again every round:
@@ -250,6 +251,12 @@ export fn Rounds.new(folders []str, interval_sec int, bounds SeverityBounds, zon
 /// showed the folder saved and "no .credentials.json here" under it (2026-10-02).
 fn folders_now(st StoreState, r Rounds) -> []str =>
     if st.conf.tag == "" { r.folders } else { st.conf.cfg.folders }
+
+/// `[refresh]` by the same rule. The FIRST round runs before the start's settings
+/// reach the store, and read the store's empty settings -- the defaults: on the stand
+/// `all_expired = true` worked from the second round only (2026-10-02).
+fn refresh_now(st StoreState, r Rounds) -> Refresh =>
+    if st.conf.tag == "" { r.refresh } else { st.conf.cfg.refresh }
 
 /// Renewing a login's token before the round asks with it (plan 01.6, П4).
 export type Renew effect {
@@ -297,7 +304,7 @@ fn round(mut st StoreState, before []Known, r Rounds) Http PollLog Creds Dirs Ti
     ro next = now + r.interval_sec * 1000
     ro first = found_in(folders_now(st, r), now)
     // Read again only when a token was renewed: the state of that login has changed.
-    ro found = if renew_expired(first, st.conf.cfg.refresh) { found_in(folders_now(st, r), now) } else { first }
+    ro found = if renew_expired(first, refresh_now(st, r)) { found_in(folders_now(st, r), now) } else { first }
     ro known = poll_round(found, before, now, next, r.zone)
     st.view = view_of(known, r.bounds, now, next, r.tz, r.zone)
     known
