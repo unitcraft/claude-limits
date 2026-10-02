@@ -242,13 +242,9 @@ loaded. What is not here yet: the page's live stream (`/api/events`) sends the
 current snapshot and closes, so the page refreshes by polling and shows `polling`
 rather than `live`.
 
-**Known issue: a path with non-ASCII characters breaks the start on Windows.** The
-Nova runtime reads the command line and the environment in the system's ANSI code
-page, so a data or settings directory under, for example, a Cyrillic user name
-arrives garbled and the first start fails with a misleading "no database key".
-Until the runtime is fixed, use `--config` with an ASCII path and set
-`LOCALAPPDATA`/`APPDATA` to ASCII directories, or start from an ASCII 8.3 short
-path. Tracked in nova; the probe is `probes/windows-args-env-ansi/`.
+A path with non-ASCII characters (a Cyrillic user name, say) works since the Nova
+runtime reads the command line and the environment as UTF-8 (nova `2488a47be`; the
+probe that pinned the old behaviour is `probes/windows-args-env-ansi/`).
 
 `scripts/claude_limits.py` is a stdlib-only reference for the data path:
 it discovers config directories and prints one row per account and window, once
