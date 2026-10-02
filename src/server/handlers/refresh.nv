@@ -34,6 +34,16 @@ export type RefreshState value {
 
 export type RefreshSource fn() -> RefreshState
 
+/// Start a poll round now. `false`: nothing is there to run one.
+///
+/// A DOOR OF ITS OWN, and its absence was a live bug: `Queue` only answered `202`,
+/// nothing asked for a round, and in the binary the targets were an empty list, so the
+/// button always said `429 too_soon` -- found on the owner's stand, 2026-10-02.
+export type Kick fn() -> bool
+
+// Hoisted: calling a captured fn value by identifier is the [M-16] mis-codegen.
+fn kick_now(k Kick) -> bool => k()
+
 // ── the body ─────────────────────────────────────────────────────────────────
 
 /// What the caller asked for.
@@ -207,11 +217,18 @@ type Accepted value {
 fn body_str(req ServerRequest) -> str => unsafe { req.body_bytes().to_str_unchecked() }
 
 // Hoisted and param-captured for the [M-16] reason named in `routes.nv`.
-fn run(src RefreshSource, ctx Ctx) -> ServerResponse {
+fn run(src RefreshSource, kick Kick, ctx Ctx) -> ServerResponse {
     ro st = src()
     match decide(st, parse_refresh_ask(body_str(ctx.req))) {
         RefreshDecision.Refuse(e) => problem(e, ctx.request_id, ctx.instance)
-        RefreshDecision.Queue(ts) => accepted(ts)
+        RefreshDecision.Queue(ts) => {
+            // One round polls every account it may; asking for one account starts the
+            // same round -- the store has no per-account round, and the floor above
+            // already kept the others from being asked too soon by their own button.
+            // nova:allow W_RESULT_DISCARDED -- a store that is gone answers no snapshot; the 202 says what was queued
+            ro _ = kick_now(kick)
+            accepted(ts)
+        }
     }
 }
 
@@ -220,7 +237,8 @@ fn run(src RefreshSource, ctx Ctx) -> ServerResponse {
 // closure value that has no C symbol ("use of undeclared identifier 'handler'").
 // Measured on this very file's twin in `handlers/snapshot.nv`; renaming was the
 // whole fix. Isolated in `probes/exported-fn-named-handler/`.
-export fn refresh_handler(src RefreshSource) -> ApiHandler {
+export fn refresh_handler(src RefreshSource, kick Kick) -> ApiHandler {
     ro inner = src
-    fn(ctx Ctx) -> ServerResponse => run(inner, ctx)
+    ro go = kick
+    fn(ctx Ctx) -> ServerResponse => run(inner, go, ctx)
 }

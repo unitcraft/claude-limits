@@ -36,7 +36,8 @@ import claude_limits.storage.config_file.{Loaded}
 import claude_limits.server.app.{Sources}
 import claude_limits.server.handlers.health.{HealthState}
 import claude_limits.server.handlers.snapshot.{SnapshotState, arrange}
-import claude_limits.server.handlers.refresh.{RefreshState}
+import claude_limits.server.handlers.refresh.{RefreshState, RefreshTarget, Kick}
+import claude_limits.usage.parse.{moment_ms}
 import claude_limits.server.handlers.events.{EventsState, Follow}
 import claude_limits.server.handlers.config.{ConfigState, ConfigCommit, FolderView, LoginDirView, AccountFound, tag_of}
 import claude_limits.model.store_fiber.{ConfNow}
@@ -180,9 +181,23 @@ fn snapshot_around(v SnapshotView, cfg Config, tag str) -> SnapshotState => {
     disclosure: Disclosure.Loopback,
 }
 
-fn refresh_at_start(cfg Config, now_ms int) -> RefreshState => {
-    now_ms, floor_sec: cfg.poll.min_interval_sec, targets: [],
+fn refresh_target(id str, email str, state str, last_poll_ms int) -> RefreshTarget => { id, email, state, last_poll_ms }
+
+/// What the refresh button may ask for: every account of the snapshot as it stands,
+/// with the moment it was last polled. It was an EMPTY list until 2026-10-02, and the
+/// button answered `429 too_soon` to every press.
+/// The clock is read here, per request, for the reason `history_env_now` gives.
+fn refresh_now(cfg Config, v SnapshotView) Time -> RefreshState {
+    ro now_ms = Time.now().unix_millis() as int
+    mut targets []RefreshTarget = []
+    for a in v.accounts {
+        ro last = if a.polled_at == "" { 0 } else { moment_ms(a.polled_at) }
+        targets.push(refresh_target(a.id, a.email, a.state, last))
+    }
+    refresh_state(now_ms, cfg.poll.min_interval_sec, targets)
 }
+
+fn refresh_state(now_ms int, floor_sec int, targets []RefreshTarget) -> RefreshState => { now_ms, floor_sec, targets }
 
 /// `/api/events` opens with the body `GET /api/snapshot` gives (01.3 §3.4: "тело §3.3
 /// целиком"), arranged by the same settings.
@@ -319,12 +334,13 @@ fn history_env_now(keep_days int) Time -> HistoryEnv => { now_ms: Time.now().uni
 /// describe a listener that does not exist.
 export fn sources_at_start(cfg Config, paths Paths, started_at str, now_ms int, db DbAtStart, current fn() -> SnapshotView,
                            history fn(HistoryAsk) -> HistoryLoad, conf fn() -> ConfNow, commit ConfigCommit,
-                           follow Follow, look Look) -> Sources {
+                           follow Follow, look Look, kick Kick) -> Sources {
     ro keep = cfg.history.keep_days
     Sources.new(
         fn() -> HealthState => health_at(cfg, paths, started_at, db),
         fn() -> SnapshotState => snapshot_now(current(), conf()),
-        fn() -> RefreshState => refresh_at_start(cfg, now_ms),
+        fn() -> RefreshState => refresh_now(cfg, current()),
+        kick,
         fn() -> EventsState => events_now(snapshot_now(current(), conf()), follow),
         fn() -> ConfigState => config_now(conf(), paths, current()),
         commit,

@@ -128,6 +128,7 @@ fn never_written() -> Committed => { saved: Saved.WriteFailed, live: false }
 fn defaults_now() -> ConfNow => conf_at_start(Config.defaults(), found(Config.defaults()))
 
 fn no_disk() -> str => "{}"
+fn no_round() -> bool => false
 
 /// No store in these tests: the events handler streams its finite opening.
 fn no_stream(after int) -> Option[Live] => None
@@ -140,7 +141,8 @@ fn ask_with(path str, current fn() -> SnapshotView) Time Random -> str =>
 fn ask_conf(path str, current fn() -> SnapshotView, conf fn() -> ConfNow) Time Random -> str {
     ro r = api_router(sources_at_start(Config.defaults(), some_paths(), "2026-09-30T09:00:00Z", 1790758800000, DbAtStart.none(), current,
         fn(a HistoryAsk) -> HistoryLoad => no_database(a), conf, fn(c Config) -> Committed => never_written(),
-        fn(a int) -> Option[Live] => no_stream(a), fn(st ProbeState, p str) -> str => no_disk()))!!
+        fn(a int) -> Option[Live] => no_stream(a), fn(st ProbeState, p str) -> str => no_disk(),
+        fn() -> bool => no_round()))!!
     wire_text(serve_once(r, "GET ${path} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"))
 }
 

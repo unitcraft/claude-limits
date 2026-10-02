@@ -10,6 +10,7 @@ module handlers.refresh_test
 
 import claude_limits.server.routes.{HttpMethod, on, route, build}
 import polaris.{Router, serve_once}
+import std.concurrency.nvchan.{Chan, ChanTx}
 import std.testing.handlers as th
 import refresh.{RefreshTarget, RefreshState, Ask, RefreshDecision, parse_refresh_ask, decide, wait_sec, refresh_handler, accepted_body}
 import claude_limits.server.json.{field_str, field_raw, object, array}
@@ -58,6 +59,9 @@ fn target(id str, email str, state str, last_poll_ms int) -> RefreshTarget =>
     { id, email, state, last_poll_ms }
 
 /// Nobody has been polled yet: every account is ready.
+/// The round a `202` starts; these tests judge the answer, not the store.
+fn kicked() -> bool => true
+
 fn fresh() -> RefreshState => {
     now_ms: NOW,
     floor_sec: 60,
@@ -80,10 +84,10 @@ fn just_polled() -> RefreshState => {
 }
 
 fn app_fresh() -> Router =>
-    build([route("/api/snapshot/refresh", [on(HttpMethod.Post, refresh_handler(fn() -> RefreshState => fresh()))])])!!
+    build([route("/api/snapshot/refresh", [on(HttpMethod.Post, refresh_handler(fn() -> RefreshState => fresh(), fn() -> bool => kicked()))])])!!
 
 fn app_busy() -> Router =>
-    build([route("/api/snapshot/refresh", [on(HttpMethod.Post, refresh_handler(fn() -> RefreshState => just_polled()))])])!!
+    build([route("/api/snapshot/refresh", [on(HttpMethod.Post, refresh_handler(fn() -> RefreshState => just_polled(), fn() -> bool => kicked()))])])!!
 
 fn serve_fresh(raw []u8) Time Random -> []u8 => serve_once(app_fresh(), raw)
 fn serve_busy(raw []u8) Time Random -> []u8 => serve_once(app_busy(), raw)
@@ -303,4 +307,24 @@ test "the 202 body, whole, against the retired hand writer" {
     ro none []RefreshTarget = []
     assert(same_body("accepted", ref_accepted(qs), accepted_body(qs)))
     assert(same_body("accepted empty", ref_accepted(none), accepted_body(none)))
+}
+
+// -- the round a 202 starts (found on the owner's stand: the button started nothing) --
+
+fn kick_into(tx ChanTx[int]) -> bool => tx.try_send(1)
+
+fn served_kicks(st RefreshState, raw []u8) Time Random -> int {
+    ro p = Chan[int].new(4)
+    ro tx = p.tx
+    ro s = st
+    ro r = build([route("/api/snapshot/refresh", [on(HttpMethod.Post, refresh_handler(fn() -> RefreshState => s, fn() -> bool => kick_into(tx)))])])!!
+    ro _ = serve_once(r, raw)
+    p.rx.len()
+}
+
+test "a queued refresh starts a round; a refused one does not" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        assert(served_kicks(fresh(), post("{}")) == 1)
+        assert(served_kicks(just_polled(), post("{}")) == 0)
+    }
 }

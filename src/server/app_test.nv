@@ -71,6 +71,7 @@ fn view_of_nothing() -> SnapshotView => {
 // closure is typed as the ENCLOSING literal's type (registry 221.1 #1392) -- written
 // inline, every one of these became a `Router` in C.
 fn snap_empty() -> SnapshotState => { view: view_of_nothing(), order: [], hidden: [], config_etag: "", disclosure: Disclosure.Loopback }
+fn no_round() -> bool => false
 fn refresh_empty() -> RefreshState => { now_ms: 0, floor_sec: 60, targets: [] }
 fn no_store(after int) -> Option[Live] => None
 fn events_empty() -> EventsState => { reg: Registry.new(), snapshot_body: "{}", rest: [], follow: fn(a int) -> Option[Live] => no_store(a) }
@@ -89,6 +90,7 @@ fn router() -> Router =>
         fn() -> HealthState => health_state(),
         fn() -> SnapshotState => snap_empty(),
         fn() -> RefreshState => refresh_empty(),
+        fn() -> bool => no_round(),
         fn() -> EventsState => events_empty(),
         fn() -> ConfigState => config_empty(),
         fn(c Config) -> Committed => never_written(),

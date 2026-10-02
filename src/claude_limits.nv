@@ -686,7 +686,8 @@ fn serve_mode(exe str, config_override str) Io Net Time Detach -> int {
                         fn() -> ConfNow => store.conf(),
                         fn(c Config) -> Committed => commit_settings(paths, win, store, c),
                         fn(a int) -> Option[Live] => Some(open_live(store, a)),
-                        fn(st ProbeState, p str) -> str => probe_on_disk(st, p)))!!
+                        fn(st ProbeState, p str) -> str => probe_on_disk(st, p),
+                        fn() -> bool => store.tick()))!!
                     println("claude-limits: listening on ${base_url(cfg)}/  (Ctrl+C to stop)")
                     ro every = cfg.poll.interval_sec
                     ro rx = pair.rx

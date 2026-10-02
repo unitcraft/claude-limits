@@ -27,7 +27,7 @@ module server.app
 import claude_limits.server.routes.{Route, Router, HttpMethod, on, route, route_q, build}
 import claude_limits.server.handlers.health.{HealthSource, health_handler}
 import claude_limits.server.handlers.snapshot.{SnapshotSource, snapshot_handler}
-import claude_limits.server.handlers.refresh.{RefreshSource, refresh_handler}
+import claude_limits.server.handlers.refresh.{RefreshSource, Kick, refresh_handler}
 import claude_limits.server.handlers.events.{EventsSource, events_handler}
 import claude_limits.server.handlers.config.{ConfigSource, ConfigCommit, config_get_handler, config_put_handler}
 import claude_limits.server.handlers.folders.{ProbeSource, Look, probe_handler}
@@ -47,6 +47,8 @@ export type Sources value {
     health HealthSource
     snapshot SnapshotSource
     refresh RefreshSource
+    /// Starts a round for `POST /api/snapshot/refresh` (the store's `tick`).
+    refresh_kick Kick
     events EventsSource
     config ConfigSource
     /// Writes what `PUT /api/config` accepted. Beside the source rather than inside
@@ -66,10 +68,10 @@ export type Sources value {
 }
 
 export fn Sources.new(health HealthSource, snapshot SnapshotSource, refresh RefreshSource,
-                     events EventsSource, config ConfigSource, config_commit ConfigCommit,
+                     refresh_kick Kick, events EventsSource, config ConfigSource, config_commit ConfigCommit,
                      probe ProbeSource, probe_look Look, token TokenSource, exporter ExportSource,
                      history HistorySource, history_env HistoryEnvSource) -> Sources =>
-    { health, snapshot, refresh, events, config, config_commit, probe, probe_look, token, exporter, history, history_env }
+    { health, snapshot, refresh, refresh_kick, events, config, config_commit, probe, probe_look, token, exporter, history, history_env }
 
 // ── query parameters, from 01.3 and nowhere else ─────────────────────────────
 //
@@ -99,7 +101,7 @@ export fn api_routes(s Sources) -> []Route => [
     route("/api/health", [on(HttpMethod.Get, health_handler(s.health))]),
     route_q("/api/snapshot", [on(HttpMethod.Get, snapshot_handler(s.snapshot))], q_snapshot()),
     route("/api/events", [on(HttpMethod.Get, events_handler(s.events))]),
-    route("/api/snapshot/refresh", [on(HttpMethod.Post, refresh_handler(s.refresh))]),
+    route("/api/snapshot/refresh", [on(HttpMethod.Post, refresh_handler(s.refresh, s.refresh_kick))]),
     route("/api/config", [on(HttpMethod.Get, config_get_handler(s.config)),
                           on(HttpMethod.Put, config_put_handler(s.config, s.config_commit))]),
     route("/api/folders/probe", [on(HttpMethod.Post, probe_handler(s.probe, s.probe_look))]),
