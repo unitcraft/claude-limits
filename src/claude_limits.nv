@@ -184,54 +184,46 @@ type Collected {
 /// Kimi renewals that FAILED, and when -- the cooldown (the reference's KimiRefresher).
 /// In memory only, as there: a restart retries a hopeless login once, which is the
 /// cheaper mistake than a state file that suppresses a renewal that was needed.
-type KimiTries {
-    mut paths []str
-    mut at_ms []int
+/// One failed renewal: which file, and when.
+type KimiTry value {
+    ro path str
+    ro at_ms int
 }
 
-fn KimiTries.new() -> KimiTries => { paths: [], at_ms: [] }
+fn kimi_try(path str, at_ms int) -> KimiTry => { path, at_ms }
+
+type KimiTries {
+    mut items []KimiTry
+}
+
+fn KimiTries.new() -> KimiTries => { items: [] }
 
 /// One hour after a failure (the reference's default `refresh_cooldown_sec`).
 const KIMI_COOLDOWN_MS = 3_600_000
 
 fn KimiTries @cooling(path str, now_ms int) -> bool {
-    mut i = 0
-    while i < @paths.len() {
-        if @paths[i] == path { return now_ms - @at_ms[i] < KIMI_COOLDOWN_MS }
-        i += 1
+    for x in @items {
+        if x.path == path { return now_ms - x.at_ms < KIMI_COOLDOWN_MS }
     }
     false
 }
 
+/// Everything but `path` -- what a success leaves, and what a failure replaces.
+fn KimiTries @without(path str) -> []KimiTry {
+    mut keep []KimiTry = []
+    for x in @items { if x.path != path { keep.push(x) } }
+    keep
+}
+
 fn KimiTries mut @failed(path str, now_ms int) -> () {
-    mut i = 0
-    while i < @paths.len() {
-        if @paths[i] == path {
-            @at_ms[i] = now_ms
-            return
-        }
-        i += 1
-    }
-    @paths.push(path)
-    @at_ms.push(now_ms)
+    mut keep = @without(path)
+    keep.push(kimi_try(path, now_ms))
+    @items = keep
 }
 
 /// A success clears the cooldown: a login that renewed once is renewable, and its next
 /// expiry (fifteen minutes on) must get a fresh try at once.
-fn KimiTries mut @cleared(path str) -> () {
-    mut keep_p []str = []
-    mut keep_t []int = []
-    mut i = 0
-    while i < @paths.len() {
-        if @paths[i] != path {
-            keep_p.push(@paths[i])
-            keep_t.push(@at_ms[i])
-        }
-        i += 1
-    }
-    @paths = keep_p
-    @at_ms = keep_t
-}
+fn KimiTries mut @cleared(path str) -> () { @items = @without(path) }
 
 /// One renewal attempt, logged as the reference logs it.
 fn renew_one(mut tries KimiTries, path str, name str) Http Time -> bool {
