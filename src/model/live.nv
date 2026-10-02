@@ -32,8 +32,8 @@ import std.time.civil.{TimeZone}
 import claude_limits.window.{Window}
 import claude_limits.model.snapshot.{AccountState, SeverityBounds, severity_of, at_100, locked}
 import claude_limits.model.format.{row_label, reset_caption}
-import claude_limits.server.dto.{SnapshotView, AccountView, LimitView, WorstView, DirView}
-import claude_limits.usage.parse.{moment_iso}
+import claude_limits.server.dto.{SnapshotView, AccountView, LimitView, WorstView, DirView, ExtraUsageView}
+import claude_limits.usage.parse.{moment_iso, ExtraUsage}
 
 const SESSION_SEC = 5 * 3600
 const WEEK_SEC = 7 * 86400
@@ -58,23 +58,37 @@ export type Known value {
     ro display_name str
     /// `claude | kimi` (01.3 §3.3, amendment 2026-09-21).
     ro provider str
+    /// Kimi Code's Extra Usage wallet, of the last successful reading; None otherwise.
+    ro extra Option[ExtraUsage]
 }
 
 export fn Known.new(id str, email str, org str, dirs []DirView, state AccountState, message str,
                     polled_at_ms int, next_poll_ms int, windows []Window) -> Known =>
-    { id, email, org, dirs, state, message, polled_at_ms, next_poll_ms, windows, display_name: "", provider: "claude" }
+    { id, email, org, dirs, state, message, polled_at_ms, next_poll_ms, windows, display_name: "", provider: "claude", extra: None }
 
 /// The same, with the person's name.
 export fn Known @with_name(name str) -> Known => {
     @id, @email, @org, @dirs, @state, @message, @polled_at_ms, @next_poll_ms, @windows,
-    display_name: name, @provider,
+    display_name: name, @provider, @extra,
 }
 
 /// The same, as an account of `provider` (`claude | kimi`).
 export fn Known @with_provider(provider str) -> Known => {
     @id, @email, @org, @dirs, @state, @message, @polled_at_ms, @next_poll_ms, @windows,
-    @display_name, provider,
+    @display_name, provider, @extra,
 }
+
+/// The same, with the Extra Usage wallet the reading carried (plan 01.6, P8).
+export fn Known @with_extra(extra Option[ExtraUsage]) -> Known => {
+    @id, @email, @org, @dirs, @state, @message, @polled_at_ms, @next_poll_ms, @windows,
+    @display_name, @provider, extra,
+}
+
+fn extra_view(e Option[ExtraUsage]) -> Option[ExtraUsageView] =>
+    match e {
+        Some(x) => Some(ExtraUsageView{ balance: x.balance, currency: x.currency, monthly_cap: x.monthly_cap })
+        None => None
+    }
 
 fn iso_or_empty(ms int) -> str => if ms == 0 { "" } else { moment_iso(ms) }
 
@@ -150,7 +164,7 @@ fn account_of(k Known) -> AccountView {
         message: k.message, polled_at: iso_or_empty(k.polled_at_ms),
         next_poll_at: iso_or_empty(k.next_poll_ms),
         locked: rows && locked(k.windows), at_100: rows && at_100(k.windows),
-        same_quota_as: "",
+        same_quota_as: "", extra_usage: extra_view(k.extra),
     }
 }
 

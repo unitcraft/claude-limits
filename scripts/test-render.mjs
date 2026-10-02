@@ -20,7 +20,7 @@ installDocument({ 'view-list': list, 'view-cards': cards });
 // shipped code drifted away from it. render.js exists precisely so this import is
 // possible: it takes a document and returns nodes, with no fetch, timers or
 // EventSource to drag in. Dynamic, because the stub must be installed first.
-const { renderList, renderCards, renderAccount, renderRow, layoutCells } = await import('../src/web/render.js');
+const { renderList, renderCards, renderAccount, renderRow, layoutCells, extraUsageLine } = await import('../src/web/render.js');
 const { setViewOptions } = await import('../src/web/format.js');
 
 // -------------------------------------------------------------------- tests --
@@ -224,6 +224,22 @@ test('a shared pool shows a footnote naming the first account, not the same bars
   const own = renderAccount({ id: 'b', email: 'second@x', state: 'ok' }, rows);
   assert.equal(own.all((n) => n.className === 'account-note').length, 0);
   assert.ok(own.all((n) => n.className === 'row').length > 0);
+});
+
+test('Kimi Extra Usage is the reference line under the rows, and no line when the wallet is off', () => {
+  // The reference's own lines for the same wallets (kimi_extra_usage_line, 2026-10-02).
+  assert.equal(extraUsageLine({ balance: '1.23', currency: 'USD', monthly_cap: '5.00' }),
+    'extra usage balance: 1.23 USD (monthly cap 5.00 USD)');
+  assert.equal(extraUsageLine({ balance: '0.01', currency: 'CNY', monthly_cap: null }),
+    'extra usage balance: 0.01 CNY');
+  const rows = [{ account_id: 'k', kind: 'monthly', label: 'month', percent: 67, severity: 'normal' }];
+  const on = renderAccount({ id: 'k', provider: 'kimi', display_name: 'kimi-env', state: 'ok',
+    extra_usage: { balance: '1.23', currency: 'USD', monthly_cap: null } }, rows);
+  assert.deepEqual(on.all((n) => n.className === 'account-extra').map((n) => n.textContent),
+    ['extra usage balance: 1.23 USD']);
+  // The control: the field absent, no line.
+  const off = renderAccount({ id: 'k', provider: 'kimi', display_name: 'kimi-env', state: 'ok' }, rows);
+  assert.equal(off.all((n) => n.className === 'account-extra').length, 0);
 });
 
 test('the person name stands before the organisation, and either may be missing', () => {

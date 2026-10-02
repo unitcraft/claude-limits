@@ -16,7 +16,7 @@ module server.serde_parity_test
 import std.encoding.serde.{json_encode, Serialize, Serializer, SerError}
 import claude_limits.server.json.{quote, field_str, field_str_or_null, field_int, field_bool, field_int_or_null, field_fixed2, field_raw, object, array, array_str}
 import claude_limits.server.errors.{ApiError, FieldError, to_json, type_uri}
-import claude_limits.server.dto.{Disclosure, render_snapshot, SnapshotView, AccountView, DirView, LimitView, ForecastView, WorstView}
+import claude_limits.server.dto.{Disclosure, render_snapshot, SnapshotView, AccountView, DirView, LimitView, ForecastView, WorstView, ExtraUsageView}
 import claude_limits.server.handlers.health.{HealthState, render_health}
 import claude_limits.server.routes.{API_VERSION}
 
@@ -216,8 +216,16 @@ fn ref_account(d Disclosure, a AccountView) -> str {
         field_bool("locked", a.locked),
         field_bool("at_100", a.at_100),
         field_str_or_null("same_quota_as", a.same_quota_as),
-    ])
+    ] + extra_fields(a))
 }
+
+/// `extra_usage` is ABSENT when None (01.3 section 3.3), not null.
+fn extra_fields(a AccountView) -> []str =>
+    match a.extra_usage {
+        Some(e) => [field_raw("extra_usage", object([field_str("balance", e.balance), field_str("currency", e.currency),
+                                                     field_str_or_null("monthly_cap", e.monthly_cap)]))]
+        None => []
+    }
 
 fn ref_forecast(f ForecastView) -> str =>
     object([
@@ -307,10 +315,10 @@ fn sample_snapshot() -> SnapshotView {
                 dirs: [DirView{ id: "d1", path: "C:\\Users\\me\\.claude", name: ".claude" },
                        DirView{ id: "d2", path: "", name: "empty" }],
                 state: "ok", message: "", polled_at: "2026-09-06T18:09:00Z",
-                next_poll_at: "2026-09-06T18:14:00Z", locked: false, display_name: "", provider: "claude", at_100: false, same_quota_as: "" },
+                next_poll_at: "2026-09-06T18:14:00Z", locked: false, display_name: "", provider: "claude", at_100: false, same_quota_as: "", extra_usage: None },
             AccountView{ id: "a2", email: "work@example.org", org: "",
                 dirs: [], state: "error", message: "HTTP 401: token\nrejected",
-                polled_at: "", next_poll_at: "", locked: true, display_name: "", provider: "claude", at_100: true, same_quota_as: "" },
+                polled_at: "", next_poll_at: "", locked: true, display_name: "", provider: "claude", at_100: true, same_quota_as: "", extra_usage: Some(ExtraUsageView{ balance: "1.23", currency: "USD", monthly_cap: "" }) },
         ],
         limits: [
             LimitView{ account_id: "a1", kind: "session", model: "", label: "session 5h",

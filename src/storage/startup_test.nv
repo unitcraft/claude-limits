@@ -166,7 +166,7 @@ test "a migration that fails is rolled back and says which" {
 // Named functions, not literals inside lambdas (registry 221.1 #1392).
 fn usage_two() -> Usage => {
     windows: [Window.new("session", "", 24, T0 + 16200000, ""), Window.new("weekly_all", "", 21, T0 + 302400000, "")],
-    outcome: PollOutcome.Parsed, from_fallback: false,
+    outcome: PollOutcome.Parsed, from_fallback: false, extra: None,
 }
 
 fn a_reading(at int) -> Reading =>

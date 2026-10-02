@@ -25,7 +25,7 @@ module usage.kimi
 
 import std.encoding.json.{Json, JsonValue}
 import claude_limits.window.{Window}
-import claude_limits.usage.parse.{Usage, PollOutcome, moment_ms}
+import claude_limits.usage.parse.{Usage, PollOutcome, ExtraUsage, moment_ms}
 
 /// A number that may arrive as a JSON number or as a numeric string; -1 for neither.
 ///
@@ -102,6 +102,76 @@ fn from_usages(usages JsonValue, key str, kind str, model str) -> Option[Window]
     Some(Window.new(kind, model, round_percent(x), moment_ms(text(entry, "reset_time")), ""))
 }
 
+/// A JSON number or numeric string; `None` for neither (the reference's `float()`).
+fn number_of(v JsonValue) -> Option[f64] {
+    match v.num() {
+        Some(n) => return Some(n)
+        None => {}
+    }
+    match v.str() {
+        Some(s) => match s.trim_ascii().to_f64() {
+            Ok(f) => Some(f)
+            Err(_) => None
+        }
+        None => None
+    }
+}
+
+/// The wallet's amounts are in millionths of a cent. Whole cents as the reference's
+/// `cents`: a positive amount under a cent is one cent -- a balance of 0.4 cents is not
+/// "nothing" -- and otherwise HALF TO EVEN, as Python's `round` (2.5 -> 2, 3.5 -> 4).
+/// An amount that does not read is 0, as there.
+export fn wallet_cents(v Option[JsonValue]) -> int {
+    ro x = match v {
+        Some(j) => number_of(j) ?? 0.0
+        None => 0.0
+    }
+    ro c = x / 1000000.0
+    if c > 0.0 && c < 1.0 { return 1 }
+    ro whole = c as int
+    ro rest = c - (whole as f64)
+    if rest > 0.5 { return whole + 1 }
+    if rest < 0.5 { return whole }
+    if whole % 2 == 0 { whole } else { whole + 1 }
+}
+
+fn money(cents int) -> str {
+    ro r = cents % 100
+    ro pad = if r < 10 { "0" } else { "" }
+    "${cents / 100}.${pad}${r}"
+}
+
+/// The Extra Usage wallet (`boosterWallet`), as the reference's `kimi_extra_usage_line`
+/// reads it: only a balance of type `BOOSTER` makes one; the currency is the cap's, else
+/// the month's spending's, else USD; the cap only when `monthlyChargeLimitEnabled`.
+export fn extra_usage_of(root JsonValue) -> Option[ExtraUsage] {
+    ro wallet = field(root, "boosterWallet")?
+    if wallet.object().is_none() { return None }
+    ro balance = field(wallet, "balance")?
+    if balance.object().is_none() || text(balance, "type") != "BOOSTER" { return None }
+    ro cap = field(wallet, "monthlyChargeLimit")
+    mut currency = match cap {
+        Some(c) => text(c, "currency")
+        None => ""
+    }
+    if currency == "" {
+        currency = match field(wallet, "monthlyUsed") {
+            Some(u) => text(u, "currency")
+            None => ""
+        }
+    }
+    if currency == "" { currency = "USD" }
+    ro enabled = match field(wallet, "monthlyChargeLimitEnabled") {
+        Some(b) => b.bool() ?? false
+        None => false
+    }
+    ro monthly_cap = match cap {
+        Some(c) => if enabled && c.object().is_some() { money(wallet_cents(field(c, "priceInCents"))) } else { "" }
+        None => ""
+    }
+    Some(ExtraUsage{ balance: money(wallet_cents(field(balance, "amountLeft"))), currency, monthly_cap })
+}
+
 /// The reply, read. `BadJson` when it is not a JSON object; `NoWindows` when nothing
 /// in it is a quota.
 export fn parse_kimi(body str) -> Usage {
@@ -139,5 +209,5 @@ export fn parse_kimi(body str) -> Usage {
         None => {}
     }
     if out.len() == 0 { return Usage.new([], PollOutcome.NoWindows, false) }
-    Usage.new(out, PollOutcome.Parsed, false)
+    Usage.new(out, PollOutcome.Parsed, false).with_extra(extra_usage_of(root))
 }

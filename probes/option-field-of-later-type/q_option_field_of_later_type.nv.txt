@@ -1,0 +1,19 @@
+// A record holding `Option[T]` of a value type declared AFTER it.
+module q_option_field_of_later_type
+
+type Outer value {
+    n int
+    inner Option[Later]
+}
+
+type Later value {
+    s str
+}
+
+fn main() Io -> () {
+    ro o = Outer{ n: 1, inner: Some(Later{ s: "x" }) }
+    match o.inner {
+        Some(l) => println("inner ${l.s}")
+        None => println("none")
+    }
+}

@@ -31,7 +31,7 @@ fn same(label str, want str, got str) -> bool {
 }
 
 // Named functions, not literals inside lambdas (registry 221.1 #1392).
-fn usage_of(ws []Window, o PollOutcome) -> Usage => { windows: ws, outcome: o, from_fallback: false }
+fn usage_of(ws []Window, o PollOutcome) -> Usage => { windows: ws, outcome: o, from_fallback: false, extra: None }
 
 fn reading(status int, state AccountState, message str, ws []Window, o PollOutcome, at int) -> Reading =>
     { email: "Work@Example.org", outcome: Outcome.new(state, message, 0, status == 200, status),

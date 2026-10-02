@@ -170,7 +170,7 @@ fn dir(path str, name str) -> DirView => { id: "d-${name}", path, name }
 
 fn account(email str, dirs []DirView) -> AccountView => {
     id: "a-${email}", email, org: "Org", dirs, state: "ok", message: "", polled_at: "",
-    next_poll_at: "", locked: false, display_name: "", provider: "claude", at_100: false, same_quota_as: "",
+    next_poll_at: "", locked: false, display_name: "", provider: "claude", at_100: false, same_quota_as: "", extra_usage: None,
 }
 
 fn seen_view(accounts []AccountView) -> SnapshotView => {

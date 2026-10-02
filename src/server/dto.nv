@@ -75,6 +75,15 @@ export type DirView value { id str, path str, name str }
 
 /// One account row. Empty strings mean `null` on the wire, which is what §0 asks
 /// for an absent value — `opt` turns "" into `None` where the wire record is built.
+/// Kimi Code's Extra Usage wallet (01.3 §3.3, amendment 2026-09-21): money as strings,
+/// `monthly_cap` "" for `null`. DECLARED BEFORE `AccountView`, which holds it in an
+/// `Option` (registry 221.1 #1625, probes/option-field-of-later-type/).
+export type ExtraUsageView value {
+    balance str
+    currency str
+    monthly_cap str
+}
+
 export type AccountView value {
     id str
     email str
@@ -98,6 +107,9 @@ export type AccountView value {
     /// The id of the account that reported the IDENTICAL quota state first this round
     /// -- one pool behind two logins (01.3 §3.3, amendment 2026-09-21); "" for `null`.
     same_quota_as str
+    /// Kimi Code's Extra Usage wallet when switched on; None: the field is ABSENT on the
+    /// wire, as the amendment says, not null.
+    extra_usage Option[ExtraUsageView]
 }
 
 /// The forecast of one limit row, or absent (`forecast: null` for stale, unknown
@@ -219,6 +231,13 @@ type WireDir value {
 }
 
 #impl(Serialize)
+type WireExtraUsage value {
+    ro balance str
+    ro currency str
+    ro monthly_cap Option[str]
+}
+
+#impl(Serialize)
 type WireAccount value {
     ro id str
     ro provider str
@@ -233,6 +252,8 @@ type WireAccount value {
     ro locked bool
     ro at_100 bool
     ro same_quota_as Option[str]
+    #serde(skip_serializing_if = "is_none")
+    ro extra_usage Option[WireExtraUsage]
 }
 
 #impl(Serialize)
@@ -293,8 +314,15 @@ fn wire_account(d Disclosure, a AccountView) -> WireAccount {
         id: a.id, provider: a.provider, email: opt(a.email), org: opt(a.org), display_name: opt(a.display_name), dirs, state: a.state,
         message: opt(a.message), polled_at: opt(a.polled_at), next_poll_at: opt(a.next_poll_at),
         locked: a.locked, at_100: a.at_100, same_quota_as: opt(a.same_quota_as),
+        extra_usage: wire_extra(a.extra_usage),
     }
 }
+
+fn wire_extra(e Option[ExtraUsageView]) -> Option[WireExtraUsage] =>
+    match e {
+        Some(x) => Some(WireExtraUsage{ balance: x.balance, currency: x.currency, monthly_cap: opt(x.monthly_cap) })
+        None => None
+    }
 
 /// A named function, not a record literal inside the closure: there the codegen
 /// gave the literal the OUTER literal's type (WireSnapshot) and the C refused it --

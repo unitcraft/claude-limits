@@ -226,6 +226,8 @@ main:has(.view-wide:not([hidden])) { max-width: var(--page-width-wide); }
    the reading it is dimmed to prevent. */
 .rows-dimmed[data-dimmed="true"] .row:hover { background: none; }
 .account-note { margin: 4px 0 0; font-size: 12px; color: var(--fg-muted); }
+/* Kimi Code's Extra Usage wallet under the rows (01.3 sec.3.3), the reference's line. */
+.account-extra { margin: 6px 0 0; font-size: 12px; color: var(--fg-muted); }
 
 .row {
   display: grid;

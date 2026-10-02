@@ -17,7 +17,8 @@
 
 module usage.kimi_test
 
-import kimi.{parse_kimi, round_percent}
+import kimi.{parse_kimi, round_percent, extra_usage_of}
+import std.encoding.json.{Json}
 import claude_limits.usage.parse.{PollOutcome}
 import claude_limits.window.{Window}
 
@@ -59,4 +60,38 @@ test "half rounds to even, as Python's %.0f does" {
 test "not JSON is BadJson; JSON with no quota is NoWindows" {
     assert(parse_kimi("not json").outcome == PollOutcome.BadJson)
     assert(parse_kimi("{\"usages\": {}}").outcome == PollOutcome.NoWindows)
+}
+
+// -- the Extra Usage wallet (plan 01.6, P8) -----------------------------------------
+//
+// THE EXPECTED VALUES ARE THE REFERENCE'S, not written by hand: each sample below was
+// run through `kimi_extra_usage_line` of scripts/claude_limits.py on 2026-10-02, and
+// its printed line is quoted beside the assertion.
+
+fn wallet(body str) -> str {
+    ro root = Json.parse(body) ?? panic("not JSON")
+    match extra_usage_of(root) {
+        Some(e) => "${e.balance} ${e.currency} cap=${e.monthly_cap}"
+        None => "none"
+    }
+}
+
+test "the wallet, as the reference reads it: balance, currency, the cap only when enabled" {
+    // "extra usage balance: 1.23 USD (monthly cap 5.00 USD)"
+    assert(wallet("{\"boosterWallet\":{\"balance\":{\"type\":\"BOOSTER\",\"amountLeft\":\"123456789\"},\"monthlyChargeLimit\":{\"priceInCents\":\"500000000\",\"currency\":\"USD\"},\"monthlyChargeLimitEnabled\":true}}") == "1.23 USD cap=5.00")
+    // "extra usage balance: 0.01 CNY" -- under a cent is a cent; the currency from the
+    // month's spending when no cap names one; a cap switched off is no cap.
+    assert(wallet("{\"boosterWallet\":{\"balance\":{\"type\":\"BOOSTER\",\"amountLeft\":\"5000\"},\"monthlyUsed\":{\"priceInCents\":\"0\",\"currency\":\"CNY\"},\"monthlyChargeLimitEnabled\":false}}") == "0.01 CNY cap=")
+}
+
+test "cents round half to even, as Python's round: 2.5 -> 2, 3.5 -> 4" {
+    // "extra usage balance: 0.02 USD", then "0.04 USD" (a number, not a string).
+    assert(wallet("{\"boosterWallet\":{\"balance\":{\"type\":\"BOOSTER\",\"amountLeft\":\"2500000\"}}}") == "0.02 USD cap=")
+    assert(wallet("{\"boosterWallet\":{\"balance\":{\"type\":\"BOOSTER\",\"amountLeft\":3500000}}}") == "0.04 USD cap=")
+}
+
+test "the control: no BOOSTER balance, or no wallet at all, is no line" {
+    // Both None in the reference.
+    assert(wallet("{\"boosterWallet\":{\"balance\":{\"type\":\"FREE\",\"amountLeft\":\"1\"}}}") == "none")
+    assert(wallet("{\"usage\":{}}") == "none")
 }

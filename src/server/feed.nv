@@ -459,7 +459,7 @@ export fn poll_round(found []Found, before []Known, now_ms int, next_ms int, zon
                 ro r = poll_once(target, now_ms)
                 ro fresh = r.outcome.state == AccountState.Ok && r.usage.outcome == PollOutcome.Parsed
                 if fresh {
-                    out.push(shown(f, Known.new(id, address_of(f), f.org, f.dirs, AccountState.Ok, expired_note(f.expired_dirs), now_ms, next_ms, r.usage.windows)))
+                    out.push(shown(f, Known.new(id, address_of(f), f.org, f.dirs, AccountState.Ok, expired_note(f.expired_dirs), now_ms, next_ms, r.usage.windows).with_extra(r.usage.extra)))
                 } else {
                     ro kept = prev_polled(p)
                     ro msg = if r.outcome.state == AccountState.Unknown { unknown_message(r.outcome, now_ms, kept, zone) } else { r.outcome.message }

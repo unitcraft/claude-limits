@@ -40,14 +40,31 @@ export fn PollOutcome @to_str() -> str =>
         NoWindows => "no_windows"
     }
 
+/// The Extra Usage (booster) wallet of a Kimi Code login: money as strings with two
+/// decimals, as 01.3 §3.3 writes them. `monthly_cap` "" when no cap is set.
+// DECLARED BEFORE `Usage`, which holds it in an `Option`: declared after, the C struct
+// of `Usage` came out first and the field had an incomplete type (CC-FAIL, measured
+// 2026-10-02; registry 221.1 #1625, probes/option-field-of-later-type/).
+export type ExtraUsage value {
+    ro balance str
+    ro currency str
+    ro monthly_cap str
+}
+
 export type Usage value {
     windows []Window
     outcome PollOutcome
     from_fallback bool      // true when `limits[]` was absent or empty
+    /// Kimi Code's Extra Usage wallet, when it is switched on (01.3 §3.3); Claude: None.
+    extra Option[ExtraUsage]
 }
 
 fn Usage.new(windows []Window, outcome PollOutcome, from_fallback bool) -> Usage =>
-    { windows, outcome, from_fallback }
+    { windows, outcome, from_fallback, extra: None }
+
+/// The same reading, with the wallet.
+export fn Usage @with_extra(extra Option[ExtraUsage]) -> Usage =>
+    { @windows, @outcome, @from_fallback, extra }
 
 /// Nothing was read. `NoWindows` and not `BadJson`: there was no body to fail on, and
 /// calling a transport failure a parse failure would send a reader looking at the JSON.

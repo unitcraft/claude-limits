@@ -244,7 +244,20 @@ export function renderAccount(acc, limits, owner = null) {
     return block;
   }
   for (const limit of sortLimits(limits)) block.append(renderRow(limit));
+  const extra = extraUsageLine(acc.extra_usage);
+  if (extra) block.append(el('p', 'account-extra', extra));
   return block;
+}
+
+/**
+ * Kimi Code's Extra Usage wallet (01.3 sec.3.3, amendment 2026-09-21), in the
+ * reference's words -- "extra usage balance: 1.23 USD (monthly cap 5.00 USD)". The
+ * field is absent when the wallet is off, and then there is no line.
+ */
+export function extraUsageLine(extra) {
+  if (!extra) return '';
+  const cap = extra.monthly_cap ? ` (monthly cap ${extra.monthly_cap} ${extra.currency})` : '';
+  return `extra usage balance: ${extra.balance} ${extra.currency}${cap}`;
 }
 
 /** The accounts by id: whom a `same_quota_as` names. */
