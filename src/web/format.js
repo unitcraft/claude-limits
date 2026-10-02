@@ -475,6 +475,21 @@ export function refuseFor(status, header, nowMs = Date.now()) {
 }
 
 /**
+ * The poll interval, read off a snapshot: `next_poll_at - fetched_at`, in seconds.
+ *
+ * 01.3 sec.3.3 has NO `interval_sec` in the snapshot; the page read one anyway, from a
+ * fixture that had it, and against the real server said "polling paused" while the
+ * rounds ran (found on the owner's stand, 2026-10-02). The two moments ARE in the
+ * contract, and their difference is the interval. Null when either is missing or the
+ * difference is not positive -- "paused" is then the honest word.
+ */
+export function intervalOf(snap) {
+  if (!snap || !snap.fetched_at || !snap.next_poll_at) return null;
+  const s = Math.round((Date.parse(snap.next_poll_at) - Date.parse(snap.fetched_at)) / 1000);
+  return Number.isFinite(s) && s > 0 ? s : null;
+}
+
+/**
  * The right half of the footer (01.1 sec.1.2): `polling every 300 s . next 19:52`.
  *
  * The interval says how often; `next_poll_at` says WHEN, which is the half a person

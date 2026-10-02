@@ -15,7 +15,7 @@ installDocument({});
 const {
   renderSettings, collect, bodyOf, diffConfig, isEmptyDiff, folderRef,
   folderNote, showErrors, unmatchedErrors, probeSummary, BROWSER_ONLY,
-  showConflict, clearConflict, conflictCurrent, syncFolders, savedNote,
+  showConflict, clearConflict, conflictCurrent, syncFolders, savedNote, checkFailed,
 } = await import('../src/web/settings.js');
 
 let passed = 0;
@@ -357,6 +357,16 @@ test('EDITS ELSEWHERE IN THE PANEL SURVIVE the refresh', () => {
 test('a panel with no folder list at all is left alone rather than crashing', () => {
   const bare = new Node('div');
   assert.equal(syncFolders(bare, withFolders([])), false);
+});
+
+console.log('a failed folder check');
+
+test('a plain-text 500 reads as the status, not as a JSON parser error', () => {
+  assert.equal(checkFailed(500, null), 'could not check: the server answered 500');
+});
+
+test('a problem body is quoted in the server words', () => {
+  assert.equal(checkFailed(422, { title: 'Invalid body', detail: 'path is empty' }), 'could not check: path is empty');
 });
 
 console.log('what a save says (01.3 §3.8 applied)');

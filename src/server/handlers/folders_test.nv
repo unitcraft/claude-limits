@@ -13,7 +13,7 @@ import claude_limits.accounts.discover.{Dirs}
 import claude_limits.accounts.login.{Creds}
 import polaris.{Router, serve_once}
 import std.testing.handlers as th
-import folders.{KnownLogin, ProbeState, Ask, parse_probe_ask, probe_handler}
+import folders.{KnownLogin, ProbeState, Ask, parse_probe_ask, probe_handler, probe_body}
 
 fn wire_str(wire []u8) -> str => unsafe { wire.to_str_unchecked() }
 
@@ -113,14 +113,18 @@ fn state() -> ProbeState => {
 }
 
 fn app() -> Router =>
-    build([route("/api/folders/probe", [on(HttpMethod.Post, probe_handler(fn() -> ProbeState => state()))])])!!
+    build([route("/api/folders/probe", [on(HttpMethod.Post, probe_handler(fn() -> ProbeState => state(), fn(st ProbeState, p str) -> str => fixture_body(st, p)))])])!!
 
-fn serve(raw []u8) Time Random Dirs Creds -> str => wire_str(serve_once(app(), raw))
-
-fn run(raw []u8) Time Random -> str {
-    ro bytes = raw
-    with_fixture(fn() -> str => serve(bytes))
+/// The fixture disk, installed HERE rather than around the request: that is how the
+/// binary has to do it too, and a test that wrapped the whole request hid for weeks
+/// that the binary never installed anything.
+fn fixture_body(st ProbeState, p str) -> str {
+    ro s = st
+    ro path = p
+    with_fixture(fn() Dirs Creds -> str => probe_body(s, path))
 }
+
+fn run(raw []u8) Time Random -> str => wire_str(serve_once(app(), raw))
 
 // ── the acceptance ───────────────────────────────────────────────────────────
 

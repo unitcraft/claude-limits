@@ -44,6 +44,23 @@ export type ProbeState value {
 
 export type ProbeSource fn() -> ProbeState
 
+/// The body for one path, with the disk behind it. The caller supplies the disk.
+///
+/// A DOOR OF ITS OWN, and its absence was a live bug: the handler needs `Dirs` and
+/// `Creds`, every test installed mocks around the whole request, and in the binary
+/// nobody installed anything -- the connection fiber has no handlers, so the first
+/// "Check" in the panel answered a bare `500` (found 2026-10-02 on the owner's stand).
+export type Look fn(ProbeState, str) -> str
+
+/// What `Look` computes: normalise, scan, describe.
+export fn probe_body(st ProbeState, p str) Dirs Creds -> str {
+    ro resolved = normalise(p)
+    render_probe(st, resolved, scan(resolved))
+}
+
+// Hoisted: calling a captured fn value by identifier is the [M-16] mis-codegen.
+fn look_now(look Look, st ProbeState, p str) -> str => look(st, p)
+
 /// The one field this body may carry (§3.9).
 const ONLY_FIELD = "path"
 
@@ -177,20 +194,19 @@ type ProbeBody value {
 fn body_str(req ServerRequest) -> str => unsafe { req.body_bytes().to_str_unchecked() }
 
 // Hoisted and param-captured for the [M-16] reason named in `routes.nv`.
-fn run(src ProbeSource, ctx Ctx) Dirs Creds -> ServerResponse {
+fn run(src ProbeSource, look Look, ctx Ctx) -> ServerResponse {
     ro st = src()
     match parse_probe_ask(body_str(ctx.req)) {
         Ask.Bad(e) => problem(e, ctx.request_id, ctx.instance)
         Ask.Path(p) => {
-            ro resolved = normalise(p)
-            ro found = scan(resolved)
-            ro body = render_probe(st, resolved, found)
+            ro body = look_now(look, st, p)
             ServerResponse.bytes(200, "application/json; charset=utf-8", body.bytes())
         }
     }
 }
 
-export fn probe_handler(src ProbeSource) -> ApiHandler {
+export fn probe_handler(src ProbeSource, look Look) -> ApiHandler {
     ro inner = src
-    fn(ctx Ctx) -> ServerResponse => run(inner, ctx)
+    ro disk = look
+    fn(ctx Ctx) -> ServerResponse => run(inner, disk, ctx)
 }

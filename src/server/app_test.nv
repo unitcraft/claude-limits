@@ -76,6 +76,7 @@ fn no_store(after int) -> Option[Live] => None
 fn events_empty() -> EventsState => { reg: Registry.new(), snapshot_body: "{}", rest: [], follow: fn(a int) -> Option[Live] => no_store(a) }
 fn config_empty() -> ConfigState => { cfg: Config.defaults(), etag: "", path: "", portable: false, folders: [], accounts_found: [], disclosure: Disclosure.Loopback }
 fn never_written() -> Committed => { saved: Saved.WriteFailed, live: false }
+fn no_disk() -> str => "{}"
 fn probe_empty() -> ProbeState => { now_ms: 0, listed: [], known: [], disclosure: Disclosure.Loopback }
 fn token_empty() -> TokenEndpointState => { cfg: Config.defaults(), etag: "", disclosure: Disclosure.Loopback }
 fn export_empty() -> ExportState => { from_day: "", to_day: "", rows: [], disclosure: Disclosure.Loopback }
@@ -92,6 +93,7 @@ fn router() -> Router =>
         fn() -> ConfigState => config_empty(),
         fn(c Config) -> Committed => never_written(),
         fn() -> ProbeState => probe_empty(),
+        fn(st ProbeState, p str) -> str => no_disk(),
         fn() -> TokenEndpointState => token_empty(),
         fn() -> ExportState => export_empty(),
         fn(a HistoryAsk) -> HistoryLoad => history_empty(a),

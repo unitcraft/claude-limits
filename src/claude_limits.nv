@@ -66,6 +66,7 @@ import claude_limits.server.feed.{Rounds, one_round, RoundLog, Settled, store_an
 import claude_limits.model.store_fiber.{Envelope, Store, ConfNow, Follower}
 import claude_limits.model.store.{Event}
 import claude_limits.server.handlers.events.{Live}
+import claude_limits.server.handlers.folders.{ProbeState, probe_body}
 import std.concurrency.nvchan.{Chan, ChanRx}
 import claude_limits.model.snapshot.{SeverityBounds}
 import claude_limits.server.dto.{SnapshotView}
@@ -475,6 +476,14 @@ fn taken_from_disk(paths Paths, was ConfNow) -> ConfNow {
     }
 }
 
+/// `POST /api/folders/probe` on the real disk: `Dirs` and `Creds` installed here,
+/// for the request, because the connection fiber has none of its own.
+fn probe_on_disk(st ProbeState, p str) -> str {
+    ro s = st
+    ro path = p
+    with_real_disk(fn() Dirs Creds -> str => probe_body(s, path))
+}
+
 /// `/api/events`' live stream: a channel of its own, handed to the store.
 ///
 /// 128 deep: a client coming back with `Last-Event-ID` may be owed the whole ring of
@@ -640,7 +649,8 @@ fn serve_mode(exe str, config_override str) Io Net Time Detach -> int {
                         fn(a HistoryAsk) -> HistoryLoad => history_from_db(paths, win, store.view(), a),
                         fn() -> ConfNow => store.conf(),
                         fn(c Config) -> Committed => commit_settings(paths, win, store, c),
-                        fn(a int) -> Option[Live] => Some(open_live(store, a))))!!
+                        fn(a int) -> Option[Live] => Some(open_live(store, a)),
+                        fn(st ProbeState, p str) -> str => probe_on_disk(st, p)))!!
                     println("claude-limits: listening on ${base_url(cfg)}/  (Ctrl+C to stop)")
                     ro every = cfg.poll.interval_sec
                     ro rx = pair.rx

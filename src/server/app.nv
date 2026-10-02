@@ -30,7 +30,7 @@ import claude_limits.server.handlers.snapshot.{SnapshotSource, snapshot_handler}
 import claude_limits.server.handlers.refresh.{RefreshSource, refresh_handler}
 import claude_limits.server.handlers.events.{EventsSource, events_handler}
 import claude_limits.server.handlers.config.{ConfigSource, ConfigCommit, config_get_handler, config_put_handler}
-import claude_limits.server.handlers.folders.{ProbeSource, probe_handler}
+import claude_limits.server.handlers.folders.{ProbeSource, Look, probe_handler}
 import claude_limits.server.handlers.token.{TokenSource, token_handler}
 import claude_limits.server.handlers.exporter.{ExportSource, export_handler}
 import claude_limits.server.handlers.history.{HistorySource, HistoryEnvSource, history_handler, history_search_handler}
@@ -54,6 +54,9 @@ export type Sources value {
     /// reads should not have to build a writer.
     config_commit ConfigCommit
     probe ProbeSource
+    /// The disk behind `POST /api/folders/probe`: `Dirs` and `Creds` are installed by
+    /// whoever supplies this -- the binary's real ones, a test's fixtures.
+    probe_look Look
     token TokenSource
     // NOT named `export`: that is a keyword, and the parse error points at the FIELD
     // rather than at the word, so it reads like a broken record declaration.
@@ -64,9 +67,9 @@ export type Sources value {
 
 export fn Sources.new(health HealthSource, snapshot SnapshotSource, refresh RefreshSource,
                      events EventsSource, config ConfigSource, config_commit ConfigCommit,
-                     probe ProbeSource, token TokenSource, exporter ExportSource,
+                     probe ProbeSource, probe_look Look, token TokenSource, exporter ExportSource,
                      history HistorySource, history_env HistoryEnvSource) -> Sources =>
-    { health, snapshot, refresh, events, config, config_commit, probe, token, exporter, history, history_env }
+    { health, snapshot, refresh, events, config, config_commit, probe, probe_look, token, exporter, history, history_env }
 
 // ── query parameters, from 01.3 and nowhere else ─────────────────────────────
 //
@@ -99,7 +102,7 @@ export fn api_routes(s Sources) -> []Route => [
     route("/api/snapshot/refresh", [on(HttpMethod.Post, refresh_handler(s.refresh))]),
     route("/api/config", [on(HttpMethod.Get, config_get_handler(s.config)),
                           on(HttpMethod.Put, config_put_handler(s.config, s.config_commit))]),
-    route("/api/folders/probe", [on(HttpMethod.Post, probe_handler(s.probe))]),
+    route("/api/folders/probe", [on(HttpMethod.Post, probe_handler(s.probe, s.probe_look))]),
     route("/api/config/token", [on(HttpMethod.Post, token_handler(s.token))]),
     route_q("/api/export", [on(HttpMethod.Get, export_handler(s.exporter))], q_export()),
     route_q("/api/history", [on(HttpMethod.Get, history_handler(s.history_env, s.history))], q_history()),

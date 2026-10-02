@@ -9,8 +9,7 @@
 // Separate file rather than an inline <script>: the CSP refuses inline (01.1 §0).
 import {
   isRetryable, retryDelay, retryAfterSeconds, setCaptionZone, getCaptionZone, captionTime, setViewOptions, MAX_RETRIES, refuseFor, orderRequest, configPut,
-  footerRight, legendText, footerCounts,
-} from './format.js';
+  footerRight, legendText, footerCounts, intervalOf } from './format.js';
 import { createLive, silentTooLong, SILENCE_LIMIT_MS } from './live.js';
 import { el, renderList, renderCards, layoutCells } from './render.js';
 import { createReorder } from './reorder.js';
@@ -19,7 +18,7 @@ import { renderFolders } from './folders.js';
 import {
   renderSettings, bodyOf, isEmptyDiff, showErrors, unmatchedErrors, probeSummary,
   showConflict, clearConflict, conflictCurrent, syncFolders, collectBrowser, saveBrowser,
-  savedNote } from './settings.js';
+  savedNote, checkFailed } from './settings.js';
 
 const VIEWS = ['list', 'cards', 'stats'];
 // The transport's own numbers (10 s degraded poll, 30 s reconnect, 90 s silence)
@@ -337,7 +336,7 @@ function applySnapshot(snap) {
   state.snapshot = snap;
   if (state.live) state.live.lastEvent = Date.now();
   state.fetchedAt = snap.fetched_at ? new Date(snap.fetched_at) : new Date();
-  state.intervalSec = snap.interval_sec ?? state.intervalSec;
+  state.intervalSec = intervalOf(snap) ?? state.intervalSec;
 
   $('[data-field="fetched-at"]').textContent = captionTime(state.fetchedAt);
 
@@ -535,21 +534,31 @@ async function probeFolder() {
   const note = panel.querySelector('.probe-note');
   const path = input && input.value ? input.value.trim() : '';
   if (!path) { if (note) note.textContent = 'type a path first'; return; }
-  if (note) note.textContent = 'checking...';
+  const say = (text, tone) => {
+    if (!note) return;
+    note.textContent = text;
+    if (tone) note.dataset.tone = tone; else delete note.dataset.tone;
+  };
+  say('checking...', null);
   try {
     const res = await fetch('/api/folders/probe', {
       method: 'POST',
       headers: { 'content-type': 'application/json', accept: 'application/json' },
       body: JSON.stringify({ path }),
     });
-    const found = await res.json();
-    const line = probeSummary(res.ok ? found : null);
-    if (note) {
-      note.textContent = line.text;
-      if (line.tone) note.dataset.tone = line.tone; else delete note.dataset.tone;
+    let found = null;
+    try { found = await res.json(); } catch { /* a refusal need not be JSON */ }
+    // A FAILED CHECK IS AN ERROR, in red, and says what the server said -- not the
+    // JSON parser's complaint about a plain-text 500, which is what a person saw on
+    // the first stand (2026-10-02).
+    if (!res.ok || !found) {
+      say(checkFailed(res.status, found), 'critical');
+      return;
     }
+    const line = probeSummary(found);
+    say(line.text, line.tone);
   } catch (err) {
-    if (note) note.textContent = `could not check: ${err.message}`;
+    say(`could not check: ${err.message}`, 'critical');
   }
 }
 

@@ -3,7 +3,6 @@
   "fetched_at": "2026-09-07T16:47:02Z",
   "next_poll_at": "2026-09-07T16:52:02Z",
   "tz": "Europe/Moscow",
-  "interval_sec": 300,
   "restored": false,
   "worst": {
     "account_id": "0192a7f0-0000-7000-8000-000000000002",

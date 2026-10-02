@@ -602,6 +602,15 @@ export function savedNote(reply) {
   return null;
 }
 
+/**
+ * The line a failed folder check shows (red): the server's own words when it sent a
+ * problem body, the status when it sent nothing readable.
+ */
+export function checkFailed(status, problem) {
+  const said = problem && (problem.detail || problem.title);
+  return said ? `could not check: ${said}` : `could not check: the server answered ${status}`;
+}
+
 /** Unmatched errors still have to be shown: a silent 422 looks like a save. */
 export function unmatchedErrors(panel, errors) {
   const paths = new Set(Array.from(panel.querySelectorAll('[data-path]')).map((n) => n.dataset.path));

@@ -40,7 +40,7 @@ import claude_limits.server.handlers.refresh.{RefreshState}
 import claude_limits.server.handlers.events.{EventsState, Follow}
 import claude_limits.server.handlers.config.{ConfigState, ConfigCommit, FolderView, LoginDirView, AccountFound, tag_of}
 import claude_limits.model.store_fiber.{ConfNow}
-import claude_limits.server.handlers.folders.{ProbeState}
+import claude_limits.server.handlers.folders.{ProbeState, Look}
 import claude_limits.server.handlers.token.{TokenEndpointState}
 import claude_limits.server.handlers.exporter.{ExportState}
 import claude_limits.server.handlers.history.{HistoryAsk, HistoryLoad, HistoryEnv}
@@ -319,7 +319,7 @@ fn history_env_now(keep_days int) Time -> HistoryEnv => { now_ms: Time.now().uni
 /// describe a listener that does not exist.
 export fn sources_at_start(cfg Config, paths Paths, started_at str, now_ms int, db DbAtStart, current fn() -> SnapshotView,
                            history fn(HistoryAsk) -> HistoryLoad, conf fn() -> ConfNow, commit ConfigCommit,
-                           follow Follow) -> Sources {
+                           follow Follow, look Look) -> Sources {
     ro keep = cfg.history.keep_days
     Sources.new(
         fn() -> HealthState => health_at(cfg, paths, started_at, db),
@@ -329,6 +329,7 @@ export fn sources_at_start(cfg Config, paths Paths, started_at str, now_ms int, 
         fn() -> ConfigState => config_now(conf(), paths, current()),
         commit,
         fn() -> ProbeState => probe_at_start(now_ms),
+        look,
         fn() -> TokenEndpointState => token_now(conf()),
         fn() -> ExportState => export_at_start(),
         history,

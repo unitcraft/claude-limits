@@ -12,7 +12,7 @@ import {
   isRetryable, retryDelay, MAX_RETRIES, refuseFor, REFUSAL_DEFAULT_SEC, REFUSAL_MAX_SEC,
   moveTo, applyOrder, dropIndexFor, landingIndex, orderRequest, configPut,
   footerRight, legendText, footerCounts, stripTooltip, percentTooltip, forecastTooltip,
-  captionTime} from '../src/web/format.js';
+  captionTime, intervalOf } from '../src/web/format.js';
 
 let passed = 0;
 const test = (name, fn) => {
@@ -501,6 +501,15 @@ test('a forecast that does not clear the next cell draws nothing', () => {
   // cell would be indistinguishable from a rendering artefact.
   const g = cellGeometry(120, 40, 41);
   assert.equal(g.ghostWidth, 0);
+});
+
+test('the interval is read off the two moments the snapshot carries (01.3 sec.3.3)', () => {
+  // The contract has no interval_sec in the snapshot; reading one said "polling
+  // paused" against the real server while the rounds ran.
+  assert.equal(intervalOf({ fetched_at: '2026-10-02T00:00:00Z', next_poll_at: '2026-10-02T00:05:00Z' }), 300);
+  assert.equal(intervalOf({ fetched_at: '2026-10-02T00:00:00Z', next_poll_at: '' }), null);
+  assert.equal(intervalOf({ fetched_at: 'x', next_poll_at: 'y' }), null);
+  assert.equal(intervalOf({ fetched_at: '2026-10-02T00:05:00Z', next_poll_at: '2026-10-02T00:00:00Z' }), null);
 });
 
 console.log(`\n${passed} passed${process.exitCode ? ', SOME FAILED' : ''}`);
