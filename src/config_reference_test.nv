@@ -1,0 +1,93 @@
+// Tests for config_reference.nv -- the reference's settings file carried into the
+// port's (plan 01.6, П6).
+//
+//   ./nova.sh test src/config_reference_test.nv
+//
+// The texts below are the reference's own shapes: the owner's file (paths made up),
+// and the template's. What each yields was checked against Python's `tomllib` -- the
+// reader the reference itself uses -- on the same text (2026-10-02).
+
+module claude_limits.config_reference_test
+
+import claude_limits.config.{Config}
+import claude_limits.config_reference.{carry, toml_to_json, Carried}
+
+/// The owner's file, as it is shaped: a multi-line array of inline tables, one WSL
+/// path as a LITERAL string with its backslashes.
+const OWNER = `# Local config for this machine (gitignored).
+interval_sec = 300
+accounts = [
+    { dir = "C:/Users/me/.claude", kind = "claude" },
+    { dir = "C:/Users/me/.kimi-code", kind = "kimi" },
+    { dir = "D:/accounts", kind = "claude", children = true },
+    { dir = '\\\\wsl.localhost\\Dist\\home\\me\\.claude', kind = "claude" },
+]
+`
+
+fn carried(base Config, text str) -> Carried =>
+    match carry(base, text) {
+        Ok(c) => c
+        Err(e) => panic("refused: ${e}")
+    }
+
+fn has_note(c Carried, part str) -> bool {
+    for n in c.notes { if n.contains(part) { return true } }
+    false
+}
+
+test "the owner's file: four folders, the WSL path with its backslashes, the interval" {
+    ro c = carried(Config.defaults(), OWNER)
+    // tomllib: accounts[3].dir == '\\\\wsl.localhost\\Dist\\home\\me\\.claude' (raw).
+    assert(c.added == 4)
+    assert(c.cfg.folders.len() == 4)
+    // (A backtick literal reads `\\` as one backslash, like a quoted one: the line above
+    // spells the file's two leading backslashes as four.)
+    assert(c.cfg.folders[3] == "\\\\wsl.localhost\\Dist\\home\\me\\.claude")
+    assert(c.cfg.poll.interval_sec == 300)
+    // kind and children are not carried, and the notes SAY so, entry by entry.
+    assert(has_note(c, "D:/accounts: children = true"))
+    assert(has_note(c, "C:/Users/me/.kimi-code: kind = \"kimi\""))
+}
+
+test "a folder the port already has is not added twice, whatever its slashes and case" {
+    mut base = Config.defaults()
+    base.folders = ["c:\\users\\me\\.claude"]
+    ro c = carried(base, OWNER)
+    assert(c.added == 3)
+    assert(c.cfg.folders.len() == 4)
+    assert(has_note(c, "already a folder here"))
+}
+
+test "below a [section] header a key is that section's: no root accounts, as tomllib reads it" {
+    // The reference's template writes `accounts` after `[thresholds]`; tomllib puts it
+    // in `thresholds`, and the reference then finds no accounts at all.
+    ro text = "interval_sec = 120\n[thresholds]\nwarning = 60\ncritical = 85\naccounts = [{ dir = \"C:/a\", kind = \"claude\" }]\n"
+    ro c = carried(Config.defaults(), text)
+    assert(c.added == 0)
+    assert(has_note(c, "no root `accounts`"))
+    assert(c.cfg.poll.interval_sec == 120)
+    assert(c.cfg.thresholds.warning == 60 && c.cfg.thresholds.critical == 85)
+}
+
+test "[forecast], the refresh keys, and [[accounts]] tables" {
+    ro text = "auto_refresh = false\nrefresh_all_expired = true\nrefresh_claude_model = \"m\"\nrefresh_timeout_sec = 60\nrefresh_cooldown_sec = 7_200\nbar_style = \"blocks\"\n\n[[accounts]]\ndir = \"C:/one\"\nkind = \"auto\"\n\n[[accounts]]\ndir = \"C:/two\"\nkind = \"claude\"\n\n[forecast]\nenabled = true\nworking_hours = true\nwork_days = [\"mon\", \"tue\"]  # two days\nwork_from = \"10:00\"\nwork_to = \"18:30\"\noff_hours_rate = 10\nrate_window_days = 2\nwarning = 75\ncritical = 92\n"
+    ro c = carried(Config.defaults(), text)
+    assert(c.added == 2 && c.cfg.folders[0] == "C:/one" && c.cfg.folders[1] == "C:/two")
+    assert(!c.cfg.refresh.enabled && c.cfg.refresh.all_expired)
+    assert(c.cfg.refresh.claude_model == "m" && c.cfg.refresh.timeout_sec == 60 && c.cfg.refresh.cooldown_sec == 7200)
+    assert(c.cfg.forecast.working_hours && c.cfg.forecast.work_days.len() == 2)
+    assert(c.cfg.forecast.work_from == "10:00" && c.cfg.forecast.work_to == "18:30")
+    assert(c.cfg.forecast.off_hours_rate == 10 && c.cfg.forecast.rate_window_days == 2)
+    assert(c.cfg.forecast.warning == 75 && c.cfg.forecast.critical == 92)
+    assert(has_note(c, "bar_style"))
+    // "auto" is the port's own way: no note for it.
+    assert(!has_note(c, "C:/one: kind"))
+}
+
+test "the control: what this reader does not know is refused by line, not guessed" {
+    assert(toml_to_json("a.b = 1\n").is_err())
+    assert(toml_to_json("[a.b]\nx = 1\n").is_err())
+    assert(toml_to_json("x = \"open\n").is_err())
+    assert(toml_to_json("x = 1 y = 2\n").is_err())
+    assert(carry(Config.defaults(), "x = [1, 2\n").is_err())
+}

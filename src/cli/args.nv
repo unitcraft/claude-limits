@@ -37,6 +37,7 @@ export type Mode enum
     | Serve             // --serve: listen, and give the page (plan 01.5, task T2.27)
     | Forget            // forget EMAIL: delete one account's data (01.2 3.15, task T2.7)
     | ImportHistory     // import-history FILE: the reference's history into the database (01.6 q.1)
+    | ImportConfig      // import-config FILE: the reference's settings into the port's (01.6 q.2)
 
 /// The canonical receiver inside a method body is `match @`, NOT `match @self`. The
 /// latter type-checks -- `nova check` prints `ok:` on it -- and then dies in codegen
@@ -53,6 +54,7 @@ export fn Mode @to_str() -> str =>
         Mode.Serve => "serve"
         Mode.Forget => "forget"
         Mode.ImportHistory => "import-history"
+        Mode.ImportConfig => "import-config"
     }
 
 /// The parsed command line. Empty string means "not given" throughout, matching the
@@ -67,7 +69,7 @@ export type Args value {
     ro color str         // auto | always | never
     ro bar_style str     // blocks | ascii -- the reference defaults to ascii
     ro email str         // forget EMAIL; "" for every other mode
-    ro file str          // import-history FILE; "" for every other mode
+    ro file str          // import-history / import-config FILE; "" for every other mode
 }
 
 /// A refusal to parse, carrying the exit code that belongs to it.
@@ -119,6 +121,7 @@ export fn parse_args(argv []str) -> Result[Args, Complaint] {
     mut forget = false
     mut file = ""
     mut importing = false
+    mut verb = Mode.ImportHistory
     mut i = 0
 
     while i < argv.len() {
@@ -167,9 +170,10 @@ export fn parse_args(argv []str) -> Result[Args, Complaint] {
             }
         } else if a.starts_with("-") {
             return Err(Complaint.new("unknown option '${a}'", EXIT_CONFIG))
-        } else if !forget && !importing && dirs.len() == 0 && a == "import-history" {
+        } else if !forget && !importing && dirs.len() == 0 && (a == "import-history" || a == "import-config") {
             // A verb in first place, as `forget` is.
             importing = true
+            verb = if a == "import-config" { Mode.ImportConfig } else { Mode.ImportHistory }
         } else if importing && file == "" {
             file = a
         } else if !forget && !importing && dirs.len() == 0 && a == "forget" {
@@ -186,13 +190,15 @@ export fn parse_args(argv []str) -> Result[Args, Complaint] {
     }
 
     if importing {
+        ro name = verb.to_str()
         if file == "" {
-            return Err(Complaint.new("import-history needs the reference's history file (claude-limits-history.json)", EXIT_CONFIG))
+            ro what = if verb == Mode.ImportConfig { "settings file (claude-limits.toml)" } else { "history file (claude-limits-history.json)" }
+            return Err(Complaint.new("${name} needs the reference's ${what}", EXIT_CONFIG))
         }
         if dirs.len() > 0 {
-            return Err(Complaint.new("import-history takes one file and nothing else, not '${dirs[0]}'", EXIT_CONFIG))
+            return Err(Complaint.new("${name} takes one file and nothing else, not '${dirs[0]}'", EXIT_CONFIG))
         }
-        return Ok(Args.new(Mode.ImportHistory, config, offline, parent, dirs, color, bar_style, "", file))
+        return Ok(Args.new(verb, config, offline, parent, dirs, color, bar_style, "", file))
     }
     if forget {
         if email == "" {

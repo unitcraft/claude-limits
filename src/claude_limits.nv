@@ -46,9 +46,10 @@ import std.fs.{real_fs, metadata, read_text}
 import std.net.{TcpListener}
 import polaris.net.{ServerPolicy}
 import polaris.serve.{serve_router}
-import claude_limits.config.{Config, listen_addr}
+import claude_limits.config.{Config, listen_addr, validate}
 import claude_limits.storage.paths.{resolve}
-import claude_limits.storage.config_file.{load, save, ConfigHistory, FromUi, on_disk_changed}
+import claude_limits.storage.config_file.{load, save, ConfigHistory, FromUi, FromMigration, on_disk_changed}
+import claude_limits.config_reference.{carry}
 import claude_limits.server.app.{api_router}
 import claude_limits.server.handlers.config.{base_url, Committed, applies_live, folders_changed, render_state}
 import claude_limits.server.start.{real_paths_input, decide_start, sources_at_start, conf_at_start, config_now, DbAtStart}
@@ -85,7 +86,7 @@ import tls.{system_roots}
 
 const USAGE = "usage: claude-limits [--once | --serve] [--config PATH] [--offline DIR] [--parent DIR] [--color auto|always|never] [DIR ...]"
 const USAGE_AUTOSTART = "       claude-limits --install-autostart | --uninstall-autostart"
-const USAGE_FORGET = "       claude-limits forget EMAIL [--config PATH]   delete everything stored about one account\n       claude-limits import-history FILE [--config PATH]   the reference's claude-limits-history.json into the history"
+const USAGE_FORGET = "       claude-limits forget EMAIL [--config PATH]   delete everything stored about one account\n       claude-limits import-history FILE [--config PATH]   the reference's claude-limits-history.json into the history\n       claude-limits import-config FILE [--config PATH]    the reference's claude-limits.toml into these settings"
 
 /// One folder's worth of output, as lines, computed with the disk available.
 ///
@@ -743,6 +744,55 @@ fn import_mode(exe str, config_override str, file str) Io Time -> int {
     }
 }
 
+/// `import-config FILE` (plan 01.6, П6): the reference's settings into the port's, once,
+/// through the ordinary save -- the previous text goes to the settings history, and a
+/// running server takes the file on its next round (`taken_from_disk`).
+fn import_config_mode(exe str, config_override str, file str) Io Time -> int {
+    ro input = with Os = real_os(), Fs = real_fs() { real_paths_input(exe, config_override) }
+    ro paths = resolve(input)
+    ro loaded = with Fs = real_fs() { load(paths.config_file) }
+    if loaded.errors.len() > 0 {
+        println("claude-limits: the settings in ${paths.config_file} have errors; fix them first, nothing was imported")
+        for e in loaded.errors { println("  ${e.field}: ${e.message}") }
+        return EXIT_CONFIG
+    }
+    ro text = with Fs = real_fs() {
+        match read_text(file.to_path()) {
+            Ok(t) => t
+            Err(e) => {
+                println("claude-limits: cannot read ${file}: ${e}")
+                return EXIT_CONFIG
+            }
+        }
+    }
+    ro carried = match carry(loaded.cfg, text) {
+        Ok(c) => c
+        Err(why) => {
+            println("claude-limits: ${file} is not read: ${why}")
+            return EXIT_CONFIG
+        }
+    }
+    for n in carried.notes { println("claude-limits: ${n}") }
+    ro problems = validate(carried.cfg)
+    if problems.len() > 0 {
+        println("claude-limits: the imported settings would not be valid here; nothing was written")
+        for e in problems { println("  ${e.field}: ${e.message}") }
+        return EXIT_CONFIG
+    }
+    ro at = Time.now().unix_millis() as int
+    ro win = input.windows
+    ro saved = with Fs = real_fs(), ConfigHistory = history_in_db(paths, win, at) {
+        save(paths.config_file, loaded, carried.cfg, FromMigration)
+    }
+    if saved.ok() {
+        println("claude-limits: ${carried.added} folder(s) added; the settings are in ${paths.config_file} (a running server takes them on its next round)")
+        EXIT_OK
+    } else {
+        println("claude-limits: the settings were not written: ${saved.to_str()}")
+        EXIT_CONFIG
+    }
+}
+
 /// `forget EMAIL` (task T2.7): delete everything stored about one account.
 ///
 /// The address is NOT printed back: the command exists to remove it, and echoing it
@@ -955,6 +1005,11 @@ fn main() Io Net Time Detach {
                 Mode.ImportHistory => {
                     ro exe = if all.len() > 0 { all[0] } else { "" }
                     ro code = import_mode(exe, a.config, a.file)
+                    if code != EXIT_OK { exit(code, "") }
+                }
+                Mode.ImportConfig => {
+                    ro exe = if all.len() > 0 { all[0] } else { "" }
+                    ro code = import_config_mode(exe, a.config, a.file)
                     if code != EXIT_OK { exit(code, "") }
                 }
                 Mode.Once => {

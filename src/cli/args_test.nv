@@ -195,6 +195,13 @@ test "import-history is a verb with one file, and keeps --config beside it" {
     assert(a.dirs.len() == 0)
 }
 
+test "import-config is the same kind of verb, with the settings file" {
+    ro a = parse_args(["import-config", "D:/ref/claude-limits.toml"])!!
+    assert(a.mode == Mode.ImportConfig)
+    assert(a.file == "D:/ref/claude-limits.toml")
+    assert(parse_args(["import-config"]).is_err())
+}
+
 test "import-history without a file, or with two, is refused" {
     assert(parse_args(["import-history"]).is_err())
     assert(parse_args(["import-history", "a.json", "b.json"]).is_err())

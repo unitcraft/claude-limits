@@ -1,0 +1,399 @@
+// config_reference.nv — the reference's settings file, carried into the port's
+// (plan 01.6, П6; question 2 answered by the owner 2026-10-02: "да").
+//
+// ONE IMPORT, NOT A SECOND FORMAT. 01.6 "Не делаем" keeps the port's own file as it is
+// (01.2 §2.1); a second format read on every start would be two sources of one setting.
+// So the reference's file is read ONCE, by `claude-limits import-config <file>`, and
+// what it says is written into the port's file through the ordinary save -- with the
+// previous text kept in the settings history.
+//
+// THE FILE IS THE REFERENCE'S, READ AS ITS `tomllib` READS IT (scripts/claude_limits.py,
+// `load_config`): root keys only before the first section header -- a key written
+// below `[forecast]` belongs to `[forecast]`, whatever the comment above it says. The
+// reader covers the TOML the reference's file uses: root keys, `[table]`, `[[table]]`,
+// basic and literal strings (`'\\wsl.localhost\...'` keeps its backslashes),
+// integers, booleans, multi-line arrays, inline tables. It turns the file into JSON
+// and leaves the rest to std's JSON reader. Anything else is refused by line, not
+// guessed.
+//
+// WHAT MAPS WHERE:
+//   accounts[].dir              -> [[folders]] path, added to the port's, deduplicated;
+//   accounts[].kind / children  -> nothing: the port recognises a folder's kind and a
+//                                  parent folder by their contents (01.2 §3.4) -- said
+//                                  in the notes, entry by entry, never dropped silently;
+//   interval_sec                -> [poll] interval_sec;
+//   [thresholds]                -> [thresholds];
+//   [forecast]                  -> [forecast], key for key;
+//   auto_refresh, refresh_*     -> [refresh] (01.2 §2.1, amendment 2026-10-02);
+//   bar_style                   -> nothing: console output, the port has a page.
+
+module claude_limits.config_reference
+
+import std.encoding.json.{Json, JsonValue, ParseJsonError}
+import claude_limits.config.{Config}
+import claude_limits.accounts.discover.{normalise}
+
+// ── the TOML subset, as JSON ─────────────────────────────────────────────────
+
+type Cur {
+    mut cs []char
+    mut i int
+    mut line int
+}
+
+fn Cur @done() -> bool => @i >= @cs.len()
+
+fn Cur @at() -> char => @cs[@i]
+
+fn Cur @fail(what str) -> str => "line ${@line}: ${what}"
+
+/// Spaces and tabs; with `lines`, also newlines and comments (inside arrays).
+fn Cur mut @skip(lines bool) -> () {
+    while !@done() {
+        ro c = @at()
+        if c == ' ' || c == '\t' || c == '\r' {
+            @i += 1
+        } else if lines && c == '\n' {
+            @i += 1
+            @line += 1
+        } else if c == '#' {
+            while !@done() && @at() != '\n' { @i += 1 }
+        } else {
+            break
+        }
+    }
+}
+
+/// A JSON string literal of `s`.
+fn json_str(s str) -> str {
+    mut out = "\""
+    for c in s.chars() {
+        if c == '"' { out = "${out}\\\"" }
+        else if c == '\\' { out = "${out}\\\\" }
+        else if c == '\n' { out = "${out}\\n" }
+        else if c == '\t' { out = "${out}\\t" }
+        else if c == '\r' { out = "${out}\\r" }
+        else { out = "${out}${c}" }
+    }
+    "${out}\""
+}
+
+/// A basic string, `"..."`: TOML's escapes are JSON's (`\\ \" \n \t \r \b \f \uXXXX`),
+/// so the body is copied as it stands; `\U` (eight digits) is refused.
+fn Cur mut @basic() -> Result[str, str] {
+    @i += 1
+    mut out = "\""
+    while !@done() && @at() != '"' {
+        ro c = @at()
+        if c == '\n' { return Err(@fail("a string that does not close on its line")) }
+        if c == '\\' {
+            if @i + 1 >= @cs.len() { return Err(@fail("a string that does not close")) }
+            ro e = @cs[@i + 1]
+            if e == 'U' { return Err(@fail("\\U escapes are not read here")) }
+            out = "${out}\\${e}"
+            @i += 2
+            continue
+        }
+        out = "${out}${c}"
+        @i += 1
+    }
+    if @done() { return Err(@fail("a string that does not close")) }
+    @i += 1
+    Ok("${out}\"")
+}
+
+/// A literal string, `'...'`: no escapes at all -- the WSL path's backslashes stay.
+fn Cur mut @literal() -> Result[str, str] {
+    @i += 1
+    mut s = ""
+    while !@done() && @at() != '\'' {
+        if @at() == '\n' { return Err(@fail("a string that does not close on its line")) }
+        s = "${s}${@at()}"
+        @i += 1
+    }
+    if @done() { return Err(@fail("a string that does not close")) }
+    @i += 1
+    Ok(json_str(s))
+}
+
+fn is_bare(c char) -> bool =>
+    (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-'
+
+/// A key: bare, or quoted. Dotted keys are refused.
+fn Cur mut @key() -> Result[str, str] {
+    if @done() { return Err(@fail("a key was expected")) }
+    if @at() == '"' { return @basic() }
+    if @at() == '\'' { return @literal() }
+    mut k = ""
+    while !@done() && is_bare(@at()) {
+        k = "${k}${@at()}"
+        @i += 1
+    }
+    if k == "" { return Err(@fail("a key was expected")) }
+    if !@done() && @at() == '.' { return Err(@fail("dotted keys are not read here")) }
+    Ok(json_str(k))
+}
+
+fn Cur mut @value() -> Result[str, str] {
+    if @done() { return Err(@fail("a value was expected")) }
+    ro c = @at()
+    if c == '"' { return @basic() }
+    if c == '\'' { return @literal() }
+    if c == '[' {
+        @i += 1
+        mut items = ""
+        loop {
+            @skip(true)
+            if @done() { return Err(@fail("an array that does not close")) }
+            if @at() == ']' { break }
+            ro v = @value()?
+            items = if items == "" { v } else { "${items},${v}" }
+            @skip(true)
+            if !@done() && @at() == ',' { @i += 1 }
+        }
+        @i += 1
+        return Ok("[${items}]")
+    }
+    if c == '{' {
+        @i += 1
+        mut pairs = ""
+        loop {
+            @skip(false)
+            if @done() { return Err(@fail("an inline table that does not close")) }
+            if @at() == '}' { break }
+            ro k = @key()?
+            @skip(false)
+            if @done() || @at() != '=' { return Err(@fail("`=` was expected in an inline table")) }
+            @i += 1
+            @skip(false)
+            ro v = @value()?
+            pairs = if pairs == "" { "${k}:${v}" } else { "${pairs},${k}:${v}" }
+            @skip(false)
+            if !@done() && @at() == ',' { @i += 1 }
+        }
+        @i += 1
+        return Ok("{${pairs}}")
+    }
+    mut word = ""
+    while !@done() && (is_bare(@at()) || @at() == '.' || @at() == '+') {
+        word = "${word}${@at()}"
+        @i += 1
+    }
+    if word == "true" || word == "false" { return Ok(word) }
+    ro digits = word.replace("_", "")
+    match digits.to_int() {
+        Ok(n) => Ok("${n}")
+        Err(_) => match digits.to_f64() {
+            Ok(_) => Ok(digits)
+            Err(_) => Err(@fail("a value this reader does not know: ${word}"))
+        }
+    }
+}
+
+/// One section: its name ("" for the root), whether it is `[[name]]`, its pairs.
+type Section value {
+    ro name str
+    ro array bool
+    ro pairs str
+}
+
+fn sec(name str, array bool, pairs str) -> Section => { name, array, pairs }
+
+/// The reference's file as one JSON object.
+export fn toml_to_json(text str) -> Result[str, str] {
+    mut cs []char = []
+    for c in text.chars() { cs.push(c) }
+    mut cur = Cur{ cs, i: 0, line: 1 }
+    mut done []Section = []
+    mut name = ""
+    mut array = false
+    mut pairs = ""
+    loop {
+        cur.skip(true)
+        if cur.done() { break }
+        if cur.at() == '[' {
+            done.push(sec(name, array, pairs))
+            cur.i += 1
+            array = !cur.done() && cur.at() == '['
+            if array { cur.i += 1 }
+            mut n = ""
+            while !cur.done() && cur.at() != ']' && cur.at() != '\n' {
+                n = "${n}${cur.at()}"
+                cur.i += 1
+            }
+            name = n.trim_ascii()
+            if name == "" || name.contains(".") { return Err(cur.fail("a section this reader does not know: [${name}]")) }
+            ro close = if array { 2 } else { 1 }
+            mut k = 0
+            while k < close {
+                if cur.done() || cur.at() != ']' { return Err(cur.fail("a section header that does not close")) }
+                cur.i += 1
+                k += 1
+            }
+            pairs = ""
+            continue
+        }
+        ro key = cur.key()?
+        cur.skip(false)
+        if cur.done() || cur.at() != '=' { return Err(cur.fail("`=` was expected")) }
+        cur.i += 1
+        cur.skip(false)
+        ro v = cur.value()?
+        pairs = if pairs == "" { "${key}:${v}" } else { "${pairs},${key}:${v}" }
+        cur.skip(false)
+        if !cur.done() && cur.at() != '\n' { return Err(cur.fail("one key per line")) }
+    }
+    done.push(sec(name, array, pairs))
+
+    // The root, then each table; `[[name]]` elements gathered into one array, in order.
+    mut out = ""
+    mut arrays []str = []
+    for s in done {
+        if s.name == "" {
+            if s.pairs != "" { out = if out == "" { s.pairs } else { "${out},${s.pairs}" } }
+        } else if !s.array {
+            ro t = "${json_str(s.name)}:{${s.pairs}}"
+            out = if out == "" { t } else { "${out},${t}" }
+        } else {
+            mut seen = false
+            for a in arrays { if a == s.name { seen = true } }
+            if !seen {
+                arrays.push(s.name)
+                mut items = ""
+                for x in done {
+                    if x.array && x.name == s.name { items = if items == "" { "{${x.pairs}}" } else { "${items},{${x.pairs}}" } }
+                }
+                ro t = "${json_str(s.name)}:[${items}]"
+                out = if out == "" { t } else { "${out},${t}" }
+            }
+        }
+    }
+    Ok("{${out}}")
+}
+
+// ── onto the port's settings ─────────────────────────────────────────────────
+
+/// What the import did: the settings to save, and what a person should read about it.
+export type Carried value {
+    ro cfg Config
+    ro notes []str
+    /// Folders added: the reference's directories the port did not have yet.
+    ro added int
+}
+
+fn field(obj JsonValue, key str) -> Option[JsonValue] =>
+    match obj.object() {
+        Some(o) => o.get(key)
+        None => None
+    }
+
+fn int_of(v Option[JsonValue]) -> Option[int] =>
+    match v {
+        Some(j) => match j.num() {
+            Some(n) => Some(n as int)
+            None => None
+        }
+        None => None
+    }
+
+fn bool_of(v Option[JsonValue]) -> Option[bool] =>
+    match v {
+        Some(j) => j.bool()
+        None => None
+    }
+
+fn str_of(v Option[JsonValue]) -> Option[str] =>
+    match v {
+        Some(j) => j.str()
+        None => None
+    }
+
+fn same_folder(a str, b str) -> bool => normalise(a).to_ascii_lower() == normalise(b).to_ascii_lower()
+
+/// The reference's settings onto `base`. `Err` when the file is not the reference's.
+export fn carry(base Config, text str) -> Result[Carried, str] {
+    ro json = toml_to_json(text)?
+    ro root = Json.parse(json).map_err(fn(_e ParseJsonError) -> str => "the file did not read as TOML")?
+    mut cfg = base
+    mut notes []str = []
+    mut added = 0
+
+    match field(root, "accounts") {
+        Some(list) => match list.array() {
+            Some(items) => {
+                for item in items {
+                    ro dir = str_of(field(item, "dir")) ?? ""
+                    if dir == "" {
+                        notes.push("an accounts entry without `dir` was skipped")
+                        continue
+                    }
+                    mut have = false
+                    for f in cfg.folders { if same_folder(f, dir) { have = true } }
+                    if have {
+                        notes.push("${dir}: already a folder here")
+                    } else {
+                        cfg.folders.push(dir)
+                        added += 1
+                    }
+                    ro kind = str_of(field(item, "kind")) ?? ""
+                    if kind != "" && kind != "auto" {
+                        notes.push("${dir}: kind = \"${kind}\" -- the port tells Claude and Kimi Code logins apart by their files")
+                    }
+                    if bool_of(field(item, "children")) ?? false {
+                        notes.push("${dir}: children = true -- the port recognises a parent folder by its contents")
+                    }
+                }
+            }
+            None => notes.push("`accounts` is not a list; no folders were taken")
+        }
+        None => notes.push("no root `accounts`: no folders were taken (a key below a [section] header belongs to that section)")
+    }
+
+    match int_of(field(root, "interval_sec")) {
+        Some(n) => { cfg.poll.interval_sec = n }
+        None => {}
+    }
+
+    match field(root, "thresholds") {
+        Some(t) => {
+            match int_of(field(t, "warning")) { Some(n) => { cfg.thresholds.warning = n }, None => {} }
+            match int_of(field(t, "critical")) { Some(n) => { cfg.thresholds.critical = n }, None => {} }
+        }
+        None => {}
+    }
+
+    match field(root, "forecast") {
+        Some(f) => {
+            match bool_of(field(f, "enabled")) { Some(b) => { cfg.forecast.enabled = b }, None => {} }
+            match bool_of(field(f, "working_hours")) { Some(b) => { cfg.forecast.working_hours = b }, None => {} }
+            match field(f, "work_days") {
+                Some(d) => match d.array() {
+                    Some(xs) => {
+                        mut days []str = []
+                        for x in xs { match x.str() { Some(s) => days.push(s), None => {} } }
+                        cfg.forecast.work_days = days
+                    }
+                    None => {}
+                }
+                None => {}
+            }
+            match str_of(field(f, "work_from")) { Some(s) => { cfg.forecast.work_from = s }, None => {} }
+            match str_of(field(f, "work_to")) { Some(s) => { cfg.forecast.work_to = s }, None => {} }
+            match int_of(field(f, "off_hours_rate")) { Some(n) => { cfg.forecast.off_hours_rate = n }, None => {} }
+            match int_of(field(f, "rate_window_days")) { Some(n) => { cfg.forecast.rate_window_days = n }, None => {} }
+            match int_of(field(f, "warning")) { Some(n) => { cfg.forecast.warning = n }, None => {} }
+            match int_of(field(f, "critical")) { Some(n) => { cfg.forecast.critical = n }, None => {} }
+        }
+        None => {}
+    }
+
+    match bool_of(field(root, "auto_refresh")) { Some(b) => { cfg.refresh.enabled = b }, None => {} }
+    match bool_of(field(root, "refresh_all_expired")) { Some(b) => { cfg.refresh.all_expired = b }, None => {} }
+    match str_of(field(root, "refresh_claude_model")) { Some(s) => { cfg.refresh.claude_model = s }, None => {} }
+    match int_of(field(root, "refresh_timeout_sec")) { Some(n) => { cfg.refresh.timeout_sec = n }, None => {} }
+    match int_of(field(root, "refresh_cooldown_sec")) { Some(n) => { cfg.refresh.cooldown_sec = n }, None => {} }
+
+    if field(root, "bar_style").is_some() { notes.push("bar_style: the console's, the port draws a page -- not carried") }
+
+    Ok(Carried{ cfg, notes, added })
+}
