@@ -1,0 +1,59 @@
+// Tests for history_import.nv -- reading the reference's history file (plan 01.6,
+// question 1). The SQL's join rules are proved against DuckDB in
+// `history_import_live_test`.
+//
+//   ./nova.sh test src/storage/ --filter history_import_test
+
+module storage.history_import_test
+
+import history_import.{port_kind, port_key, read_reference, import_sql, CHUNK, RefPoint}
+
+test "every row kind the reference writes has its window, and nothing else does" {
+    assert(port_kind("session").map(|k| "${k.kind}/${k.model}") == Some("session/"))
+    assert(port_kind("weekly_all").map(|k| "${k.kind}/${k.model}") == Some("weekly_all/"))
+    assert(port_kind("weekly_scoped:Fable").map(|k| "${k.kind}/${k.model}") == Some("weekly_scoped/Fable"))
+    assert(port_kind("5h limit").map(|k| "${k.kind}/${k.model}") == Some("session/"))
+    assert(port_kind("month limit").map(|k| "${k.kind}/${k.model}") == Some("monthly/"))
+    assert(port_kind("month limit (code)").map(|k| "${k.kind}/${k.model}") == Some("monthly/code"))
+    assert(port_kind("weekly_scoped:").is_none())
+    assert(port_kind("yearly").is_none())
+}
+
+test "a Claude series becomes its lowered e-mail, a Kimi one keeps its name" {
+    assert(port_key("claude:Work@Example.ORG") == Some("work@example.org"))
+    assert(port_key("kimi:kimi-code-env-0e4f") == Some("kimi:kimi-code-env-0e4f"))
+    assert(port_key("kimi:").is_none())
+    assert(port_key("gpt:x").is_none())
+}
+
+test "the file reads both moment formats, rounds half to even, and counts what it skips" {
+    ro body = "{\"claude:a@b.c|weekly_all\": [[\"2026-10-01T12:00:00Z\", 12.5], [1790856000, 13.5], [\"bad\", 1], [\"2026-10-01T12:00:00Z\"]], \"claude:a@b.c|yearly\": [[\"2026-10-01T12:00:00Z\", 1]], \"kimi:k|month limit (code)\": [[\"2026-10-01T12:00:00Z\", 30.0]]}"
+    ro h = read_reference(body) ?? panic("not read")
+    assert(h.points.len() == 3)
+    assert(h.skipped == 3)
+    ro p0 = h.points[0]
+    assert(p0.key == "a@b.c" && p0.kind == "weekly_all" && p0.at_ms == 1790856000000 && p0.percent == 12)
+    // Epoch seconds, the older format; 13.5 rounds to 14, not 13.
+    assert(h.points[1].at_ms == 1790856000000 && h.points[1].percent == 14)
+    assert(h.points[2].key == "kimi:k" && h.points[2].kind == "monthly" && h.points[2].model == "code")
+}
+
+test "the control: a file that is not the reference's object is refused" {
+    assert(read_reference("[1, 2]").is_err())
+    assert(read_reference("not json").is_err())
+}
+
+test "the points go in chunks, each joined to the known cycle and before the first sample" {
+    mut ps []RefPoint = []
+    mut i = 0
+    while i < CHUNK + 1 {
+        ps.push(RefPoint{ key: "a@b.c", kind: "session", model: "", at_ms: 1790856000000 + i * 1000, percent: 1 })
+        i += 1
+    }
+    ro sqls = import_sql(ps, "inst", 1790900000000)
+    assert(sqls.len() == 2)
+    assert(sqls[0].contains("c.starts_at <= v.taken_at AND v.taken_at < c.resets_at"))
+    assert(sqls[0].contains("FROM import_first f"))
+    assert(sqls[0].contains("ON CONFLICT (window_id, sampled_at) DO NOTHING"))
+    assert(import_sql([], "inst", 1).len() == 0)
+}

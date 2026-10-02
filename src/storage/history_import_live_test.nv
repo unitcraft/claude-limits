@@ -1,0 +1,135 @@
+// history_import.nv's statements against DuckDB: which reference points become samples.
+//
+//   ./nova.sh test src/storage/ --filter history_import_live_test
+//
+// The rules are the SQL's own joins, so only a database can say they hold: a point is
+// written only into a cycle the database knows, of a window and an account it knows,
+// and only before the window's first sample; a second run writes nothing.
+
+module storage.history_import_live_test
+
+import std.fs.{real_fs, read_text}
+import duckdb.{Database, DbOptions}
+import duckdb.errors.{DuckError}
+import duckdb.types.{Value}
+import history_import.{import_sql, RefPoint, FIRST_SQL, DROP_FIRST_SQL, CHUNK}
+
+const INST = "01900000-0000-7000-8000-000000000001"
+const ACC = "01900000-0000-7000-8000-0000000000a1"
+const KIMI = "01900000-0000-7000-8000-0000000000a2"
+const WIN = "01900000-0000-7000-8000-0000000000b1"
+const KWIN = "01900000-0000-7000-8000-0000000000b2"
+const CYC = "01900000-0000-7000-8000-0000000000c1"
+const KCYC = "01900000-0000-7000-8000-0000000000c2"
+
+// The known cycle: 2026-09-30 18:00 .. 2026-10-07 18:00 UTC; the port's first sample
+// in it at 2026-10-02 00:37.
+const STARTS = 1790791200000
+const RESETS = 1791396000000
+const FIRST = 1790901420000
+const HOUR = 3600000
+
+fn migration() Io -> str =>
+    with Fs = real_fs() {
+        ro m1 = read_text("migrations/0001_init.sql".to_path()) ?? ""
+        ro m2 = read_text("migrations/0002_kimi_accounts.sql".to_path()) ?? ""
+        "${m1}\n${m2}"
+    }
+
+fn ts(ms int) -> str => "(make_timestamp(${ms * 1000}) AT TIME ZONE 'UTC')"
+
+fn seed() -> []str {
+    ro by = "'${INST}', '${INST}'"
+    ro now = "now(), now()"
+    [
+        "INSERT INTO account (id, created_at, updated_at, created_by, updated_by, provider, email, color_slot, first_seen_at, last_seen_at) VALUES ('${ACC}', ${now}, ${by}, 'claude', 'a@b.c', 0, now(), now())",
+        "INSERT INTO account (id, created_at, updated_at, created_by, updated_by, provider, cred_key, color_slot, first_seen_at, last_seen_at) VALUES ('${KIMI}', ${now}, ${by}, 'kimi', 'kimi-env', 0, now(), now())",
+        "INSERT INTO limit_window (id, created_at, updated_at, created_by, updated_by, account_id, kind, model, first_seen_at, last_seen_at) VALUES ('${WIN}', ${now}, ${by}, '${ACC}', 'weekly_all', '', now(), now())",
+        "INSERT INTO limit_window (id, created_at, updated_at, created_by, updated_by, account_id, kind, model, first_seen_at, last_seen_at) VALUES ('${KWIN}', ${now}, ${by}, '${KIMI}', 'monthly', 'code', now(), now())",
+        "INSERT INTO window_cycle VALUES ('${CYC}', ${now}, ${by}, '${WIN}', ${ts(STARTS)}, ${ts(RESETS)})",
+        "INSERT INTO window_cycle VALUES ('${KCYC}', ${now}, ${by}, '${KWIN}', ${ts(STARTS)}, ${ts(RESETS)})",
+        "INSERT INTO sample (id, created_at, updated_at, created_by, updated_by, window_id, sampled_at, cycle_id, percent, locked) VALUES (uuidv7(), ${now}, ${by}, '${WIN}', ${ts(FIRST)}, '${CYC}', 54, false)",
+    ]
+}
+
+fn pt(key str, kind str, model str, at_ms int, percent int) -> RefPoint => { key, kind, model, at_ms, percent }
+
+fn points() -> []RefPoint => [
+    pt("a@b.c", "weekly_all", "", STARTS + HOUR, 40),        // in the cycle, before the first sample: IN
+    pt("a@b.c", "weekly_all", "", FIRST - HOUR, 53),         // IN
+    pt("a@b.c", "weekly_all", "", FIRST + HOUR, 55),         // after the first sample: out
+    pt("a@b.c", "weekly_all", "", STARTS - HOUR, 99),        // before any known cycle: out
+    pt("a@b.c", "session", "", STARTS + HOUR, 5),            // no such window: out
+    pt("x@y.z", "weekly_all", "", STARTS + HOUR, 5),         // no such account: out
+    pt("kimi:kimi-env", "monthly", "code", STARTS + HOUR, 18), // Kimi, by its file: IN
+]
+
+/// Run the seed, then `runs` imports of `ps`; the answers of `queries`.
+fn run(ps []RefPoint, runs int, queries []str) Io -> []str {
+    mut out = []str.new()
+    ro schema = migration()
+    mut steps = seed()
+    mut r = 0
+    while r < runs {
+        steps.push(FIRST_SQL)
+        for s in import_sql(ps, INST, 1790910000000) { steps.push(s) }
+        steps.push(DROP_FIRST_SQL)
+        r += 1
+    }
+    mut last = "<nothing ran>"
+    with Fail[DuckError] = |e| { panic("DuckDB refused [${last}]: ${e.message()}") } {
+        consume db = Database.open_memory(DbOptions.defaults())!! {
+            consume con = db.connect()!! {
+                last = "migration"
+                ro _ = con.exec(schema)!!
+                for s in steps {
+                    last = s
+                    ro _ = con.exec(s)!!
+                }
+                for q in queries {
+                    last = q
+                    consume res = con.query(q)!! {
+                        match res.value(0, 0)!! {
+                            Value.Text(s) => out.push(s)
+                            _ => out.push("<non-text>")
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+const COUNTS = "SELECT (SELECT count(*) FROM sample WHERE window_id = '01900000-0000-7000-8000-0000000000b1')::VARCHAR || '/' || (SELECT count(*) FROM sample WHERE window_id = '01900000-0000-7000-8000-0000000000b2')::VARCHAR || '/' || (SELECT count(*) FROM sample)::VARCHAR"
+
+test "only points of a known cycle, window and account, before the first sample, go in" {
+    // weekly_all: the port's own 1 + 2 imported; Kimi's monthly code: 1; total 4.
+    ro a = run(points(), 1, [
+        COUNTS,
+        "SELECT string_agg(percent::VARCHAR, ',' ORDER BY sampled_at) FROM sample WHERE window_id = '01900000-0000-7000-8000-0000000000b1'",
+        "SELECT count(*)::VARCHAR FROM duckdb_tables() WHERE table_name = 'import_first'",
+    ])
+    if a[0] != "3/1/4" { panic("counts: ${a[0]}") }
+    assert(a[1] == "40,53,54")
+    assert(a[2] == "0")
+}
+
+test "a second run writes nothing" {
+    ro a = run(points(), 2, [COUNTS])
+    if a[0] != "3/1/4" { panic("counts after two runs: ${a[0]}") }
+}
+
+test "a series longer than a chunk goes in whole -- the boundary is taken once" {
+    // CHUNK + 5 points an hour apart from the cycle's start, all before the first sample
+    // would be needed; the cycle start to the first sample is ~30 hours, so step by
+    // a minute instead.
+    mut ps []RefPoint = []
+    mut i = 0
+    while i < CHUNK + 5 {
+        ps.push(pt("a@b.c", "weekly_all", "", STARTS + i * 60000, 1))
+        i += 1
+    }
+    ro a = run(ps, 1, [COUNTS])
+    if a[0] != "${CHUNK + 6}/0/${CHUNK + 6}" { panic("counts: ${a[0]}") }
+}

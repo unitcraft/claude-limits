@@ -1,0 +1,198 @@
+// history_import.nv — the reference's history file, into `sample` (plan 01.6, question 1:
+// the owner's "4 — да", 2026-10-02).
+//
+// Why: the forecast needs at least thirty minutes of a window's history, and the port's
+// database starts empty. The reference has kept a week of readings in
+// `claude-limits-history.json` next to its config all along; importing them makes the
+// forecast appear at once instead of after the first half hour.
+//
+// THE FILE (`scripts/claude_limits.py`, `record_sample` / `save_history`): one object,
+// `"<series>|<kind>": [[moment, percent], ...]`. `series` is `claude:<e-mail>` or
+// `kimi:<login name>`; `kind` is the reference's row kind -- `session`, `weekly_all`,
+// `weekly_scoped:<model>` for Claude, `5h limit`, `month limit`, `month limit (code)` for
+// Kimi Code. A moment is a UTC ISO string with `Z` (written since 2026-09-21) or epoch
+// seconds (the older format); the percent is a float.
+//
+// WHAT THE FILE DOES NOT HAVE IS THE RESET MOMENT, and every `sample` belongs to a
+// `window_cycle`. So a point is written ONLY into a cycle the database already knows --
+// one whose `[starts_at, resets_at)` holds the moment -- of a window the database already
+// knows, of an account it already knows. Everything else is skipped, by the SQL itself:
+// a point is a row of a join, and a point with nothing to join to is no row. That is
+// enough for the forecast (its rate is taken inside the current cycle); a cycle older
+// than the port's first reading of that window is not guessed.
+//
+// AND ONLY BEFORE THE WINDOW'S FIRST SAMPLE: from that moment on the port has its own
+// readings, and interleaving a second poller's would draw two lines as one. Inserts are
+// `ON CONFLICT DO NOTHING`, so a second run adds nothing.
+
+module storage.history_import
+
+import std.encoding.json.{Json, JsonValue, ParseJsonError}
+import claude_limits.storage.repo.{quote, moment, account_key_sql}
+import claude_limits.usage.kimi.{round_percent}
+import claude_limits.usage.parse.{moment_ms}
+
+/// One reading of the reference, in the port's terms.
+export type RefPoint value {
+    ro key str        // the account's key: an e-mail, or `kimi:<name>` (repo.kimi_key)
+    ro kind str       // window_kind (01.2 §3.2)
+    ro model str
+    ro at_ms int
+    ro percent int
+}
+
+/// What the file held.
+export type RefHistory value {
+    ro points []RefPoint
+    /// Series whose kind the port has no window for, and points whose moment or
+    /// percent did not read -- counted, so the command can say so.
+    ro skipped int
+}
+
+/// The port's window of a reference row kind.
+export type KindModel value {
+    ro kind str
+    ro model str
+}
+
+fn km(kind str, model str) -> KindModel => { kind, model }
+
+/// The reference's row kind -> the port's `(kind, model)`; `None` for one the port has
+/// no window for.
+export fn port_kind(raw str) -> Option[KindModel] {
+    if raw == "session" || raw == "5h limit" { return Some(km("session", "")) }
+    if raw == "weekly_all" { return Some(km("weekly_all", "")) }
+    if raw.starts_with("weekly_scoped:") {
+        ro model = raw["weekly_scoped:".byte_len()..]
+        if model == "" { return None }
+        return Some(km("weekly_scoped", model))
+    }
+    if raw == "month limit" { return Some(km("monthly", "")) }
+    if raw == "month limit (code)" { return Some(km("monthly", "code")) }
+    None
+}
+
+/// The reference's series -> the port's account key: a Claude e-mail lowered as the
+/// database stores it; a Kimi login as the live model names it. `None` otherwise.
+export fn port_key(series str) -> Option[str] {
+    if series.starts_with("claude:") {
+        ro email = series["claude:".byte_len()..].trim_ascii().to_ascii_lower()
+        if email == "" { return None }
+        return Some(email)
+    }
+    if series.starts_with("kimi:") && series.byte_len() > "kimi:".byte_len() { return Some(series) }
+    None
+}
+
+/// A moment of the file in milliseconds; 0 when it does not read.
+fn point_ms(v JsonValue) -> int {
+    match v.num() {
+        Some(sec) => return (sec * 1000.0) as int
+        None => {}
+    }
+    match v.str() {
+        Some(s) => moment_ms(s)
+        None => 0
+    }
+}
+
+/// A float percent as a whole one, rounded as the reference prints it (half to even,
+/// `kimi.round_percent`), held to 0..100 -- the column's CHECK.
+fn whole_percent(p f64) -> int {
+    ro x = round_percent((p * 100.0) as int)
+    if x < 0 { return 0 }
+    if x > 100 { return 100 }
+    x
+}
+
+/// Read the file. `Err` only when it is not the reference's object at all.
+export fn read_reference(body str) -> Result[RefHistory, str] {
+    ro root = Json.parse(body).map_err(fn(_e ParseJsonError) -> str => "not JSON")?
+    ro series = root.object().ok_or("not the reference history: the top level is not an object")?
+    mut points []RefPoint = []
+    mut skipped = 0
+    for (name, value) in series.iter() {
+        ro (left, right) = match name.rsplit_once("|") {
+            Some(parts) => parts
+            None => {
+                skipped += 1
+                continue
+            }
+        }
+        ro key = match port_key(left) {
+            Some(k) => k
+            None => {
+                skipped += 1
+                continue
+            }
+        }
+        ro kind = match port_kind(right) {
+            Some(k) => k
+            None => {
+                skipped += 1
+                continue
+            }
+        }
+        ro rows = match value.array() {
+            Some(a) => a
+            None => {
+                skipped += 1
+                continue
+            }
+        }
+        for row in rows {
+            ro pair = row.array() ?? []
+            if pair.len() != 2 {
+                skipped += 1
+                continue
+            }
+            ro at = point_ms(pair[0])
+            ro pct = match pair[1].num() {
+                Some(p) => p
+                None => -1.0
+            }
+            if at <= 0 || pct < 0.0 {
+                skipped += 1
+                continue
+            }
+            points.push(RefPoint{ key, kind: kind.kind, model: kind.model, at_ms: at, percent: whole_percent(pct) })
+        }
+    }
+    Ok(RefHistory{ points, skipped })
+}
+
+/// Points per statement: a VALUES list this long stays far below any statement limit,
+/// and one failing chunk loses no more than this.
+export const CHUNK = 400
+
+fn row_sql(p RefPoint) -> str =>
+    "(${quote(p.key)}, ${quote(p.kind)}, ${quote(p.model)}, ${moment(p.at_ms)}, ${p.percent})"
+
+/// Each window's first sample, taken ONCE before any insert: computed per statement,
+/// the first chunk's oldest point would become the boundary and cut off the rest of
+/// its own series in the next chunk.
+export const FIRST_SQL = "CREATE OR REPLACE TEMP TABLE import_first AS SELECT window_id, min(sampled_at) AS first_at FROM sample GROUP BY window_id"
+
+export const DROP_FIRST_SQL = "DROP TABLE IF EXISTS import_first"
+
+/// The statements that write `points`, `CHUNK` at a time, between `FIRST_SQL` and
+/// `DROP_FIRST_SQL`. Each inserts only the points that join to a known account, window
+/// and cycle, before the window's first sample.
+export fn import_sql(points []RefPoint, instance str, now_ms int) -> []str {
+    ro at = moment(now_ms)
+    ro by = quote(instance)
+    mut out []str = []
+    mut i = 0
+    while i < points.len() {
+        mut rows = ""
+        mut j = i
+        while j < points.len() && j < i + CHUNK {
+            ro r = row_sql(points[j])
+            rows = if rows == "" { r } else { "${rows}, ${r}" }
+            j += 1
+        }
+        out.push("INSERT INTO sample (id, created_at, updated_at, created_by, updated_by, window_id, sampled_at, cycle_id, percent, locked) SELECT uuidv7(), ${at}, ${at}, ${by}, ${by}, w.id, v.taken_at, c.id, v.pct, false FROM (VALUES ${rows}) AS v(k, kind, model, taken_at, pct) JOIN account a ON ${account_key_sql("a")} = v.k AND a.deleted_at IS NULL JOIN limit_window w ON w.account_id = a.id AND w.kind = v.kind AND w.model = v.model JOIN window_cycle c ON c.window_id = w.id AND c.starts_at <= v.taken_at AND v.taken_at < c.resets_at WHERE v.taken_at < coalesce((SELECT f.first_at FROM import_first f WHERE f.window_id = w.id), 'infinity'::TIMESTAMPTZ) ON CONFLICT (window_id, sampled_at) DO NOTHING")
+        i = j
+    }
+    out
+}

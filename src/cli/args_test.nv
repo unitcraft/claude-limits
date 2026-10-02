@@ -185,6 +185,21 @@ test "a misspelled autostart verb is refused, like every other unknown flag" {
     assert(r.err()!!.message.contains("install-autostrat"))
 }
 
+// ── import-history (plan 01.6, question 1) ──────────────────────────────────
+
+test "import-history is a verb with one file, and keeps --config beside it" {
+    ro a = parse_args(["import-history", "C:/ref/claude-limits-history.json", "--config", "C:/c.toml"])!!
+    assert(a.mode == Mode.ImportHistory)
+    assert(a.file == "C:/ref/claude-limits-history.json")
+    assert(a.config == "C:/c.toml")
+    assert(a.dirs.len() == 0)
+}
+
+test "import-history without a file, or with two, is refused" {
+    assert(parse_args(["import-history"]).is_err())
+    assert(parse_args(["import-history", "a.json", "b.json"]).is_err())
+}
+
 // ── forget (01.2 section 3.15, task T2.7) ───────────────────────────────────
 
 test "forget is a verb with one e-mail, and keeps --config beside it" {

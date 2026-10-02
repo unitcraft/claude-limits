@@ -29,7 +29,7 @@ module claude_limits.claude_limits
 
 import claude_limits.version.{version_line}
 import std.os.{args, real_os, home_dir}
-import claude_limits.cli.args.{EXIT_OK, EXIT_CONFIG, EXIT_OTHER}
+import claude_limits.cli.args.{EXIT_OK, EXIT_CONFIG, EXIT_OTHER, EXIT_DB}
 import claude_limits.cli.args as cli_args
 import claude_limits.cli.table.{account_header, short_name, no_logins, expired_note}
 import claude_limits.accounts.real_dirs.{with_real_disk}
@@ -42,7 +42,7 @@ import claude_limits.usage.parse as usage_parse
 import claude_limits.cli.table.{row, cli_label, reference_moment}
 import claude_limits.install.autostart.{install, uninstall, message, entry_for, Autostart, Change}
 import claude_limits.install.real_autostart.{with_real_autostart, host}
-import std.fs.{real_fs, metadata}
+import std.fs.{real_fs, metadata, read_text}
 import std.net.{TcpListener}
 import polaris.net.{ServerPolicy}
 import polaris.serve.{serve_router}
@@ -52,7 +52,7 @@ import claude_limits.storage.config_file.{load, save, ConfigHistory, FromUi, on_
 import claude_limits.server.app.{api_router}
 import claude_limits.server.handlers.config.{base_url, Committed, applies_live, folders_changed, render_state}
 import claude_limits.server.start.{real_paths_input, decide_start, sources_at_start, conf_at_start, config_now, DbAtStart}
-import claude_limits.storage.startup.{migrations_in, bundled, open_for_serve, record_readings, read_history_rows, record_found, Ready, StartFail, Upkeep, Upkept, forget_account, ForgetDone, upkeep_daily, record_config_version}
+import claude_limits.storage.startup.{migrations_in, bundled, open_for_serve, record_readings, read_history_rows, record_found, Ready, StartFail, Upkeep, Upkept, forget_account, ForgetDone, upkeep_daily, record_config_version, import_history, Imported}
 import claude_limits.storage.maintenance.{machine_rollup_tz}
 import claude_limits.storage.discovery_write.{Discovered, discovered}
 import claude_limits.storage.history_rows.{HistRows, HistFolderRows}
@@ -85,7 +85,7 @@ import tls.{system_roots}
 
 const USAGE = "usage: claude-limits [--once | --serve] [--config PATH] [--offline DIR] [--parent DIR] [--color auto|always|never] [DIR ...]"
 const USAGE_AUTOSTART = "       claude-limits --install-autostart | --uninstall-autostart"
-const USAGE_FORGET = "       claude-limits forget EMAIL [--config PATH]   delete everything stored about one account"
+const USAGE_FORGET = "       claude-limits forget EMAIL [--config PATH]   delete everything stored about one account\n       claude-limits import-history FILE [--config PATH]   the reference's claude-limits-history.json into the history"
 
 /// One folder's worth of output, as lines, computed with the disk available.
 ///
@@ -694,6 +694,49 @@ fn announced(r Ready, db_file str) Io -> int {
     }
 }
 
+/// `import-history FILE` (plan 01.6, question 1): the reference's history into the
+/// database, where it joins a cycle the database already knows (`history_import.nv`).
+fn import_mode(exe str, config_override str, file str) Io Time -> int {
+    ro input = with Os = real_os(), Fs = real_fs() { real_paths_input(exe, config_override) }
+    ro paths = resolve(input)
+    ro loaded = with Fs = real_fs() { load(paths.config_file) }
+    ro keep = loaded.cfg.storage.backups_keep
+    ro now = Time.now().unix_millis() as int
+    ro win = input.windows
+    ro body = with Fs = real_fs() {
+        match read_text(file.to_path()) {
+            Ok(t) => t
+            Err(e) => {
+                println("claude-limits: cannot read ${file}: ${e}")
+                return EXIT_CONFIG
+            }
+        }
+    }
+    ro done = with Fs = real_fs(), Random = real_random() {
+        with_real_db(fn() Db Fs Random -> Result[Imported, str] => import_history(paths, body, now, keep, win))
+    }
+    match done {
+        Ok(Imported.NoDatabase) => {
+            println("claude-limits: no database at ${paths.db_file} yet; start the server once, then import")
+            EXIT_OK
+        }
+        Ok(Imported.Older(v)) => {
+            println("claude-limits: the database is at schema ${v}, older than this build; start the server once (it migrates), then import")
+            EXIT_DB
+        }
+        Ok(Imported.Done(read, skipped, written, backup)) => {
+            println("claude-limits: ${written} of ${read} readings written; the rest fall outside a cycle the database knows, or after its own first reading of that window")
+            if skipped > 0 { println("claude-limits: ${skipped} entries of the file were not readings the port keeps (unknown kind or moment)") }
+            println("claude-limits: backup before the import ${backup}")
+            EXIT_OK
+        }
+        Err(why) => {
+            println("claude-limits: ${why}")
+            EXIT_DB
+        }
+    }
+}
+
 /// `forget EMAIL` (task T2.7): delete everything stored about one account.
 ///
 /// The address is NOT printed back: the command exists to remove it, and echoing it
@@ -901,6 +944,11 @@ fn main() Io Net Time Detach {
                 Mode.Forget => {
                     ro exe = if all.len() > 0 { all[0] } else { "" }
                     ro code = forget_mode(exe, a.config, a.email)
+                    if code != EXIT_OK { exit(code, "") }
+                }
+                Mode.ImportHistory => {
+                    ro exe = if all.len() > 0 { all[0] } else { "" }
+                    ro code = import_mode(exe, a.config, a.file)
                     if code != EXIT_OK { exit(code, "") }
                 }
                 Mode.Once => {
