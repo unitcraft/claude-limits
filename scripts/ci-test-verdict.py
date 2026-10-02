@@ -33,6 +33,11 @@ SUMMARY = re.compile(r"PASS:\s*(\d+)\s+FAIL:\s*(\d+)")
 
 
 def main(path):
+    # The transcript carries the compiler's own words, Russian among them, and the
+    # Windows runner's console is cp1252: printing a refusal raised UnicodeEncodeError
+    # and hid the verdict behind a traceback (CI, 2026-10-02). Replace what cannot be
+    # shown instead.
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     text = open(path, encoding="utf-8", errors="replace").read()
     # The runner colours its summary; strip ANSI before reading it.
     plain = re.sub(r"\x1b\[[0-9;]*m", "", text)

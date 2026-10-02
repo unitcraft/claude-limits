@@ -310,11 +310,25 @@ fn str_of(v Option[JsonValue]) -> Option[str] =>
 
 fn same_folder(a str, b str) -> bool => normalise(a).to_ascii_lower() == normalise(b).to_ascii_lower()
 
+/// An independent copy of `base`, field by field: `Config` has no `clone`, and
+/// `mut cfg = base` is refused (E_READONLY_COERCE: a write through it would reach the
+/// caller) -- the rebuild `handlers/config.apply` does, for the same reason. The folder
+/// list is copied element by element: the import pushes onto it.
+fn fresh(base Config) -> Config {
+    mut folders []str = []
+    for f in base.folders { folders.push(f) }
+    {
+        schema: base.schema, folders, poll: base.poll, thresholds: base.thresholds,
+        forecast: base.forecast, server: base.server, ui: base.ui, widget: base.widget,
+        history: base.history, storage: base.storage, refresh: base.refresh,
+    }
+}
+
 /// The reference's settings onto `base`. `Err` when the file is not the reference's.
 export fn carry(base Config, text str) -> Result[Carried, str] {
     ro json = toml_to_json(text)?
     ro root = Json.parse(json).map_err(fn(_e ParseJsonError) -> str => "the file did not read as TOML")?
-    mut cfg = base
+    mut cfg = fresh(base)
     mut notes []str = []
     mut added = 0
 
