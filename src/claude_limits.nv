@@ -247,10 +247,28 @@ fn say(line str) -> () {
 }
 
 /// One Kimi renewal attempt, logged as the reference logs it.
+/// A configured path as a file can be opened by: `~` expanded to the home directory.
+///
+/// THE RENEWAL GETS THE CONFIGURED PATH, `~` AND ALL. The rounds read a token through
+/// `Creds`, which expands it; the Kimi renewal read the file itself and did not, so
+/// with the folder written `~/.kimi-code` it found "no refresh_token on disk" every
+/// time -- the owner's stand, 2026-10-02, the first day its log could be read (#1655)
+/// -- and only the reference's own renewal kept the login alive.
+fn home_expanded(path str) -> str {
+    ro home = with Os = real_os() {
+        match home_dir() {
+            Some(p) => p.display()
+            None => ""
+        }
+    }
+    expand_home(path, home)
+}
+
 fn renew_one(mut tries LoginTries, path str, name str, cooldown_sec int) Http Time -> bool {
     ro now = Time.now().unix_millis() as int
     if tries.cooling(path, now, cooldown_sec * 1000) { return false }
-    ro r = with Fs = real_fs() { renew_kimi(path, now / 1000) }
+    ro file = home_expanded(path)
+    ro r = with Fs = real_fs() { renew_kimi(file, now / 1000) }
     match r {
         Renewed.Fresh => {
             tries.cleared(path)
@@ -295,13 +313,7 @@ fn renew_claude(mut tries LoginTries, path str, name str, model str, timeout_sec
     // Counted from the ATTEMPT, as the reference's Refresher counts it: a run that
     // answered "unchanged" also spent a request.
     tries.tried(path, now)
-    ro home = with Os = real_os() {
-        match home_dir() {
-            Some(p) => p.display()
-            None => ""
-        }
-    }
-    ro dir = expand_home(path, home)
+    ro dir = home_expanded(path)
     if creds_mtime_ms(dir) == 0 {
         say("auto-refresh ${name}: no .credentials.json, never logged in here")
         return false
