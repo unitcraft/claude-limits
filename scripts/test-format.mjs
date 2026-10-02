@@ -8,7 +8,7 @@
 import assert from 'node:assert/strict';
 import {
   windowMs, elapsedShare, cellGeometry, formatDuration,
-  formatResetMoment, formatReset, rowLabel, sortLimits, severityOf,
+  formatResetMoment, formatReset, durationRef, rowLabel, sortLimits, severityOf,
   isRetryable, retryDelay, MAX_RETRIES, refuseFor, REFUSAL_DEFAULT_SEC, REFUSAL_MAX_SEC,
   moveTo, applyOrder, accountKey, dropIndexFor, landingIndex, orderRequest, configPut,
   footerRight, legendText, footerCounts, stripTooltip, percentTooltip, forecastTooltip,
@@ -134,11 +134,23 @@ test('reset moment: bare time today, weekday this week, day and month beyond six
   assert.match(formatResetMoment(iso(8 * 86400_000), now), /^\d{1,2} [A-Z][a-z]{2} \d{2}:\d{2}$/);
 });
 
-test('reset caption pairs the moment with the remainder', () => {
+test("reset caption is the reference's: resets, the date and time, the remainder", () => {
+  // scripts/claude_limits.py `local_time`: "resets 2026-10-07 21:00 (5d 0h)" -- the
+  // owner chose it over the card's "Tue 13:00 (2d 17h)" (2026-10-02).
   const now = Date.parse('2026-09-07T12:00:00Z');
   const at = new Date(now + 2 * 86400_000 + 17 * 3600_000).toISOString();
-  assert.match(formatReset(at, now), /^[A-Z][a-z]{2} \d{2}:\d{2} \(2d 17h\)$/);
+  assert.equal(formatReset(at, now, 'UTC'), 'resets 2026-09-10 05:00 (2d 17h)');
+  assert.equal(formatReset(at, now, 'Europe/Moscow'), 'resets 2026-09-10 08:00 (2d 17h)');
   assert.equal(formatReset(null, now), '—', 'a window with no reset must not print a fake one');
+});
+
+test("time left, the reference's way: 5d 0h, 3h 0min, 7min, now", () => {
+  assert.equal(durationRef(5 * 86400_000), '5d 0h');
+  assert.equal(durationRef(2 * 86400_000 + 17 * 3600_000), '2d 17h');
+  assert.equal(durationRef(3 * 3600_000), '3h 0min');
+  assert.equal(durationRef(3600_000 + 52 * 60_000 + 30_000), '1h 52min');
+  assert.equal(durationRef(7 * 60_000), '7min');
+  assert.equal(durationRef(0), 'now');
 });
 
 // -- labels, order, severity --------------------------------------------------

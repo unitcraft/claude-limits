@@ -236,7 +236,40 @@ export function formatResetMoment(resetsAtIso, now = Date.now(), tz = captionZon
   return `${at.toLocaleDateString('en', zoned({ weekday: 'short' }))} ${hhmm}`;
 }
 
-/** `Tue 13:00 (2d 17h)` — the whole caption of the reset column. */
+/**
+ * Time left the REFERENCE's way (`duration_of` in scripts/claude_limits.py): `2d 18h`,
+ * `1h 52min`, `7min`, `now`. The owner chose the reference's captions over the card's
+ * (2026-10-02); `formatDuration` stays for the tooltips and the strip.
+ */
+export function durationRef(ms) {
+  const total = Math.floor(ms / 1000);
+  if (total <= 0) return 'now';
+  const d = Math.floor(total / 86400);
+  const h = Math.floor((total % 86400) / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  if (d > 0) return `${d}d ${h}h`;
+  if (h > 0) return `${h}h ${m}min`;
+  return `${m}min`;
+}
+
+/** `2026-10-07 21:00` in the backend's zone -- the reference's `local_time`. */
+export function dateTimeIn(atMs, tz = captionZone) {
+  const at = new Date(atMs);
+  const zone = (opts) => {
+    if (!tz) return opts;
+    try {
+      new Intl.DateTimeFormat('en', { timeZone: tz });
+      return { ...opts, timeZone: tz };
+    } catch {
+      return opts;
+    }
+  };
+  const day = at.toLocaleDateString('en-CA', zone({ year: 'numeric', month: '2-digit', day: '2-digit' }));
+  const hhmm = at.toLocaleTimeString('en', zone({ hour: '2-digit', minute: '2-digit', hour12: false }));
+  return `${day} ${hhmm}`;
+}
+
+/** `resets 2026-10-07 21:00 (5d 0h)` — the whole caption of the reset column, as the reference prints it. */
 export function formatReset(resetsAtIso, now = Date.now(), tz = captionZone) {
   if (!resetsAtIso) return '—';
   const at = Date.parse(resetsAtIso);
@@ -245,7 +278,7 @@ export function formatReset(resetsAtIso, now = Date.now(), tz = captionZone) {
   // minute (01.1 lines 124 and 148 -- "locally, without asking the backend"). That is
   // why the page does not simply print the backend's `reset_label`, which bundles the
   // two: its countdown would be as old as the last poll.
-  return `${formatResetMoment(resetsAtIso, now, tz)} (${formatDuration(at - now)})`;
+  return `resets ${dateTimeIn(at, tz)} (${durationRef(at - now)})`;
 }
 
 /**

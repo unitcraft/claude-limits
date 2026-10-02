@@ -28,7 +28,7 @@ module model.forecast_join
 import std.time.civil.{TimeZone}
 import std.time.duration.{Timestamp}
 import claude_limits.model.forecast.{Schedule, Basis, forecast, effective_minutes, unavailable_for}
-import claude_limits.model.format.{reset_moment, duration_words}
+import claude_limits.model.format.{date_time, duration_ref}
 import claude_limits.server.dto.{SnapshotView, AccountView, LimitView, ForecastView}
 import claude_limits.storage.history_rows.{HistRows, HistSample}
 import claude_limits.usage.parse.{moment_iso}
@@ -140,14 +140,20 @@ fn after_effective(sched Schedule, from_ms int, eff_min int, offset_sec int, lim
     -1
 }
 
-/// "ends Tue ~12:30 (2d 17h)" -- the reset caption's moment with `~` before the time.
+/// "ends 2026-10-03 ~11:28 (14h 58min)" -- the reference's `forecast_suffix`: the date
+/// only when it is not today, `~` before a time still ahead, "(now)" for one already
+/// past (a fact, not an estimate).
 fn ends_label(at_ms int, now_ms int, zone TimeZone) -> str {
-    ro moment = reset_moment(at_ms.to_unix_millis(), now_ms.to_unix_millis(), zone)
-    ro approx = match moment.rsplit_once(" ") {
-        Some((head, time)) => "${head} ~${time}"
-        None => "~${moment}"
+    ro full = date_time(at_ms.to_unix_millis(), zone)
+    ro today = date_time(now_ms.to_unix_millis(), zone)
+    ro (day, hm) = full.split_once(" ") ?? (full, "")
+    ro same_day = match today.split_once(" ") {
+        Some((d, _)) => d == day
+        None => false
     }
-    "ends ${approx} (${duration_words(at_ms - now_ms)})"
+    ro prefix = if same_day { "" } else { "${day} " }
+    if at_ms <= now_ms { return "ends ${prefix}${hm} (now)" }
+    "ends ${prefix}~${hm} (${duration_ref(at_ms - now_ms)})"
 }
 
 fn view_of_forecast(percent_at_reset int, runs_out_at str, rate_milli int, basis str,
@@ -221,7 +227,10 @@ export fn forecast_of(v SnapshotView, l LimitView, rows HistRows, f ForecastRule
     } else {
         after_effective(sched, now_ms, r.runs_out_in_min, offset_sec, reset_ms)
     }
-    ro label = if out_ms < 0 { "\u{2192} ${r.percent_at_reset}% at reset" } else { ends_label(out_ms, now_ms, zone) }
+    // The reference's line 2, whole: the percent at reset ALWAYS, and when the limit runs
+    // out first, ", ends ..." after it (2026-10-02, the owner's choice).
+    ro head = "\u{2192} ${r.percent_at_reset}% at reset"
+    ro label = if out_ms < 0 { head } else { "${head}, ${ends_label(out_ms, now_ms, zone)}" }
     ro runs_out_at = if out_ms < 0 { "" } else { moment_iso(out_ms) }
     // The model keeps HUNDREDTHS, the wire THOUSANDTHS (`dto.ForecastView`): times ten.
     ro rate_milli = r.rate_per_hour_x100 * 10

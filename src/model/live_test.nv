@@ -70,7 +70,7 @@ test "time on a row: seconds left, the share elapsed, the caption, the instant" 
     assert(s.window_sec == 18000)
     // (18000 - 3600) / 18000 = 0.80, in hundredths.
     assert(s.elapsed_share_hundredths == 80)
-    assert(same("caption", "10:00 (1h 00m)", s.reset_label))
+    assert(same("caption", "resets 2026-09-30 10:00 (1h 0min)", s.reset_label))
     assert(same("resets_at", "2026-09-30T10:00:00Z", s.resets_at))
     assert(same("fetched_at", "2026-09-30T09:00:00Z", v.fetched_at))
 }

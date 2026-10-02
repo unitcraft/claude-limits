@@ -14,7 +14,7 @@ module model.snapshot_test
 
 import claude_limits.window.{Window}
 import snapshot.{SeverityBounds, Severity, AccountState, severity_of, at_100, locked, worst, stale_message, error_401_message, error_parse_message, rate_limited_badge, network_badge, red_panel_caption}
-import format.{duration_words, reset_moment, reset_caption, row_label}
+import format.{duration_words, duration_ref, reset_moment, reset_caption, row_label}
 import std.time.civil.{TimeZone}
 
 fn utc() -> TimeZone => TimeZone.Utc
@@ -90,9 +90,19 @@ test "the three moments of the card, in UTC" {
     assert(reset_moment(at("2026-09-14T09:30:00Z"), now(), utc()) == "14 Sep 09:30")
 }
 
-test "the whole caption matches the card" {
-    // The exact string in 01.1 §2.4 and on the artboard.
-    assert(reset_caption(at("2026-09-08T13:00:00Z"), now(), utc()) == "Tue 13:00 (2d 17h)")
+test "the whole caption is the reference's" {
+    // `resets <date> <time> (<left>)`, as scripts/claude_limits.py prints it -- the
+    // owner's choice of 2026-10-02 over the card's "Tue 13:00 (2d 17h)".
+    assert(reset_caption(at("2026-09-08T13:00:00Z"), now(), utc()) == "resets 2026-09-08 13:00 (2d 17h)")
+}
+
+test "time left, the reference's way: days and hours, hours and minutes, minutes, now" {
+    assert(duration_ref(2 * 86400_000 + 17 * 3600_000) == "2d 17h")
+    assert(duration_ref(5 * 86400_000) == "5d 0h")
+    assert(duration_ref(3 * 3600_000) == "3h 0min")
+    assert(duration_ref(3600_000 + 52 * 60_000) == "1h 52min")
+    assert(duration_ref(7 * 60_000) == "7min")
+    assert(duration_ref(0) == "now")
 }
 
 test "row labels, including the visible fallback" {

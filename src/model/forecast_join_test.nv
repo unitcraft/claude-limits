@@ -107,9 +107,8 @@ test "week by the clock, as the reference: 120 %, runs out 2026-10-05 08:04 UTC"
             assert(f.runs_out_at.starts_with("2026-10-05T08:04:00"))
             assert(f.sample_minutes == 1860)
             assert(f.warning)
-            assert(f.label.starts_with("ends "))
-            assert(f.label.contains("~08:04"))
-            assert(f.label.contains("(3d 23h)"))
+            // The reference's line, whole: the percent, then where it runs out.
+            assert(same("label", "\u{2192} 120% at reset, ends 2026-10-05 ~08:04 (3d 23h)", f.label))
             // 120 % at reset is past the ghost's 95: red, whatever the fill says now (54 %).
             assert(same("severity", "critical", f.severity))
         }

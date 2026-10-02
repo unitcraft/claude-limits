@@ -31,8 +31,8 @@ export const el = (tag, cls, text) => {
 export function valueText(limit, elapsedPercent = null) {
   const parts = [`${Math.round(wireNumber(limit.percent) ?? 0)}%`, limit.label || rowLabel(limit)];
   if (limit.locked_reason) parts.push(`locked: ${limit.locked_reason}`);
-  if (limit.resets_at) parts.push(`resets ${formatReset(limit.resets_at)}`);
-  else if (limit.reset_label) parts.push(`resets ${limit.reset_label}`);
+  if (limit.resets_at) parts.push(formatReset(limit.resets_at));
+  else if (limit.reset_label) parts.push(limit.reset_label);
   if (elapsedPercent != null) parts.push(`${elapsedPercent}% of the window elapsed`);
   const fc = limit.forecast;
   if (fc && fc.percent_at_reset != null) {

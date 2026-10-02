@@ -58,9 +58,34 @@ export fn reset_moment(at Timestamp, now Timestamp, zone TimeZone) -> str {
 }
 
 /// The whole caption: `Tue 13:00 (2d 17h)`.
+/// Time left the REFERENCE's way (`duration_of`): `2d 18h` / `1h 52min` / `7min` /
+/// `now`. The owner chose the reference's captions over the card's (2026-10-02:
+/// "надписи непонятны у нас, в скрипте понятны" -- "да"); `duration_words` stays for the
+/// places that did not change.
+export fn duration_ref(ms int) -> str {
+    ro total = ms / 1000
+    if total <= 0 { return "now" }
+    ro days = total / 86400
+    ro hours = (total % 86400) / 3600
+    ro mins = (total % 3600) / 60
+    if days > 0 { return "${days}d ${hours}h" }
+    if hours > 0 { return "${hours}h ${mins}min" }
+    "${mins}min"
+}
+
+/// `2026-10-07 21:00` in `zone` -- the reference's `local_time`, without its countdown.
+export fn date_time(at Timestamp, zone TimeZone) -> str {
+    ro dt = at.to_zoned(zone).datetime()
+    ro t = dt.time()
+    ro hh = if t.hour() < 10 { "0${t.hour()}" } else { "${t.hour()}" }
+    ro mm = if t.minute() < 10 { "0${t.minute()}" } else { "${t.minute()}" }
+    "${dt.date().to_iso()} ${hh}:${mm}"
+}
+
+/// The reset caption as the reference prints it: `resets 2026-10-07 21:00 (5d 0h)`.
 export fn reset_caption(at Timestamp, now Timestamp, zone TimeZone) -> str {
     ro left = at.minus(now)
-    "${reset_moment(at, now, zone)} (${duration_words(left.seconds() * 1000)})"
+    "resets ${date_time(at, zone)} (${duration_ref(left.seconds() * 1000)})"
 }
 
 /// The row's name (01.1 §2.1). A scoped row without a model name would be
