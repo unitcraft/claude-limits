@@ -38,9 +38,9 @@ import std.encoding.serde.{json_encode, Serialize}
 import std.time.civil.{TimeZone}
 import std.encoding.json.{Json, JsonValue}
 
-export const HISTORY_MAX_POINTS int = 50000
+export const HISTORY_MAX_POINTS = 50000
 
-const DAY_MS int = 86400000
+const DAY_MS = 86400000
 
 /// What the caller asked for, every default already applied.
 export type HistoryAsk value {
@@ -281,6 +281,7 @@ export fn history_thin(samples []HistSample, from_ms int, to_ms int, step_ms int
             }
             j += 1
         }
+        // nova:allow W_MANUAL_SLICE_COPY -- one chosen sample per grid node, not a run of them: no slice says "the nearest"
         if best >= 0 { out.push(samples[best]) }
         node += step_ms
     }
@@ -369,9 +370,8 @@ export fn history_local_midnight(ms int, zone TimeZone) -> int {
 }
 
 fn sample_day(start int, peak int, sum int, n int, last HistSample, locks []HistLock, from_ms int, to_ms int) -> HistDay {
-    ro lo = if start < from_ms { from_ms } else { start }
-    ro end = start + DAY_MS
-    ro hi = if end > to_ms { to_ms } else { end }
+    ro lo = start.max(from_ms)
+    ro hi = (start + DAY_MS).min(to_ms)
     {
         start_ms: start,
         peak,
@@ -403,7 +403,7 @@ export fn history_days(w HistWindow, from_ms int, to_ms int, zone TimeZone) -> [
             sum = 0
             n = 0
         }
-        if s.percent > peak { peak = s.percent }
+        peak = peak.max(s.percent)
         sum += s.percent
         n += 1
         last = s
@@ -420,6 +420,7 @@ export fn history_days(w HistWindow, from_ms int, to_ms int, zone TimeZone) -> [
         ro noon = start + DAY_MS / 2
         if noon < from_ms || noon >= to_ms { continue }
         while i < by_samples.len() && by_samples[i].start_ms < start {
+            // nova:allow W_MANUAL_SLICE_COPY -- a merge of two sorted lists: each step decides which side goes next
             out.push(by_samples[i])
             i += 1
         }
@@ -427,10 +428,7 @@ export fn history_days(w HistWindow, from_ms int, to_ms int, zone TimeZone) -> [
         out.push(HistDay{ start_ms: start, peak: r.peak, avg_hundredths: r.avg_hundredths,
                           locked_sec: r.locked_sec, resets_at_ms: 0, locked: false })
     }
-    while i < by_samples.len() {
-        out.push(by_samples[i])
-        i += 1
-    }
+    for d in by_samples[i..] { out.push(d) }
     out
 }
 
@@ -615,9 +613,9 @@ export fn history_lock_label(l HistLock, zone TimeZone) -> str {
 export fn history_locked_sec(locks []HistLock, from_ms int, to_ms int) -> int {
     mut total = 0
     for l in locks {
-        ro a = if l.from_ms < from_ms { from_ms } else { l.from_ms }
+        ro a = l.from_ms.max(from_ms)
         ro raw_b = if l.to_ms == 0 { to_ms } else { l.to_ms }
-        ro b = if raw_b > to_ms { to_ms } else { raw_b }
+        ro b = raw_b.min(to_ms)
         if b > a { total += (b - a) / 1000 }
     }
     total
@@ -664,7 +662,7 @@ fn day_avg_tenths(days []HistDay) -> int {
 
 fn peak_of(points []HistSample) -> int {
     mut peak = 0
-    for p in points { if p.percent > peak { peak = p.percent } }
+    for p in points { peak = peak.max(p.percent) }
     peak
 }
 
@@ -1070,11 +1068,11 @@ type HistWireByFolder value {
     ro note str
 }
 
-export const HISTORY_FOLDER_NOTE str = "the endpoint counts per login: folders sharing one login show the same curve"
+export const HISTORY_FOLDER_NOTE = "the endpoint counts per login: folders sharing one login show the same curve"
 
 fn occ_end(o HistOcc, to_ms int) -> int => if o.to_ms == 0 || o.to_ms > to_ms { to_ms } else { o.to_ms }
 
-fn occ_start(o HistOcc, from_ms int) -> int => if o.from_ms < from_ms { from_ms } else { o.from_ms }
+fn occ_start(o HistOcc, from_ms int) -> int => o.from_ms.max(from_ms)
 
 /// The points of one window inside `[lo, hi)`, on the RANGE's grid: thinned (or
 /// rolled into days) over the whole range first, so two segments of one directory sit
