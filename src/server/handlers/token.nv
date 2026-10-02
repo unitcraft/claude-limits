@@ -127,6 +127,7 @@ export fn applied(cfg Config, token str, want_lan bool) -> Config {
         widget: cfg.widget,
         history: cfg.history,
         storage: cfg.storage,
+        refresh: cfg.refresh,
     }
     c.server.access_token = token
     if want_lan { c.server.allow_lan = true }

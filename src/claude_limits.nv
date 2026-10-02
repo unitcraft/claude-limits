@@ -64,6 +64,9 @@ import duckdb.db_effect.{Db}
 import duckdb.db_real.{with_real_db}
 import claude_limits.server.feed.{Rounds, one_round, RoundLog, Settled, Renew, store_and_poll, tick_every, ping_every}
 import claude_limits.usage.kimi_refresh.{Renewed, renew_kimi}
+import claude_limits.accounts.claude_refresh.{refresh_run, verdict_of, RefreshVerdict}
+import claude_limits.accounts.discover.{expand_home, under}
+import std.os.{Command}
 import claude_limits.model.store_fiber.{Envelope, Store, ConfNow, Follower}
 import claude_limits.model.store.{Event}
 import claude_limits.model.forecast_join.{ForecastRules, with_forecasts}
@@ -184,51 +187,51 @@ type Collected {
 /// Kimi renewals that FAILED, and when -- the cooldown (the reference's KimiRefresher).
 /// In memory only, as there: a restart retries a hopeless login once, which is the
 /// cheaper mistake than a state file that suppresses a renewal that was needed.
-/// One failed renewal: which file, and when.
-type KimiTry value {
+/// One renewal attempt that counts against the cooldown: which file, and when.
+type LoginTry value {
     ro path str
     ro at_ms int
 }
 
-fn kimi_try(path str, at_ms int) -> KimiTry => { path, at_ms }
+fn login_try(path str, at_ms int) -> LoginTry => { path, at_ms }
 
-type KimiTries {
-    mut items []KimiTry
+/// The cooldown of renewals (the reference's KimiRefresher and Refresher). In memory
+/// only, as there: a restart retries a hopeless login once, which is the cheaper
+/// mistake than a state file that suppresses a renewal that was needed.
+type LoginTries {
+    mut items []LoginTry
 }
 
-fn KimiTries.new() -> KimiTries => { items: [] }
+fn LoginTries.new() -> LoginTries => { items: [] }
 
-/// One hour after a failure (the reference's default `refresh_cooldown_sec`).
-const KIMI_COOLDOWN_MS = 3_600_000
-
-fn KimiTries @cooling(path str, now_ms int) -> bool {
+fn LoginTries @cooling(path str, now_ms int, cooldown_ms int) -> bool {
     for x in @items {
-        if x.path == path { return now_ms - x.at_ms < KIMI_COOLDOWN_MS }
+        if x.path == path { return now_ms - x.at_ms < cooldown_ms }
     }
     false
 }
 
-/// Everything but `path` -- what a success leaves, and what a failure replaces.
-fn KimiTries @without(path str) -> []KimiTry {
-    mut keep []KimiTry = []
+/// Everything but `path`.
+fn LoginTries @without(path str) -> []LoginTry {
+    mut keep []LoginTry = []
     for x in @items { if x.path != path { keep.push(x) } }
     keep
 }
 
-fn KimiTries mut @failed(path str, now_ms int) -> () {
+fn LoginTries mut @tried(path str, now_ms int) -> () {
     mut keep = @without(path)
-    keep.push(kimi_try(path, now_ms))
+    keep.push(login_try(path, now_ms))
     @items = keep
 }
 
-/// A success clears the cooldown: a login that renewed once is renewable, and its next
-/// expiry (fifteen minutes on) must get a fresh try at once.
-fn KimiTries mut @cleared(path str) -> () { @items = @without(path) }
+/// A Kimi success clears the cooldown: a login that renewed once is renewable, and its
+/// next expiry (fifteen minutes on) must get a fresh try at once.
+fn LoginTries mut @cleared(path str) -> () { @items = @without(path) }
 
-/// One renewal attempt, logged as the reference logs it.
-fn renew_one(mut tries KimiTries, path str, name str) Http Time -> bool {
+/// One Kimi renewal attempt, logged as the reference logs it.
+fn renew_one(mut tries LoginTries, path str, name str, cooldown_sec int) Http Time -> bool {
     ro now = Time.now().unix_millis() as int
-    if tries.cooling(path, now) { return false }
+    if tries.cooling(path, now, cooldown_sec * 1000) { return false }
     ro r = with Fs = real_fs() { renew_kimi(path, now / 1000) }
     match r {
         Renewed.Fresh => {
@@ -242,10 +245,57 @@ fn renew_one(mut tries KimiTries, path str, name str) Http Time -> bool {
             true
         }
         Renewed.Failed(why) => {
-            tries.failed(path, now)
+            tries.tried(path, now)
             println("claude-limits: auto-refresh ${name}: failed -- ${why}")
             false
         }
+    }
+}
+
+/// The credentials file's mtime in milliseconds, 0 when there is none -- the only
+/// thing ever read from that file on this path (`claude_refresh.nv`).
+fn creds_mtime_ms(dir str) -> int {
+    ro f = under(dir, ".credentials.json")
+    with Fs = real_fs() {
+        match metadata(f.to_path()) {
+            Ok(m) => m.mtime_ns / 1000000
+            Err(_) => 0
+        }
+    }
+}
+
+/// One Claude renewal: run Claude Code under the directory, judge by the file's mtime.
+fn renew_claude(mut tries LoginTries, path str, name str, model str, timeout_sec int, cooldown_sec int) Time -> bool {
+    ro now = Time.now().unix_millis() as int
+    if tries.cooling(path, now, cooldown_sec * 1000) { return false }
+    // Counted from the ATTEMPT, as the reference's Refresher counts it: a run that
+    // answered "unchanged" also spent a request.
+    tries.tried(path, now)
+    ro home = with Os = real_os() {
+        match home_dir() {
+            Some(p) => p.display()
+            None => ""
+        }
+    }
+    ro dir = expand_home(path, home)
+    ro before = creds_mtime_ms(dir)
+    ro run = refresh_run(dir, model, timeout_sec)
+    mut c = Command.new(run.program)
+    c.args(run.args)
+    // A copy of the environment with one key: this process may itself run under a
+    // CLAUDE_CONFIG_DIR, and pointing IT at another account would be a silent switch.
+    if run.config_dir != "" { c.env("CLAUDE_CONFIG_DIR", run.config_dir) }
+    ro code = with Os = real_os() {
+        match c.run() {
+            Ok(st) => st.code()
+            Err(_) => -1
+        }
+    }
+    ro v = verdict_of(before, creds_mtime_ms(dir), code)
+    println("claude-limits: auto-refresh ${name}: ${v.to_str()}")
+    match v {
+        RefreshVerdict.Refreshed => true
+        _ => false
     }
 }
 
@@ -270,9 +320,12 @@ fn round_of(view SnapshotView, readings []Reading, found Discovered) -> Round =>
 /// capture is the shape `feed_test` has always used.
 fn collect_round(rounds Rounds) Http Dirs Creds Time -> Round {
     mut got = Collected.new()
-    mut tries = KimiTries.new()
+    mut tries = LoginTries.new()
     ro view = with Renew = effect Renew {
-        kimi(path str, name str) -> bool { renew_one(tries, path, name) }
+        kimi(path str, name str, cooldown_sec int) -> bool { renew_one(tries, path, name, cooldown_sec) }
+        claude(path str, name str, model str, timeout_sec int, cooldown_sec int) -> bool {
+            renew_claude(tries, path, name, model, timeout_sec, cooldown_sec)
+        }
     }, PollLog = effect PollLog {
         // Not logged: a log line would carry the e-mail, which 01.2 section 10 keeps
         // out of logs. The journal is `poll`, written from the readings.
@@ -308,9 +361,12 @@ fn rounds_recorded(rx ChanRx[Envelope], rounds Rounds, paths Paths, win bool, ca
     ro where = paths
     ro on_windows = win
     ro folders = rounds.folders
-    mut tries = KimiTries.new()
+    mut tries = LoginTries.new()
     with Renew = effect Renew {
-        kimi(path str, name str) -> bool { renew_one(tries, path, name) }
+        kimi(path str, name str, cooldown_sec int) -> bool { renew_one(tries, path, name, cooldown_sec) }
+        claude(path str, name str, model str, timeout_sec int, cooldown_sec int) -> bool {
+            renew_claude(tries, path, name, model, timeout_sec, cooldown_sec)
+        }
     }, PollLog = effect PollLog {
         // Not logged: a log line would carry the e-mail, which 01.2 section 10 keeps
         // out of logs. The journal is `poll`, written from the readings.

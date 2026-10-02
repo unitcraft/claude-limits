@@ -106,6 +106,15 @@ export type Storage value {
     threads int
 }
 
+/// Renewing expired logins (01.2 §2.1, amendment 2026-10-02; plan 01.6 П4/П5).
+export type Refresh value {
+    enabled bool            // Kimi renews itself; Claude by running `claude -p ok`
+    all_expired bool        // also the dirs of an account that still has a live token
+    claude_model str        // the tiny request's model -- it spends the account's limits
+    timeout_sec int         // 10..600
+    cooldown_sec int        // after a FAILURE, not a success; >= 60
+}
+
 export type Config value {
     schema int
     folders []str            // paths only: kind/login_dirs are computed, not settings
@@ -117,6 +126,7 @@ export type Config value {
     widget Widget
     history History
     storage Storage
+    refresh Refresh
 }
 
 /// One refusal, in the shape 01.3 §3.8 gives `errors[]`: the field in dotted
@@ -152,6 +162,7 @@ export fn Config.defaults() -> Config => {
     ui: { accounts_order: [], hidden_accounts: [], hide_stale: false, time_bar: true },
     widget: { enabled: false, always_on_top: true, x: 1480, y: 820, visible: true },
     history: { keep_days: 30, rollup_keep_days: 400, config_versions_keep: 20 },
+    refresh: { enabled: true, all_expired: false, claude_model: "claude-haiku-4-5-20251001", timeout_sec: 120, cooldown_sec: 3600 },
     storage: { data_dir: "", backups_keep: 5, memory_limit: "512MB", threads: 2 },
 }
 
@@ -216,6 +227,15 @@ export fn validate(cfg Config) -> []ConfigError {
     // these two lines are where they live.
     if cfg.server.port < 1 || cfg.server.port > 65535 {
         out.push({ field: "server.port", code: CODE_INVALID, message: MSG_PORT })
+    }
+    if cfg.refresh.timeout_sec < 10 || cfg.refresh.timeout_sec > 600 {
+        out.push({ field: "refresh.timeout_sec", code: CODE_INVALID, message: "from 10 to 600 seconds" })
+    }
+    if cfg.refresh.cooldown_sec < 60 {
+        out.push({ field: "refresh.cooldown_sec", code: CODE_INVALID, message: "at least 60 seconds" })
+    }
+    if cfg.refresh.claude_model.trim_ascii() == "" {
+        out.push({ field: "refresh.claude_model", code: CODE_INVALID, message: "name a model" })
     }
     if cfg.history.keep_days < 1 {
         out.push({ field: "history.keep_days", code: CODE_INVALID, message: MSG_KEEP_DAYS })
@@ -410,6 +430,7 @@ fn known_section(name str) -> bool =>
         "widget" => true
         "history" => true
         "storage" => true
+        "refresh" => true
         _ => false
     }
 
@@ -671,6 +692,23 @@ fn assign(section str, key str, value str, mut cfg Config, mut errs []ConfigErro
         return ()
     }
 
+    if section == "refresh" {
+        if key == "enabled" {
+            match set_bool(field, value, errs) { Some(b) => { cfg.refresh.enabled = b }, None => {} }
+        } else if key == "all_expired" {
+            match set_bool(field, value, errs) { Some(b) => { cfg.refresh.all_expired = b }, None => {} }
+        } else if key == "claude_model" {
+            match set_str(field, value, errs) { Some(s) => { cfg.refresh.claude_model = s }, None => {} }
+        } else if key == "timeout_sec" {
+            match set_int(field, value, errs) { Some(n) => { cfg.refresh.timeout_sec = n }, None => {} }
+        } else if key == "cooldown_sec" {
+            match set_int(field, value, errs) { Some(n) => { cfg.refresh.cooldown_sec = n }, None => {} }
+        } else {
+            errs.push(unknown(field))
+        }
+        return ()
+    }
+
     if section == "history" {
         if key == "keep_days" {
             match set_int(field, value, errs) {
@@ -836,5 +874,12 @@ fn render_text(cfg Config, secret bool) -> str {
     out = "${out}backups_keep = ${cfg.storage.backups_keep}\n"
     out = "${out}memory_limit = ${toml_quote(cfg.storage.memory_limit)}\n"
     out = "${out}threads = ${cfg.storage.threads}\n"
+
+    out = "${out}\n[refresh]\n"
+    out = "${out}enabled = ${bool_of(cfg.refresh.enabled)}\n"
+    out = "${out}all_expired = ${bool_of(cfg.refresh.all_expired)}\n"
+    out = "${out}claude_model = ${toml_quote(cfg.refresh.claude_model)}\n"
+    out = "${out}timeout_sec = ${cfg.refresh.timeout_sec}\n"
+    out = "${out}cooldown_sec = ${cfg.refresh.cooldown_sec}\n"
     out
 }

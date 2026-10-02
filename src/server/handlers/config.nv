@@ -102,7 +102,7 @@ export type ConfigCommit fn(Config) -> Committed
 fn with_live_from(c Config, from Config) -> Config => {
     schema: c.schema, folders: from.folders, poll: c.poll, thresholds: c.thresholds,
     forecast: c.forecast, server: c.server, ui: from.ui, widget: c.widget, history: c.history,
-    storage: c.storage,
+    storage: c.storage, refresh: c.refresh,
 }
 
 /// Is the change in force at once? `ui.*` is read per request; `folders` is read by
@@ -693,6 +693,7 @@ export fn apply(current Config, body JsonObject) -> Merge {
         widget: current.widget,
         history: current.history,
         storage: current.storage,
+        refresh: current.refresh,
     }
     mut errs = []FieldError.new()
     mut it = body.iter()

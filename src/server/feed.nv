@@ -39,6 +39,7 @@ import claude_limits.accounts.discover.{Dirs, LoginDir, scan}
 import claude_limits.accounts.login.{Login, TokenState, Creds, read_login, read_token}
 import claude_limits.accounts.kimi_home.{KimiLogin, kimi_logins_at, read_kimi_token}
 import claude_limits.accounts.discover.{leaf}
+import claude_limits.config.{Refresh}
 import claude_limits.accounts.group.{group}
 import claude_limits.cli.table.{short_name}
 import claude_limits.server.dto.{DirView, SnapshotView}
@@ -253,17 +254,39 @@ fn folders_now(st StoreState, r Rounds) -> []str =>
 /// Renewing a login's token before the round asks with it (plan 01.6, П4).
 export type Renew effect {
     // A Kimi Code login whose token expired: `true` when its file now holds a usable
-    // one (renewed, or rotated by another Kimi tool). The cooldown is the handler's.
-    kimi(path str, name str) -> bool
+    // one (renewed, or rotated by another Kimi tool). `cooldown_sec` runs from a failure.
+    kimi(path str, name str, cooldown_sec int) -> bool
+    // A Claude login directory: run Claude Code there so IT renews the token (П5);
+    // `true` when the credentials file was rewritten. `cooldown_sec` runs from any
+    // attempt, as the reference's Refresher does.
+    claude(path str, name str, model str, timeout_sec int, cooldown_sec int) -> bool
 }
 
-/// Renew every expired Kimi token; `true` when any file changed and the folders are
-/// worth reading again.
-fn renew_expired(found []Found) Renew -> bool {
+/// Renew what `[refresh]` allows; `true` when a file changed and the folders are worth
+/// reading again.
+///
+/// CLAUDE, BY DEFAULT, ONLY WHERE NOTHING CAN BE READ: an account with no live token in
+/// any directory. One that still reports through another directory is left alone --
+/// silencing its "token expired on disk" note would spend a request on limits that are
+/// in nobody's way (the reference's `targets`). `all_expired` takes the other choice.
+fn renew_expired(found []Found, r Refresh) Renew -> bool {
+    if !r.enabled { return false }
     mut any = false
     for f in found {
-        if f.kimi && f.state == TokenState.Stale && f.cred_path != "" {
-            if Renew.kimi(f.cred_path, f.display_name) { any = true }
+        if f.kimi {
+            if f.state == TokenState.Stale && f.cred_path != "" {
+                if Renew.kimi(f.cred_path, f.display_name, r.cooldown_sec) { any = true }
+            }
+            continue
+        }
+        for d in f.dirs {
+            mut expired = f.state == TokenState.Stale
+            if !expired && r.all_expired {
+                for n in f.expired_dirs { if n == d.name { expired = true } }
+            }
+            if expired {
+                if Renew.claude(d.path, d.name, r.claude_model, r.timeout_sec, r.cooldown_sec) { any = true }
+            }
         }
     }
     any
@@ -274,7 +297,7 @@ fn round(mut st StoreState, before []Known, r Rounds) Http PollLog Creds Dirs Ti
     ro next = now + r.interval_sec * 1000
     ro first = found_in(folders_now(st, r), now)
     // Read again only when a token was renewed: the state of that login has changed.
-    ro found = if renew_expired(first) { found_in(folders_now(st, r), now) } else { first }
+    ro found = if renew_expired(first, st.conf.cfg.refresh) { found_in(folders_now(st, r), now) } else { first }
     ro known = poll_round(found, before, now, next, r.zone)
     st.view = view_of(known, r.bounds, now, next, r.tz, r.zone)
     known

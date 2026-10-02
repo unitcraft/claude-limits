@@ -1,0 +1,122 @@
+// claude_refresh.nv — making Claude Code renew a login's token (plan 01.6, П5).
+//
+// Source: the reference, `scripts/refresh_token.py`. Enabled by the owner 2026-10-02.
+//
+// THIS FILE NEVER WRITES `.credentials.json`, AND NEVER READS A VALUE FROM IT. It reads
+// the file's MODIFICATION TIME and nothing else. The `refreshToken` belongs to Claude
+// Code; a second refresher racing it would be a second writer of one file. Claude Code
+// is started with its config directory pointed at the login and asked for one tiny
+// answer -- IT rewrites the file.
+//
+// Two kinds of directory, by the path, because the renewal must happen inside the
+// system that owns the login:
+//
+//   Windows  `claude.cmd` on this machine, `CLAUDE_CONFIG_DIR` set;
+//   WSL      `\\wsl.localhost\<distro>\home\<user>\...` (also `\\wsl$\...`): `claude`
+//            INSIDE that distro, AS THAT USER -- the default user would renew a
+//            different login and report success.
+//
+// THE VERDICT IS THE FILE'S mtime, NOT THE EXIT CODE: a `claude` that answered on a
+// token still valid rewrites nothing, and that is `unchanged`, not success.
+//
+// THE TIMEOUT IS THE WRAPPER'S. `supervised(timeout:)` does not interrupt
+// `Command.run` (registry 221.1 #1615, `probes/command-run-ignores-timeout/`), so a hung
+// `claude` would hold the round forever: PowerShell waits with a limit and kills the
+// process TREE (`claude.cmd` starts node under cmd); inside WSL, coreutils `timeout`.
+//
+// Every renewal spends one small request on that account's own limits.
+
+module accounts.claude_refresh
+
+import claude_limits.accounts.discover.{normalise}
+
+/// What to start for one directory.
+export type RefreshRun value {
+    ro program str
+    ro args []str
+    /// `CLAUDE_CONFIG_DIR` for this machine's `claude`; "" when it is set inside WSL.
+    ro config_dir str
+}
+
+fn run_of(program str, args []str, config_dir str) -> RefreshRun => { program, args, config_dir }
+
+/// The WSL distro, user and POSIX path of a `\\wsl.localhost\...` / `\\wsl$\...` path;
+/// `None` for anything else, and for a WSL path not under `/home/<user>`.
+export fn wsl_parts(dir str) -> Option[WslDir] {
+    ro p = normalise(dir)
+    ro rest = if p.starts_with("//wsl.localhost/") {
+        p["//wsl.localhost/".byte_len()..]
+    } else if p.starts_with("//wsl$/") {
+        p["//wsl$/".byte_len()..]
+    } else {
+        return None
+    }
+    ro (distro, path) = rest.split_once("/")?
+    ro posix = "/${path}"
+    if !posix.starts_with("/home/") { return None }
+    ro after_home = posix["/home/".byte_len()..]
+    ro user = match after_home.split_once("/") {
+        Some((u, _)) => u
+        None => after_home
+    }
+    if user == "" { return None }
+    Some(wsl_dir(distro, user, posix))
+}
+
+export type WslDir value {
+    ro distro str
+    ro user str
+    ro posix str
+}
+
+fn wsl_dir(distro str, user str, posix str) -> WslDir => { distro, user, posix }
+
+/// A single-quoted shell word: `'` closes, an escaped quote, and opens again.
+fn sh_quote(s str) -> str => "'${s.replace("'", "'\\''")}'"
+
+/// A single-quoted PowerShell string: a quote is doubled.
+fn ps_quote(s str) -> str => "'${s.replace("'", "''")}'"
+
+/// What to run for `dir`, bounded by `timeout_sec`.
+export fn refresh_run(dir str, model str, timeout_sec int) -> RefreshRun {
+    match wsl_parts(dir) {
+        Some(w) => {
+            ro inner = "cd ~ && CLAUDE_CONFIG_DIR=${sh_quote(w.posix)} claude -p ok --model ${sh_quote(model)}"
+            run_of("wsl.exe", ["-d", w.distro, "-u", w.user, "--", "timeout", "${timeout_sec}", "bash", "-lc", inner], "")
+        }
+        None => {
+            // `claude.cmd`, not `claude`: on Windows the bare name resolves to the
+            // PowerShell shim, which cannot be started as a process (the reference).
+            ro start = "$p = Start-Process -FilePath 'claude.cmd' -ArgumentList '-p','ok','--model',${ps_quote(model)} -PassThru -WindowStyle Hidden"
+            ro wait = "if (-not $p.WaitForExit(${timeout_sec * 1000})) { taskkill /T /F /PID $p.Id | Out-Null; exit 124 }; exit $p.ExitCode"
+            ro script = "${start}; ${wait}"
+            run_of("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], dir)
+        }
+    }
+}
+
+/// What one attempt came to (the reference's three verdicts).
+export type RefreshVerdict enum
+    /// The credentials file was rewritten -- the only success.
+    | Refreshed
+    /// The run succeeded and rewrote nothing: the token was still valid.
+    | Unchanged
+    /// The run failed, timed out, or there was nothing to run; the reason.
+    | Failed(str)
+
+export fn RefreshVerdict @to_str() -> str =>
+    match @ {
+        Refreshed => "refreshed"
+        Unchanged => "unchanged"
+        Failed(why) => "failed -- ${why}"
+    }
+
+/// The verdict from the file's mtime before and after, and the exit code. `before` of 0
+/// means there was no file: never logged in here.
+export fn verdict_of(before_ms int, after_ms int, exit_code int) -> RefreshVerdict {
+    if before_ms == 0 { return RefreshVerdict.Failed("no .credentials.json: never logged in here") }
+    if after_ms > before_ms { return RefreshVerdict.Refreshed }
+    if exit_code == 0 { return RefreshVerdict.Unchanged }
+    if exit_code == 124 { return RefreshVerdict.Failed("timed out") }
+    RefreshVerdict.Failed("exit ${exit_code}")
+}
