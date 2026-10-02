@@ -91,6 +91,20 @@ export fn normalise(path str) -> str {
     out.strip_suffix("/") ?? out
 }
 
+/// `~` and `~/rest` with the home directory in front; anything else as it is.
+///
+/// The reference config writes `~/.claude` and `~/.kimi-code`, and so does a person:
+/// without this the folder check answered "no such folder" for both on the owner's
+/// stand (2026-10-02). Expanded where the DISK is read (`real_dirs.nv`), not in the
+/// settings: the file keeps `~`, which stays true when the profile moves.
+/// `~user` is not a form this tool knows, and is left alone rather than guessed at.
+export fn expand_home(path str, home str) -> str {
+    if home == "" { return path }
+    if path == "~" { return home }
+    if path.starts_with("~/") || path.starts_with("~\\") { return "${home}${path[1..]}" }
+    path
+}
+
 /// Join, assuming both sides are already normalised.
 export fn under(base str, name str) -> str {
     if base == "" { return name }

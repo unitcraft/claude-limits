@@ -15,7 +15,7 @@
 
 module accounts.discover_test
 
-import discover.{Dirs, Folder, LoginDir, scan, login_at, normalise, under, leaf}
+import discover.{Dirs, Folder, LoginDir, scan, login_at, normalise, under, leaf, expand_home}
 
 // The fixture tree, as flat lists. Directories first, then files.
 //
@@ -240,4 +240,15 @@ test "a NON-.claude directory does not borrow the parent's identity" {
             assert(one.identity == want)
         }
     }
+}
+
+test "a leading ~ is the home directory; other paths and ~user are left alone" {
+    // The reference config writes ~/.claude and ~/.kimi-code; without this both were
+    // "no such folder" on the owner's stand.
+    assert(expand_home("~/.claude", "C:/Users/me") == "C:/Users/me/.claude")
+    assert(expand_home("~", "C:/Users/me") == "C:/Users/me")
+    assert(expand_home("D:/x/.claude", "C:/Users/me") == "D:/x/.claude")
+    assert(expand_home("~other/.claude", "C:/Users/me") == "~other/.claude")
+    // No home known: nothing to put in front, and the path stays visibly unexpanded.
+    assert(expand_home("~/.claude", "") == "~/.claude")
 }

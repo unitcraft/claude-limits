@@ -25,7 +25,8 @@
 module accounts.real_dirs
 
 import std.fs.{real_fs, read_dir, read_text, try_exists, metadata}
-import claude_limits.accounts.discover.{Dirs}
+import std.os.{real_os, home_dir}
+import claude_limits.accounts.discover.{Dirs, expand_home}
 import claude_limits.accounts.login.{Creds}
 
 /// Runs `body` with both effects served by the real filesystem.
@@ -33,10 +34,17 @@ import claude_limits.accounts.login.{Creds}
 /// One `real_fs()` for both, because two handlers would open two effect instances over
 /// the same disk and the second would be silently redundant.
 export fn with_real_disk[T](body fn() Dirs Creds -> T) Io -> T {
+    // `~` is the person's home on every read below (`discover.expand_home`).
+    ro home = with Os = real_os() {
+        match home_dir() {
+            Some(p) => p.display()
+            None => ""
+        }
+    }
     with Fs = real_fs() {
         with Dirs = effect Dirs {
             list(path) -> []str {
-                match read_dir(path.to_path()) {
+                match read_dir(expand_home(path, home).to_path()) {
                     Err(_) => []
                     Ok(entries) => {
                         mut names []str = []
@@ -51,10 +59,10 @@ export fn with_real_disk[T](body fn() Dirs Creds -> T) Io -> T {
                 }
             }
             exists(path) -> bool {
-                match try_exists(path.to_path()) { Err(_) => false, Ok(v) => v }
+                match try_exists(expand_home(path, home).to_path()) { Err(_) => false, Ok(v) => v }
             }
             is_dir(path) -> bool {
-                match metadata(path.to_path()) {
+                match metadata(expand_home(path, home).to_path()) {
                     Err(_) => false
                     Ok(m) => m.is_dir()
                 }
@@ -62,7 +70,7 @@ export fn with_real_disk[T](body fn() Dirs Creds -> T) Io -> T {
         } {
             with Creds = effect Creds {
                 read(path) -> str {
-                    match read_text(path.to_path()) { Err(_) => "", Ok(t) => t }
+                    match read_text(expand_home(path, home).to_path()) { Err(_) => "", Ok(t) => t }
                 }
             } {
                 body()
