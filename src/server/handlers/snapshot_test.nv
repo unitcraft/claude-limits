@@ -201,6 +201,20 @@ test "accounts follow accounts_order, and the rest keep their arrival order" {
     }
 }
 
+test "a Kimi Code account keeps its place in the order by its name, not by its position" {
+    // No e-mail: its key is `kimi:<name>` (AccountView @order_key). Keyed by e-mail it
+    // was saved as "?2" and fell to the end after a reload (the owner's stand).
+    mut k = acc("k", "")
+    k.provider = "kimi"
+    k.display_name = "Kimi-Env-0e4f"
+    ro v = SnapshotView{ fetched_at: "", next_poll_at: "", tz: "+03:00", restored: false, worst: None,
+        accounts: [acc("a", "a@example.org"), acc("b", "b@example.org"), k], limits: [] }
+    ro got = arrange(v, ["a@example.org", "kimi:kimi-env-0e4f", "b@example.org"], [], false)
+    assert(got.accounts[1].id == "k")
+    // And it can be hidden by the same key.
+    assert(arrange(v, [], ["kimi:kimi-env-0e4f"], false).accounts.len() == 2)
+}
+
 test "an account nobody arranged does not jump into the middle" {
     // "By first appearance", not by e-mail: a new account must not push itself
     // between two a person put next to each other.

@@ -10,7 +10,7 @@ import {
   windowMs, elapsedShare, cellGeometry, formatDuration,
   formatResetMoment, formatReset, rowLabel, sortLimits, severityOf,
   isRetryable, retryDelay, MAX_RETRIES, refuseFor, REFUSAL_DEFAULT_SEC, REFUSAL_MAX_SEC,
-  moveTo, applyOrder, dropIndexFor, landingIndex, orderRequest, configPut,
+  moveTo, applyOrder, accountKey, dropIndexFor, landingIndex, orderRequest, configPut,
   footerRight, legendText, footerCounts, stripTooltip, percentTooltip, forecastTooltip,
   captionTime, intervalOf } from '../src/web/format.js';
 
@@ -325,6 +325,15 @@ test('moveTo clamps instead of dropping the item off the end', () => {
   assert.deepEqual(moveTo(['a', 'b', 'c'], 0, 99), ['b', 'c', 'a']);
   assert.deepEqual(moveTo(['a', 'b', 'c'], 2, -5), ['c', 'a', 'b']);
   assert.deepEqual(moveTo(['a', 'b', 'c'], 7, 0), ['a', 'b', 'c'], 'a bogus source is a no-op');
+});
+
+test('a Kimi account is ordered by kimi:<name>, the server\'s key, not by its position', () => {
+  const accs = [{ email: 'a@x' }, { email: 'b@x' }, { provider: 'kimi', display_name: 'Kimi-Env' }];
+  assert.equal(accountKey(accs[2]), 'kimi:kimi-env');
+  assert.equal(accountKey({ email: 'A@X' }), 'a@x');
+  assert.equal(accountKey({ provider: 'claude' }), '');
+  assert.deepEqual(applyOrder(accs, ['kimi:kimi-env', 'a@x']).map((a) => a.email || a.display_name),
+    ['Kimi-Env', 'a@x', 'b@x']);
 });
 
 test('applyOrder: named first in order, the rest in discovery order', () => {

@@ -6,7 +6,7 @@
 // code nobody ships. Everything here takes a document and returns nodes; no fetch,
 // no timers, no EventSource.
 import {
-  elapsedShare, cellGeometry, formatReset, rowLabel, sortLimits, severityOf, applyOrder, wireNumber, getViewOptions, stripTooltip, percentTooltip, forecastTooltip, runsOutShare } from './format.js';
+  elapsedShare, cellGeometry, formatReset, rowLabel, sortLimits, severityOf, applyOrder, accountKey, wireNumber, getViewOptions, stripTooltip, percentTooltip, forecastTooltip, runsOutShare } from './format.js';
 
 // ------------------------------------------------------------- rendering ----
 
@@ -291,7 +291,7 @@ export function renderList(accounts, allLimits, order = null) {
   // One order for every view (01.1 §4.1): a card dragged in the cards view moves in
   // the list too, or the two views disagree about which account is first.
   applyOrder(accounts, order).forEach((acc, i) => {
-    const key = (acc.email || `?${i}`).toLowerCase();
+    const key = accountKey(acc) || `?${i}`;
     seen.add(key);
     const fresh = renderAccount(acc, byAccount.get(acc.id) || [], owners.get(acc.same_quota_as));
     fresh.dataset.email = key;
@@ -357,7 +357,7 @@ export function renderCards(accounts, allLimits, order = null) {
   const owners = byId(accounts);
 
   applyOrder(accounts, order).forEach((acc, i) => {
-    const key = (acc.email || `?${i}`).toLowerCase();
+    const key = accountKey(acc) || `?${i}`;
     seen.add(key);
     const fresh = renderCard(acc, byAccount.get(acc.id) || [], owners.get(acc.same_quota_as));
     fresh.dataset.email = key;

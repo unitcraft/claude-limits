@@ -13,7 +13,7 @@ module handlers.snapshot
 
 import claude_limits.server.routes.{Ctx, ApiHandler, problem}
 import claude_limits.server.errors.{ApiError}
-import claude_limits.server.dto.{Disclosure, SnapshotView, AccountView, LimitView, render_snapshot}
+import claude_limits.server.dto.{Disclosure, SnapshotView, AccountView, LimitView, render_snapshot, is_listed}
 import polaris.{ServerRequest, ServerResponse}
 import claude_limits.server.etag.{etag_of}
 
@@ -115,15 +115,19 @@ fn kind_rank(kind str) -> int {
 /// jump into the middle of a list a person arranged, and the only order that does
 /// not surprise is the one it arrived in.
 export fn arrange(v SnapshotView, order []str, hidden []str, include_hidden bool) -> SnapshotView {
+    // By `order_key`: the e-mail, or `kimi:<name>` for a Kimi Code account, which has
+    // no e-mail to be listed by.
     mut kept = []AccountView.new()
     for e in order {
         for a in v.accounts {
-            if a.email == e && (include_hidden || !hidden.contains(a.email)) { kept.push(a) }
+            ro k = a.order_key()
+            if k != "" && k == e.to_ascii_lower() && (include_hidden || !is_listed(hidden, k)) { kept.push(a) }
         }
     }
     for a in v.accounts {
-        if order.contains(a.email) { continue }
-        if include_hidden || !hidden.contains(a.email) { kept.push(a) }
+        ro k = a.order_key()
+        if is_listed(order, k) { continue }
+        if include_hidden || !is_listed(hidden, k) { kept.push(a) }
     }
 
     // Limits follow their accounts, and inside an account: session, weekly_all,

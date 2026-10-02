@@ -320,6 +320,9 @@ function toast(text) {
  * successful PUT the repeat would get a `412` anyway (§3.8, idempotency by version).
  */
 async function saveOrder(emails) {
+  // Keys only: an account without one is drawn under its position (`?2`), and a
+  // position saved into the order names nothing after a reload.
+  emails = emails.filter((k) => k && !k.startsWith('?'));
   const current = await apiGet('/api/config');
   const etag = current.headers.get('ETag');
   const res = await fetch('/api/config', orderRequest(etag, emails));

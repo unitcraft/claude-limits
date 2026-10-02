@@ -589,6 +589,18 @@ export function moveTo(list, from, to) {
 }
 
 /**
+ * The key an account is ordered and hidden by (01.3 sec.3.8), lowered: its e-mail, or
+ * `kimi:<name>` for Kimi Code -- the server's `AccountView @order_key`. A Kimi account
+ * has no e-mail; keyed by it, the page saved its position ("?2") into the order, and
+ * after a reload the account lost its place. "" for an account with neither.
+ */
+export function accountKey(acc) {
+  if (acc && acc.email) return String(acc.email).toLowerCase();
+  if (acc && acc.provider === 'kimi' && acc.display_name) return `kimi:${acc.display_name}`.toLowerCase();
+  return '';
+}
+
+/**
  * Accounts in the configured order (01.1 §4.2): e-mails listed in
  * `ui.accounts_order` first and in that order, everything else after, in the order
  * it was discovered. The key is the e-mail, lowercased — one account may sit in
@@ -603,7 +615,7 @@ export function applyOrder(accounts, order) {
   if (!order || !order.length) return [...accounts];
   const rank = new Map(order.map((e, i) => [String(e).toLowerCase(), i]));
   const at = (a) => {
-    const r = rank.get(String(a.email || '').toLowerCase());
+    const r = rank.get(accountKey(a));
     return r == null ? order.length : r;
   };
   // Index as the tiebreaker keeps it a STABLE sort even where the engine's is not,

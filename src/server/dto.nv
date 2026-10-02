@@ -71,6 +71,26 @@ export type Disclosure enum Loopback | Lan | Anonymous
 // suffix to its divisor.
 
 /// One login directory of an account. `path` is class `pii-path`; `name` is not.
+/// The account's key in `ui.accounts_order` and `ui.hidden_accounts` (01.3 §3.8), lowered:
+/// its e-mail, or `kimi:<name>` for Kimi Code, whose snapshot has no e-mail and whose
+/// name is its credentials file's stem. The page builds the same key (`format.js
+/// accountKey`). Until 2026-10-02 both sides keyed by e-mail only, and a Kimi account
+/// was saved in the order as "?2" -- its position -- and lost its place on reload.
+export fn AccountView @order_key() -> str {
+    if @email != "" { return @email.to_ascii_lower() }
+    if @provider == "kimi" && @display_name != "" { return "kimi:${@display_name}".to_ascii_lower() }
+    ""
+}
+
+fn listed(keys []str, key str) -> bool {
+    if key == "" { return false }
+    for k in keys { if k.to_ascii_lower() == key { return true } }
+    false
+}
+
+/// `key` among `keys`, case-insensitive; an account without a key is never listed.
+export fn is_listed(keys []str, key str) -> bool => listed(keys, key)
+
 export type DirView value { id str, path str, name str }
 
 /// One account row. Empty strings mean `null` on the wire, which is what §0 asks
