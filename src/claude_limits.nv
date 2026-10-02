@@ -259,7 +259,7 @@ fn creds_mtime_ms(dir str) -> int {
     ro f = under(dir, ".credentials.json")
     with Fs = real_fs() {
         match metadata(f.to_path()) {
-            Ok(m) => m.mtime_ns / 1000000
+            Ok(m) => (m.mtime_ns / 1000000) as int
             Err(_) => 0
         }
     }
