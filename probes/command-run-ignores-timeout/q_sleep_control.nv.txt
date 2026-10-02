@@ -1,0 +1,14 @@
+// Control for q_cmd_timeout: the same timeout around a SLEEP, not a process.
+// If this returns in about 2 s, the timeout mechanism works and it is `Command.run`
+// that does not honour it.
+module hcap.q_sleep_control
+
+import std.time.duration.{Duration}
+
+fn main() Io Time {
+    ro t0 = Time.now().unix_millis()
+    supervised(timeout: 2.to_seconds()) {
+        Time.sleep(10.to_seconds())
+    }
+    println("returned after ${Time.now().unix_millis() - t0} ms")
+}

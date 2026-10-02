@@ -1,0 +1,21 @@
+// Probe: does `supervised(timeout:)` around `Command.run` stop waiting -- and does it
+// kill the child?
+module hcap.q_cmd_timeout
+
+import std.os.{Command, real_os}
+
+fn main() Io Time {
+    mut c = Command.new("ping.exe")
+    c.args(["-n", "30", "127.0.0.1"])
+    ro t0 = Time.now().unix_millis()
+    ro r = with Os = real_os() {
+        supervised(timeout: 2.to_seconds()) {
+            c.run()
+        }
+    }
+    ro dt = Time.now().unix_millis() - t0
+    match r {
+        Ok(st) => println("returned after ${dt} ms: exit ${st.code()}")
+        Err(e) => println("returned after ${dt} ms: error ${e}")
+    }
+}
