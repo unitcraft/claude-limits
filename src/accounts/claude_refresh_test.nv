@@ -1,33 +1,28 @@
 // Tests for claude_refresh.nv -- plan 01.6, П5: what is started to renew a Claude
-// login, and what the outcome is called. Nothing is started here.
+// login. Nothing is started here.
 //
 //   ./nova.sh test src/accounts/claude_refresh_test.nv
 
 module accounts.claude_refresh_test
 
-import claude_refresh.{refresh_run, wsl_parts, verdict_of, RefreshVerdict}
+import claude_refresh.{refresh_run, refresh_script, launcher_script, wsl_parts}
 
-test "a Windows directory runs claude.cmd under its CLAUDE_CONFIG_DIR, bounded by the wrapper" {
-    ro r = refresh_run("D:/Sources/.claude-accounts/MGTS", "claude-haiku-4-5-20251001", 120)
-    assert(r.program == "powershell.exe")
-    assert(r.config_dir == "D:/Sources/.claude-accounts/MGTS")
-    ro script = r.args[r.args.len() - 1]
-    assert(script.contains("Start-Process -FilePath 'claude.cmd'"))
-    assert(script.contains("'--model','claude-haiku-4-5-20251001'"))
+test "a Windows directory runs claude.cmd under its CLAUDE_CONFIG_DIR, bounded by the script" {
+    ro s = refresh_script("D:/Sources/.claude-accounts/MGTS", "claude-haiku-4-5-20251001", 120)
+    assert(s.starts_with("$env:CLAUDE_CONFIG_DIR = 'D:/Sources/.claude-accounts/MGTS';"))
+    assert(s.contains("Start-Process -FilePath 'claude.cmd'"))
+    assert(s.contains("'--model','claude-haiku-4-5-20251001'"))
     // The limit and the kill of the whole tree: claude.cmd starts node under cmd.
-    assert(script.contains("WaitForExit(120000)"))
-    assert(script.contains("taskkill /T /F"))
+    assert(s.contains("WaitForExit(120000)"))
+    assert(s.contains("taskkill /T /F"))
 }
 
 test "a WSL directory runs claude INSIDE the distro, as the user the path names" {
     // The default WSL user would renew a different login and report success.
-    ro r = refresh_run("\\\\wsl.localhost\\MGTS-KARKAS\\home\\karkas\\.claude", "m", 60)
-    assert(r.program == "wsl.exe")
-    assert(r.config_dir == "")
-    assert(r.args[0] == "-d" && r.args[1] == "MGTS-KARKAS")
-    assert(r.args[2] == "-u" && r.args[3] == "karkas")
-    assert(r.args[5] == "timeout" && r.args[6] == "60")
-    assert(r.args[r.args.len() - 1].contains("CLAUDE_CONFIG_DIR='/home/karkas/.claude'"))
+    ro s = refresh_script("\\\\wsl.localhost\\MGTS-KARKAS\\home\\karkas\\.claude", "m", 60)
+    assert(s.starts_with("& wsl.exe -d 'MGTS-KARKAS' -u 'karkas' -- timeout 60 bash -lc "))
+    // The inner shell's own quotes are doubled for PowerShell.
+    assert(s.contains("CLAUDE_CONFIG_DIR=''/home/karkas/.claude''"))
 }
 
 test "wsl$ is a WSL path too; a path not under /home is not one we can run" {
@@ -36,13 +31,26 @@ test "wsl$ is a WSL path too; a path not under /home is not one we can run" {
     assert(wsl_parts("C:/Users/me/.claude").is_none())
 }
 
-test "the verdict is the file's mtime, not the exit code" {
-    assert(verdict_of(1000, 2000, 0).to_str() == "refreshed")
-    // A run that answered on a token still valid rewrote nothing.
-    assert(verdict_of(1000, 1000, 0).to_str() == "unchanged")
-    assert(verdict_of(1000, 1000, 124).to_str() == "failed -- timed out")
-    assert(verdict_of(1000, 1000, 1).to_str() == "failed -- exit 1")
-    assert(verdict_of(0, 0, 0).to_str().contains("never logged in"))
-    // A rewritten file is a renewal even when the process then exited badly.
-    assert(verdict_of(1000, 2000, 1).to_str() == "refreshed")
+test "the launcher returns at once: an outer PowerShell starts the inner one through .NET" {
+    // The round runs in the store's fiber: a launcher that waited for claude held every
+    // reader of the snapshot (CI's smoke, 2026-10-02).
+    ro inner = refresh_script("C:/Users/Евгений/.claude", "m", 120)
+    ro r = refresh_run("C:/Users/Евгений/.claude", "m", 120)
+    assert(r.program == "powershell.exe")
+    assert(r.args[r.args.len() - 2] == "-Command")
+    ro outer = r.args[r.args.len() - 1]
+    assert(outer == launcher_script(inner))
+    assert(outer.contains("[System.Diagnostics.Process]::Start($i)"))
+    // No cmdlet in the outer script -- the inner's own Start-Process is only inside it.
+    assert(outer.starts_with("$i = [System.Diagnostics.ProcessStartInfo]::new('powershell.exe', "))
+    // The inner script, its single quotes doubled, in double quotes.
+    assert(outer.contains("-Command \"${inner.replace("'", "''")}\"'"))
+    assert(!inner.contains("\""))
+}
+
+test "no -EncodedCommand anywhere: the owner's antivirus flags it (event 4662, 2026-10-02)" {
+    ro r = refresh_run("C:/x/.claude", "m", 60)
+    for a in r.args { assert(!a.contains("EncodedCommand")) }
+    ro w = refresh_run("\\\\wsl.localhost\\U\\home\\me\\.claude", "m", 60)
+    for a in w.args { assert(!a.contains("EncodedCommand")) }
 }

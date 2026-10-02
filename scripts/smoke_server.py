@@ -11,6 +11,11 @@ Checks, one line each:
   page         GET / is 200 text/html
   snapshot     GET /api/snapshot lists the fixture's one account as `stale`,
                with the 01.1 text and no rows
+  refresh      (Windows) the stale login's renewal IS launched -- a fake `claude.cmd`
+               first on PATH marks its directory and then sleeps -- and the server
+               answers while it sleeps: the round must not wait for Claude Code
+               (CI went red on exactly that, 2026-10-02). No network: the fake is all
+               that runs.
   settings     GET /api/config carries the configured folder INSIDE `config`, as the
                page reads it, with the login the round found there
   save         PUT /api/config of `ui` is 200, written to the file, and the folder
@@ -89,6 +94,11 @@ def fixture(tmp, port):
     write(ok, f'[[folders]]\npath = "{folder}"\n\n[server]\nport = {port}\n')
     lan = os.path.join(tmp, "lan.toml")
     write(lan, f"[server]\nport = {port}\nallow_lan = true\n")
+    # The fake Claude Code: it marks the login it was started for, then sleeps far
+    # longer than any request below may take.
+    write(os.path.join(tmp, "bin", "claude.cmd"),
+          '@echo off\r\necho %* > "%CLAUDE_CONFIG_DIR%\\fake-claude-ran.txt"\r\n'
+          'ping -n 30 127.0.0.1 >nul\r\n')
     return ok, lan
 
 
@@ -110,7 +120,8 @@ def main(argv):
     env = dict(os.environ,
                LOCALAPPDATA=os.path.join(tmp, "local"), APPDATA=os.path.join(tmp, "roaming"),
                XDG_DATA_HOME=os.path.join(tmp, "xdg-data"), XDG_CONFIG_HOME=os.path.join(tmp, "xdg-config"),
-               XDG_STATE_HOME=os.path.join(tmp, "xdg-state"))
+               XDG_STATE_HOME=os.path.join(tmp, "xdg-state"),
+               PATH=os.path.join(tmp, "bin") + os.pathsep + os.environ.get("PATH", ""))
     base = f"http://127.0.0.1:{port}"
     results = []
 
@@ -133,10 +144,11 @@ def main(argv):
 
         status, _, body = get(base + "/api/health")
         check("health", status == 200 and '"ok":true' in body, f"{status} {body[:120]}")
-        # The database this start opened: encrypted, schema 1, a real file.
+        # The database this start opened: encrypted, the binary's schema (0002 since
+        # 2026-10-02), a real file.
         try:
             st = json.loads(body).get("storage", {})
-            db_ok = st.get("encrypted") is True and st.get("schema_version") == 1 and st.get("db_size_bytes", 0) > 0
+            db_ok = st.get("encrypted") is True and st.get("schema_version") == 2 and st.get("db_size_bytes", 0) > 0
         except ValueError:
             st, db_ok = {}, False
         check("database", db_ok, f"storage {st}")
@@ -163,6 +175,18 @@ def main(argv):
             check("snapshot", fine, f"{status} {body[:200]}")
         except ValueError:
             check("snapshot", False, f"{status} not JSON: {body[:120]}")
+
+        if os.name == "nt":
+            marker = os.path.join(tmp, "acc", "work", "fake-claude-ran.txt")
+            until = time.time() + 20
+            while time.time() < until and not os.path.exists(marker):
+                time.sleep(0.5)
+            launched = os.path.exists(marker)
+            t0 = time.time()
+            status, _, body = get(base + "/api/snapshot", timeout=5)
+            took = time.time() - t0
+            check("refresh", launched and status == 200 and took < 3,
+                  f"launched={launched} snapshot {status} in {took:.1f}s while the fake claude sleeps")
 
         # THE HISTORY (T2.15), read back from the database this start wrote. The fixture's
         # login is expired, so no tick is written -- but the round's DISCOVERY is: the

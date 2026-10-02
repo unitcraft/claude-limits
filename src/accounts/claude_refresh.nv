@@ -16,13 +16,35 @@
 //            INSIDE that distro, AS THAT USER -- the default user would renew a
 //            different login and report success.
 //
-// THE VERDICT IS THE FILE'S mtime, NOT THE EXIT CODE: a `claude` that answered on a
-// token still valid rewrites nothing, and that is `unchanged`, not success.
+// THE ROUND DOES NOT WAIT FOR IT (correction 2026-10-02, after CI). The round runs in
+// the store's fiber, and every reader of the snapshot waits for the round; a renewal
+// that waited for `claude` held the page, the history and the settings for as long as
+// Claude Code took -- up to the timeout. CI's smoke went red on it: its fixture's token
+// is expired, and `/api/snapshot` stopped answering. So the renewal is LAUNCHED and
+// left: an outer PowerShell starts the inner one through .NET `Process.Start` and
+// exits; the inner one does the waiting, and the next round reads the file -- the
+// token is fresh, or it is not.
+//
+// WHY .NET IN THE OUTER SCRIPT: a cmdlet there (`Start-Process`) loads its module, and
+// in a fresh `LOCALAPPDATA` (CI, the smoke) PowerShell builds its module cache first --
+// many seconds of a stalled round. With `Process.Start` alone the outer returned in
+// 1.5 s on a cold cache (measured 2026-10-02).
+//
+// NEVER `-EncodedCommand` (measured the same day, the hard way). A program that starts
+// a hidden PowerShell with an encoded script is what malware does, and the owner's
+// antivirus treats it so: Kaspersky logged a detection (event 4662, `avp`) on EVERY
+// start of the build that did it -- from its first run, 07:17 -- and the processes it
+// held could not be stopped any more; `cmd /c start` in front of such a line never
+// returned. The `-Command` form that renewed MGTS live at 05:44 drew no detection. So
+// both scripts travel as plain `-Command`: the outer one as one argument, the inner
+// one in double quotes inside the outer's single-quoted string -- it holds no double
+// quote of its own (`ps_quote` makes single-quoted literals), so neither layer needs
+// an escape beyond doubling `'`.
 //
 // THE TIMEOUT IS THE WRAPPER'S. `supervised(timeout:)` does not interrupt
-// `Command.run` (registry 221.1 #1615, `probes/command-run-ignores-timeout/`), so a hung
-// `claude` would hold the round forever: PowerShell waits with a limit and kills the
-// process TREE (`claude.cmd` starts node under cmd); inside WSL, coreutils `timeout`.
+// `Command.run` (registry 221.1 #1615, `probes/command-run-ignores-timeout/`): the hidden
+// PowerShell waits with a limit and kills the process TREE (`claude.cmd` starts node
+// under cmd); inside WSL, coreutils `timeout`.
 //
 // Every renewal spends one small request on that account's own limits.
 
@@ -30,15 +52,11 @@ module accounts.claude_refresh
 
 import claude_limits.accounts.discover.{normalise}
 
-/// What to start for one directory.
+/// What to start for one directory: a launcher that returns at once.
 export type RefreshRun value {
     ro program str
     ro args []str
-    /// `CLAUDE_CONFIG_DIR` for this machine's `claude`; "" when it is set inside WSL.
-    ro config_dir str
 }
-
-fn run_of(program str, args []str, config_dir str) -> RefreshRun => { program, args, config_dir }
 
 /// The WSL distro, user and POSIX path of a `\\wsl.localhost\...` / `\\wsl$\...` path;
 /// `None` for anything else, and for a WSL path not under `/home/<user>`.
@@ -77,46 +95,40 @@ fn sh_quote(s str) -> str => "'${s.replace("'", "'\\''")}'"
 /// A single-quoted PowerShell string: a quote is doubled.
 fn ps_quote(s str) -> str => "'${s.replace("'", "''")}'"
 
-/// What to run for `dir`, bounded by `timeout_sec`.
-export fn refresh_run(dir str, model str, timeout_sec int) -> RefreshRun {
+/// The PowerShell script that renews `dir`, bounded by `timeout_sec`. It runs hidden and
+/// on its own; nothing waits for it.
+export fn refresh_script(dir str, model str, timeout_sec int) -> str {
     match wsl_parts(dir) {
         Some(w) => {
             ro inner = "cd ~ && CLAUDE_CONFIG_DIR=${sh_quote(w.posix)} claude -p ok --model ${sh_quote(model)}"
-            run_of("wsl.exe", ["-d", w.distro, "-u", w.user, "--", "timeout", "${timeout_sec}", "bash", "-lc", inner], "")
+            "& wsl.exe -d ${ps_quote(w.distro)} -u ${ps_quote(w.user)} -- timeout ${timeout_sec} bash -lc ${ps_quote(inner)}"
         }
         None => {
             // `claude.cmd`, not `claude`: on Windows the bare name resolves to the
             // PowerShell shim, which cannot be started as a process (the reference).
+            // The variable is set HERE, in the hidden PowerShell's own environment: the
+            // server's is never touched, and it may itself run under a CLAUDE_CONFIG_DIR.
+            ro env = "$env:CLAUDE_CONFIG_DIR = ${ps_quote(dir)}"
             ro start = "$p = Start-Process -FilePath 'claude.cmd' -ArgumentList '-p','ok','--model',${ps_quote(model)} -PassThru -WindowStyle Hidden"
-            ro wait = "if (-not $p.WaitForExit(${timeout_sec * 1000})) { taskkill /T /F /PID $p.Id | Out-Null; exit 124 }; exit $p.ExitCode"
-            ro script = "${start}; ${wait}"
-            run_of("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], dir)
+            ro wait = "if (-not $p.WaitForExit(${timeout_sec * 1000})) { taskkill /T /F /PID $p.Id | Out-Null }"
+            "${env}; ${start}; ${wait}"
         }
     }
 }
 
-/// What one attempt came to (the reference's three verdicts).
-export type RefreshVerdict enum
-    /// The credentials file was rewritten -- the only success.
-    | Refreshed
-    /// The run succeeded and rewrote nothing: the token was still valid.
-    | Unchanged
-    /// The run failed, timed out, or there was nothing to run; the reason.
-    | Failed(str)
+/// The outer script: start the hidden inner PowerShell and return. .NET only -- no
+/// cmdlet, so no module is loaded on the way (see the header). The inner script goes
+/// in double quotes; it has none of its own.
+export fn launcher_script(inner_script str) -> str {
+    ro args = "-NoProfile -NonInteractive -WindowStyle Hidden -Command \"${inner_script}\""
+    "$i = [System.Diagnostics.ProcessStartInfo]::new('powershell.exe', ${ps_quote(args)}); $i.UseShellExecute = $false; $i.CreateNoWindow = $true; [void][System.Diagnostics.Process]::Start($i)"
+}
 
-export fn RefreshVerdict @to_str() -> str =>
-    match @ {
-        Refreshed => "refreshed"
-        Unchanged => "unchanged"
-        Failed(why) => "failed -- ${why}"
+/// What to start for `dir`: the outer PowerShell, which returns once the inner one runs.
+export fn refresh_run(dir str, model str, timeout_sec int) -> RefreshRun {
+    {
+        program: "powershell.exe",
+        args: ["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden",
+               "-Command", launcher_script(refresh_script(dir, model, timeout_sec))],
     }
-
-/// The verdict from the file's mtime before and after, and the exit code. `before` of 0
-/// means there was no file: never logged in here.
-export fn verdict_of(before_ms int, after_ms int, exit_code int) -> RefreshVerdict {
-    if before_ms == 0 { return RefreshVerdict.Failed("no .credentials.json: never logged in here") }
-    if after_ms > before_ms { return RefreshVerdict.Refreshed }
-    if exit_code == 0 { return RefreshVerdict.Unchanged }
-    if exit_code == 124 { return RefreshVerdict.Failed("timed out") }
-    RefreshVerdict.Failed("exit ${exit_code}")
 }

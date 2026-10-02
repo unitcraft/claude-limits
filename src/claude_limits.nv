@@ -64,7 +64,7 @@ import duckdb.db_effect.{Db}
 import duckdb.db_real.{with_real_db}
 import claude_limits.server.feed.{Rounds, one_round, RoundLog, Settled, Renew, store_and_poll, tick_every, ping_every}
 import claude_limits.usage.kimi_refresh.{Renewed, renew_kimi}
-import claude_limits.accounts.claude_refresh.{refresh_run, verdict_of, RefreshVerdict}
+import claude_limits.accounts.claude_refresh.{refresh_run}
 import claude_limits.accounts.discover.{expand_home, under}
 import std.os.{Command}
 import claude_limits.model.store_fiber.{Envelope, Store, ConfNow, Follower}
@@ -253,7 +253,8 @@ fn renew_one(mut tries LoginTries, path str, name str, cooldown_sec int) Http Ti
 }
 
 /// The credentials file's mtime in milliseconds, 0 when there is none -- the only
-/// thing ever read from that file on this path (`claude_refresh.nv`).
+/// thing ever read from that file on this path (`claude_refresh.nv`): a directory
+/// without one was never logged in, and there is nothing to renew.
 fn creds_mtime_ms(dir str) -> int {
     ro f = under(dir, ".credentials.json")
     with Fs = real_fs() {
@@ -264,7 +265,12 @@ fn creds_mtime_ms(dir str) -> int {
     }
 }
 
-/// One Claude renewal: run Claude Code under the directory, judge by the file's mtime.
+/// One Claude renewal: LAUNCH Claude Code under the directory and do not wait.
+///
+/// The round runs in the store's fiber and every reader waits for it; waiting for
+/// `claude` held the page for as long as it took (CI's smoke, 2026-10-02). The launcher
+/// returns at once, the hidden PowerShell bounds and waits, and the next round reads
+/// the file. `false`: nothing changed on disk yet, so nothing is worth reading again.
 fn renew_claude(mut tries LoginTries, path str, name str, model str, timeout_sec int, cooldown_sec int) Time -> bool {
     ro now = Time.now().unix_millis() as int
     if tries.cooling(path, now, cooldown_sec * 1000) { return false }
@@ -278,25 +284,25 @@ fn renew_claude(mut tries LoginTries, path str, name str, model str, timeout_sec
         }
     }
     ro dir = expand_home(path, home)
-    ro before = creds_mtime_ms(dir)
+    if creds_mtime_ms(dir) == 0 {
+        println("claude-limits: auto-refresh ${name}: no .credentials.json, never logged in here")
+        return false
+    }
     ro run = refresh_run(dir, model, timeout_sec)
     mut c = Command.new(run.program)
     c.args(run.args)
-    // A copy of the environment with one key: this process may itself run under a
-    // CLAUDE_CONFIG_DIR, and pointing IT at another account would be a silent switch.
-    if run.config_dir != "" { c.env("CLAUDE_CONFIG_DIR", run.config_dir) }
     ro code = with Os = real_os() {
         match c.run() {
             Ok(st) => st.code()
             Err(_) => -1
         }
     }
-    ro v = verdict_of(before, creds_mtime_ms(dir), code)
-    println("claude-limits: auto-refresh ${name}: ${v.to_str()}")
-    match v {
-        RefreshVerdict.Refreshed => true
-        _ => false
+    if code == 0 {
+        println("claude-limits: auto-refresh ${name}: started; Claude Code renews the file, the next round reads it")
+    } else {
+        println("claude-limits: auto-refresh ${name}: could not be started (exit ${code})")
     }
+    false
 }
 
 fn Collected.new() -> Collected => { items: [] }
