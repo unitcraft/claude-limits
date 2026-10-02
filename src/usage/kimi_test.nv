@@ -1,0 +1,62 @@
+// Tests for kimi.nv -- plan 01.6, П3: the Kimi Code reply against the REFERENCE.
+//
+//   ./nova.sh test src/usage/kimi_test.nv
+//
+// The two replies below were run through the reference's own `kimi_rows_of`
+// (`scripts/claude_limits.py`, 2026-10-02), which printed:
+//
+//   A  5h limit 37 (37.0000)            reset 1790920800000
+//      weekly limit 46 (46.3700)        reset 1791406800000
+//      month limit 46 (46.1200)         reset 1793491200000   (code share 0: not shown)
+//   B  5h limit 12 (12.5000)            reset 1790920800000   (from usages: no limits[])
+//      month limit 50 (50.0000)         reset 1793491200000
+//      month limit (code) 20 (20.4900)  reset 1793491200000
+//
+// The reference's "5h / weekly / month / month (code)" are the contract's `session`,
+// `weekly_all`, `monthly`, `monthly` with model `code` (01.3 §3.3, 2026-09-21).
+
+module usage.kimi_test
+
+import kimi.{parse_kimi, round_percent}
+import claude_limits.usage.parse.{PollOutcome}
+import claude_limits.window.{Window}
+
+const A = "{\"limits\": [{\"window\": {\"duration\": 300, \"timeUnit\": \"TIME_UNIT_MINUTE\"}, \"detail\": {\"used\": \"37\", \"limit\": \"100\", \"resetTime\": \"2026-10-02T06:00:00Z\"}}], \"usages\": {\"limit_5h\": {\"used_ratio\": 0, \"reset_time\": \"2026-10-02T06:00:00Z\"}, \"limit_7d\": {\"used_ratio\": 0.4637, \"reset_time\": \"2026-10-07T21:00:00Z\"}, \"limit_month_total\": {\"used_ratio\": 0.4612, \"reset_time\": \"2026-11-01T00:00:00Z\"}, \"limit_month_code\": {\"used_ratio\": 0, \"reset_time\": \"2026-11-01T00:00:00Z\"}}}"
+
+const B = "{\"usages\": {\"limit_5h\": {\"used_ratio\": 0.125, \"reset_time\": \"2026-10-02T06:00:00Z\"}, \"limit_month_total\": {\"used_ratio\": 0.5, \"reset_time\": \"2026-11-01T00:00:00Z\"}, \"limit_month_code\": {\"used_ratio\": 0.2049, \"reset_time\": \"2026-11-01T00:00:00Z\"}}}"
+
+fn row(w Window) -> str => "${w.kind}|${w.model}|${w.percent}|${w.resets_at_ms}"
+
+fn rows_of(body str) -> str {
+    ro u = parse_kimi(body)
+    mut out = ""
+    for w in u.windows { out = if out == "" { row(w) } else { "${out} ; ${row(w)}" } }
+    out
+}
+
+fn same(label str, want str, got str) -> bool {
+    if want == got { return true }
+    panic("${label}: want [${want}], got [${got}]")
+}
+
+test "reply A, as the reference reads it: 5h from limits[], the week, the month; code share 0 hidden" {
+    ro body = A
+    assert(same("A", "session||37|1790920800000 ; weekly_all||46|1791406800000 ; monthly||46|1793491200000", rows_of(body)))
+}
+
+test "reply B, as the reference reads it: no limits[], so 5h from usages; the code share shown" {
+    ro body = B
+    assert(same("B", "session||12|1790920800000 ; monthly||50|1793491200000 ; monthly|code|20|1793491200000", rows_of(body)))
+}
+
+test "half rounds to even, as Python's %.0f does" {
+    assert(round_percent(1250) == 12)
+    assert(round_percent(1350) == 14)
+    assert(round_percent(4659) == 47)
+    assert(round_percent(4637) == 46)
+}
+
+test "not JSON is BadJson; JSON with no quota is NoWindows" {
+    assert(parse_kimi("not json").outcome == PollOutcome.BadJson)
+    assert(parse_kimi("{\"usages\": {}}").outcome == PollOutcome.NoWindows)
+}

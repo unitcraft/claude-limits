@@ -1,0 +1,146 @@
+// kimi.nv — the quota reply of Kimi Code, read into the same windows as Claude's
+// (plan 01.6, П3).
+//
+// Source: the reference, `scripts/claude_limits.py` `kimi_rows_of`, and 01.3 §3.3, the
+// 2026-09-21 amendment (Kimi accounts: `session`, `weekly_all`, `monthly`). The
+// endpoint is `GET https://api.kimi.com/coding/v1/usages`, the one the CLI's `/usage`
+// reads (the reference cites `MoonshotAI/kimi-code`, `managed-usage.ts`).
+//
+// THE RULES, AS THE REFERENCE KEEPS THEM:
+//
+//   * the live 5-hour window comes from `limits[]` -- `detail.used / detail.limit` --
+//     because `usages.limit_5h.used_ratio` can sit at 0 while the console shows the
+//     real figure (seen 2026-09-21);
+//   * a window `limits[]` served is not read again from `usages`;
+//   * `usages.limit_month_code` at 0 is SKIPPED: the server leaves it unfilled even
+//     when the whole month was spent through Kimi Code (seen 2026-09-28: total 46 %,
+//     code 0 %), and a row that is always zero is noise;
+//   * a window the backend did not send is not invented (new plans have no week).
+//
+// One deliberate narrowing: a `limits[]` window other than five hours (the reference
+// prints it as "<n>h limit" or "rate limit") has no `kind` in 01.3, and is left out
+// rather than squeezed into one. None has been seen.
+
+module usage.kimi
+
+import std.encoding.json.{Json, JsonValue}
+import claude_limits.window.{Window}
+import claude_limits.usage.parse.{Usage, PollOutcome, moment_ms}
+
+/// A number that may arrive as a JSON number or as a numeric string; -1 for neither.
+///
+/// HUNDREDTHS, to keep the percent arithmetic integral without losing the half that
+/// rounding needs.
+fn hundredths_of(v JsonValue) -> int {
+    match v.num() {
+        Some(n) => return (n * 100.0) as int
+        None => {}
+    }
+    match v.str() {
+        Some(s) => match s.trim_ascii().to_f64() {
+            Ok(f) => (f * 100.0) as int
+            Err(_) => -1
+        }
+        None => -1
+    }
+}
+
+fn field(obj JsonValue, key str) -> Option[JsonValue] =>
+    match obj.object() {
+        Some(fields) => fields.get(key)
+        None => None
+    }
+
+fn text(obj JsonValue, key str) -> str =>
+    match field(obj, key) {
+        Some(v) => v.str() ?? ""
+        None => ""
+    }
+
+/// Hundredths of a percent -> whole percent, the way the reference prints it.
+///
+/// HALF TO EVEN, not half up: the reference formats with Python's `%.0f`, which rounds
+/// 12.5 to 12 and 13.5 to 14. Half up would put the two a point apart on exactly the
+/// readings that land on a half -- measured by the differential, `kimi_test`.
+export fn round_percent(x int) -> int {
+    ro whole = x / 100
+    ro rest = x % 100
+    if rest > 50 { return whole + 1 }
+    if rest < 50 { return whole }
+    if whole % 2 == 0 { whole } else { whole + 1 }
+}
+
+fn percent_of(used_x100 int, limit_x100 int) -> int => round_percent(used_x100 * 10000 / limit_x100)
+
+/// The `limits[]` window of five hours, as a `session` row; `None` otherwise.
+fn five_hours(item JsonValue) -> Option[Window] {
+    ro window = field(item, "window")?
+    ro detail = field(item, "detail")?
+    if text(window, "timeUnit") != "TIME_UNIT_MINUTE" { return None }
+    ro minutes = match field(window, "duration") {
+        Some(d) => hundredths_of(d) / 100
+        None => -1
+    }
+    if minutes != 300 { return None }
+    ro used = hundredths_of(field(detail, "used")?)
+    ro limit = hundredths_of(field(detail, "limit")?)
+    if used < 0 || limit <= 0 { return None }
+    Some(Window.new("session", "", percent_of(used, limit), moment_ms(text(detail, "resetTime")), ""))
+}
+
+/// One `usages` entry as a row, from its `used_ratio`; `None` when it carries none.
+fn from_usages(usages JsonValue, key str, kind str, model str) -> Option[Window] {
+    ro entry = field(usages, key)?
+    ro raw = field(entry, "used_ratio")?
+    // A FRACTION of one: hundredths of a percent are ten-thousandths of it.
+    ro x = match raw.num() {
+        Some(n) => (n * 10000.0) as int
+        None => -1
+    }
+    if x < 0 { return None }
+    if key == "limit_month_code" && x == 0 { return None }
+    Some(Window.new(kind, model, round_percent(x), moment_ms(text(entry, "reset_time")), ""))
+}
+
+/// The reply, read. `BadJson` when it is not a JSON object; `NoWindows` when nothing
+/// in it is a quota.
+export fn parse_kimi(body str) -> Usage {
+    ro root = match Json.parse(body) {
+        Ok(v) => v
+        Err(_) => return Usage.new([], PollOutcome.BadJson, false)
+    }
+    if root.object().is_none() { return Usage.new([], PollOutcome.BadJson, false) }
+
+    mut out []Window = []
+    mut have_session = false
+    match field(root, "limits") {
+        Some(v) => match v.array() {
+            Some(items) => {
+                for item in items {
+                    match five_hours(item) {
+                        Some(w) => {
+                            out.push(w)
+                            have_session = true
+                        }
+                        None => {}
+                    }
+                }
+            }
+            None => {}
+        }
+        None => {}
+    }
+    match field(root, "usages") {
+        Some(u) => {
+            if !have_session {
+                match from_usages(u, "limit_5h", "session", "") { Some(w) => out.push(w), None => {} }
+            }
+            match from_usages(u, "limit_7d", "weekly_all", "") { Some(w) => out.push(w), None => {} }
+            match from_usages(u, "limit_month_total", "monthly", "") { Some(w) => out.push(w), None => {} }
+            match from_usages(u, "limit_month_code", "monthly", "code") { Some(w) => out.push(w), None => {} }
+        }
+        None => {}
+    }
+    if out.len() == 0 { return Usage.new([], PollOutcome.NoWindows, false) }
+    Usage.new(out, PollOutcome.Parsed, false)
+}
