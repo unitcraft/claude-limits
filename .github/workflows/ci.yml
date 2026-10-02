@@ -145,8 +145,14 @@ jobs:
           # `+e`: GitHub runs bash with -e, and `nova test` exits 1 on the known failure
           # -- the first run stopped HERE, before the verdict below could read it.
           set +e -uo pipefail
+          # A test alive past 600 s gets its stacks printed before the 900-s limit kills
+          # it -- registry 221.1 #1612: twice a hang was killed with no evidence at all.
+          python scripts/ci-hang-watch.py > hang.out 2>&1 &
+          watch_pid=$!
           "$GITHUB_WORKSPACE/nova/nova-cli/target/release/nova.exe" test src --timeout 900 > test.out 2>&1
           echo "nova test exited $?"
+          kill "$watch_pid" 2>/dev/null
+          cat hang.out
           tail -40 test.out
           # The exit code is not the verdict: one known compiler defect is named in the
           # script, with the text it must fail with -- see its header.
