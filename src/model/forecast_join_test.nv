@@ -144,6 +144,27 @@ test "a locked row, a stale account, or forecasting switched off: no forecast" {
     assert(forecast_of(view(l), l, rows("session", session_samples()), off, NOW_MS, OFFSET_SEC, TimeZone.Utc).is_none())
 }
 
+test "a Kimi row finds its history by the credentials file, not by an e-mail it has none of" {
+    // The snapshot's Kimi account: no e-mail, its file stem as the name (feed.nv).
+    mut a = account()
+    a.email = ""
+    a.provider = "kimi"
+    a.display_name = "kimi-code-env-0e4f"
+    ro l = limit("monthly", 54, 18 * 86400, 30 * 86400)
+    ro v = SnapshotView{ fetched_at: "2026-10-01T09:00:00Z", next_poll_at: "", tz: "+03:00", restored: false,
+        worst: None, accounts: [a], limits: [l] }
+    ro r = HistRows{
+        accounts: [HistAccount{ id: "db-k", email: "kimi:kimi-code-env-0e4f", color_slot: 0, polls: [] }],
+        windows: [HistWindow{ account_id: "db-k", kind: "monthly", model: "", samples: week_samples(), locks: [], rollups: [] }],
+    }
+    assert(forecast_of(v, l, r, rules(false), NOW_MS, OFFSET_SEC, TimeZone.Utc).is_some())
+    // The control: the same account under another file name has no history.
+    a.display_name = "kimi-code-env-other"
+    ro v2 = SnapshotView{ fetched_at: "2026-10-01T09:00:00Z", next_poll_at: "", tz: "+03:00", restored: false,
+        worst: None, accounts: [a], limits: [l] }
+    assert(forecast_of(v2, l, r, rules(false), NOW_MS, OFFSET_SEC, TimeZone.Utc).is_none())
+}
+
 test "with_forecasts fills the row in the snapshot it returns" {
     ro l = limit("session", 28, 2 * 3600, 5 * 3600)
     ro v = with_forecasts(view(l), rows("session", session_samples()), rules(false), NOW_MS, OFFSET_SEC, TimeZone.Utc)

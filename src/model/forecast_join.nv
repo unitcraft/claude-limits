@@ -29,7 +29,7 @@ import std.time.civil.{TimeZone}
 import std.time.duration.{Timestamp}
 import claude_limits.model.forecast.{Schedule, Basis, forecast, effective_minutes, unavailable_for}
 import claude_limits.model.format.{reset_moment, duration_words}
-import claude_limits.server.dto.{SnapshotView, LimitView, ForecastView}
+import claude_limits.server.dto.{SnapshotView, AccountView, LimitView, ForecastView}
 import claude_limits.storage.history_rows.{HistRows, HistSample}
 import claude_limits.usage.parse.{moment_iso}
 
@@ -154,11 +154,11 @@ fn view_of_forecast(percent_at_reset int, runs_out_at str, rate_milli int, basis
                     sample_minutes int, label str, warning bool, severity str) -> ForecastView =>
     { percent_at_reset, runs_out_at, rate_per_hour_milli: rate_milli, basis, sample_minutes, label, warning, severity }
 
-/// The samples of one limit row: its account (by e-mail -- the snapshot and the
+/// The samples of one limit row: its account (by its key -- the snapshot and the
 /// database name accounts differently, 01.2 §3.6) and its window (kind and model).
 fn samples_of(v SnapshotView, l LimitView, rows HistRows) -> []HistSample {
     mut email = ""
-    for a in v.accounts { if a.id == l.account_id { email = a.email.to_ascii_lower() } }
+    for a in v.accounts { if a.id == l.account_id { email = key_of(a) } }
     if email == "" { return [] }
     mut db_id = ""
     for a in rows.accounts { if a.email == email { db_id = a.id } }
@@ -167,6 +167,19 @@ fn samples_of(v SnapshotView, l LimitView, rows HistRows) -> []HistSample {
         if w.account_id == db_id && w.kind == l.kind && w.model == l.model { return w.samples }
     }
     []
+}
+
+/// The account's key as the database's readers return it (`repo.account_key_sql`):
+/// the lowered e-mail, or `kimi:<name>` for Kimi Code -- whose snapshot e-mail is
+/// EMPTY on purpose (`feed.address_of`) and whose `display_name` is its credentials
+/// file's stem (`feed.kimi_found`). Matched by e-mail alone, every Kimi row had no
+/// samples and no forecast (measured 2026-10-02 on the stand, 632 monthly points).
+fn key_of(a AccountView) -> str {
+    if a.provider == "kimi" {
+        if a.display_name == "" { return "" }
+        return "kimi:${a.display_name}"
+    }
+    a.email.to_ascii_lower()
 }
 
 fn state_of(v SnapshotView, account_id str) -> str {
