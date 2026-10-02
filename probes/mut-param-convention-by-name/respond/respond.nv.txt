@@ -1,0 +1,11 @@
+module respond
+
+export type Rec value {
+    n int
+}
+
+// A same-named free function whose parameter is `mut`.
+export fn stamp(mut r Rec) -> Rec {
+    r.n = r.n + 1
+    r
+}

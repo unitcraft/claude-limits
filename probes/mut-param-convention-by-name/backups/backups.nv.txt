@@ -1,0 +1,5 @@
+module backups
+
+fn stamp(ms int) -> str => "${ms / 1000}"
+
+export fn named(ms int) -> str => "x-${stamp(ms)}"

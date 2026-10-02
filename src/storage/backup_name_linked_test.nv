@@ -1,0 +1,36 @@
+// The backup name in a unit that also holds the web server -- as the binary does.
+//
+//   ./nova.sh test src/storage/ --filter backup_name_linked_test
+//
+// WHY A SECOND TEST OF THE SAME NAME (measured 2026-10-02 on the stand). `backup_test`
+// proves the stamp in a unit of the storage modules alone, and it was right there. In
+// the binary the start's backup was called `claude-limits-20340304-0656.duckdb` at
+// 2026-10-02 03:18 UTC, the next `...-20420605-2047`, another `...-20581216-1252`: the
+// generated C called the storage stamp with the ADDRESS of its argument, `stamp(&ms)`,
+// because `server/static.nv` and `server/routes.nv` declared free functions of the
+// same name whose parameter is `mut` -- the calling convention was looked up by name
+// (registry 221.1 №TBD, `probes/mut-param-convention-by-name/`). Names that do not sort
+// by time break `weekly_due` and let `backups_keep` delete the NEWEST copy.
+//
+// The import below is what puts the server's functions into this unit; the test is
+// red whenever a same-named function with a `mut` parameter changes how the storage
+// one is called.
+
+module storage.backup_name_linked_test
+
+import claude_limits.server.static.{PAGE_CSP}
+import backup.{backup_name, corrupt_name}
+
+// 2026-10-02 03:18:00 UTC.
+const AT_MS = 1790911080000
+
+test "the backup name is the moment's, with the server in the unit" {
+    assert(PAGE_CSP != "")
+    ro got = backup_name(AT_MS)
+    if got != "claude-limits-20261002-0318.duckdb" { panic("backup_name: ${got}") }
+}
+
+test "and so is the name a corrupt file is moved to" {
+    ro got = corrupt_name(AT_MS)
+    if got != "claude-limits.corrupt-20261002-0318.duckdb" { panic("corrupt_name: ${got}") }
+}

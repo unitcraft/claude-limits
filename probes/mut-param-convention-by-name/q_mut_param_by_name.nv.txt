@@ -1,0 +1,12 @@
+// `backups.stamp(ms int)` called inside `backups`, with `respond.stamp(mut r Rec)` in the same unit.
+module q_mut_param_by_name
+
+import respond.{Rec, stamp}
+import backups.{named}
+
+fn main() Io -> () {
+    ro start = Rec{ n: 1 }
+    ro r = stamp(start)
+    println("respond.stamp  ${r.n}  (want 2)")
+    println("backups.named  ${named(1790911579855)}  (want x-1790911579)")
+}
