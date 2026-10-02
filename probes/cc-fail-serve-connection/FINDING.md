@@ -1,5 +1,7 @@
 # `nova test`: polaris `serve_connection` получает `TcpStream` значением вместо указателя
 
+**ИСПРАВЛЕНО исправлением №1616 (nova `29210c203`, опубликовано в `0dfec1135`); проверено 2026-10-02 09:58:** `nova test src/claude_limits.nv` — PASS. Причина была та же: соглашение о параметре бралось по имени функции (`run_request` в polaris и в nova-http). Запись снята из `KNOWN` в `scripts/ci-test-verdict.py`.
+
 **Замер 2026-10-01, 23:44.** Реестр 221.1 **№1579** (номер дал интегратор 23:42; заводится
 после поезда слияний). С 2026-09-30 это «известный CC-FAIL `src/claude_limits`»
 (`scripts/ci-test-verdict.py`, план 01.5 T2.27, коммит f4a2d1d): только `nova test`, а

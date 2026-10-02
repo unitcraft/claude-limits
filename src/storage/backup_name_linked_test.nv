@@ -14,7 +14,8 @@
 //
 // The import below is what puts the server's functions into this unit; the test is
 // red whenever a same-named function with a `mut` parameter changes how the storage
-// one is called.
+// one is called. Since nova 0dfec1135 the storage function is called `stamp` again --
+// the very name that collided -- so this test now guards the fix, not a workaround.
 
 module storage.backup_name_linked_test
 

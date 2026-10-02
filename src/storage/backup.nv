@@ -84,11 +84,12 @@ fn two(n int) -> str => "${n}".pad_start(2, '0')
 
 /// `YYYYMMDD-HHMM` of a moment, in UTC.
 ///
-/// NOT `stamp`: `server/static.nv` and `server/routes.nv` have free functions of that
-/// name with a `mut` parameter, and in the binary every call of this one passed the
-/// ADDRESS of `ms` -- the convention was taken by name (measured 2026-10-02; the start's
-/// backup was named for 2034, the next for 2042). `backup_name_linked_test` holds it.
-export fn backup_stamp(ms int) -> str {
+/// `server/static.nv` and `server/routes.nv` have free functions of this name with a
+/// `mut` parameter, and until nova 0dfec1135 every call of this one in the binary passed
+/// the ADDRESS of `ms` -- the convention was taken by name (registry 221.1 #1616; the
+/// start's backup was named for 2034). The workaround was a rename, removed with the
+/// fix; `backup_name_linked_test` keeps the server in the unit and holds it.
+export fn stamp(ms int) -> str {
     // Moments here are after 1970, so plain division is the floor.
     ro day = ms / DAY_MS
     ro d = Date.from_epoch_day(day as i64)
@@ -97,10 +98,10 @@ export fn backup_stamp(ms int) -> str {
     "${y}${two(d.month().number())}${two(d.day() as int)}-${two(in_day / 3_600_000)}${two(in_day % 3_600_000 / 60_000)}"
 }
 
-export fn backup_name(ms int) -> str => "${PREFIX}${backup_stamp(ms)}${SUFFIX}"
+export fn backup_name(ms int) -> str => "${PREFIX}${stamp(ms)}${SUFFIX}"
 
 /// Where the damaged file is moved aside (01.2 §5 "Целостность").
-export fn corrupt_name(ms int) -> str => "claude-limits.corrupt-${backup_stamp(ms)}${SUFFIX}"
+export fn corrupt_name(ms int) -> str => "claude-limits.corrupt-${stamp(ms)}${SUFFIX}"
 
 /// Exactly `claude-limits-DDDDDDDD-DDDD.duckdb`. Anything else in the directory -- a
 /// `.part`, a file someone put there -- is not ours to count or to delete.

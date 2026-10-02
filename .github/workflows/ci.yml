@@ -27,7 +27,7 @@ on:
   workflow_dispatch:
 
 env:
-  NOVA_REF: 2488a47be67edd667a3dd2a2d80ccedf56348032
+  NOVA_REF: 0dfec11352d6817ed07c61bc13783fc7038b0226
   DUCKDB_TAG: v0.2.2
 
 jobs:
@@ -154,8 +154,9 @@ jobs:
           kill "$watch_pid" 2>/dev/null
           cat hang.out
           tail -40 test.out
-          # The exit code is not the verdict: one known compiler defect is named in the
-          # script, with the text it must fail with -- see its header.
+          # The exit code is not the verdict: a known compiler defect, while one stands, is
+          # named in the script with the text it must fail with -- see its header. None
+          # stands since NOVA_REF 0dfec1135 (#1579 closed by the #1616 fix).
           python scripts/ci-test-verdict.py test.out
 
       - name: Build the binary

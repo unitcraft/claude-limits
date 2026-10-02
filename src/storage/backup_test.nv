@@ -13,7 +13,7 @@ import std.os.{real_os, temp_dir}
 import duckdb.{Database, DbOptions}
 import duckdb.db_effect.{Db}
 import duckdb.db_real.{with_real_db}
-import claude_limits.storage.backup.{backup_stamp, backup_name, corrupt_name, is_backup_name, newest_first, to_remove, weekly_due, backup_sql, list_names, take_backup, restore_latest, Table, WEEK_MS}
+import claude_limits.storage.backup.{stamp, backup_name, corrupt_name, is_backup_name, newest_first, to_remove, weekly_due, backup_sql, list_names, take_backup, restore_latest, Table, WEEK_MS}
 import claude_limits.storage.repo.{Tick, WindowRow, Ids, plan_sql}
 
 // 2026-09-30 12:00 in Moscow, 09:00 UTC.
@@ -23,9 +23,9 @@ const MIN_MS = 60_000
 // ── names ───────────────────────────────────────────────────────────────────
 
 test "the stamp is UTC and fixed-width" {
-    assert(backup_stamp(0) == "19700101-0000")
-    assert(backup_stamp(NOW_MS) == "20260930-0900")
-    assert(backup_stamp(NOW_MS + 59 * MIN_MS + 59_999) == "20260930-0959")
+    assert(stamp(0) == "19700101-0000")
+    assert(stamp(NOW_MS) == "20260930-0900")
+    assert(stamp(NOW_MS + 59 * MIN_MS + 59_999) == "20260930-0959")
     assert(backup_name(NOW_MS) == "claude-limits-20260930-0900.duckdb")
     assert(corrupt_name(NOW_MS) == "claude-limits.corrupt-20260930-0900.duckdb")
 }

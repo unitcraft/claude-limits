@@ -21,15 +21,12 @@ import re
 import sys
 
 # file -> (verdict it fails with, text that must appear in its line, why)
-KNOWN = {
-    "src/claude_limits": (
-        "CC-FAIL",
-        "NovaValue_TcpStream",
-        "test mode compiles polaris serve_connection with a TcpStream value where a "
-        "pointer is wanted; `nova build` of the same file passes (nova registry 221.1 "
-        "#1579, probes/cc-fail-serve-connection/)",
-    ),
-}
+# EMPTY since NOVA_REF 0dfec1135 (2026-10-02): `src/claude_limits` failed CC-FAIL with
+# `NovaValue_TcpStream` (#1579, probes/cc-fail-serve-connection/) because the calling
+# convention of a parameter was taken from a same-named function of another module;
+# the fix of #1616 (nova 29210c203) closed it -- measured locally before the bump, the
+# unit PASSES. A defect that stands again goes back in here, with its text.
+KNOWN = {}
 
 LINE = re.compile(r"^(PASS|CC-FAIL|CODEGEN-FAIL|RUN-FAIL|CHECK-FAIL|TIMEOUT|SKIP)\s+(\S+)\s*(.*)$")
 SUMMARY = re.compile(r"PASS:\s*(\d+)\s+FAIL:\s*(\d+)")
