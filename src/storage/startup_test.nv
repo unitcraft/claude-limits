@@ -106,27 +106,37 @@ fn is_on_disk(path str) Io -> bool => with Fs = real_fs() { try_exists(path.to_p
 test "a first start creates the key, the file and the schema, and backs up nothing" {
     ro p = place("first")
     ro all = migrations_in(bundled())
-    assert(same("first", "first=true schema=0 applied=1 backup=false", start(p, all, 7)))
+    assert(same("first", "first=true schema=0 applied=2 backup=false", start(p, all, 7)))
     assert(is_on_disk(p.key_file))
     assert(is_on_disk(p.db_file))
 }
 
-test "the second start finds schema 1, applies nothing and backs up nothing" {
+test "the second start finds schema 2, applies nothing and backs up nothing" {
     ro p = place("second")
     ro all = migrations_in(bundled())
     ro _ = start(p, all, 7)
-    assert(same("second", "first=false schema=1 applied=0 backup=false", start(p, all, 8)))
+    assert(same("second", "first=false schema=2 applied=0 backup=false", start(p, all, 8)))
+}
+
+test "a database a 0001 build wrote is taken to 0002, backed up first" {
+    // The owner's file as it is today: schema 1. The next start must migrate it, and
+    // only after the backup (01.2 §5) -- 0002 rebuilds eight tables.
+    ro p = place("from-one")
+    mut only_one []Migration = []
+    for m in migrations_in(bundled()) { if m.version == 1 { only_one.push(m) } }
+    assert(same("one", "first=true schema=0 applied=1 backup=false", start(p, only_one, 7)))
+    assert(same("two", "first=false schema=1 applied=1 backup=true", start(p, migrations_in(bundled()), 8)))
 }
 
 test "a new migration on an existing file is preceded by a backup" {
     ro p = place("upgrade")
     mut all = migrations_in(bundled())
     ro _ = start(p, all, 7)
-    all.push(Migration.new(2, "CREATE TABLE startup_probe (x INTEGER)"))
-    assert(same("upgrade", "first=false schema=1 applied=1 backup=true", start(p, all, 8)))
-    // Schema 2 is beyond what THIS build knows (KNOWN_SCHEMA = 1), so the next start
+    all.push(Migration.new(3, "CREATE TABLE startup_probe (x INTEGER)"))
+    assert(same("upgrade", "first=false schema=2 applied=1 backup=true", start(p, all, 8)))
+    // Schema 3 is beyond what THIS build knows (KNOWN_SCHEMA = 2), so the next start
     // refuses -- the rule of 01.2 §5, shown on the file the upgrade just wrote.
-    assert(start(p, all, 9).starts_with("FAIL the database was written by a newer version (schema 2"))
+    assert(start(p, all, 9).starts_with("FAIL the database was written by a newer version (schema 3"))
 }
 
 test "KNOWN_SCHEMA is the highest migration the binary carries" {
@@ -143,12 +153,12 @@ test "a migration that fails is rolled back and says which" {
     ro p = place("broken")
     mut all = migrations_in(bundled())
     ro _ = start(p, all, 7)
-    all.push(Migration.new(2, "CREATE TABLE schema_meta (x INTEGER)"))
+    all.push(Migration.new(3, "CREATE TABLE schema_meta (x INTEGER)"))
     ro got = start(p, all, 8)
-    assert(got.starts_with("FAIL a migration failed and was rolled back: 2:"))
-    // Rolled back: the schema is still 1, and the next start tries again.
+    assert(got.starts_with("FAIL a migration failed and was rolled back: 3:"))
+    // Rolled back: the schema is still 2, and the next start tries again.
     ro fixed = migrations_in(bundled())
-    assert(same("still 1", "first=false schema=1 applied=0 backup=false", start(p, fixed, 9)))
+    assert(same("still 2", "first=false schema=2 applied=0 backup=false", start(p, fixed, 9)))
 }
 
 // -- the round's readings, written as ticks -----------------------------------------

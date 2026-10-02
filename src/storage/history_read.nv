@@ -26,7 +26,7 @@ module storage.history_read
 import duckdb.db_effect.{Db, ConnRef}
 import duckdb.errors.{DuckError}
 import duckdb.types.{Value}
-import claude_limits.storage.repo.{quote, moment}
+import claude_limits.storage.repo.{quote, moment, account_key_sql}
 import claude_limits.storage.history_rows.{HistSample, HistLock, HistPoll, HistWindow, HistAccount, HistRows, HistRollup, HistDir, HistOcc, HistFolderRows}
 
 // ── the SQL ──────────────────────────────────────────────────────────────────
@@ -68,7 +68,7 @@ export fn history_locks_sql(window_id str, from_ms int, to_ms int) -> str =>
 
 /// The accounts that own a window of the list, in id order.
 export fn history_accounts_sql(from_ms int, to_ms int, accounts []str) -> str =>
-    "SELECT a.id::VARCHAR, a.email, a.color_slot::BIGINT FROM account a WHERE a.deleted_at IS NULL AND (EXISTS (SELECT 1 FROM limit_window w JOIN sample s ON s.window_id = w.id WHERE w.account_id = a.id AND ${span_sql("s.sampled_at", from_ms, to_ms)}) OR EXISTS (SELECT 1 FROM limit_window w JOIN daily_rollup r ON r.window_id = w.id WHERE w.account_id = a.id AND ${days_sql("r.day_on", from_ms, to_ms)}))${history_in_sql("a.id", accounts)} ORDER BY a.id::VARCHAR"
+    "SELECT a.id::VARCHAR, ${account_key_sql("a")}, a.color_slot::BIGINT FROM account a WHERE a.deleted_at IS NULL AND (EXISTS (SELECT 1 FROM limit_window w JOIN sample s ON s.window_id = w.id WHERE w.account_id = a.id AND ${span_sql("s.sampled_at", from_ms, to_ms)}) OR EXISTS (SELECT 1 FROM limit_window w JOIN daily_rollup r ON r.window_id = w.id WHERE w.account_id = a.id AND ${days_sql("r.day_on", from_ms, to_ms)}))${history_in_sql("a.id", accounts)} ORDER BY a.id::VARCHAR"
 
 /// The rollup rows of one window on the days `[from, to)` touches.
 export fn history_rollups_sql(window_id str, from_ms int, to_ms int) -> str =>
@@ -157,7 +157,7 @@ export fn history_dirs_sql(from_ms int, to_ms int, dirs []str) -> str =>
 
 /// The journal rows overlapping `[from, to)`, with the e-mail of who sat there.
 export fn history_occupancy_sql(from_ms int, to_ms int, dirs []str) -> str =>
-    "SELECT o.login_dir_id::VARCHAR, coalesce(o.account_id::VARCHAR, ''), coalesce(a.email, ''), o.token_state, epoch_ms(o.started_at), coalesce(epoch_ms(o.ended_at), 0) FROM occupancy o LEFT JOIN account a ON a.id = o.account_id WHERE o.started_at < ${moment(to_ms)} AND (o.ended_at IS NULL OR o.ended_at > ${moment(from_ms)})${history_in_sql("o.login_dir_id", dirs)} ORDER BY o.login_dir_id::VARCHAR, o.started_at"
+    "SELECT o.login_dir_id::VARCHAR, coalesce(o.account_id::VARCHAR, ''), coalesce(${account_key_sql("a")}, ''), o.token_state, epoch_ms(o.started_at), coalesce(epoch_ms(o.ended_at), 0) FROM occupancy o LEFT JOIN account a ON a.id = o.account_id WHERE o.started_at < ${moment(to_ms)} AND (o.ended_at IS NULL OR o.ended_at > ${moment(from_ms)})${history_in_sql("o.login_dir_id", dirs)} ORDER BY o.login_dir_id::VARCHAR, o.started_at"
 
 /// Everything `by=folder` draws for `[from, to)`. `dirs` empty is every directory.
 ///

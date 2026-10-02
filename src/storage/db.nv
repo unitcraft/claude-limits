@@ -30,7 +30,7 @@ import duckdb.errors.{DbOptions, DuckError}
 /// The schema this binary understands. A database reporting more than this is from a
 /// newer build and is NOT opened (01.2 §5): an older binary writing into a newer
 /// schema is how a column silently stops being filled.
-export const KNOWN_SCHEMA = 1
+export const KNOWN_SCHEMA = 2   // 0002_kimi_accounts (01.2 amendment 2026-10-02)
 
 /// 32 bytes, AES-256-GCM (01.2 §1). The number is the algorithm's, not a taste.
 export const KEY_BYTES = 32

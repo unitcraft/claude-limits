@@ -487,3 +487,24 @@ test "the lock statement comes after its window's sample and before the journal"
     assert(steps[8].contains("lock_period"))
     assert(steps[9].contains("INSERT INTO poll"))
 }
+
+test "a Kimi key is written by its credentials file, never as an e-mail" {
+    // 0002: a Kimi Code account has no e-mail; `kimi:<stem>` is the live model's key,
+    // and the stem keeps its case -- it is a file name.
+    ro t = tick_with_email("kimi:Kimi-Code-env-0e4f")
+    ro sql = upsert_account_sql(t, "id-account")
+    assert(sql.contains("'kimi', NULL, 'Kimi-Code-env-0e4f'"))
+    assert(sql.contains("ON CONFLICT (cred_key)"))
+    assert(!sql.contains("kimi:"))
+    // Every other statement finds the account by the same column.
+    for s in plan_sql(t, ids()) {
+        assert(!s.contains("email ="))
+        assert(!s.contains("kimi:"))
+    }
+}
+
+test "the control: a Claude account is still keyed by its e-mail" {
+    ro sql = upsert_account_sql(tick(), "id-account")
+    assert(sql.contains("'claude', 'work@example.org', NULL"))
+    assert(sql.contains("ON CONFLICT (email)"))
+}

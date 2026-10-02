@@ -52,7 +52,7 @@ export fn WindowRow.new(kind str, model str, percent int, locked bool, locked_re
 export type Tick value {
     ro instance str      // the author of every row: `created_by` / `updated_by`
     ro at_ms int
-    ro email str
+    ro email str         // the account's key: an e-mail, or `kimi:<file stem>` (`kimi_key`)
     ro org str
     ro outcome str       // poll_outcome (01.2 §3.2)
     ro http_status int
@@ -115,15 +115,44 @@ export fn sql_opt(s str) -> str {
 
 // ── the statements ───────────────────────────────────────────────────────────
 
+/// The live model's key of a Kimi Code account starts with this (`server/feed.nv`,
+/// `usage/poller.nv`: `kimi:<credentials file stem>`).
+const KIMI_PREFIX = "kimi:"
+
+/// The credentials file stem of a Kimi Code key; `None` for an e-mail.
+///
+/// A KIMI ACCOUNT HAS NO E-MAIL, and the database keys it by the stem (`cred_key`,
+/// 01.2 §3.6, amendment 2026-10-02; migration 0002). The prefix cannot be an e-mail's:
+/// an address has no `:` before its `@` in anything a credentials file holds.
+export fn kimi_key(key str) -> Option[str] {
+    if !key.starts_with(KIMI_PREFIX) { return None }
+    Some(key[KIMI_PREFIX.byte_len()..])
+}
+
+/// The account's key in SQL, as the live model writes it: the e-mail, or `kimi:` and
+/// the stem -- what a reader compares with `Reading.email` and `AccountView.email`.
+export fn account_key_sql(a str) -> str => "coalesce(${a}.email, '${KIMI_PREFIX}' || ${a}.cred_key)"
+
+/// The condition naming the account of `key`, by the column that keys it.
+fn account_match(key str) -> str =>
+    match kimi_key(key) {
+        Some(stem) => "cred_key = ${quote(stem)}"
+        None => "email = ${quote(key.to_ascii_lower())}"
+    }
+
 /// Upsert the account, touching `last_seen_at` and the service set (01.2 §3.1).
 ///
 /// THE E-MAIL IS LOWERED HERE, before the CHECK ever sees it: the column refuses
 /// anything else, and a row refused at the database is a tick lost for a reason the
-/// caller cannot fix.
+/// caller cannot fix. A Kimi key's stem is NOT lowered: it is a file name, and two
+/// files differing in case are two logins.
 export fn upsert_account_sql(t Tick, id str) -> str {
     ro at = moment(t.at_ms)
-    ro email = t.email.to_ascii_lower()
-    "INSERT INTO account (id, created_at, updated_at, created_by, updated_by, email, org_name, color_slot, first_seen_at, last_seen_at) VALUES (${quote(id)}, ${at}, ${at}, ${quote(t.instance)}, ${quote(t.instance)}, ${quote(email)}, ${sql_opt(t.org)}, 0, ${at}, ${at}) ON CONFLICT (email) DO UPDATE SET last_seen_at = excluded.last_seen_at, updated_at = excluded.updated_at, updated_by = excluded.updated_by"
+    ro (provider, email, stem, target) = match kimi_key(t.email) {
+        Some(s) => ("kimi", "NULL", quote(s), "cred_key")
+        None => ("claude", quote(t.email.to_ascii_lower()), "NULL", "email")
+    }
+    "INSERT INTO account (id, created_at, updated_at, created_by, updated_by, provider, email, cred_key, org_name, color_slot, first_seen_at, last_seen_at) VALUES (${quote(id)}, ${at}, ${at}, ${quote(t.instance)}, ${quote(t.instance)}, '${provider}', ${email}, ${stem}, ${sql_opt(t.org)}, 0, ${at}, ${at}) ON CONFLICT (${target}) DO UPDATE SET last_seen_at = excluded.last_seen_at, updated_at = excluded.updated_at, updated_by = excluded.updated_by"
 }
 
 // ── references BY NATURAL KEY, not by the ids the caller minted ──────────────
@@ -151,7 +180,7 @@ export fn upsert_account_sql(t Tick, id str) -> str {
 // account's (`email`) does not. When a window was last seen is `max(sample.sampled_at)`
 // of its samples; `limit_window.last_seen_at` stays its first sighting (01.2 says so).
 
-fn account_ref(t Tick) -> str => "(SELECT id FROM account WHERE email = ${quote(t.email.to_ascii_lower())})"
+fn account_ref(t Tick) -> str => "(SELECT id FROM account WHERE ${account_match(t.email)})"
 
 fn window_ref(t Tick, w WindowRow) -> str =>
     "(SELECT id FROM limit_window WHERE account_id = ${account_ref(t)} AND kind = ${quote(w.kind)} AND model = ${quote(w.model)})"

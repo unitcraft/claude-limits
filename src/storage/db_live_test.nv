@@ -115,7 +115,7 @@ test "after 0001 and a claim, the file reports schema 1 and its owner" {
     ro sql = init_sql()
     assert(sql != "")
     assert(same("migrate", "", on_conn(db, [], Some(Migration.new(1, sql)), ME)))
-    assert(same("reopen", "first=false version=${KNOWN_SCHEMA} owner=${ME}", read_line(db, dir)))
+    assert(same("reopen", "first=false version=1 owner=${ME}", read_line(db, dir)))
 }
 
 test "a claim by another instance is what the next open reports" {

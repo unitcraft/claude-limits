@@ -1,0 +1,184 @@
+// migrations/0002_kimi_accounts.sql against a REAL file holding 0001 data.
+//
+//   ./nova.sh test src/storage/ --filter migration_0002_live_test
+//
+// 0002 rebuilds eight tables (DuckDB 1.5.5 cannot widen a CHECK or drop a NOT NULL on a
+// referenced table -- the measurement is in the migration's header). A rebuild that
+// loses a row, renames a column or keeps the old CHECK would pass any test that only
+// looks at the schema, so this one seeds EVERY rebuilt table through 0001, migrates
+// through the runner the start uses (`apply_migration`: one transaction), and then
+// asks the data: same rows, the provider every old account gets, what Kimi can now
+// write, and what is still refused.
+
+module storage.migration_0002_live_test
+
+import std.fs.{real_fs, read_text, create_dir_all, remove_dir_all}
+import std.os.{real_os, temp_dir}
+import duckdb.db_effect.{Db, ConnRef}
+import duckdb.db_real.{with_real_db}
+import duckdb.errors.{DbOptions}
+import duckdb.types.{Value}
+import db.{Migration, apply_migration}
+
+const ME = "0192f3a4-0000-7000-8000-000000000001"
+const ACC = "0192f3a4-0000-7000-8000-0000000000a1"
+const WIN = "0192f3a4-0000-7000-8000-0000000000b1"
+const CYC = "0192f3a4-0000-7000-8000-0000000000c1"
+
+fn place(name str) Io -> str {
+    ro base = with Os = real_os() { temp_dir().display().replace("\\", "/") }
+    ro dir = "${base}/claude-limits-m0002-${name}"
+    with Fs = real_fs() {
+        ro _ = remove_dir_all(dir.to_path())
+        ro _ = create_dir_all(dir.to_path())
+    }
+    dir
+}
+
+fn file(name str) Io -> str =>
+    with Fs = real_fs() {
+        read_text("migrations/${name}".to_path()) ?? ""
+    }
+
+/// One row in each table 0002 rebuilds, written in 0001's column order.
+fn seed() -> []str {
+    ro by = "'${ME}', '${ME}'"
+    [
+        "INSERT INTO account VALUES ('${ACC}', now(), now(), NULL, ${by}, 'a@b.c', 'Org', 'max', 'tier', 3, now(), now())",
+        "INSERT INTO occupancy VALUES ('0192f3a4-0000-7000-8000-0000000000d1', now(), now(), ${by}, '0192f3a4-0000-7000-8000-0000000000e1', '${ACC}', 'ok', now(), NULL)",
+        "INSERT INTO poll VALUES ('0192f3a4-0000-7000-8000-0000000000f1', now(), now(), ${by}, '${ACC}', now(), 'ok', 200, NULL, 12, NULL)",
+        "INSERT INTO limit_window VALUES ('${WIN}', now(), now(), NULL, ${by}, '${ACC}', 'weekly_scoped', 'Opus', now(), now())",
+        "INSERT INTO window_cycle VALUES ('${CYC}', now(), now(), ${by}, '${WIN}', now() - INTERVAL 7 DAY, now())",
+        "INSERT INTO sample VALUES ('0192f3a4-0000-7000-8000-000000000101', now(), now(), ${by}, '${WIN}', now(), '${CYC}', 41, false, NULL, 'normal', true)",
+        "INSERT INTO lock_period VALUES ('0192f3a4-0000-7000-8000-000000000102', now(), now(), ${by}, '${WIN}', '${CYC}', now(), NULL, 'server')",
+        "INSERT INTO daily_rollup VALUES ('0192f3a4-0000-7000-8000-000000000103', now(), now(), ${by}, '${WIN}', DATE '2026-10-01', 4, 41, 40.5, 0, 1)",
+    ]
+}
+
+fn text_of(v Value) -> str =>
+    match v {
+        Value.Text(s) => s
+        Value.Null => "NULL"
+        _ => "?"
+    }
+
+/// The first column of the first row, as text; "ERR <why>" when the query fails.
+fn one(conn ConnRef, sql str) Db -> str =>
+    match Db.query(conn, sql) {
+        Err(e) => "ERR ${e.message()}"
+        Ok(rows) => {
+            ro got = match Db.next(rows) {
+                Ok(Some(cells)) => if cells.len() == 0 { "NONE" } else { text_of(cells[0]) }
+                _ => "NONE"
+            }
+            Db.close_result(rows)
+            got
+        }
+    }
+
+/// "" when the statement ran, else "refused".
+fn tried(conn ConnRef, sql str) Db -> str =>
+    match Db.exec(conn, sql) {
+        Ok(_) => "ran"
+        Err(_) => "refused"
+    }
+
+/// 0001, the seed, 0002; then every probe line, one per entry of `asks`.
+fn after_0002(name str, asks []str) Io -> []str {
+    ro path = "${place(name)}/db.duckdb"
+    ro m1 = file("0001_init.sql")
+    ro m2 = file("0002_kimi_accounts.sql")
+    ro rows = seed()
+    with_real_db(fn() Db -> []str => {
+        mut out []str = []
+        match Db.open(path, DbOptions.defaults()) {
+            Err(e) => { out.push("OPEN ${e.message()}") }
+            Ok(db) => match Db.connect(db) {
+                Err(e) => { out.push("CONNECT ${e.message()}") }
+                Ok(conn) => {
+                    match apply_migration(conn, Migration.new(1, m1)) {
+                        Ok(_) => ()
+                        Err(e) => { out.push("M1 ${e.message()}") }
+                    }
+                    for s in rows {
+                        match Db.exec(conn, s) {
+                            Ok(_) => ()
+                            Err(e) => { out.push("SEED ${e.message()}") }
+                        }
+                    }
+                    match apply_migration(conn, Migration.new(2, m2)) {
+                        Ok(_) => ()
+                        Err(e) => { out.push("M2 ${e.message()}") }
+                    }
+                    for a in asks {
+                        if a.starts_with("SELECT") { out.push(one(conn, a)) } else { out.push(tried(conn, a)) }
+                    }
+                    Db.close_conn(conn)
+                    Db.close_db(db)
+                }
+            }
+        }
+        out
+    })
+}
+
+fn joined(xs []str) -> str {
+    mut out = ""
+    for x in xs { out = if out == "" { x } else { "${out} | ${x}" } }
+    out
+}
+
+fn same(label str, want []str, got []str) -> bool {
+    ro w = joined(want)
+    ro g = joined(got)
+    if w == g { return true }
+    panic("${label}:\n  want ${w}\n  got  ${g}")
+}
+
+test "every row of every rebuilt table survives, and the old account is a Claude account" {
+    ro got = after_0002("keep", [
+        "SELECT (SELECT value FROM schema_meta WHERE key = 'schema_version')",
+        "SELECT provider || ' ' || email || ' ' || coalesce(cred_key, '-') || ' ' || org_name || ' ' || subscription_type || ' ' || rate_limit_tier || ' ' || color_slot::VARCHAR FROM account",
+        "SELECT (SELECT count(*) FROM occupancy WHERE account_id = '${ACC}')::VARCHAR || (SELECT count(*) FROM poll WHERE account_id = '${ACC}')::VARCHAR || (SELECT count(*) FROM limit_window WHERE model = 'Opus')::VARCHAR || (SELECT count(*) FROM window_cycle)::VARCHAR || (SELECT count(*) FROM sample WHERE percent = 41)::VARCHAR || (SELECT count(*) FROM lock_period)::VARCHAR || (SELECT count(*) FROM daily_rollup WHERE avg_percent = 40.5)::VARCHAR",
+        // The views were dropped with their tables; they must read again.
+        "SELECT count(*)::VARCHAR FROM v_latest_sample",
+        "SELECT email FROM v_sample_local",
+        // No copy left behind.
+        "SELECT count(*)::VARCHAR FROM duckdb_tables() WHERE table_name LIKE 'm2_%'",
+    ])
+    assert(same("keep", ["2", "claude a@b.c - Org max tier 3", "1111111", "1", "a@b.c", "0"], got))
+}
+
+test "a Kimi account, keyed by its file, with both monthly windows" {
+    ro by = "'${ME}', '${ME}'"
+    ro kimi = "0192f3a4-0000-7000-8000-0000000000a2"
+    ro got = after_0002("kimi", [
+        "INSERT INTO account (id, created_at, updated_at, created_by, updated_by, provider, email, cred_key, color_slot, first_seen_at, last_seen_at) VALUES ('${kimi}', now(), now(), ${by}, 'kimi', NULL, 'kimi-code-env-0e4f', 0, now(), now())",
+        "INSERT INTO limit_window (id, created_at, updated_at, created_by, updated_by, account_id, kind, model, first_seen_at, last_seen_at) VALUES ('0192f3a4-0000-7000-8000-0000000000b2', now(), now(), ${by}, '${kimi}', 'monthly', '', now(), now())",
+        "INSERT INTO limit_window (id, created_at, updated_at, created_by, updated_by, account_id, kind, model, first_seen_at, last_seen_at) VALUES ('0192f3a4-0000-7000-8000-0000000000b3', now(), now(), ${by}, '${kimi}', 'monthly', 'code', now(), now())",
+        "SELECT count(*)::VARCHAR FROM limit_window WHERE kind = 'monthly'",
+    ])
+    assert(same("kimi", ["ran", "ran", "ran", "2"], got))
+}
+
+test "the control: what 0002 must still refuse" {
+    ro by = "'${ME}', '${ME}'"
+    ro got = after_0002("refuse", [
+        // A Kimi key that is empty or padded. (Which provider goes with which key is the
+        // writer's, not a CHECK's -- the migration's header says why.)
+        "INSERT INTO account (id, created_at, updated_at, created_by, updated_by, provider, email, cred_key, color_slot, first_seen_at, last_seen_at) VALUES ('0192f3a4-0000-7000-8000-0000000000a3', now(), now(), ${by}, 'kimi', NULL, '', 0, now(), now())",
+        "INSERT INTO account (id, created_at, updated_at, created_by, updated_by, provider, email, cred_key, color_slot, first_seen_at, last_seen_at) VALUES ('0192f3a4-0000-7000-8000-0000000000a4', now(), now(), ${by}, 'kimi', NULL, ' k', 0, now(), now())",
+        // A second account on the same file.
+        "INSERT INTO account (id, created_at, updated_at, created_by, updated_by, provider, email, cred_key, color_slot, first_seen_at, last_seen_at) VALUES ('0192f3a4-0000-7000-8000-0000000000a5', now(), now(), ${by}, 'kimi', NULL, 'dup', 0, now(), now()), ('0192f3a4-0000-7000-8000-0000000000a8', now(), now(), ${by}, 'kimi', NULL, 'dup', 0, now(), now())",
+        // A provider nobody listed; an e-mail not lowered.
+        "INSERT INTO account (id, created_at, updated_at, created_by, updated_by, provider, email, cred_key, color_slot, first_seen_at, last_seen_at) VALUES ('0192f3a4-0000-7000-8000-0000000000a6', now(), now(), ${by}, 'gpt', 'q@w.e', NULL, 0, now(), now())",
+        "INSERT INTO account (id, created_at, updated_at, created_by, updated_by, provider, email, cred_key, color_slot, first_seen_at, last_seen_at) VALUES ('0192f3a4-0000-7000-8000-0000000000a7', now(), now(), ${by}, 'claude', 'Q@w.e', NULL, 0, now(), now())",
+        // weekly_scoped without a model, session with one, a kind nobody listed.
+        "INSERT INTO limit_window (id, created_at, updated_at, created_by, updated_by, account_id, kind, model, first_seen_at, last_seen_at) VALUES ('0192f3a4-0000-7000-8000-0000000000b4', now(), now(), ${by}, '${ACC}', 'weekly_scoped', '', now(), now())",
+        "INSERT INTO limit_window (id, created_at, updated_at, created_by, updated_by, account_id, kind, model, first_seen_at, last_seen_at) VALUES ('0192f3a4-0000-7000-8000-0000000000b5', now(), now(), ${by}, '${ACC}', 'session', 'x', now(), now())",
+        "INSERT INTO limit_window (id, created_at, updated_at, created_by, updated_by, account_id, kind, model, first_seen_at, last_seen_at) VALUES ('0192f3a4-0000-7000-8000-0000000000b6', now(), now(), ${by}, '${ACC}', 'yearly', '', now(), now())",
+        // The foreign keys came back with the tables: a window of no account.
+        "INSERT INTO limit_window (id, created_at, updated_at, created_by, updated_by, account_id, kind, model, first_seen_at, last_seen_at) VALUES ('0192f3a4-0000-7000-8000-0000000000b7', now(), now(), ${by}, '0192f3a4-0000-7000-8000-0000000000ff', 'session', '', now(), now())",
+    ])
+    assert(same("refuse", ["refused", "refused", "refused", "refused", "refused", "refused", "refused", "refused", "refused"], got))
+}

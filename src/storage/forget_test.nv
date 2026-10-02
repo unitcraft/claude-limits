@@ -64,7 +64,10 @@ fn scratch(name str) Io -> str {
 
 fn migration() Io -> str =>
     with Fs = real_fs() {
-        read_text("migrations/0001_init.sql".to_path()) ?? ""
+        // The schema the binary writes: 0001 and every migration after it.
+        ro m1 = read_text("migrations/0001_init.sql".to_path()) ?? ""
+        ro m2 = read_text("migrations/0002_kimi_accounts.sql".to_path()) ?? ""
+        "${m1}\n${m2}"
     }
 
 fn win(kind str, percent int) -> WindowRow =>

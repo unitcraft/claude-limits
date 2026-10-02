@@ -1,4 +1,4 @@
-// Tests for migrations/0001_init.sql — task T2.3.
+// Tests for migrations/0001_init.sql — task T2.3 — as 0002 leaves it (the binary's schema).
 //
 //   ./nova.sh test src/storage/ --filter schema_test
 //
@@ -24,7 +24,10 @@ import claude_limits.accounts.discover.{FolderKind}
 /// the FILE changes, and an embedded copy would test the copy.
 fn migration() Io -> str =>
     with Fs = real_fs() {
-        read_text("migrations/0001_init.sql".to_path()) ?? ""
+        // The schema the binary writes: 0001 and every migration after it.
+        ro m1 = read_text("migrations/0001_init.sql".to_path()) ?? ""
+        ro m2 = read_text("migrations/0002_kimi_accounts.sql".to_path()) ?? ""
+        "${m1}\n${m2}"
     }
 
 /// Every domain table. `schema_meta` is deliberately NOT here: 01.2 §3.3 calls it the
@@ -219,19 +222,19 @@ test "config_history.source carries the four values of 01.2 §3.2" {
 // three refusals need no graph of parent rows to exist first.
 
 test "a string does not go into a TIMESTAMPTZ column" {
-    assert(refused("INSERT INTO account (id, created_at, updated_at, created_by, updated_by, email, color_slot, first_seen_at, last_seen_at) VALUES ('0192f0a1-7c3d-7000-8000-000000000001', now(), now(), '0192f0a1-7c3d-7000-8000-0000000000ff', '0192f0a1-7c3d-7000-8000-0000000000ff', 'work@example.org', 1, 'not a moment', now())"))
+    assert(refused("INSERT INTO account (id, created_at, updated_at, created_by, updated_by, provider, email, color_slot, first_seen_at, last_seen_at) VALUES ('0192f0a1-7c3d-7000-8000-000000000001', now(), now(), '0192f0a1-7c3d-7000-8000-0000000000ff', '0192f0a1-7c3d-7000-8000-0000000000ff', 'claude', 'work@example.org', 1, 'not a moment', now())"))
 }
 
 test "200 does not go into a TINYINT column" {
     // `account.color_slot` is TINYINT: the type itself stops at 127, before any CHECK
     // has to have an opinion.
-    assert(refused("INSERT INTO account (id, created_at, updated_at, created_by, updated_by, email, color_slot, first_seen_at, last_seen_at) VALUES ('0192f0a1-7c3d-7000-8000-000000000002', now(), now(), '0192f0a1-7c3d-7000-8000-0000000000ff', '0192f0a1-7c3d-7000-8000-0000000000ff', 'work@example.org', 200, now(), now())"))
+    assert(refused("INSERT INTO account (id, created_at, updated_at, created_by, updated_by, provider, email, color_slot, first_seen_at, last_seen_at) VALUES ('0192f0a1-7c3d-7000-8000-000000000002', now(), now(), '0192f0a1-7c3d-7000-8000-0000000000ff', '0192f0a1-7c3d-7000-8000-0000000000ff', 'claude', 'work@example.org', 200, now(), now())"))
 }
 
 test "an e-mail with a capital letter is refused" {
     // 01.2 §3.6: the normalisation lives in a CHECK, so a row that skipped
     // `normalise_email` cannot enter. Without it the same person appears twice.
-    assert(refused("INSERT INTO account (id, created_at, updated_at, created_by, updated_by, email, color_slot, first_seen_at, last_seen_at) VALUES ('0192f0a1-7c3d-7000-8000-000000000003', now(), now(), '0192f0a1-7c3d-7000-8000-0000000000ff', '0192f0a1-7c3d-7000-8000-0000000000ff', 'Work@Example.org', 1, now(), now())"))
+    assert(refused("INSERT INTO account (id, created_at, updated_at, created_by, updated_by, provider, email, color_slot, first_seen_at, last_seen_at) VALUES ('0192f0a1-7c3d-7000-8000-000000000003', now(), now(), '0192f0a1-7c3d-7000-8000-0000000000ff', '0192f0a1-7c3d-7000-8000-0000000000ff', 'claude', 'Work@Example.org', 1, now(), now())"))
 }
 
 test "a complete, lower-case row IS accepted -- the control" {
@@ -239,5 +242,5 @@ test "a complete, lower-case row IS accepted -- the control" {
     // INSERT omitted `color_slot`, which is NOT NULL — every row was refused, and for
     // a reason that had nothing to do with the CHECK being tested. This control is
     // the only thing that said so.
-    assert(!refused("INSERT INTO account (id, created_at, updated_at, created_by, updated_by, email, color_slot, first_seen_at, last_seen_at) VALUES ('0192f0a1-7c3d-7000-8000-000000000004', now(), now(), '0192f0a1-7c3d-7000-8000-0000000000ff', '0192f0a1-7c3d-7000-8000-0000000000ff', 'work@example.org', 1, now(), now())"))
+    assert(!refused("INSERT INTO account (id, created_at, updated_at, created_by, updated_by, provider, email, color_slot, first_seen_at, last_seen_at) VALUES ('0192f0a1-7c3d-7000-8000-000000000004', now(), now(), '0192f0a1-7c3d-7000-8000-0000000000ff', '0192f0a1-7c3d-7000-8000-0000000000ff', 'claude', 'work@example.org', 1, now(), now())"))
 }

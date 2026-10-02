@@ -20,7 +20,10 @@ const INST = "01900000-0000-7000-8000-000000000001"
 
 fn migration() Io -> str =>
     with Fs = real_fs() {
-        read_text("migrations/0001_init.sql".to_path()) ?? ""
+        // The schema the binary writes: 0001 and every migration after it.
+        ro m1 = read_text("migrations/0001_init.sql".to_path()) ?? ""
+        ro m2 = read_text("migrations/0002_kimi_accounts.sql".to_path()) ?? ""
+        "${m1}\n${m2}"
     }
 
 fn run(setup []str, queries []str) Io -> []str {
@@ -170,4 +173,34 @@ test "a reading still locked leaves the period open -- the control" {
     ])
     assert(a[0] == "1")
     assert(a[1] == "true")
+}
+
+fn kimi_tick(at_ms int) -> Tick => {
+    instance: INST, at_ms, email: "kimi:kimi-code-env-0e4f", org: "",
+    outcome: "ok", http_status: 200, retry_after_sec: 0, latency_ms: 90, error: "",
+    windows: [win("session", 12),
+              WindowRow.new("monthly", "", 30, false, "", "", 1757340000000, 1759932000000),
+              WindowRow.new("monthly", "code", 18, false, "", "", 1757340000000, 1759932000000)],
+}
+
+/// Three windows, so three of everything a window owns.
+fn kimi_ids(n int) -> Ids {
+    ro p = "01900000-0000-7000-8000-000000${n}"
+    Ids.new("${p}a1", "${p}01", ["${p}11", "${p}12", "${p}13"], ["${p}21", "${p}22", "${p}23"], ["${p}31", "${p}32", "${p}33"], ["${p}41", "${p}42", "${p}43"])
+}
+
+test "two Kimi ticks beside a Claude one: two accounts, one Kimi row, its monthly windows once" {
+    mut all = plan_sql(tick(1757347622000), ids(1000))
+    for s in plan_sql(kimi_tick(1757347622000), kimi_ids(3000)) { all.push(s) }
+    for s in plan_sql(kimi_tick(1757347922000), kimi_ids(4000)) { all.push(s) }
+    ro a = run(all, [
+        "SELECT count(*)::VARCHAR FROM account",
+        "SELECT provider || ' ' || cred_key || ' ' || coalesce(email, '-') FROM account WHERE provider = 'kimi'",
+        "SELECT count(*)::VARCHAR FROM limit_window w JOIN account a ON a.id = w.account_id WHERE a.provider = 'kimi' AND w.kind = 'monthly'",
+        "SELECT count(*)::VARCHAR FROM sample s JOIN limit_window w ON w.id = s.window_id JOIN account a ON a.id = w.account_id WHERE a.provider = 'kimi'",
+    ])
+    assert(a[0] == "2")
+    assert(a[1] == "kimi kimi-code-env-0e4f -")
+    assert(a[2] == "2")
+    assert(a[3] == "6")
 }
