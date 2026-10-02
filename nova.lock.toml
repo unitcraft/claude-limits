@@ -33,8 +33,8 @@ name = "polaris"
 source = "git"
 git = "https://github.com/nv-lang/nova-polaris"
 pin = "version:>=0.2.0, <0.3.0"
-version = "0.2.1"
-commit = "093291ed681b11fa5082f24ff465a96b69628fb9"
+version = "0.2.3"
+commit = "16d2f3b3191cc18ee45441c67f15c070a0bb56ca"
 
 [[package]]
 name = "tls"
