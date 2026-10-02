@@ -150,7 +150,55 @@ fn account_of(k Known) -> AccountView {
         message: k.message, polled_at: iso_or_empty(k.polled_at_ms),
         next_poll_at: iso_or_empty(k.next_poll_ms),
         locked: rows && locked(k.windows), at_100: rows && at_100(k.windows),
+        same_quota_as: "",
     }
+}
+
+/// A moment's minute: `2026-10-02T03:18:44.117Z` -> `2026-10-02T03:18`.
+fn minute_of(iso str) -> str => if iso.byte_len() >= 16 { iso[0..16] } else { iso }
+
+/// The quota fingerprint of one account: every row's kind, model, percent and reset
+/// minute, in row order; "" when it has no rows. The reference's `sig` (`snapshot`).
+fn signature_of(account_id str, limits []LimitView) -> str {
+    mut s = ""
+    for l in limits {
+        if l.account_id == account_id { s = "${s}${l.kind}|${l.model}|${l.percent}|${minute_of(l.resets_at)};" }
+    }
+    s
+}
+
+/// The shared pool (01.3 §3.3, amendment 2026-09-21; the reference's "same quota
+/// reported for X -- shared pool suspected"): a live account whose rows repeat, to the
+/// percent and the reset minute, those of an account BEFORE it is one pool behind two
+/// logins -- an organisation's quota. It gets `same_quota_as` naming the first; the
+/// first keeps its rows. Only `ok` accounts: an `unknown` one shows its last good rows,
+/// and two old readings that agree say nothing about now.
+export fn with_pools(accounts []AccountView, limits []LimitView) -> []AccountView {
+    mut sigs []str = []
+    mut owners []str = []
+    mut out []AccountView = []
+    for a in accounts {
+        mut x = a
+        if a.state == "ok" {
+            ro sig = signature_of(a.id, limits)
+            if sig != "" {
+                mut owner = ""
+                mut i = 0
+                while i < sigs.len() && owner == "" {
+                    if sigs[i] == sig { owner = owners[i] }
+                    i += 1
+                }
+                if owner == "" {
+                    sigs.push(sig)
+                    owners.push(a.id)
+                } else {
+                    x.same_quota_as = owner
+                }
+            }
+        }
+        out.push(x)
+    }
+    out
 }
 
 fn sev_rank(s str) -> int {
@@ -192,6 +240,6 @@ export fn view_of(known []Known, th SeverityBounds, now_ms int, next_poll_ms int
     }
     {
         fetched_at: iso_or_empty(now_ms), next_poll_at: iso_or_empty(next_poll_ms), tz,
-        restored: false, worst: worst_of(limits), accounts, limits,
+        restored: false, worst: worst_of(limits), accounts: with_pools(accounts, limits), limits,
     }
 }

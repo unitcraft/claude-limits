@@ -32,7 +32,7 @@
       "polled_at": "2026-09-07T16:47:02Z",
       "next_poll_at": "2026-09-07T16:52:02Z",
       "locked": false,
-      "at_100": false
+      "at_100": false, "same_quota_as": null
     },
     {
       "id": "0192a7f0-0000-7000-8000-000000000002",
@@ -50,7 +50,7 @@
       "polled_at": "2026-09-07T16:47:02Z",
       "next_poll_at": "2026-09-07T16:52:02Z",
       "locked": true,
-      "at_100": true
+      "at_100": true, "same_quota_as": null
     },
     {
       "id": "0192a7f0-0000-7000-8000-000000000003",
@@ -68,7 +68,7 @@
       "polled_at": null,
       "next_poll_at": null,
       "locked": false,
-      "at_100": false
+      "at_100": false, "same_quota_as": null
     },
     {
       "id": "0192a7f0-0000-7000-8000-000000000004",
@@ -86,7 +86,7 @@
       "polled_at": "2026-09-07T16:41:00Z",
       "next_poll_at": "2026-09-07T16:49:00Z",
       "locked": false,
-      "at_100": false
+      "at_100": false, "same_quota_as": null
     }
   ],
   "limits": [

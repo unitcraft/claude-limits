@@ -95,6 +95,9 @@ export type AccountView value {
     /// There is a window at 100 % WITHOUT a `locked_reason` — a different fact,
     /// and the panel says different words for it (§3.3).
     at_100 bool
+    /// The id of the account that reported the IDENTICAL quota state first this round
+    /// -- one pool behind two logins (01.3 §3.3, amendment 2026-09-21); "" for `null`.
+    same_quota_as str
 }
 
 /// The forecast of one limit row, or absent (`forecast: null` for stale, unknown
@@ -229,6 +232,7 @@ type WireAccount value {
     ro next_poll_at Option[str]
     ro locked bool
     ro at_100 bool
+    ro same_quota_as Option[str]
 }
 
 #impl(Serialize)
@@ -288,7 +292,7 @@ fn wire_account(d Disclosure, a AccountView) -> WireAccount {
     {
         id: a.id, provider: a.provider, email: opt(a.email), org: opt(a.org), display_name: opt(a.display_name), dirs, state: a.state,
         message: opt(a.message), polled_at: opt(a.polled_at), next_poll_at: opt(a.next_poll_at),
-        locked: a.locked, at_100: a.at_100,
+        locked: a.locked, at_100: a.at_100, same_quota_as: opt(a.same_quota_as),
     }
 }
 

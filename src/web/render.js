@@ -163,7 +163,7 @@ export function renderRow(limit, { dimmed = false } = {}) {
  * nesting and would have drawn every account empty against a real backend; caught by
  * reading the response shape before there was a backend to be wrong against.
  */
-export function renderAccount(acc, limits) {
+export function renderAccount(acc, limits, owner = null) {
   const block = el('section', 'account');
   block.dataset.state = acc.state || 'ok';
   // Two different facts, both of which colour the block (01.3 §3.3): `locked` means
@@ -233,8 +233,25 @@ export function renderAccount(acc, limits) {
   // token expired ("MGTS: token expired on disk", as the reference prints it). The
   // server sent it since 2026-10-02 and the page showed it only for the not-ok states.
   if (acc.message) block.append(el('p', 'account-note', acc.message));
+  // ONE POOL BEHIND TWO LOGINS (01.3 sec.3.3, amendment 2026-09-21): this account
+  // reported the same quota, to the percent and the reset minute, as `owner` above it.
+  // Its bars would repeat that block's bars exactly; the footnote says so instead, in
+  // the reference's words.
+  if (acc.same_quota_as) {
+    const first = owner ? (owner.email || owner.display_name || 'another account') : 'another account';
+    block.append(el('p', 'account-note', `same quota reported for ${first} -- shared pool suspected`));
+    block.dataset.pool = acc.same_quota_as;
+    return block;
+  }
   for (const limit of sortLimits(limits)) block.append(renderRow(limit));
   return block;
+}
+
+/** The accounts by id: whom a `same_quota_as` names. */
+function byId(accounts) {
+  const m = new Map();
+  for (const a of accounts || []) if (a.id) m.set(a.id, a);
+  return m;
 }
 
 /**
@@ -256,13 +273,14 @@ export function renderList(accounts, allLimits, order = null) {
     if (!byAccount.has(l.account_id)) byAccount.set(l.account_id, []);
     byAccount.get(l.account_id).push(l);
   }
+  const owners = byId(accounts);
 
   // One order for every view (01.1 §4.1): a card dragged in the cards view moves in
   // the list too, or the two views disagree about which account is first.
   applyOrder(accounts, order).forEach((acc, i) => {
     const key = (acc.email || `?${i}`).toLowerCase();
     seen.add(key);
-    const fresh = renderAccount(acc, byAccount.get(acc.id) || []);
+    const fresh = renderAccount(acc, byAccount.get(acc.id) || [], owners.get(acc.same_quota_as));
     fresh.dataset.email = key;
     const old = have.get(key);
     if (old) old.replaceWith(fresh);
@@ -287,7 +305,7 @@ export function renderList(accounts, allLimits, order = null) {
  * function needs no `createElementNS`, and so the dots recolour with the card state
  * by inheriting `currentColor`.
  */
-export function renderCard(acc, limits) {
+export function renderCard(acc, limits, owner = null) {
   const card = el('article', 'card');
   const handle = el('button', 'card-handle');
   handle.setAttribute('type', 'button');
@@ -295,7 +313,7 @@ export function renderCard(acc, limits) {
   handle.title = 'drag to reorder, or Space then arrows';
   card.append(handle);
 
-  const body = renderAccount(acc, limits);
+  const body = renderAccount(acc, limits, owner);
   card.append(body);
   card.dataset.state = body.dataset.state;
   return card;
@@ -323,11 +341,12 @@ export function renderCards(accounts, allLimits, order = null) {
     if (!byAccount.has(l.account_id)) byAccount.set(l.account_id, []);
     byAccount.get(l.account_id).push(l);
   }
+  const owners = byId(accounts);
 
   applyOrder(accounts, order).forEach((acc, i) => {
     const key = (acc.email || `?${i}`).toLowerCase();
     seen.add(key);
-    const fresh = renderCard(acc, byAccount.get(acc.id) || []);
+    const fresh = renderCard(acc, byAccount.get(acc.id) || [], owners.get(acc.same_quota_as));
     fresh.dataset.email = key;
     const old = have.get(key);
     if (old) old.replaceWith(fresh);

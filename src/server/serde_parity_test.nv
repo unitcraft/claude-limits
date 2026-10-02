@@ -215,6 +215,7 @@ fn ref_account(d Disclosure, a AccountView) -> str {
         field_str_or_null("next_poll_at", a.next_poll_at),
         field_bool("locked", a.locked),
         field_bool("at_100", a.at_100),
+        field_str_or_null("same_quota_as", a.same_quota_as),
     ])
 }
 
@@ -306,10 +307,10 @@ fn sample_snapshot() -> SnapshotView {
                 dirs: [DirView{ id: "d1", path: "C:\\Users\\me\\.claude", name: ".claude" },
                        DirView{ id: "d2", path: "", name: "empty" }],
                 state: "ok", message: "", polled_at: "2026-09-06T18:09:00Z",
-                next_poll_at: "2026-09-06T18:14:00Z", locked: false, display_name: "", provider: "claude", at_100: false },
+                next_poll_at: "2026-09-06T18:14:00Z", locked: false, display_name: "", provider: "claude", at_100: false, same_quota_as: "" },
             AccountView{ id: "a2", email: "work@example.org", org: "",
                 dirs: [], state: "error", message: "HTTP 401: token\nrejected",
-                polled_at: "", next_poll_at: "", locked: true, display_name: "", provider: "claude", at_100: true },
+                polled_at: "", next_poll_at: "", locked: true, display_name: "", provider: "claude", at_100: true, same_quota_as: "" },
         ],
         limits: [
             LimitView{ account_id: "a1", kind: "session", model: "", label: "session 5h",

@@ -211,6 +211,21 @@ test('a hundred percent WITHOUT a reason colours the block, and locked still win
   assert.equal(ordinary.dataset.state, 'ok');
 });
 
+test('a shared pool shows a footnote naming the first account, not the same bars again', () => {
+  // 01.3 sec.3.3 (amendment 2026-09-21): the later of two logins reporting the
+  // identical quota gets `same_quota_as`; its bars would repeat the first block's.
+  const rows = [{ account_id: 'b', kind: 'session', label: 'session', percent: 9, severity: 'normal' }];
+  const owner = { id: 'a', email: 'first@x', state: 'ok' };
+  const pooled = renderAccount({ id: 'b', email: 'second@x', state: 'ok', same_quota_as: 'a' }, rows, owner);
+  const notes = pooled.all((n) => n.className === 'account-note').map((n) => n.textContent);
+  assert.deepEqual(notes, ['same quota reported for first@x -- shared pool suspected']);
+  assert.equal(pooled.all((n) => n.className === 'row').length, 0);
+  // The control: without `same_quota_as` the same rows are drawn.
+  const own = renderAccount({ id: 'b', email: 'second@x', state: 'ok' }, rows);
+  assert.equal(own.all((n) => n.className === 'account-note').length, 0);
+  assert.ok(own.all((n) => n.className === 'row').length > 0);
+});
+
 test('the person name stands before the organisation, and either may be missing', () => {
   const org = (acc) => renderAccount(acc, []).all((n) => n.className === 'account-org').map((n) => n.textContent);
   assert.deepEqual(org({ email: 'a@x', state: 'ok', display_name: 'Nova', org: 'Org' }), ['Nova, Org']);

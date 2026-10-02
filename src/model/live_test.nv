@@ -149,3 +149,36 @@ test "never polled: polled_at is null, not the epoch" {
     assert(same("polled_at", "", v.accounts[0].polled_at))
     assert(same("next_poll_at", "", v.accounts[0].next_poll_at))
 }
+
+// -- the shared pool (01.3 section 3.3, amendment 2026-09-21) ----------------------
+
+test "two logins reporting the identical quota are one pool: the later names the first" {
+    ro b = body_of([
+        acct("a", AccountState.Ok, "", two_windows()),
+        acct("b", AccountState.Ok, "", two_windows()),
+        acct("c", AccountState.Ok, "", two_windows()),
+    ])
+    assert(b.accounts[0].same_quota_as == "")
+    assert(b.accounts[1].same_quota_as == "a")
+    // The third names the FIRST, not the second: one pool has one owner.
+    assert(b.accounts[2].same_quota_as == "a")
+}
+
+test "the control: one percent apart, or a reset minute apart, is two quotas" {
+    ro other_percent = [Window.new("weekly_all", "", 75, NOW_MS + 50 * HOUR_MS, ""), Window.new("session", "", 9, NOW_MS + HOUR_MS, "")]
+    ro other_minute = [Window.new("weekly_all", "", 74, NOW_MS + 50 * HOUR_MS + 60000, ""), Window.new("session", "", 9, NOW_MS + HOUR_MS, "")]
+    ro b = body_of([
+        acct("a", AccountState.Ok, "", two_windows()),
+        acct("b", AccountState.Ok, "", other_percent),
+        acct("c", AccountState.Ok, "", other_minute),
+    ])
+    for x in b.accounts { assert(x.same_quota_as == "") }
+}
+
+test "an unknown account's last good rows say nothing about now: no pool" {
+    ro b = body_of([
+        acct("a", AccountState.Ok, "", two_windows()),
+        acct("b", AccountState.Unknown, "429", two_windows()),
+    ])
+    assert(b.accounts[1].same_quota_as == "")
+}
