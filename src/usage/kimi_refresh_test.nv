@@ -1,0 +1,122 @@
+// Tests for kimi_refresh.nv -- plan 01.6, П4: renewing a Kimi Code token.
+//
+//   ./nova.sh test src/usage/kimi_refresh_test.nv
+//
+// No network: `Http` answers what each test says, and the file system is a `MemFs`.
+
+module usage.kimi_refresh_test
+
+import std.fs.{mock_fs, MemFs, write_text, read_text}
+import http.{Http, HttpError}
+import kimi_refresh.{Renewed, renew_kimi, rewritten, form_value, grant_request}
+import claude_limits.accounts.login.{raw_field_str, raw_field_int}
+
+const P = "/home/.kimi-code/credentials/kimi-code-env-1.json"
+const NOW_S = 1790845200
+
+fn old_file() -> str =>
+    "{\"access_token\": \"old-access\", \"refresh_token\": \"old-refresh\", \"expires_at\": 1790844000, \"expires_in\": 900, \"scope\": \"kimi-code\", \"token_type\": \"Bearer\", \"user_id\": \"u-42\"}"
+
+fn ok_reply() -> str =>
+    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 0\r\n\r\n{\"access_token\": \"new-access\", \"refresh_token\": \"new-refresh\", \"expires_in\": 900, \"token_type\": \"Bearer\"}"
+
+fn rejected() -> str => "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n{\"error\": \"invalid_grant\"}"
+
+/// What the server saw, and what it answered.
+type Wire {
+    mut sent str
+    mut calls int
+}
+
+fn Wire.new() -> Wire => { sent: "", calls: 0 }
+
+/// One renewal against a file holding `start`, a server answering `reply`; `racer`,
+/// when not "", is written over the file the moment the server answers -- another
+/// Kimi tool winning the rotation race.
+fn attempt(mut fs MemFs, mut w Wire, start str, reply str, racer str) -> Renewed {
+    with Fs = mock_fs(fs) {
+        ro _w = write_text(P.to_path(), start)
+        with Http = effect Http {
+            send(host, port, secure, request) -> Result[str, HttpError] {
+                w.calls += 1
+                w.sent = request
+                if racer != "" { ro _r = write_text(P.to_path(), racer) }
+                Ok(reply)
+            }
+        } {
+            renew_kimi(P, NOW_S)
+        }
+    }
+}
+
+fn file_of(mut fs MemFs) -> str => with Fs = mock_fs(fs) { read_text(P.to_path()) ?? "" }
+
+fn is_fresh(r Renewed) -> bool => match r { Renewed.Fresh => true, _ => false }
+fn is_rotated(r Renewed) -> bool => match r { Renewed.Rotated => true, _ => false }
+fn failed_with(r Renewed) -> str => match r { Renewed.Failed(why) => why, _ => "" }
+
+test "a renewal sends the grant with the CLI's client id and writes the new token" {
+    mut fs = MemFs.new()
+    mut w = Wire.new()
+    ro r = attempt(fs, w, old_file(), ok_reply(), "")
+    assert(is_fresh(r))
+    assert(w.calls == 1)
+    assert(w.sent.starts_with("POST /api/oauth/token HTTP/1.1"))
+    assert(w.sent.contains("Host: auth.kimi.com"))
+    assert(w.sent.contains("grant_type=refresh_token&refresh_token=old-refresh"))
+    assert(w.sent.contains("client_id=17e5f671-d194-4dfb-9706-5516cb48c098"))
+    ro after = file_of(fs)
+    assert(raw_field_str(after, "access_token") == "new-access")
+    assert(raw_field_str(after, "refresh_token") == "new-refresh")
+    assert(raw_field_int(after, "expires_at") == NOW_S + 900)
+}
+
+test "every field the answer does not own is kept" {
+    // The reference: `data = dict(old); data.update(...)`. A rewrite that dropped
+    // `user_id` would break the Kimi CLI that wrote it.
+    ro text = rewritten(old_file(), "{\"access_token\": \"a\", \"expires_in\": 60}", NOW_S) ?? ""
+    assert(raw_field_str(text, "user_id") == "u-42")
+    assert(raw_field_str(text, "scope") == "kimi-code")
+    // No refresh_token in the answer: the old one stays.
+    assert(raw_field_str(text, "refresh_token") == "old-refresh")
+}
+
+test "an answer without a token or a lifetime writes nothing" {
+    assert(rewritten(old_file(), "{\"expires_in\": 60}", NOW_S).is_err())
+    assert(rewritten(old_file(), "{\"access_token\": \"a\"}", NOW_S).is_err())
+    assert(rewritten(old_file(), "not json", NOW_S).is_err())
+}
+
+test "a rejected grant with the file unchanged says log in again, and the file is untouched" {
+    mut fs = MemFs.new()
+    mut w = Wire.new()
+    ro r = attempt(fs, w, old_file(), rejected(), "")
+    assert(failed_with(r).contains("log in again"))
+    assert(raw_field_str(file_of(fs), "access_token") == "old-access")
+}
+
+test "a rejection after another Kimi tool rotated the token takes the file as it is" {
+    // The server rotates the refresh token on every grant; the loser of the race gets
+    // invalid_grant on a healthy login. A different refresh token in the file is the
+    // sign -- and the file is not overwritten.
+    mut fs = MemFs.new()
+    mut w = Wire.new()
+    ro winner = "{\"access_token\": \"theirs\", \"refresh_token\": \"theirs-refresh\", \"expires_at\": 1790846100}"
+    ro r = attempt(fs, w, old_file(), rejected(), winner)
+    assert(is_rotated(r))
+    assert(raw_field_str(file_of(fs), "access_token") == "theirs")
+}
+
+test "no refresh token on disk: no request at all" {
+    mut fs = MemFs.new()
+    mut w = Wire.new()
+    ro r = attempt(fs, w, "{\"access_token\": \"x\"}", ok_reply(), "")
+    assert(failed_with(r).contains("no refresh_token"))
+    assert(w.calls == 0)
+}
+
+test "form values are percent-encoded, unreserved characters left alone" {
+    assert(form_value("abc-._~XYZ019") == "abc-._~XYZ019")
+    assert(form_value("a b+c/=") == "a%20b%2Bc%2F%3D")
+    assert(grant_request("t").contains("Content-Length: 87"))
+}

@@ -1,0 +1,156 @@
+// kimi_refresh.nv — renewing a Kimi Code login's access token (plan 01.6, П4).
+//
+// Source: the reference, `scripts/claude_limits.py` `refresh_kimi_token`,
+// `write_kimi_credentials`, `KimiRefresher.run`. Enabled by the owner 2026-10-02
+// ("1 - ок"): the one exception to "the tool never writes a login's file" (plan 01,
+// decision 6) -- Kimi's access token lives fifteen minutes, and the Kimi CLI is not
+// necessarily on the machine to renew it. A Claude login is NEVER written here; Claude
+// Code renews its own (`refresh_claude.nv`).
+//
+// WHAT IT DOES, AS THE REFERENCE DOES IT:
+//
+//   * the OAuth `refresh_token` grant at `auth.kimi.com`, with the Kimi CLI's public
+//     `client_id`;
+//   * the credentials file is rewritten ATOMICALLY (temp file + rename, `write_atomic`)
+//     and every field it does not own is kept;
+//   * a rejection is not believed at once: the Kimi desktop app refreshes the same
+//     file, and the server ROTATES the refresh token on every grant, so the loser of a
+//     race gets `invalid_grant` on a healthy login. When the file now holds a
+//     DIFFERENT refresh token than the one sent, the race is what happened, and the
+//     file is taken as it is.
+//
+// The cooldown after a failure is the CALLER's (it lives across rounds); this file is
+// one attempt.
+//
+// No token is printed or returned: the result is a sentence for the log.
+
+module usage.kimi_refresh
+
+import std.fs.{read_text, write_atomic}
+import std.encoding.json.{Json, JsonValue, JsonObject, ParseJsonError}
+import claude_limits.accounts.login.{raw_field_str}
+import claude_limits.usage.fetch.{status_of, body_of}
+import http.{Http}
+
+export const KIMI_AUTH_HOST = "auth.kimi.com"
+const KIMI_AUTH_PATH = "/api/oauth/token"
+/// The Kimi Code CLI's public client id (the reference's `KIMI_CLIENT_ID`).
+const KIMI_CLIENT_ID = "17e5f671-d194-4dfb-9706-5516cb48c098"
+const CRLF = "\r\n"
+
+/// What one attempt did.
+export type Renewed enum
+    /// The file holds a fresh token.
+    | Fresh
+    /// Another Kimi tool won the rotation race; its file is taken as it is.
+    | Rotated
+    /// Nothing renewed; the reason is for the log ("log in again", "HTTP 503 ...").
+    | Failed(str)
+
+fn hex(n int) -> str => "0123456789ABCDEF"[n..n + 1]
+
+/// `application/x-www-form-urlencoded` of one value: unreserved characters as they
+/// are, everything else as `%XX` of its UTF-8 bytes.
+export fn form_value(s str) -> str {
+    ro bytes = s.bytes()
+    mut out = ""
+    for i in 0..bytes.len() {
+        ro c = bytes[i] as int
+        ro plain = (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) ||
+                   c == 45 || c == 46 || c == 95 || c == 126
+        // A plain byte is ASCII, so `i` is a character boundary and the slice is it.
+        out = if plain { "${out}${s[i..i + 1]}" } else { "${out}%${hex(c / 16)}${hex(c % 16)}" }
+    }
+    out
+}
+
+/// The grant's request, serialised.
+export fn grant_request(refresh_token str) -> str {
+    ro body = "client_id=${form_value(KIMI_CLIENT_ID)}&grant_type=refresh_token&refresh_token=${form_value(refresh_token)}"
+    mut r = "POST ${KIMI_AUTH_PATH} HTTP/1.1${CRLF}"
+    r = "${r}Host: ${KIMI_AUTH_HOST}${CRLF}"
+    r = "${r}Accept: application/json${CRLF}"
+    r = "${r}Content-Type: application/x-www-form-urlencoded${CRLF}"
+    r = "${r}Content-Length: ${body.byte_len()}${CRLF}"
+    r = "${r}Connection: close${CRLF}${CRLF}"
+    "${r}${body}"
+}
+
+fn num_of(v JsonValue) -> int =>
+    match v.num() {
+        Some(n) => n as int
+        None => match v.str() {
+            Some(s) => s.trim_ascii().to_int() ?? -1
+            None => -1
+        }
+    }
+
+/// The old file with the fresh fields over it -- every other field kept, as the
+/// reference does (`data = dict(old); data.update(...)`).
+export fn rewritten(old_text str, fresh_text str, now_s int) -> Result[str, str] {
+    ro fresh = Json.parse(fresh_text).map_err(fn(_ ParseJsonError) -> str => "the refresh answer is not JSON")?
+    ro ff = fresh.object().ok_or("the refresh answer is not an object")?
+    ro access = match ff.get("access_token") {
+        Some(v) => v.str() ?? ""
+        None => ""
+    }
+    if access == "" { return Err("the refresh answer has no access_token") }
+    ro expires_in = match ff.get("expires_in") {
+        Some(v) => num_of(v)
+        None => -1
+    }
+    if expires_in < 0 { return Err("the refresh answer has no expires_in") }
+
+    mut data = match Json.parse(old_text) {
+        Ok(v) => v.object() ?? JsonObject.new()
+        Err(_) => JsonObject.new()
+    }
+    ro _a = data.insert("access_token", JsonValue.str(access))
+    match ff.get("refresh_token") {
+        Some(v) => {
+            ro rt = v.str() ?? ""
+            if rt != "" { ro _r = data.insert("refresh_token", JsonValue.str(rt)) }
+        }
+        None => {}
+    }
+    ro _i = data.insert("expires_in", JsonValue.num(expires_in as f64))
+    ro _e = data.insert("expires_at", JsonValue.num((now_s + expires_in) as f64))
+    for key in ["scope", "token_type"] {
+        match ff.get(key) {
+            Some(v) => {
+                if (v.str() ?? "") != "" { ro _k = data.insert(key, v) }
+            }
+            None => {}
+        }
+    }
+    Ok(JsonValue.object(data).to_str_pretty())
+}
+
+/// One renewal of the login whose credentials are at `path`.
+export fn renew_kimi(path str, now_s int) Http Fs -> Renewed {
+    ro before = read_text(path.to_path()) ?? ""
+    ro tried = raw_field_str(before, "refresh_token")
+    if tried == "" { return Renewed.Failed("no refresh_token on disk; log in again") }
+
+    ro raw = Http.send(KIMI_AUTH_HOST, 443, true, grant_request(tried)) ?? return Renewed.Failed("auth.kimi.com did not answer")
+    ro status = status_of(raw)
+    if status != 200 {
+        // The race (see the header): a different refresh token in the file now means
+        // another Kimi tool renewed it first. The reference also waits 8 s for a
+        // winner that has not written yet; the next round is that second look here.
+        ro now_text = read_text(path.to_path()) ?? ""
+        ro current = raw_field_str(now_text, "refresh_token")
+        if current != "" && current != tried { return Renewed.Rotated }
+        if status == 400 || status == 401 || status == 403 {
+            return Renewed.Failed("refresh token rejected; log in again")
+        }
+        return Renewed.Failed("auth.kimi.com answered HTTP ${status}")
+    }
+    match rewritten(before, body_of(raw), now_s) {
+        Err(why) => Renewed.Failed(why)
+        Ok(text) => match write_atomic(path.to_path(), text.bytes()) {
+            Ok(_) => Renewed.Fresh
+            Err(_) => Renewed.Failed("the credentials file could not be written")
+        }
+    }
+}
