@@ -37,7 +37,7 @@ fn rules(working_hours bool) -> ForecastRules =>
 
 fn account() -> AccountView => {
     id: "a-1", email: "Main@Example.com", org: "Org", dirs: [], state: "ok", message: "",
-    polled_at: "", next_poll_at: "", locked: false, at_100: false,
+    polled_at: "", next_poll_at: "", locked: false, display_name: "", at_100: false,
 }
 
 fn limit(kind str, percent int, seconds_left int, window_sec int) -> LimitView => {

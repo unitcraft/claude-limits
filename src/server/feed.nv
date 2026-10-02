@@ -99,6 +99,7 @@ export type Found value {
     ro cred_path str
     /// Directories whose token is dead, named beside a live account.
     ro expired_dirs []str
+    ro display_name str
 }
 
 /// The line under an account that is asked with one directory's token while others
@@ -138,7 +139,7 @@ export fn found_in(folders []str, now_ms int) Dirs Creds -> []Found {
             i += 1
         }
         out.push(Found { email: acc.email, org: acc.org, dirs, state: acc.state, expires_at_ms: acc.expires_at_ms, cred_path: cred,
-                         expired_dirs: acc.expired_dirs })
+                         expired_dirs: acc.expired_dirs, display_name: acc.display_name })
     }
     out
 }
@@ -352,23 +353,23 @@ export fn poll_round(found []Found, before []Known, now_ms int, next_ms int, zon
         ro p = previous(before, id)
         if f.state != TokenState.Ok || f.cred_path == "" {
             ro msg = if f.state == TokenState.Stale { stale_message(expiry_text(f.expires_at_ms, zone)) } else { "no token · start Claude Code under this login" }
-            out.push(Known.new(id, f.email, f.org, f.dirs, AccountState.Stale, msg, prev_polled(p), 0, []))
+            out.push(Known.new(id, f.email, f.org, f.dirs, AccountState.Stale, msg, prev_polled(p), 0, []).with_name(f.display_name))
             continue
         }
         match read_token(f.cred_path) {
             None => {
-                out.push(Known.new(id, f.email, f.org, f.dirs, AccountState.Stale, "no token · start Claude Code under this login", prev_polled(p), 0, []))
+                out.push(Known.new(id, f.email, f.org, f.dirs, AccountState.Stale, "no token · start Claude Code under this login", prev_polled(p), 0, []).with_name(f.display_name))
             }
             Some(consume secret) => {
                 ro token = secret.into_secret()
                 ro r = poll_once(PollTarget.new(f.email, usage_host(), 443, true, usage_path(), token), now_ms)
                 ro fresh = r.outcome.state == AccountState.Ok && r.usage.outcome == PollOutcome.Parsed
                 if fresh {
-                    out.push(Known.new(id, f.email, f.org, f.dirs, AccountState.Ok, expired_note(f.expired_dirs), now_ms, next_ms, r.usage.windows))
+                    out.push(Known.new(id, f.email, f.org, f.dirs, AccountState.Ok, expired_note(f.expired_dirs), now_ms, next_ms, r.usage.windows).with_name(f.display_name))
                 } else {
                     ro kept = prev_polled(p)
                     ro msg = if r.outcome.state == AccountState.Unknown { unknown_message(r.outcome, now_ms, kept, zone) } else { r.outcome.message }
-                    out.push(Known.new(id, f.email, f.org, f.dirs, r.outcome.state, msg, kept, next_ms, prev_windows(p)))
+                    out.push(Known.new(id, f.email, f.org, f.dirs, r.outcome.state, msg, kept, next_ms, prev_windows(p)).with_name(f.display_name))
                 }
             }
         }

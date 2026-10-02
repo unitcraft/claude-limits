@@ -16,8 +16,8 @@ module accounts.group
 import claude_limits.accounts.login.{Login, GroupedAccount, TokenState, state_of}
 
 fn GroupedAccount.new(email str, org str, dirs []str, paths []str, state TokenState, expires_at_ms int,
-                      live_path str, expired_dirs []str) -> GroupedAccount =>
-    { email, org, dirs, paths, state, expires_at_ms, live_path, expired_dirs }
+                      live_path str, expired_dirs []str, display_name str) -> GroupedAccount =>
+    { email, org, dirs, paths, state, expires_at_ms, live_path, expired_dirs, display_name }
 
 fn index_of(accounts []GroupedAccount, email str) -> int {
     mut i = 0
@@ -66,7 +66,8 @@ export fn group(logins []Login, now_ms int) -> []GroupedAccount {
         ro at = index_of(out, l.email)
         if at < 0 {
             out.push(GroupedAccount.new(l.email, l.org, [l.name], [l.dir], st, l.expires_at_ms,
-                                        if live { l.dir } else { "" }, if live { []str.new() } else { [l.name] }))
+                                        if live { l.dir } else { "" }, if live { []str.new() } else { [l.name] },
+                                        l.display_name))
             continue
         }
 
@@ -86,6 +87,7 @@ export fn group(logins []Login, now_ms int) -> []GroupedAccount {
         // An organisation name may be missing in one directory and present in
         // another; keep the one that says something.
         if acc.org == "" && l.org != "" { acc.org = l.org }
+        if acc.display_name == "" && l.display_name != "" { acc.display_name = l.display_name }
         out[at] = acc
     }
     out

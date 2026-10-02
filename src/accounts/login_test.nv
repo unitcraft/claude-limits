@@ -65,6 +65,20 @@ test "reading a login gives the identity, and the token is a SEPARATE ask" {
     assert(info.has_token)
 }
 
+test "the person's name is read from fullName, and from displayName when that is all there is" {
+    // 01.3 section 3.3 (2026-09-21): a reseller may re-bind a login to another
+    // person's pool, and a changed name is the first visible sign of it.
+    ro full = with_files("{\"oauthAccount\":{\"emailAddress\":\"a@x\",\"fullName\":\"Nova\",\"displayName\":\"N\"}}", creds_json(LATER),
+        fn() -> Login => read_login("/fx/a", "a", "/fx/a/.claude.json", "/fx/a/.claude/.credentials.json"))
+    assert(full.display_name == "Nova")
+    ro shown = with_files("{\"oauthAccount\":{\"emailAddress\":\"a@x\",\"displayName\":\"N\"}}", creds_json(LATER),
+        fn() -> Login => read_login("/fx/a", "a", "/fx/a/.claude.json", "/fx/a/.claude/.credentials.json"))
+    assert(shown.display_name == "N")
+    ro none = with_files(identity_json(), creds_json(LATER),
+        fn() -> Login => read_login("/fx/a", "a", "/fx/a/.claude.json", "/fx/a/.claude/.credentials.json"))
+    assert(none.display_name == "")
+}
+
 test "the token comes only from the call that asks for it by name" {
     ro got = with_files(identity_json(), creds_json(LATER),
         fn() -> Option[Secret] => read_token("/fx/a/.claude/.credentials.json"))

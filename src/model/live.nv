@@ -54,11 +54,19 @@ export type Known value {
     ro next_poll_ms int
     /// Of the last successful reading: an `unknown` account shows these, dimmed.
     ro windows []Window
+    /// The person's name from `.claude.json`, "" when none.
+    ro display_name str
 }
 
 export fn Known.new(id str, email str, org str, dirs []DirView, state AccountState, message str,
                     polled_at_ms int, next_poll_ms int, windows []Window) -> Known =>
-    { id, email, org, dirs, state, message, polled_at_ms, next_poll_ms, windows }
+    { id, email, org, dirs, state, message, polled_at_ms, next_poll_ms, windows, display_name: "" }
+
+/// The same, with the person's name.
+export fn Known @with_name(name str) -> Known => {
+    @id, @email, @org, @dirs, @state, @message, @polled_at_ms, @next_poll_ms, @windows,
+    display_name: name,
+}
 
 fn iso_or_empty(ms int) -> str => if ms == 0 { "" } else { moment_iso(ms) }
 
@@ -124,7 +132,7 @@ fn limit_of(account_id str, w Window, th SeverityBounds, now_ms int, zone TimeZo
 fn account_of(k Known) -> AccountView {
     ro rows = has_rows(k.state)
     {
-        id: k.id, email: k.email, org: k.org, dirs: k.dirs, state: k.state.to_str(),
+        id: k.id, email: k.email, org: k.org, display_name: k.display_name, dirs: k.dirs, state: k.state.to_str(),
         message: k.message, polled_at: iso_or_empty(k.polled_at_ms),
         next_poll_at: iso_or_empty(k.next_poll_ms),
         locked: rows && locked(k.windows), at_100: rows && at_100(k.windows),

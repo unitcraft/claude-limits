@@ -67,7 +67,7 @@ fn acc(id str, email str) -> AccountView => {
     polled_at: "2026-09-08T16:47:02Z",
     next_poll_at: "2026-09-08T16:52:02Z",
     locked: false,
-    at_100: false,
+    display_name: "", at_100: false,
 }
 
 fn lim(account_id str, kind str, model str, percent int) -> LimitView => {

@@ -78,6 +78,10 @@ export type Login value {
     org str
     expires_at_ms int   // 0 when unknown
     has_token bool
+    /// `oauthAccount.fullName` (or `displayName`), "" when the file has none. Shown
+    /// beside the e-mail because a reseller may re-bind a login to another person's
+    /// pool, and a name that changes is the first visible sign (01.3 §3.3, 2026-09-21).
+    display_name str
 }
 
 /// State of a login's token at a given moment (README §Secret lifetime).
@@ -103,6 +107,7 @@ export type GroupedAccount value {
     state TokenState
     expires_at_ms int   // the EARLIEST expiry among its directories
     live_path str       // the first directory whose token is alive -- the one to ask with; "" for none
+    display_name str    // the first non-empty name among its directories
     expired_dirs []str  // the NAMES of directories whose token is not usable, to be named
 }
 
@@ -175,7 +180,12 @@ export fn raw_field_int(text str, key str) -> int {
 export fn normalise_email(raw str) -> str => raw.trim_ascii().to_ascii_lower()
 
 export fn Login.new(dir str, name str, email str, org str, expires_at_ms int, has_token bool) -> Login =>
-    { dir, name, email, org, expires_at_ms, has_token }
+    { dir, name, email, org, expires_at_ms, has_token, display_name: "" }
+
+/// `Login.new` with the person's name.
+export fn Login.named(dir str, name str, email str, org str, expires_at_ms int, has_token bool,
+                      display_name str) -> Login =>
+    { dir, name, email, org, expires_at_ms, has_token, display_name }
 
 /// Read a login directory's DESCRIPTION. No token, ever.
 ///
@@ -193,12 +203,14 @@ export fn read_login(dir str, name str, identity_path str, credentials_path str)
     ro identity = if identity_path == "" { "" } else { Creds.read(identity_path) }
     ro email = normalise_email(raw_field_str(identity, "emailAddress"))
     ro org = raw_field_str(identity, "organizationName")
+    ro full = raw_field_str(identity, "fullName")
+    ro shown = if full != "" { full } else { raw_field_str(identity, "displayName") }
 
     ro creds = if credentials_path == "" { "" } else { Creds.read(credentials_path) }
     ro expires = raw_field_int(creds, "expiresAt")
     ro has_token = raw_field_str(creds, "accessToken") != ""
 
-    Login.new(dir, name, email, org, expires, has_token)
+    Login.named(dir, name, email, org, expires, has_token, shown)
 }
 
 /// The token itself, for the one caller that sends it.

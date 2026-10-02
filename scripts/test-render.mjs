@@ -211,6 +211,14 @@ test('a hundred percent WITHOUT a reason colours the block, and locked still win
   assert.equal(ordinary.dataset.state, 'ok');
 });
 
+test('the person name stands before the organisation, and either may be missing', () => {
+  const org = (acc) => renderAccount(acc, []).all((n) => n.className === 'account-org').map((n) => n.textContent);
+  assert.deepEqual(org({ email: 'a@x', state: 'ok', display_name: 'Nova', org: 'Org' }), ['Nova, Org']);
+  assert.deepEqual(org({ email: 'a@x', state: 'ok', display_name: null, org: 'Org' }), ['Org']);
+  assert.deepEqual(org({ email: 'a@x', state: 'ok', display_name: 'Nova' }), ['Nova']);
+  assert.deepEqual(org({ email: 'a@x', state: 'ok' }), []);
+});
+
 test('a live account shows its note, and one without a note shows none', () => {
   const noted = renderAccount({ email: 'a@x', state: 'ok', message: 'MGTS: token expired on disk' }, []);
   const notes = noted.all((n) => n.className === 'account-note');

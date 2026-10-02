@@ -182,7 +182,11 @@ export function renderAccount(acc, limits) {
   const email = el('span', 'account-email', acc.email || 'unknown account');
   if (acc.id) email.dataset.account = acc.id;
   head.append(email);
-  if (acc.org) head.append(el('span', 'account-org', acc.org));
+  // The person's name first, as the reference prints it -- "(Nova, Org)": a reseller
+  // may re-bind a login to someone else's pool, and the name is where that shows
+  // (01.3 sec.3.3, 2026-09-21).
+  const who = [acc.display_name, acc.org].filter(Boolean).join(', ');
+  if (who) head.append(el('span', 'account-org', who));
   // `dirs` are objects {id, path, name}; the name is what a person recognises, and
   // the full path belongs in the tooltip rather than the line.
   if (acc.dirs && acc.dirs.length) {
