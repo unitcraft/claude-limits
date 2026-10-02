@@ -425,5 +425,5 @@ fn address_of(f Found) -> str => if f.kimi { "" } else { f.email }
 /// The account as it is shown: its name, and its service.
 fn shown(f Found, k Known) -> Known {
     ro named = k.with_name(f.display_name)
-    if f.kimi { named.as_kimi() } else { named }
+    if f.kimi { named.with_provider("kimi") } else { named }
 }

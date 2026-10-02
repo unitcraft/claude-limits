@@ -70,10 +70,10 @@ export fn Known @with_name(name str) -> Known => {
     display_name: name, @provider,
 }
 
-/// The same, as a Kimi Code account.
-export fn Known @as_kimi() -> Known => {
+/// The same, as an account of `provider` (`claude | kimi`).
+export fn Known @with_provider(provider str) -> Known => {
     @id, @email, @org, @dirs, @state, @message, @polled_at_ms, @next_poll_ms, @windows,
-    @display_name, provider: "kimi",
+    @display_name, provider,
 }
 
 fn iso_or_empty(ms int) -> str => if ms == 0 { "" } else { moment_iso(ms) }
