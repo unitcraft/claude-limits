@@ -24,10 +24,19 @@ console.log('format.js');
 
 // -- windows and the elapsed share ------------------------------------------
 
-test('session window is 5h, weekly is 7d', () => {
+test('session window is 5h, weekly is 7d, the month is 30d', () => {
   assert.equal(windowMs('session'), 5 * 3600_000);
   assert.equal(windowMs('weekly_all'), 7 * 86400_000);
   assert.equal(windowMs('weekly_scoped'), 7 * 86400_000);
+  assert.equal(windowMs('monthly'), 30 * 86400_000);
+});
+
+test('a month eighteen days before its reset is twelve days in, not nothing', () => {
+  // The owner's stand, 2026-10-02: Kimi's month resets on the 21st, eighteen days
+  // away; as a week, the share was negative and the strip was not drawn at all.
+  const now = Date.parse('2026-10-02T17:00:00Z');
+  const reset = new Date(now + 18 * 86400_000).toISOString();
+  assert.equal(elapsedShare('monthly', reset, now), 12 / 30);
 });
 
 test('elapsed share: start, middle and end of a session window', () => {

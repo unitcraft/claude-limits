@@ -8,9 +8,17 @@
 // Everything here follows subplan 01.1 §2. Where the spec gives a formula it is
 // transcribed, not reinvented.
 
-/** Window length in ms: five hours for the session, seven days for the weekly ones. */
+/**
+ * Window length in ms: five hours for the session, seven days for the weekly ones,
+ * thirty days for Kimi Code's month -- the server's own `window_sec_of`
+ * (model/live.nv). The month counted as a week until 2026-10-02: eighteen days before
+ * its reset the elapsed share came out negative, was clamped to zero, and the time
+ * strip under a month row was simply not there.
+ */
 export function windowMs(kind) {
-  return kind === 'session' ? 5 * 3600_000 : 7 * 86400_000;
+  if (kind === 'session') return 5 * 3600_000;
+  if (kind === 'monthly') return 30 * 86400_000;
+  return 7 * 86400_000;
 }
 
 /**
