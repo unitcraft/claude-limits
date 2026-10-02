@@ -38,7 +38,7 @@ import claude_limits.server.errors.{ApiError, FieldError, to_json, field_errors_
 import claude_limits.server.etag.{etag_of}
 import claude_limits.server.dto.{Disclosure, opt, shown_path}
 import std.encoding.serde.{json_encode, Serialize}
-import claude_limits.config.{Config, Ui, validate, render, render_file, listen_addr}
+import claude_limits.config.{Config, validate, render, render_file, listen_addr}
 import claude_limits.storage.config_file.{Saved}
 import polaris.{ServerRequest, ServerResponse}
 import std.encoding.json.{Json, JsonValue}
@@ -97,24 +97,29 @@ export type Committed value {
 /// the file and the history row; a test's answers whatever the test needs.
 export type ConfigCommit fn(Config) -> Committed
 
-/// `c` with `u` in place of its `ui`. A named function: a record literal inside a
-/// closure is typed as the enclosing literal's type (registry 221.1 #1392).
-fn with_ui(c Config, u Ui) -> Config => {
-    schema: c.schema, folders: c.folders, poll: c.poll, thresholds: c.thresholds,
-    forecast: c.forecast, server: c.server, ui: u, widget: c.widget, history: c.history,
+/// `c` with `ui` and `folders` taken from `from`. A named function: a record literal
+/// inside a closure is typed as the enclosing literal's type (registry 221.1 #1392).
+fn with_live_from(c Config, from Config) -> Config => {
+    schema: c.schema, folders: from.folders, poll: c.poll, thresholds: c.thresholds,
+    forecast: c.forecast, server: c.server, ui: from.ui, widget: c.widget, history: c.history,
     storage: c.storage,
 }
 
-/// Did the change touch nothing but `ui`? §3.8: "Изменения только `ui.*` не трогают
-/// поллеры" -- those are read per request, so they are live the moment they are stored.
+/// Is the change in force at once? `ui.*` is read per request; `folders` is read by
+/// every round from the settings the store holds, and a folder change starts a round
+/// at once (§3.8: "Смена `folders` запускает обнаружение немедленно"). Anything else
+/// waits for a restart.
 ///
 /// COMPARED THROUGH THE FILE TEXT, not field by field: a field added to `Config`
 /// tomorrow is covered the day it is rendered, and a hand-written comparison would
 /// silently call a change to it "ui only". The FILE text and not `render`, because
 /// `render` leaves the access token out -- and a new token is exactly a change that
 /// moves the listener.
-export fn only_ui_changed(before Config, after Config) -> bool =>
-    render_file(with_ui(after, before.ui)) == render_file(before)
+export fn applies_live(before Config, after Config) -> bool =>
+    render_file(with_live_from(after, before)) == render_file(before)
+
+/// Did the folder list change? The commit starts a round when it did.
+export fn folders_changed(before Config, after Config) -> bool => before.folders != after.folders
 
 /// The tag of a settings text. One function, so `GET`, `If-Match` and the tag of a
 /// freshly written file cannot be computed three different ways.

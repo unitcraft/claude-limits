@@ -11,7 +11,7 @@ import std.encoding.json.{Json}
 import polaris.{Router, serve_once}
 import std.testing.handlers as th
 import config.{ConfigState, FolderView, LoginDirView, AccountFound, apply, tag_of, render_state, listener_moved, base_url, config_get_handler, config_put_handler}
-import config.{Committed, ConfigCommit, only_ui_changed}
+import config.{Committed, ConfigCommit, applies_live, folders_changed}
 import claude_limits.storage.config_file.{Saved}
 
 fn wire_str(wire []u8) -> str => unsafe { wire.to_str_unchecked() }
@@ -472,25 +472,31 @@ test "a refused PUT never reaches the commit" {
     }
 }
 
-test "only_ui_changed: ui alone is live, anything beside it is not" {
+test "applies_live: ui and folders are live, anything beside them is not" {
     ro before = base_cfg()
     mut ui_only = base_cfg()
     ui_only.ui.accounts_order = ["work@example.org"]
     ui_only.ui.time_bar = false
-    assert(only_ui_changed(before, ui_only))
+    assert(applies_live(before, ui_only))
     mut poll = base_cfg()
     poll.poll.interval_sec = 120
-    assert(!only_ui_changed(before, poll))
+    assert(!applies_live(before, poll))
     mut both = base_cfg()
     both.ui.time_bar = false
     both.folders = ["C:/other"]
-    assert(!only_ui_changed(before, both))
-    assert(only_ui_changed(before, base_cfg()))
+    assert(applies_live(before, both))
+    assert(folders_changed(before, both))
+    assert(!folders_changed(before, ui_only))
+    mut folders_and_port = base_cfg()
+    folders_and_port.folders = ["C:/other"]
+    folders_and_port.server.port = 7400
+    assert(!applies_live(before, folders_and_port))
+    assert(applies_live(before, base_cfg()))
     // The token is not in `render` -- and a new one moves the listener, so it must
     // not pass for a ui change.
     mut tok = base_cfg()
     tok.server.access_token = "a-different-token"
-    assert(!only_ui_changed(before, tok))
+    assert(!applies_live(before, tok))
 }
 
 // ── the pure parts ───────────────────────────────────────────────────────────

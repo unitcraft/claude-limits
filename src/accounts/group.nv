@@ -15,8 +15,9 @@ module accounts.group
 // and every test of it was green.
 import claude_limits.accounts.login.{Login, GroupedAccount, TokenState, state_of}
 
-fn GroupedAccount.new(email str, org str, dirs []str, paths []str, state TokenState, expires_at_ms int) -> GroupedAccount =>
-    { email, org, dirs, paths, state, expires_at_ms }
+fn GroupedAccount.new(email str, org str, dirs []str, paths []str, state TokenState, expires_at_ms int,
+                      live_path str, expired_dirs []str) -> GroupedAccount =>
+    { email, org, dirs, paths, state, expires_at_ms, live_path, expired_dirs }
 
 fn index_of(accounts []GroupedAccount, email str) -> int {
     mut i = 0
@@ -27,13 +28,18 @@ fn index_of(accounts []GroupedAccount, email str) -> int {
     -1
 }
 
-/// The worse of two states. `no_token` beats `stale` beats `ok`.
+/// The account's state from two of its directories': ONE live token makes it `ok`;
+/// among dead ones, `no_token` beats `stale`.
 ///
-/// An account whose token is good in one directory and expired in another is NOT
-/// healthy: the poller will use one of them, and the honest thing to show is the
-/// state that can fail. The alternative -- reporting `ok` because some directory is
-/// fine -- hides the directory a person has to fix.
-fn worse(a TokenState, b TokenState) -> TokenState {
+/// AS THE REFERENCE DOES IT (`scripts/claude_limits.py`, `accounts_of`: the account
+/// takes the first live token, and the expired directories are named beside it), and
+/// it was the opposite here until 2026-10-02: the WORST state won, a `stale` account is
+/// never asked, and an account with a live token in one directory and an expired one in
+/// another showed no limits at all -- the owner's three directories of one login did
+/// exactly that on the first stand. The expired directories are not hidden: they ride
+/// in `expired_dirs` and the page names them.
+fn combined(a TokenState, b TokenState) -> TokenState {
+    if a == TokenState.Ok || b == TokenState.Ok { return TokenState.Ok }
     if rank(a) >= rank(b) { a } else { b }
 }
 
@@ -56,16 +62,20 @@ export fn group(logins []Login, now_ms int) -> []GroupedAccount {
         if l.email == "" { continue }
 
         ro st = state_of(l, now_ms)
+        ro live = st == TokenState.Ok
         ro at = index_of(out, l.email)
         if at < 0 {
-            out.push(GroupedAccount.new(l.email, l.org, [l.name], [l.dir], st, l.expires_at_ms))
+            out.push(GroupedAccount.new(l.email, l.org, [l.name], [l.dir], st, l.expires_at_ms,
+                                        if live { l.dir } else { "" }, if live { []str.new() } else { [l.name] }))
             continue
         }
 
         mut acc = out[at]
         acc.dirs.push(l.name)
         acc.paths.push(l.dir)
-        acc.state = worse(acc.state, st)
+        acc.state = combined(acc.state, st)
+        if live && acc.live_path == "" { acc.live_path = l.dir }
+        if !live { acc.expired_dirs.push(l.name) }
         // The EARLIEST expiry, because that is the one that will bite first. A zero
         // means "unknown" and must not win a minimum against a real timestamp.
         if l.expires_at_ms != 0 {

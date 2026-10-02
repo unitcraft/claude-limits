@@ -102,6 +102,8 @@ export type GroupedAccount value {
                         // both: the name is shown, the path finds the credentials file
     state TokenState
     expires_at_ms int   // the EARLIEST expiry among its directories
+    live_path str       // the first directory whose token is alive -- the one to ask with; "" for none
+    expired_dirs []str  // the NAMES of directories whose token is not usable, to be named
 }
 
 /// A token within this many milliseconds of expiry is already `stale`.

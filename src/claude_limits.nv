@@ -50,7 +50,7 @@ import claude_limits.config.{Config, listen_addr}
 import claude_limits.storage.paths.{resolve}
 import claude_limits.storage.config_file.{load, save, ConfigHistory, FromUi, on_disk_changed}
 import claude_limits.server.app.{api_router}
-import claude_limits.server.handlers.config.{base_url, Committed, only_ui_changed, render_state}
+import claude_limits.server.handlers.config.{base_url, Committed, applies_live, folders_changed, render_state}
 import claude_limits.server.start.{real_paths_input, decide_start, sources_at_start, conf_at_start, config_now, DbAtStart}
 import claude_limits.storage.startup.{migrations_in, bundled, open_for_serve, record_readings, read_history_rows, record_found, Ready, StartFail, Upkeep, Upkept, forget_account, ForgetDone, upkeep_daily, record_config_version}
 import claude_limits.storage.maintenance.{machine_rollup_tz}
@@ -404,10 +404,11 @@ fn keep_version(paths Paths, windows bool, toml str, source str, at_ms int) -> (
 /// `PUT /api/config`'s commit: write the file, keep the old text, hand the store the
 /// new settings, and say whether they are in force now.
 ///
-/// LIVE ONLY WHEN ONLY `ui` CHANGED. The order, hidden accounts and the like are read
-/// per request from the store, so they apply the moment it holds them. Everything
-/// else -- the poll, the folders, the listener -- was taken at the start and is not
-/// re-taken yet, so the reply says `restart_required` instead of claiming otherwise.
+/// LIVE WHEN ONLY `ui` AND `folders` CHANGED (`applies_live`). The order and hidden
+/// accounts are read per request from the store, the folders by every round -- and a
+/// new folder list starts a round at once. Everything else -- the poll interval, the
+/// listener -- was taken at the start and is not re-taken yet, so the reply says
+/// `restart_required` instead of claiming otherwise.
 ///
 /// THE FILE IS READ BACK after the write: its `mtime_ns` is what the next save
 /// compares, and a stored one from before the write would call our own save a hand
@@ -427,6 +428,11 @@ fn commit_settings(paths Paths, windows bool, store Store, after Config) Time ->
         // would otherwise keep showing the settings this save replaced.
         // nova:allow W_RESULT_DISCARDED -- a store that is gone has no streams to tell
         ro _e = store.publish("config", render_state(config_now(now_conf, paths, store.view())))
+        // A new folder list is looked at NOW (§3.8), not at the next tick minutes away.
+        if folders_changed(was.cfg, after) {
+            // nova:allow W_RESULT_DISCARDED -- a store that is gone runs no rounds anyway
+            ro _t = store.tick()
+        }
     }
     match saved {
         Saved.Conflict => {
@@ -435,7 +441,7 @@ fn commit_settings(paths Paths, windows bool, store Store, after Config) Time ->
         }
         _ => ()
     }
-    { saved, live: only_ui_changed(was.cfg, after) }
+    { saved, live: applies_live(was.cfg, after) }
 }
 
 /// Between rounds: re-read the settings file if it moved (01.2 §2.2).

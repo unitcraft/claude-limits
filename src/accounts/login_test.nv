@@ -181,14 +181,29 @@ test "different e-mails stay different accounts, in discovery order" {
     assert(accounts[1].email == "a@example.com")
 }
 
-test "an account is only as healthy as its WORST directory" {
+test "one live directory makes the account askable, with that token; the expired one is named" {
+    // As the reference does it. The opposite rule (the WORST directory wins) left the
+    // owner's login in three directories unasked: one token had expired.
     ro accounts = group([
-        sample_login("main@example.com", "good", LATER),
         sample_login("main@example.com", "expired", PAST),
+        sample_login("main@example.com", "good", LATER),
     ], NOW_MS)
     assert(accounts.len() == 1)
-    // Reporting `ok` because one directory is fine would hide the one to fix.
+    assert(accounts[0].state.to_str() == "ok")
+    // The token is taken from the LIVE directory, not from the first one found.
+    assert(accounts[0].live_path == "/fx/good")
+    assert(accounts[0].expired_dirs.len() == 1)
+    assert(accounts[0].expired_dirs[0] == "expired")
+}
+
+test "with every token expired the account is stale and has nothing to ask with" {
+    ro accounts = group([
+        sample_login("main@example.com", "one", PAST),
+        sample_login("main@example.com", "two", PAST),
+    ], NOW_MS)
     assert(accounts[0].state.to_str() == "stale")
+    assert(accounts[0].live_path == "")
+    assert(accounts[0].expired_dirs.len() == 2)
 }
 
 test "the earliest expiry wins, and an unknown one does not win" {

@@ -97,7 +97,15 @@ export type Found value {
     ro expires_at_ms int
     /// The credentials file to ask with; "" when none of its directories has one.
     ro cred_path str
+    /// Directories whose token is dead, named beside a live account.
+    ro expired_dirs []str
 }
+
+/// The line under an account that is asked with one directory's token while others
+/// have expired -- the reference's "(4px, MGTS: token expired on disk)". Nothing to
+/// fix urgently: Claude Code renews a token when that login is next used.
+export fn expired_note(names []str) -> str =>
+    if names.len() == 0 { "" } else { "${names.join(", ")}: token expired on disk" }
 
 fn cred_of(dirs []LoginDir, path str) -> str {
     for d in dirs {
@@ -119,7 +127,9 @@ export fn found_in(folders []str, now_ms int) Dirs Creds -> []Found {
     mut out []Found = []
     for acc in group(logins, now_ms) {
         mut dirs []DirView = []
-        mut cred = ""
+        // The LIVE directory's credentials first: the first directory found may hold an
+        // expired token, and asking with it is the 401 the rules forbid.
+        mut cred = if acc.live_path != "" { cred_of(seen, acc.live_path) } else { "" }
         mut i = 0
         while i < acc.dirs.len() {
             ro path = acc.paths[i]
@@ -127,7 +137,8 @@ export fn found_in(folders []str, now_ms int) Dirs Creds -> []Found {
             if cred == "" { cred = cred_of(seen, path) }
             i += 1
         }
-        out.push(Found { email: acc.email, org: acc.org, dirs, state: acc.state, expires_at_ms: acc.expires_at_ms, cred_path: cred })
+        out.push(Found { email: acc.email, org: acc.org, dirs, state: acc.state, expires_at_ms: acc.expires_at_ms, cred_path: cred,
+                         expired_dirs: acc.expired_dirs })
     }
     out
 }
@@ -197,10 +208,19 @@ export fn Rounds.new(folders []str, interval_sec int, bounds SeverityBounds, zon
 /// One round: find the accounts, ask about them, and put the snapshot body -- computed
 /// AT THIS MOMENT -- into the store's state. The folders are found again every round:
 /// a login added while the server runs appears without a restart.
+/// The folders a round looks in: the settings AS THEY STAND, once the start has handed
+/// them over; the start's own list before that.
+///
+/// 01.3 §3.8: "Смена `folders` запускает обнаружение немедленно". A round reading the
+/// start's list made a saved folder invisible until a restart -- the owner's stand
+/// showed the folder saved and "no .credentials.json here" under it (2026-10-02).
+fn folders_now(st StoreState, r Rounds) -> []str =>
+    if st.conf.tag == "" { r.folders } else { st.conf.cfg.folders }
+
 fn round(mut st StoreState, before []Known, r Rounds) Http PollLog Creds Dirs Time -> []Known {
     ro now = Time.now().unix_millis()
     ro next = now + r.interval_sec * 1000
-    ro known = poll_round(found_in(r.folders, now), before, now, next, r.zone)
+    ro known = poll_round(found_in(folders_now(st, r), now), before, now, next, r.zone)
     st.view = view_of(known, r.bounds, now, next, r.tz, r.zone)
     known
 }
@@ -341,7 +361,7 @@ export fn poll_round(found []Found, before []Known, now_ms int, next_ms int, zon
                 ro r = poll_once(PollTarget.new(f.email, usage_host(), 443, true, usage_path(), token), now_ms)
                 ro fresh = r.outcome.state == AccountState.Ok && r.usage.outcome == PollOutcome.Parsed
                 if fresh {
-                    out.push(Known.new(id, f.email, f.org, f.dirs, AccountState.Ok, "", now_ms, next_ms, r.usage.windows))
+                    out.push(Known.new(id, f.email, f.org, f.dirs, AccountState.Ok, expired_note(f.expired_dirs), now_ms, next_ms, r.usage.windows))
                 } else {
                     ro kept = prev_polled(p)
                     ro msg = if r.outcome.state == AccountState.Unknown { unknown_message(r.outcome, now_ms, kept, zone) } else { r.outcome.message }
