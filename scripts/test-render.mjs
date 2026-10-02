@@ -242,6 +242,19 @@ test('Kimi Extra Usage is the reference line under the rows, and no line when th
   assert.equal(off.all((n) => n.className === 'account-extra').length, 0);
 });
 
+test('a new order moves the blocks that are already drawn', () => {
+  // The owner's stand: a card dragged from third to second was saved, the snapshot came
+  // back in the new order, and the list still showed the old one -- a block replaced in
+  // place kept its old position.
+  const accs = [{ id: 'a', email: 'a@x', state: 'ok' }, { id: 'k', provider: 'kimi', display_name: 'K', state: 'ok' },
+    { id: 'm', email: 'm@x', state: 'ok' }];
+  list.replaceChildren();
+  renderList(accs, [], null);
+  assert.deepEqual(list.children.map((n) => n.dataset.email), ['a@x', 'kimi:k', 'm@x']);
+  renderList([accs[0], accs[2], accs[1]], [], null);
+  assert.deepEqual(list.children.map((n) => n.dataset.email), ['a@x', 'm@x', 'kimi:k']);
+});
+
 test('the person name stands before the organisation, and either may be missing', () => {
   const org = (acc) => renderAccount(acc, []).all((n) => n.className === 'account-org').map((n) => n.textContent);
   assert.deepEqual(org({ email: 'a@x', state: 'ok', display_name: 'Nova', org: 'Org' }), ['Nova, Org']);

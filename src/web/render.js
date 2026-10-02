@@ -260,6 +260,23 @@ export function extraUsageLine(extra) {
   return `extra usage balance: ${extra.balance} ${extra.currency}${cap}`;
 }
 
+/**
+ * Put `fresh` at position `i` of `view`, in place of `old` when there is one.
+ *
+ * IN PLACE ONLY WHEN `old` IS ALREADY AT `i`. A block replaced where it stood kept its
+ * OLD position, so a new order never reached the DOM: the owner dragged a card from
+ * third to second, the server saved it, the snapshot came back in the new order -- and
+ * the list view still showed it third (2026-10-02). A block in the wrong place moves.
+ */
+function place(view, old, fresh, i) {
+  if (old && view.children[i] === old) {
+    old.replaceWith(fresh);
+    return;
+  }
+  if (old) old.remove();
+  view.insertBefore(fresh, view.children[i] || null);
+}
+
 /** The accounts by id: whom a `same_quota_as` names. */
 function byId(accounts) {
   const m = new Map();
@@ -295,9 +312,7 @@ export function renderList(accounts, allLimits, order = null) {
     seen.add(key);
     const fresh = renderAccount(acc, byAccount.get(acc.id) || [], owners.get(acc.same_quota_as));
     fresh.dataset.email = key;
-    const old = have.get(key);
-    if (old) old.replaceWith(fresh);
-    else view.insertBefore(fresh, view.children[i] || null);
+    place(view, have.get(key), fresh, i);
   });
 
   for (const [key, node] of have) if (!seen.has(key)) node.remove();
@@ -361,9 +376,7 @@ export function renderCards(accounts, allLimits, order = null) {
     seen.add(key);
     const fresh = renderCard(acc, byAccount.get(acc.id) || [], owners.get(acc.same_quota_as));
     fresh.dataset.email = key;
-    const old = have.get(key);
-    if (old) old.replaceWith(fresh);
-    else view.insertBefore(fresh, view.children[i] || null);
+    place(view, have.get(key), fresh, i);
   });
 
   for (const [key, node] of have) if (!seen.has(key)) node.remove();

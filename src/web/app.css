@@ -231,7 +231,10 @@ main:has(.view-wide:not([hidden])) { max-width: var(--page-width-wide); }
 
 .row {
   display: grid;
-  grid-template-columns: 100px 1fr 44px 170px;
+  /* The reset column grows with its captions: the reference's words (01.1 sec.2.4,
+     amendment 2026-10-02) are longer than the card's 170 px, and a fixed column drew
+     them over the percent. */
+  grid-template-columns: 100px 1fr 44px minmax(170px, max-content);
   gap: 12px;
   align-items: center;
   padding: 4px 6px;
