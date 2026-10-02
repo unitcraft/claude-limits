@@ -9,7 +9,7 @@
 // generated C called the storage stamp with the ADDRESS of its argument, `stamp(&ms)`,
 // because `server/static.nv` and `server/routes.nv` declared free functions of the
 // same name whose parameter is `mut` -- the calling convention was looked up by name
-// (registry 221.1 №TBD, `probes/mut-param-convention-by-name/`). Names that do not sort
+// (registry 221.1 №1616, `probes/mut-param-convention-by-name/`). Names that do not sort
 // by time break `weekly_due` and let `backups_keep` delete the NEWEST copy.
 //
 // The import below is what puts the server's functions into this unit; the test is
