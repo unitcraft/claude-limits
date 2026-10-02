@@ -1,0 +1,8 @@
+module shapes
+
+export type Section value {
+    ro name str
+}
+
+// A free function that happens to share its name with a LOCAL of std's Timestamp.to_zoned.
+export fn sec(name str) -> Section => { name }

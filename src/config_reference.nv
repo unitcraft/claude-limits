@@ -197,7 +197,7 @@ type Section value {
     ro pairs str
 }
 
-fn sec(name str, array bool, pairs str) -> Section => { name, array, pairs }
+fn section_of(name str, array bool, pairs str) -> Section => { name, array, pairs }
 
 /// The reference's file as one JSON object.
 export fn toml_to_json(text str) -> Result[str, str] {
@@ -212,7 +212,7 @@ export fn toml_to_json(text str) -> Result[str, str] {
         cur.skip(true)
         if cur.done() { break }
         if cur.at() == '[' {
-            done.push(sec(name, array, pairs))
+            done.push(section_of(name, array, pairs))
             cur.i += 1
             array = !cur.done() && cur.at() == '['
             if array { cur.i += 1 }
@@ -243,7 +243,7 @@ export fn toml_to_json(text str) -> Result[str, str] {
         cur.skip(false)
         if !cur.done() && cur.at() != '\n' { return Err(cur.fail("one key per line")) }
     }
-    done.push(sec(name, array, pairs))
+    done.push(section_of(name, array, pairs))
 
     // The root, then each table; `[[name]]` elements gathered into one array, in order.
     mut out = ""

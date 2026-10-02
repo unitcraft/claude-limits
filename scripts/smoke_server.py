@@ -11,6 +11,10 @@ Checks, one line each:
   page         GET / is 200 text/html
   snapshot     GET /api/snapshot lists the fixture's one account as `stale`,
                with the 01.1 text and no rows
+  moment       the snapshot's `fetched_at` is NOW, to the minute -- the whole binary
+               formats a moment right (2026-10-02: a free fn `sec` in one module made
+               std's `to_zoned` lose the time of day, every moment read 00:00:00Z, and
+               no unit test saw it: none holds both)
   refresh      (Windows) the stale login's renewal IS launched -- a fake `claude.cmd`
                first on PATH marks its directory and then sleeps -- and the server
                answers while it sleeps: the round must not wait for Claude Code
@@ -173,6 +177,14 @@ def main(argv):
                     and (one.get("message") or "").startswith("token expired")
                     and len(snap.get("limits", [])) == 0)
             check("snapshot", fine, f"{status} {body[:200]}")
+            at = snap.get("fetched_at") or ""
+            try:
+                from datetime import datetime, timezone
+                when = datetime.fromisoformat(at.replace("Z", "+00:00"))
+                off = abs((datetime.now(timezone.utc) - when).total_seconds())
+            except ValueError:
+                off = None
+            check("moment", off is not None and off < 120, f"fetched_at {at!r}, {off} s from now")
         except ValueError:
             check("snapshot", False, f"{status} not JSON: {body[:120]}")
 

@@ -1,0 +1,12 @@
+// A free fn `sec` in the unit; std's to_rfc3339 -> to_zoned has a local `ro sec = ...`.
+module q_free_fn_named_like_std_local
+
+import std.time.civil
+import shapes.{sec}
+
+fn main() Io -> () {
+    ro s = sec("x")
+    // 2026-10-02T17:29:28Z
+    ro ms = 1790962168000
+    println("rfc3339 ${ms.to_unix_millis().to_rfc3339()}  (want 2026-10-02T17:29:28Z)  ${s.name}")
+}
