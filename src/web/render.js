@@ -219,6 +219,10 @@ export function renderAccount(acc, limits) {
     block.append(el('p', 'account-note', acc.message || acc.state));
     return block;
   }
+  // A LIVE account can carry a note too: the directories of the same login whose
+  // token expired ("MGTS: token expired on disk", as the reference prints it). The
+  // server sent it since 2026-10-02 and the page showed it only for the not-ok states.
+  if (acc.message) block.append(el('p', 'account-note', acc.message));
   for (const limit of sortLimits(limits)) block.append(renderRow(limit));
   return block;
 }

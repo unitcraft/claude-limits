@@ -211,6 +211,15 @@ test('a hundred percent WITHOUT a reason colours the block, and locked still win
   assert.equal(ordinary.dataset.state, 'ok');
 });
 
+test('a live account shows its note, and one without a note shows none', () => {
+  const noted = renderAccount({ email: 'a@x', state: 'ok', message: 'MGTS: token expired on disk' }, []);
+  const notes = noted.all((n) => n.className === 'account-note');
+  assert.equal(notes.length, 1);
+  assert.equal(notes[0].textContent, 'MGTS: token expired on disk');
+  const plain = renderAccount({ email: 'a@x', state: 'ok', message: '' }, []);
+  assert.equal(plain.all((n) => n.className === 'account-note').length, 0);
+});
+
 console.log('\nthe three not-ok states are not one state (01.1 sec.3.2)');
 
 const limitsOf = (id) => snap.limits.filter((l) => l.account_id === id);
