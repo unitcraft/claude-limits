@@ -250,10 +250,32 @@ export fn Rounds.new(folders []str, interval_sec int, bounds SeverityBounds, zon
 fn folders_now(st StoreState, r Rounds) -> []str =>
     if st.conf.tag == "" { r.folders } else { st.conf.cfg.folders }
 
-fn round(mut st StoreState, before []Known, r Rounds) Http PollLog Creds Dirs Time -> []Known {
+/// Renewing a login's token before the round asks with it (plan 01.6, П4).
+export type Renew effect {
+    // A Kimi Code login whose token expired: `true` when its file now holds a usable
+    // one (renewed, or rotated by another Kimi tool). The cooldown is the handler's.
+    kimi(path str, name str) -> bool
+}
+
+/// Renew every expired Kimi token; `true` when any file changed and the folders are
+/// worth reading again.
+fn renew_expired(found []Found) Renew -> bool {
+    mut any = false
+    for f in found {
+        if f.kimi && f.state == TokenState.Stale && f.cred_path != "" {
+            if Renew.kimi(f.cred_path, f.display_name) { any = true }
+        }
+    }
+    any
+}
+
+fn round(mut st StoreState, before []Known, r Rounds) Http PollLog Creds Dirs Time Renew -> []Known {
     ro now = Time.now().unix_millis()
     ro next = now + r.interval_sec * 1000
-    ro known = poll_round(found_in(folders_now(st, r), now), before, now, next, r.zone)
+    ro first = found_in(folders_now(st, r), now)
+    // Read again only when a token was renewed: the state of that login has changed.
+    ro found = if renew_expired(first) { found_in(folders_now(st, r), now) } else { first }
+    ro known = poll_round(found, before, now, next, r.zone)
     st.view = view_of(known, r.bounds, now, next, r.tz, r.zone)
     known
 }
@@ -267,7 +289,7 @@ fn round(mut st StoreState, before []Known, r Rounds) Http PollLog Creds Dirs Ti
 /// ("fiber stack overflow in slot 2", at 4 MB and at 64 MB alike). Both are handed to
 /// the compiler registry. Until then `--serve` runs ONE round before it listens and
 /// serves that body: the accounts, their token states, and what the endpoint said.
-export fn one_round(r Rounds) Http PollLog Creds Dirs Time -> SnapshotView {
+export fn one_round(r Rounds) Http PollLog Creds Dirs Time Renew -> SnapshotView {
     mut st = StoreState.new(Snapshot.empty())
     ro _ = round(st, [], r)
     st.view
@@ -353,7 +375,7 @@ export fn tick_every(store Store, interval_sec int) Time -> () {
 ///
 /// The first round runs at once: a page opened right after the start shows accounts,
 /// not "nothing yet" for a whole interval.
-export fn store_and_poll(rx ChanRx[Envelope], r Rounds) Http PollLog RoundLog Creds Dirs Time -> () {
+export fn store_and_poll(rx ChanRx[Envelope], r Rounds) Http PollLog RoundLog Creds Dirs Time Renew -> () {
     mut st = StoreState.new(Snapshot.empty())
     mut before = round(st, [], r)
     after_round(st)

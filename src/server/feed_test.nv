@@ -17,7 +17,7 @@ import claude_limits.model.live.{Known, view_of}
 import claude_limits.model.snapshot.{SeverityBounds}
 import claude_limits.model.snapshot.{AccountState}
 import feed.{Found, stable_id, found_in, poll_round, expiry_text}
-import feed.{Rounds, RoundLog, Settled, store_and_poll}
+import feed.{Rounds, RoundLog, Settled, Renew, store_and_poll}
 import claude_limits.model.store_fiber.{Envelope, Store, ConfNow}
 import claude_limits.server.dto.{SnapshotView}
 import std.concurrency.nvchan.{Chan}
@@ -220,7 +220,9 @@ fn loop_with_one_tick() -> Said {
     pair.tx.close()
     ro rounds = Rounds.new(["/acc"], 300, SeverityBounds.new(70, 90), TimeZone.Utc, "+00:00")
     ro now = NOW_MS
-    with Time = fixed_ms(now as u64), RoundLog = effect RoundLog {
+    with Time = fixed_ms(now as u64), Renew = effect Renew {
+        kimi(path str, name str) -> bool { false }
+    }, RoundLog = effect RoundLog {
         done(view SnapshotView, conf ConfNow) -> SnapshotView {
             said.rounds += 1
             said.accounts = view.accounts.len()

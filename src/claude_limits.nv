@@ -62,7 +62,8 @@ import claude_limits.server.dto.{Disclosure}
 import claude_limits.storage.db.{owner_changed, owner_line}
 import duckdb.db_effect.{Db}
 import duckdb.db_real.{with_real_db}
-import claude_limits.server.feed.{Rounds, one_round, RoundLog, Settled, store_and_poll, tick_every, ping_every}
+import claude_limits.server.feed.{Rounds, one_round, RoundLog, Settled, Renew, store_and_poll, tick_every, ping_every}
+import claude_limits.usage.kimi_refresh.{Renewed, renew_kimi}
 import claude_limits.model.store_fiber.{Envelope, Store, ConfNow, Follower}
 import claude_limits.model.store.{Event}
 import claude_limits.model.forecast_join.{ForecastRules, with_forecasts}
@@ -180,6 +181,82 @@ type Collected {
     mut items []Reading
 }
 
+/// Kimi renewals that FAILED, and when -- the cooldown (the reference's KimiRefresher).
+/// In memory only, as there: a restart retries a hopeless login once, which is the
+/// cheaper mistake than a state file that suppresses a renewal that was needed.
+type KimiTries {
+    mut paths []str
+    mut at_ms []int
+}
+
+fn KimiTries.new() -> KimiTries => { paths: [], at_ms: [] }
+
+/// One hour after a failure (the reference's default `refresh_cooldown_sec`).
+const KIMI_COOLDOWN_MS = 3_600_000
+
+fn KimiTries @cooling(path str, now_ms int) -> bool {
+    mut i = 0
+    while i < @paths.len() {
+        if @paths[i] == path { return now_ms - @at_ms[i] < KIMI_COOLDOWN_MS }
+        i += 1
+    }
+    false
+}
+
+fn KimiTries mut @failed(path str, now_ms int) -> () {
+    mut i = 0
+    while i < @paths.len() {
+        if @paths[i] == path {
+            @at_ms[i] = now_ms
+            return
+        }
+        i += 1
+    }
+    @paths.push(path)
+    @at_ms.push(now_ms)
+}
+
+/// A success clears the cooldown: a login that renewed once is renewable, and its next
+/// expiry (fifteen minutes on) must get a fresh try at once.
+fn KimiTries mut @cleared(path str) -> () {
+    mut keep_p []str = []
+    mut keep_t []int = []
+    mut i = 0
+    while i < @paths.len() {
+        if @paths[i] != path {
+            keep_p.push(@paths[i])
+            keep_t.push(@at_ms[i])
+        }
+        i += 1
+    }
+    @paths = keep_p
+    @at_ms = keep_t
+}
+
+/// One renewal attempt, logged as the reference logs it.
+fn renew_one(mut tries KimiTries, path str, name str) Http Time -> bool {
+    ro now = Time.now().unix_millis() as int
+    if tries.cooling(path, now) { return false }
+    ro r = with Fs = real_fs() { renew_kimi(path, now / 1000) }
+    match r {
+        Renewed.Fresh => {
+            tries.cleared(path)
+            println("claude-limits: auto-refresh ${name}: refreshed")
+            true
+        }
+        Renewed.Rotated => {
+            tries.cleared(path)
+            println("claude-limits: auto-refresh ${name}: token rotated by another Kimi tool; using its file")
+            true
+        }
+        Renewed.Failed(why) => {
+            tries.failed(path, now)
+            println("claude-limits: auto-refresh ${name}: failed -- ${why}")
+            false
+        }
+    }
+}
+
 fn Collected.new() -> Collected => { items: [] }
 
 /// A round's body and the readings behind it.
@@ -201,7 +278,10 @@ fn round_of(view SnapshotView, readings []Reading, found Discovered) -> Round =>
 /// capture is the shape `feed_test` has always used.
 fn collect_round(rounds Rounds) Http Dirs Creds Time -> Round {
     mut got = Collected.new()
-    ro view = with PollLog = effect PollLog {
+    mut tries = KimiTries.new()
+    ro view = with Renew = effect Renew {
+        kimi(path str, name str) -> bool { renew_one(tries, path, name) }
+    }, PollLog = effect PollLog {
         // Not logged: a log line would carry the e-mail, which 01.2 section 10 keeps
         // out of logs. The journal is `poll`, written from the readings.
         record(email str, state str, message str, at_ms int) -> () {}
@@ -236,7 +316,10 @@ fn rounds_recorded(rx ChanRx[Envelope], rounds Rounds, paths Paths, win bool, ca
     ro where = paths
     ro on_windows = win
     ro folders = rounds.folders
-    with PollLog = effect PollLog {
+    mut tries = KimiTries.new()
+    with Renew = effect Renew {
+        kimi(path str, name str) -> bool { renew_one(tries, path, name) }
+    }, PollLog = effect PollLog {
         // Not logged: a log line would carry the e-mail, which 01.2 section 10 keeps
         // out of logs. The journal is `poll`, written from the readings.
         record(email str, state str, message str, at_ms int) -> () {}
