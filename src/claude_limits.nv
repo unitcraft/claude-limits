@@ -43,6 +43,7 @@ import claude_limits.cli.table.{row, cli_label, reference_moment}
 import claude_limits.install.autostart.{install, uninstall, message, entry_for, Autostart, Change}
 import claude_limits.install.real_autostart.{with_real_autostart, host}
 import std.fs.{real_fs, metadata, read_text}
+import std.io.{stderr, real_io}
 import std.net.{TcpListener}
 import polaris.net.{ServerPolicy}
 import polaris.serve.{serve_router}
@@ -229,6 +230,22 @@ fn LoginTries mut @tried(path str, now_ms int) -> () {
 /// next expiry (fifteen minutes on) must get a fresh try at once.
 fn LoginTries mut @cleared(path str) -> () { @items = @without(path) }
 
+/// A log line of the running server, on STDERR.
+///
+/// NOT `println`: stdout is block-buffered when it is not a console -- a file, a pipe,
+/// the hidden start of autostart -- and `Stdout.flush` is a no-op, so the server's lines
+/// reached nobody until it exited, and a stopped server lost them all (measured
+/// 2026-10-02: registry 221.1 #1655, `probes/stdout-buffered-when-redirected/`; remove this
+/// detour when #1655 is fixed). stderr is written through
+/// at once. The handler is installed here, as `real_fs` is elsewhere, so the callers --
+/// some of them inside the router's closures -- need no `Io` of their own.
+fn say(line str) -> () {
+    with Io = real_io() {
+        mut e = stderr()
+        ro _ = e.write("claude-limits: ${line}\n".bytes())
+    }
+}
+
 /// One Kimi renewal attempt, logged as the reference logs it.
 fn renew_one(mut tries LoginTries, path str, name str, cooldown_sec int) Http Time -> bool {
     ro now = Time.now().unix_millis() as int
@@ -237,17 +254,17 @@ fn renew_one(mut tries LoginTries, path str, name str, cooldown_sec int) Http Ti
     match r {
         Renewed.Fresh => {
             tries.cleared(path)
-            println("claude-limits: auto-refresh ${name}: refreshed")
+            say("auto-refresh ${name}: refreshed")
             true
         }
         Renewed.Rotated => {
             tries.cleared(path)
-            println("claude-limits: auto-refresh ${name}: token rotated by another Kimi tool; using its file")
+            say("auto-refresh ${name}: token rotated by another Kimi tool; using its file")
             true
         }
         Renewed.Failed(why) => {
             tries.tried(path, now)
-            println("claude-limits: auto-refresh ${name}: failed -- ${why}")
+            say("auto-refresh ${name}: failed -- ${why}")
             false
         }
     }
@@ -286,7 +303,7 @@ fn renew_claude(mut tries LoginTries, path str, name str, model str, timeout_sec
     }
     ro dir = expand_home(path, home)
     if creds_mtime_ms(dir) == 0 {
-        println("claude-limits: auto-refresh ${name}: no .credentials.json, never logged in here")
+        say("auto-refresh ${name}: no .credentials.json, never logged in here")
         return false
     }
     ro run = refresh_run(dir, model, timeout_sec)
@@ -299,9 +316,9 @@ fn renew_claude(mut tries LoginTries, path str, name str, model str, timeout_sec
         }
     }
     if code == 0 {
-        println("claude-limits: auto-refresh ${name}: started; Claude Code renews the file, the next round reads it")
+        say("auto-refresh ${name}: started; Claude Code renews the file, the next round reads it")
     } else {
-        println("claude-limits: auto-refresh ${name}: could not be started (exit ${code})")
+        say("auto-refresh ${name}: could not be started (exit ${code})")
     }
     false
 }
@@ -419,12 +436,12 @@ fn upkeep_round(at Paths, windows bool, u Upkeep, keep int) Io Time -> () {
         with_real_db(fn() Db Fs Random -> Result[Upkept, StartFail] => upkeep_daily(paths, how, now, backups, win))
     }
     match r {
-        Err(f) => println("claude-limits: the daily upkeep did not run: ${f.message(paths.key_file)}")
+        Err(f) => say("the daily upkeep did not run: ${f.message(paths.key_file)}")
         Ok(d) => {
-            if d.zone != "" { println("claude-limits: ${d.zone}") }
-            if d.retention_fail != "" { println("claude-limits: the retention pass did not run: ${d.retention_fail}") }
-            if d.weekly != "" { println("claude-limits: weekly backup ${d.weekly}") }
-            if d.weekly_fail != "" { println("claude-limits: the weekly backup was not taken: ${d.weekly_fail}") }
+            if d.zone != "" { say("${d.zone}") }
+            if d.retention_fail != "" { say("the retention pass did not run: ${d.retention_fail}") }
+            if d.weekly != "" { say("weekly backup ${d.weekly}") }
+            if d.weekly_fail != "" { say("the weekly backup was not taken: ${d.weekly_fail}") }
         }
     }
 }
@@ -449,7 +466,7 @@ fn record_round(at Paths, windows bool, view SnapshotView, readings []Reading, f
     }
     match recorded {
         Ok(_) => ()
-        Err(f) => println("claude-limits: the history was not written: ${f.message(paths.key_file)}")
+        Err(f) => say("the history was not written: ${f.message(paths.key_file)}")
     }
     ro found_at = Time.now().unix_millis()
     ro found = discovered(folders, found_at)
@@ -458,7 +475,7 @@ fn record_round(at Paths, windows bool, view SnapshotView, readings []Reading, f
     }
     match noted {
         Ok(_) => ()
-        Err(f) => println("claude-limits: the folders were not written: ${f.message(paths.key_file)}")
+        Err(f) => say("the folders were not written: ${f.message(paths.key_file)}")
     }
 }
 
@@ -542,7 +559,7 @@ fn keep_version(paths Paths, windows bool, toml str, source str, at_ms int) -> (
     }
     match got {
         Ok(_) => ()
-        Err(e) => println("claude-limits: the previous settings were saved without a history row: ${e}")
+        Err(e) => say("the previous settings were saved without a history row: ${e}")
     }
 }
 
@@ -601,7 +618,7 @@ fn settings_if_moved(paths Paths, held ConfNow) -> Option[ConfNow] {
     if held.tag == "" { return None }
     ro moved = with Fs = real_fs() { on_disk_changed(paths.config_file, held.loaded) }
     if !moved { return None }
-    println("claude-limits: the settings file changed on disk and was read again")
+    say("the settings file changed on disk and was read again")
     Some(taken_from_disk(paths, held))
 }
 
@@ -620,7 +637,7 @@ fn taken_from_disk(paths Paths, was ConfNow) -> ConfNow {
     match decide_start(reread) {
         Start.Go(cfg, _) => conf_at_start(cfg, reread)
         Start.Refuse(lines) => {
-            println("claude-limits: the settings file has errors; the previous values stay in force:")
+            say("the settings file has errors; the previous values stay in force:")
             for l in lines { println("  ${l}") }
             conf_at_start(was.cfg, reread)
         }
@@ -667,7 +684,7 @@ fn forecast_round(paths Paths, windows bool, view SnapshotView, conf ConfNow) Ti
     match got {
         Ok(r) => with_forecasts(view, r.rows, rules_of(conf.cfg), now, Offset.local().seconds() as int, TimeZone.Fixed(Offset.local()))
         Err(why) => {
-            println("claude-limits: no forecast this round, the history did not read: ${why}")
+            say("no forecast this round, the history did not read: ${why}")
             view
         }
     }
@@ -682,16 +699,16 @@ fn db_seen(r Ready, size int) -> DbAtStart =>
 /// in the arm, the arm's value came out as `()` (measured 2026-09-30).
 fn announced(r Ready, db_file str) Io -> int {
     if r.opened.first_start {
-        println("claude-limits: new database ${db_file}, encrypted")
+        say("new database ${db_file}, encrypted")
     } else if r.applied > 0 {
-        println("claude-limits: database migrated to schema ${r.opened.schema_version + r.applied} (backup ${r.backup})")
+        say("database migrated to schema ${r.opened.schema_version + r.applied} (backup ${r.backup})")
     }
-    if r.upkeep.zone != "" { println("claude-limits: ${r.upkeep.zone}") }
-    if r.upkeep.retention_fail != "" { println("claude-limits: the retention pass did not run: ${r.upkeep.retention_fail}") }
-    if r.upkeep.weekly != "" { println("claude-limits: weekly backup ${r.upkeep.weekly}") }
-    if r.upkeep.weekly_fail != "" { println("claude-limits: the weekly backup was not taken: ${r.upkeep.weekly_fail}") }
+    if r.upkeep.zone != "" { say("${r.upkeep.zone}") }
+    if r.upkeep.retention_fail != "" { say("the retention pass did not run: ${r.upkeep.retention_fail}") }
+    if r.upkeep.weekly != "" { say("weekly backup ${r.upkeep.weekly}") }
+    if r.upkeep.weekly_fail != "" { say("the weekly backup was not taken: ${r.upkeep.weekly_fail}") }
     if owner_changed(r.opened.previous_owner, r.opened.instance_id) {
-        println("claude-limits: ${owner_line(r.opened.previous_owner, r.opened.instance_id)}")
+        say("${owner_line(r.opened.previous_owner, r.opened.instance_id)}")
     }
     with Fs = real_fs() {
         match metadata(db_file.to_path()) {
@@ -846,17 +863,17 @@ fn serve_mode(exe str, config_override str) Io Net Time Detach -> int {
     ro loaded = with Fs = real_fs() { load(paths.config_file) }
     match decide_start(loaded) {
         Start.Refuse(lines) => {
-            println("claude-limits: the settings in ${paths.config_file} do not allow a start:")
+            say("the settings in ${paths.config_file} do not allow a start:")
             for l in lines { println("  ${l}") }
             return EXIT_CONFIG
         }
         Start.Go(cfg, repairs) => {
-            for r in repairs { println("claude-limits: ${r}") }
+            for r in repairs { say("${r}") }
             ro addr = listen_addr(cfg)
             match TcpListener.bind(addr) {
                 Err(e) => {
-                    println("claude-limits: cannot listen on ${addr}: ${e}")
-                    println("claude-limits: is another copy already running? The port is [server] port in ${paths.config_file}")
+                    say("cannot listen on ${addr}: ${e}")
+                    say("is another copy already running? The port is [server] port in ${paths.config_file}")
                     return EXIT_OTHER
                 }
                 Ok(consume listener) => {
@@ -881,23 +898,23 @@ fn serve_mode(exe str, config_override str) Io Net Time Detach -> int {
                     ro db_state = match opened {
                         Ok(r) => db_seen(r, announced(r, paths.db_file))
                         Err(f) => {
-                            println("claude-limits: ${f.message(paths.key_file)}")
+                            say("${f.message(paths.key_file)}")
                             return f.exit_code()
                         }
                     }
                     ro bounds = SeverityBounds.new(cfg.thresholds.warning, cfg.thresholds.critical)
                     ro rounds = Rounds.new(cfg.folders, cfg.poll.interval_sec, bounds, TimeZone.Fixed(Offset.local()), Offset.local().to_iso(), cfg.refresh)
                     if loaded.missing {
-                        println("claude-limits: no settings file yet, running on the defaults (${paths.config_file})")
+                        say("no settings file yet, running on the defaults (${paths.config_file})")
                     } else {
-                        println("claude-limits: settings ${paths.config_file}")
+                        say("settings ${paths.config_file}")
                     }
                     // Where the TLS roots came from (nova-tls 0.2: the OS store, a system
                     // bundle, or the embedded list). The first thing to read when a poll
                     // fails with a certificate error -- plan 01.5 question 9 was exactly that.
                     match system_roots() {
-                        Ok(r) => println("claude-limits: TLS roots: ${r.source} (${r.detail}), ${r.count}")
-                        Err(e) => println("claude-limits: TLS roots could not be loaded: ${e}")
+                        Ok(r) => say("TLS roots: ${r.source} (${r.detail}), ${r.count}")
+                        Err(e) => say("TLS roots could not be loaded: ${e}")
                     }
                     // THE ROUNDS REPEAT (T2.27, 2026-10-01). The store with its poller runs
                     // in THIS fiber (`feed.store_and_poll`: D446 refuses the poll in a
@@ -922,7 +939,7 @@ fn serve_mode(exe str, config_override str) Io Net Time Detach -> int {
                         fn(a int) -> Option[Live] => Some(open_live(store, a)),
                         fn(st ProbeState, p str) -> str => probe_on_disk(st, p),
                         fn() -> bool => store.tick()))!!
-                    println("claude-limits: listening on ${base_url(cfg)}/  (Ctrl+C to stop)")
+                    say("listening on ${base_url(cfg)}/  (Ctrl+C to stop)")
                     ro every = cfg.poll.interval_sec
                     ro rx = pair.rx
                     supervised {

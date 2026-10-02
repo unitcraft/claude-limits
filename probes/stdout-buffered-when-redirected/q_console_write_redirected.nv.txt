@@ -1,0 +1,13 @@
+// stdout().write and stderr().write: are their bytes in a redirected file before exit?
+module q_console_write_redirected
+
+import std.io.{stdout, stderr}
+import std.time.duration.{Timestamp}
+
+fn main() Io Time -> () {
+    mut o = stdout()
+    ro _a = o.write("out: printed at the start\n".bytes())
+    mut e = stderr()
+    ro _b = e.write("err: printed at the start\n".bytes())
+    Time.sleep(8.to_seconds())
+}

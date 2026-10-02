@@ -1,0 +1,10 @@
+// Is a println line in a redirected stdout before the program exits?
+module q_println_redirected
+
+import std.time.duration.{Timestamp}
+
+fn main() Io Time -> () {
+    println("line one, printed at the start")
+    Time.sleep(8.to_seconds())
+    println("line two, printed at the end")
+}

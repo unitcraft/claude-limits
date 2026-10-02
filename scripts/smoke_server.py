@@ -248,15 +248,19 @@ def main(argv):
         check("save", fine, f"{status} folders after={kept} {body[:160]}")
 
         second = subprocess.run([exe, "--serve", "--config", ok_cfg], capture_output=True, text=True, timeout=60, env=env)
-        check("busy port", second.returncode == 1 and "address already in use" in second.stdout,
-              f"exit {second.returncode}: {second.stdout.strip()[:160]}")
+        # The server's own lines go to stderr (they are a log; stdout is buffered when it
+        # is not a console -- claude_limits.nv `say`), so both streams are read.
+        said = second.stdout + second.stderr
+        check("busy port", second.returncode == 1 and "address already in use" in said,
+              f"exit {second.returncode}: {said.strip()[:160]}")
     finally:
         server.kill()
         server.wait(timeout=10)
 
     lan = subprocess.run([exe, "--serve", "--config", lan_cfg], capture_output=True, text=True, timeout=60, env=env)
-    check("lan", lan.returncode == 2 and "server.allow_lan" in lan.stdout,
-          f"exit {lan.returncode}: {lan.stdout.strip()[:160]}")
+    lan_said = lan.stdout + lan.stderr
+    check("lan", lan.returncode == 2 and "server.allow_lan" in lan_said,
+          f"exit {lan.returncode}: {lan_said.strip()[:160]}")
 
     shutil.rmtree(tmp, ignore_errors=True)
     passed = sum(1 for r in results if r)
