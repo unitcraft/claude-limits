@@ -179,10 +179,7 @@ export fn parse_history_query(target str, now_ms int, keep_days int) -> HistoryA
     mut dirs []str = []
     for (k, raw) in history_pairs(target) {
         if !history_known(k) { return bad("unknown query parameter '${k}'") }
-        ro v = match history_pct_decode(raw) {
-            Some(s) => s
-            None => return bad("parameter '${k}' is not percent-encoded correctly")
-        }
+        ro v = history_pct_decode(raw) ?? return bad("parameter '${k}' is not percent-encoded correctly")
         if k == "login_dir_id" {
             if v.to_uuid().is_err() { return bad("login_dir_id must be a UUID") }
             dirs.push(v)
@@ -886,14 +883,8 @@ fn ids_of(k str, v JsonValue, mut errs []FieldError) -> []str {
 export fn parse_history_search(raw str, now_ms int, keep_days int) -> HistoryAskOr {
     ro text = raw.trim_ascii()
     if text == "" { return HistoryAskOr.Refused(ApiError.invalid_body("body must be a JSON object")) }
-    ro root = match Json.parse(text) {
-        Ok(v) => v
-        Err(_) => return HistoryAskOr.Refused(ApiError.invalid_body("body is not JSON"))
-    }
-    ro obj = match root.object() {
-        Some(o) => o
-        None => return HistoryAskOr.Refused(ApiError.invalid_body("body must be a JSON object"))
-    }
+    ro root = Json.parse(text) ?? return HistoryAskOr.Refused(ApiError.invalid_body("body is not JSON"))
+    ro obj = root.object() ?? return HistoryAskOr.Refused(ApiError.invalid_body("body must be a JSON object"))
     mut extra []FieldError = []
     mut errs []FieldError = []
     mut range = ""

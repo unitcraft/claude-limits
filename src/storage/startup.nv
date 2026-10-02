@@ -424,10 +424,7 @@ fn migrate_and_claim(conn ConnRef, opened Opened, todo []Migration, p Paths, now
 }
 
 fn first_text(conn ConnRef, sql str) Db -> str {
-    ro rows = match Db.query(conn, sql) {
-        Ok(r) => r
-        Err(_) => return ""
-    }
+    ro rows = Db.query(conn, sql) ?? return ""
     ro got = match Db.next(rows) {
         Ok(Some(cells)) => if cells.len() > 0 { match cells[0] { Value.Text(s) => s, _ => "" } } else { "" }
         _ => ""

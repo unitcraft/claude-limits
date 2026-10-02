@@ -76,22 +76,10 @@ fn num_field(obj JsonValue, key str) -> int =>
 
 /// The model name of a scoped window: `scope.model.display_name`.
 fn scoped_model(item JsonValue) -> str {
-    ro fields = match item.object() {
-        Some(f) => f
-        None => return ""
-    }
-    ro scope = match fields.get("scope") {
-        Some(v) => v
-        None => return ""
-    }
-    ro sf = match scope.object() {
-        Some(f) => f
-        None => return ""
-    }
-    ro model = match sf.get("model") {
-        Some(v) => v
-        None => return ""
-    }
+    ro fields = item.object() ?? return ""
+    ro scope = fields.get("scope") ?? return ""
+    ro sf = scope.object() ?? return ""
+    ro model = sf.get("model") ?? return ""
     str_field(model, "display_name")
 }
 
@@ -129,14 +117,8 @@ export fn moment_iso(ms int) -> str => ms.to_unix_millis().to_rfc3339()
 
 /// The `locked_reason` of a named window, "" when there is none.
 fn named_lock(root JsonValue, key str) -> str {
-    ro fields = match root.object() {
-        Some(f) => f
-        None => return ""
-    }
-    ro node = match fields.get(key) {
-        Some(v) => v
-        None => return ""
-    }
+    ro fields = root.object() ?? return ""
+    ro node = fields.get(key) ?? return ""
     if node.is_null() { return "" }
     str_field(node, "locked_reason")
 }
@@ -196,14 +178,8 @@ fn named_window(root JsonValue, key str, kind str) -> Option[Window] {
 /// file, and deliberately so: an unknown key in a file the person wrote is a typo, an
 /// unknown key in a reply from a service is a newer service.
 export fn parse(body str) -> Usage {
-    ro root = match Json.parse(body) {
-        Ok(v) => v
-        Err(_) => return Usage.new([], BadJson, false)
-    }
-    ro fields = match root.object() {
-        Some(f) => f
-        None => return Usage.new([], BadJson, false)
-    }
+    ro root = Json.parse(body) ?? return Usage.new([], BadJson, false)
+    ro fields = root.object() ?? return Usage.new([], BadJson, false)
 
     mut out []Window = []
     match fields.get("limits") {

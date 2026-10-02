@@ -261,10 +261,7 @@ fn read_meta(conn ConnRef) Db -> Meta {
     // START, not a fault. Distinguishing them by the error text would be reading
     // DuckDB's wording; distinguishing them by "did the table exist" is the question
     // actually being asked.
-    ro rows = match Db.query(conn, "SELECT key, value FROM schema_meta WHERE key IN ('schema_version', 'last_opened_by')") {
-        Ok(r) => r
-        Err(_) => return { first: true, version: 0, owner: "" }
-    }
+    ro rows = Db.query(conn, "SELECT key, value FROM schema_meta WHERE key IN ('schema_version', 'last_opened_by')") ?? return { first: true, version: 0, owner: "" }
     mut version = 0
     mut owner = ""
     mut seen_version = false

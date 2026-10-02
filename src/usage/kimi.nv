@@ -105,10 +105,7 @@ fn from_usages(usages JsonValue, key str, kind str, model str) -> Option[Window]
 /// The reply, read. `BadJson` when it is not a JSON object; `NoWindows` when nothing
 /// in it is a quota.
 export fn parse_kimi(body str) -> Usage {
-    ro root = match Json.parse(body) {
-        Ok(v) => v
-        Err(_) => return Usage.new([], PollOutcome.BadJson, false)
-    }
+    ro root = Json.parse(body) ?? return Usage.new([], PollOutcome.BadJson, false)
     if root.object().is_none() { return Usage.new([], PollOutcome.BadJson, false) }
 
     mut out []Window = []
