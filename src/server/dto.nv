@@ -81,6 +81,8 @@ export type AccountView value {
     org str
     /// The person's name, "" for `null` (01.3 §3.3, amendment 2026-09-21).
     display_name str
+    /// `claude | kimi` (the same amendment). A Kimi account has no e-mail: `email` "".
+    provider str
     dirs []DirView
     /// `ok | stale | unknown | error` (01.1 §3.2).
     state str
@@ -214,8 +216,9 @@ type WireDir value {
 #impl(Serialize)
 type WireAccount value {
     ro id str
-    ro email str
-    ro org str
+    ro provider str
+    ro email Option[str]
+    ro org Option[str]
     ro display_name Option[str]
     ro dirs []WireDir
     ro state str
@@ -280,7 +283,7 @@ fn wire_account(d Disclosure, a AccountView) -> WireAccount {
     mut dirs []WireDir = []
     for x in a.dirs { dirs.push({ id: x.id, path: shown_path(d, x.path), name: x.name }) }
     {
-        id: a.id, email: a.email, org: a.org, display_name: opt(a.display_name), dirs, state: a.state,
+        id: a.id, provider: a.provider, email: opt(a.email), org: opt(a.org), display_name: opt(a.display_name), dirs, state: a.state,
         message: opt(a.message), polled_at: opt(a.polled_at), next_poll_at: opt(a.next_poll_at),
         locked: a.locked, at_100: a.at_100,
     }

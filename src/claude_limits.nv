@@ -303,7 +303,14 @@ fn record_round(at Paths, windows bool, view SnapshotView, readings []Reading, f
     ro win = windows
     ro emails = emails_of(view)
     ro orgs = orgs_of(view)
-    ro rs = readings
+    // KIMI CODE IS NOT WRITTEN YET, on purpose and by name. The schema keys an account
+    // by its e-mail (`account_email_uq`), Kimi has none, and its `monthly` windows are
+    // a kind the schema does not list: a write would fail every round, or worse, pass
+    // under a made-up key. Kimi accounts are shown live; their history waits for the
+    // migration that plan 01.6 П3 step 3 names.
+    mut claude_only []Reading = []
+    for r in readings { if !r.email.starts_with("kimi:") { claude_only.push(r) } }
+    ro rs = claude_only
     ro recorded = with Fs = real_fs(), Random = real_random() {
         with_real_db(fn() Db Fs Random -> Result[int, StartFail] => record_readings(paths, rs, emails, orgs, win))
     }

@@ -1,0 +1,66 @@
+// kimi_home.nv — Kimi Code logins in a folder (plan 01.6, П3, step 2).
+//
+// Source: the reference, `scripts/claude_limits.py` `kimi_logins_of` / `kimi_login_of`.
+// A folder is a Kimi Code home when `credentials/*.json` hold an `access_token`; ONE
+// ACCOUNT PER FILE, named by the file's stem (`kimi-code-env-0e4f99c69cc27850`). The
+// `mcp/` subdirectory holds MCP-server tokens, not logins, and is not looked into.
+//
+// Detected BY CONTENT, as the reference does, and not by the folder's name: the
+// default home is `~/.kimi-code` (`$KIMI_CODE_HOME`), but a person may point the tool
+// anywhere.
+//
+// NO TOKEN LEAVES THIS FILE except through `read_kimi_token`, for the one caller that
+// sends it -- the same split as `login.read_login` / `login.read_token`.
+
+module accounts.kimi_home
+
+import claude_limits.accounts.discover.{Dirs, normalise, under}
+import claude_limits.accounts.login.{Creds, Secret, raw_field_str, raw_field_int}
+
+/// One Kimi Code login: a credentials file. No token in it.
+export type KimiLogin value {
+    /// The file's stem -- the account's name (01.3 §3.3: Kimi has no e-mail).
+    ro name str
+    /// The Kimi Code home it was found in.
+    ro home str
+    /// The credentials file itself.
+    ro path str
+    /// Unix milliseconds; 0 when the file does not say.
+    ro expires_at_ms int
+    ro has_token bool
+}
+
+fn kimi_login(name str, home str, path str, expires_at_ms int, has_token bool) -> KimiLogin =>
+    { name, home, path, expires_at_ms, has_token }
+
+/// Every Kimi Code login in `dir`, in file-name order; none when it is not a Kimi home.
+export fn kimi_logins_at(dir str) Dirs Creds -> []KimiLogin {
+    ro home = normalise(dir)
+    ro creds = under(home, "credentials")
+    mut out []KimiLogin = []
+    if !Dirs.is_dir(creds) { return out }
+    mut names = Dirs.list(creds)
+    names.sort()
+    for n in names {
+        if !n.ends_with(".json") { continue }
+        ro path = under(creds, n)
+        ro text = Creds.read(path)
+        ro has_token = raw_field_str(text, "access_token") != ""
+        // A JSON file without a token is not a login (the reference skips it too).
+        if !has_token { continue }
+        // `expires_at` is in SECONDS in Kimi's file (the reference compares it with
+        // `time.time()`); a fraction, if any, is dropped with the rest of the second.
+        ro expires_s = raw_field_int(text, "expires_at")
+        ro stem = n[..n.byte_len() - 5]
+        out.push(kimi_login(stem, home, path, expires_s * 1000, has_token))
+    }
+    out
+}
+
+/// The access token of one Kimi login, for the one caller that sends it.
+export fn read_kimi_token(path str) Creds -> Option[Secret] {
+    if path == "" { return None }
+    ro secret = raw_field_str(Creds.read(path), "access_token")
+    if secret == "" { return None }
+    Some(Secret.new(secret))
+}

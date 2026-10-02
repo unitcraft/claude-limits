@@ -23,6 +23,7 @@
 
 module usage.fetch
 
+import claude_limits.usage.kimi.{parse_kimi}
 import http.{Http, HttpError}
 import claude_limits.usage.outcome.{Outcome, of_status, bad_body, transport_failed}
 import claude_limits.usage.parse.{Usage, PollOutcome}
@@ -65,6 +66,18 @@ export fn request_for(host str, path str, token str) -> str {
     // scripts/claude_limits.py:79). Missing until 2026-09-30: no test here had ever
     // spoken to the real endpoint.
     r = "${r}anthropic-beta: oauth-2025-04-20${CRLF}"
+    r = "${r}Accept: application/json${CRLF}"
+    r = "${r}Connection: close${CRLF}${CRLF}"
+    r
+}
+
+/// The Kimi Code request: the same shape without Anthropic's beta header, which a
+/// foreign endpoint has no use for (the reference's `fetch_kimi_usage` sends exactly
+/// `Authorization` and `Accept`).
+export fn request_kimi(host str, path str, token str) -> str {
+    mut r = "GET ${path} HTTP/1.1${CRLF}"
+    r = "${r}Host: ${host}${CRLF}"
+    r = "${r}Authorization: Bearer ${token}${CRLF}"
     r = "${r}Accept: application/json${CRLF}"
     r = "${r}Connection: close${CRLF}${CRLF}"
     r
@@ -182,8 +195,13 @@ export fn retry_after_of(raw str) -> int {
 }
 
 /// One poll. The only effectful function here.
-export fn fetch(host str, port int, secure bool, path str, token str) Http -> Reply {
-    match Http.send(host, port, secure, request_for(host, path, token)) {
+export fn fetch(host str, port int, secure bool, path str, token str) Http -> Reply =>
+    fetch_with(host, port, secure, path, token, false)
+
+/// One poll of either service: `kimi` picks the request and the reader of the reply.
+export fn fetch_with(host str, port int, secure bool, path str, token str, kimi bool) Http -> Reply {
+    ro request = if kimi { request_kimi(host, path, token) } else { request_for(host, path, token) }
+    match Http.send(host, port, secure, request) {
         // The request never arrived. `unknown`, and the last good reading stays.
         Err(_) => Reply.new(transport_failed(), Usage.empty())
         Ok(raw) => {
@@ -194,7 +212,7 @@ export fn fetch(host str, port int, secure bool, path str, token str) Http -> Re
             ro out = of_status(status, retry_after_of(raw))
             if !out.body_usable { return Reply.new(out, Usage.empty()) }
 
-            ro usage = usage_reply.parse(body_of(raw))
+            ro usage = if kimi { parse_kimi(body_of(raw)) } else { usage_reply.parse(body_of(raw)) }
             // A 200 whose body will not parse is `error`, per 01.1 §3.2 -- see the
             // note in `outcome_test` about the fixture that says `unknown` instead.
             if usage.outcome == PollOutcome.BadJson {

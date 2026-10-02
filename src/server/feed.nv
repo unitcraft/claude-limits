@@ -37,6 +37,8 @@ import std.checksums.fnv.{Fnv64}
 import std.time.civil.{TimeZone}
 import claude_limits.accounts.discover.{Dirs, LoginDir, scan}
 import claude_limits.accounts.login.{Login, TokenState, Creds, read_login, read_token}
+import claude_limits.accounts.kimi_home.{KimiLogin, kimi_logins_at, read_kimi_token}
+import claude_limits.accounts.discover.{leaf}
 import claude_limits.accounts.group.{group}
 import claude_limits.cli.table.{short_name}
 import claude_limits.server.dto.{DirView, SnapshotView}
@@ -57,6 +59,10 @@ import http.{Http}
 /// The endpoint (README §Endpoint; the header it needs is in `usage.fetch`).
 export fn usage_host() -> str => "api.anthropic.com"
 export fn usage_path() -> str => "/api/oauth/usage"
+
+/// Kimi Code's quota endpoint (the reference's `KIMI_USAGE_URL`).
+export fn kimi_host() -> str => "api.kimi.com"
+export fn kimi_path() -> str => "/coding/v1/usages"
 
 // ── ids ──────────────────────────────────────────────────────────────────────
 
@@ -100,6 +106,23 @@ export type Found value {
     /// Directories whose token is dead, named beside a live account.
     ro expired_dirs []str
     ro display_name str
+    /// A Kimi Code login: `email` is then the key `kimi:<name>`, not an address.
+    ro kimi bool
+}
+
+/// A Kimi token a minute from expiry is already stale, as a Claude one is.
+const KIMI_GUARD_MS = 60_000
+
+fn kimi_state(k KimiLogin, now_ms int) -> TokenState {
+    if !k.has_token { return TokenState.NoToken }
+    if k.expires_at_ms != 0 && k.expires_at_ms <= now_ms + KIMI_GUARD_MS { return TokenState.Stale }
+    TokenState.Ok
+}
+
+fn kimi_found(k KimiLogin, now_ms int) -> Found => {
+    email: "kimi:${k.name}", org: "", dirs: [DirView { id: stable_id("dir", k.home), path: k.home, name: leaf(k.home) }],
+    state: kimi_state(k, now_ms), expires_at_ms: k.expires_at_ms, cred_path: k.path, expired_dirs: [],
+    display_name: k.name, kimi: true,
 }
 
 /// The line under an account that is asked with one directory's token while others
@@ -139,7 +162,16 @@ export fn found_in(folders []str, now_ms int) Dirs Creds -> []Found {
             i += 1
         }
         out.push(Found { email: acc.email, org: acc.org, dirs, state: acc.state, expires_at_ms: acc.expires_at_ms, cred_path: cred,
-                         expired_dirs: acc.expired_dirs, display_name: acc.display_name })
+                         expired_dirs: acc.expired_dirs, display_name: acc.display_name, kimi: false })
+    }
+    // Kimi Code homes in the same folders (plan 01.6, П3): one account per credentials
+    // file. A file reached through two folders is one account, not two.
+    for f in folders {
+        for k in kimi_logins_at(f) {
+            mut dup = false
+            for o in out { if o.email == "kimi:${k.name}" { dup = true } }
+            if !dup { out.push(kimi_found(k, now_ms)) }
+        }
     }
     out
 }
@@ -352,27 +384,46 @@ export fn poll_round(found []Found, before []Known, now_ms int, next_ms int, zon
         ro id = stable_id("account", f.email)
         ro p = previous(before, id)
         if f.state != TokenState.Ok || f.cred_path == "" {
-            ro msg = if f.state == TokenState.Stale { stale_message(expiry_text(f.expires_at_ms, zone)) } else { "no token · start Claude Code under this login" }
-            out.push(Known.new(id, f.email, f.org, f.dirs, AccountState.Stale, msg, prev_polled(p), 0, []).with_name(f.display_name))
+            ro msg = if f.kimi {
+                // No self-refresh yet (plan 01.6, П4): the advice is the reference's
+                // with auto-refresh off.
+                "token expired · start Kimi Code under this login"
+            } else if f.state == TokenState.Stale {
+                stale_message(expiry_text(f.expires_at_ms, zone))
+            } else {
+                "no token · start Claude Code under this login"
+            }
+            out.push(shown(f, Known.new(id, address_of(f), f.org, f.dirs, AccountState.Stale, msg, prev_polled(p), 0, [])))
             continue
         }
-        match read_token(f.cred_path) {
+        ro got = if f.kimi { read_kimi_token(f.cred_path) } else { read_token(f.cred_path) }
+        match got {
             None => {
-                out.push(Known.new(id, f.email, f.org, f.dirs, AccountState.Stale, "no token · start Claude Code under this login", prev_polled(p), 0, []).with_name(f.display_name))
+                out.push(shown(f, Known.new(id, address_of(f), f.org, f.dirs, AccountState.Stale, "no token · start Claude Code under this login", prev_polled(p), 0, [])))
             }
             Some(consume secret) => {
                 ro token = secret.into_secret()
-                ro r = poll_once(PollTarget.new(f.email, usage_host(), 443, true, usage_path(), token), now_ms)
+                ro target = if f.kimi { PollTarget.for_kimi(f.email, kimi_host(), kimi_path(), token) } else { PollTarget.new(f.email, usage_host(), 443, true, usage_path(), token) }
+                ro r = poll_once(target, now_ms)
                 ro fresh = r.outcome.state == AccountState.Ok && r.usage.outcome == PollOutcome.Parsed
                 if fresh {
-                    out.push(Known.new(id, f.email, f.org, f.dirs, AccountState.Ok, expired_note(f.expired_dirs), now_ms, next_ms, r.usage.windows).with_name(f.display_name))
+                    out.push(shown(f, Known.new(id, address_of(f), f.org, f.dirs, AccountState.Ok, expired_note(f.expired_dirs), now_ms, next_ms, r.usage.windows)))
                 } else {
                     ro kept = prev_polled(p)
                     ro msg = if r.outcome.state == AccountState.Unknown { unknown_message(r.outcome, now_ms, kept, zone) } else { r.outcome.message }
-                    out.push(Known.new(id, f.email, f.org, f.dirs, r.outcome.state, msg, kept, next_ms, prev_windows(p)).with_name(f.display_name))
+                    out.push(shown(f, Known.new(id, address_of(f), f.org, f.dirs, r.outcome.state, msg, kept, next_ms, prev_windows(p))))
                 }
             }
         }
     }
     out
+}
+
+/// The e-mail a person reads: none for Kimi, whose `email` field is only a key.
+fn address_of(f Found) -> str => if f.kimi { "" } else { f.email }
+
+/// The account as it is shown: its name, and its service.
+fn shown(f Found, k Known) -> Known {
+    ro named = k.with_name(f.display_name)
+    if f.kimi { named.as_kimi() } else { named }
 }

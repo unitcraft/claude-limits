@@ -35,7 +35,7 @@
 
 module usage.poller
 
-import claude_limits.usage.fetch.{fetch}
+import claude_limits.usage.fetch.{fetch_with}
 import claude_limits.usage.outcome.{Outcome}
 import claude_limits.usage.schedule.{Interval, PollSchedule, due, polled, refresh_allowed}
 import claude_limits.usage.parse.{Usage}
@@ -57,11 +57,18 @@ export type PollTarget value {
     ro secure bool
     ro path str
     ro token str
+    /// Kimi Code rather than Claude: another request and another reply (plan 01.6).
+    ro kimi bool
 }
 
 export fn PollTarget.new(email str, host str, port int, secure bool, path str,
                      token str) -> PollTarget =>
-    { email, host, port, secure, path, token }
+    { email, host, port, secure, path, token, kimi: false }
+
+/// A Kimi Code account. `key` stands where the e-mail would: Kimi has none, and the
+/// journal needs a name (`kimi:<credentials stem>`).
+export fn PollTarget.for_kimi(key str, host str, path str, token str) -> PollTarget =>
+    { email: key, host, port: 443, secure: true, path, token, kimi: true }
 
 /// What one poll produced, for a caller that wants the numbers rather than the state.
 export type Reading value {
@@ -119,7 +126,7 @@ export fn may_ask(state TokenState) -> bool =>
 /// decision from the act is what makes both testable -- `due` without a network, and
 /// this without a clock.
 export fn poll_once(a PollTarget, now_ms int) Http PollLog -> Reading {
-    ro got = fetch(a.host, a.port, a.secure, a.path, a.token)
+    ro got = fetch_with(a.host, a.port, a.secure, a.path, a.token, a.kimi)
     // WRITTEN BEFORE ANYTHING ELSE CAN GO WRONG. Every outcome is recorded, including
     // the ones nobody wants to look at: a 429 that is not in `poll` is a 429 nobody
     // can explain the next morning.

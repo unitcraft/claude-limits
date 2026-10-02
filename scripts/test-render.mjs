@@ -219,6 +219,12 @@ test('the person name stands before the organisation, and either may be missing'
   assert.deepEqual(org({ email: 'a@x', state: 'ok' }), []);
 });
 
+test('a Kimi Code account is headed by its name and says which service it is', () => {
+  const block = renderAccount({ provider: 'kimi', email: null, display_name: 'kimi-code-env-0e4f', state: 'ok' }, []);
+  assert.equal(block.all((n) => n.className === 'account-email')[0].textContent, 'kimi-code-env-0e4f');
+  assert.equal(block.all((n) => n.className === 'account-org')[0].textContent, 'Kimi Code');
+});
+
 test('a live account shows its note, and one without a note shows none', () => {
   const noted = renderAccount({ email: 'a@x', state: 'ok', message: 'MGTS: token expired on disk' }, []);
   const notes = noted.all((n) => n.className === 'account-note');

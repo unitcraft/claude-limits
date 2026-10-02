@@ -54,18 +54,26 @@ export type Known value {
     ro next_poll_ms int
     /// Of the last successful reading: an `unknown` account shows these, dimmed.
     ro windows []Window
-    /// The person's name from `.claude.json`, "" when none.
+    /// The person's name from `.claude.json`, "" when none; for Kimi, the login's name.
     ro display_name str
+    /// `claude | kimi` (01.3 §3.3, amendment 2026-09-21).
+    ro provider str
 }
 
 export fn Known.new(id str, email str, org str, dirs []DirView, state AccountState, message str,
                     polled_at_ms int, next_poll_ms int, windows []Window) -> Known =>
-    { id, email, org, dirs, state, message, polled_at_ms, next_poll_ms, windows, display_name: "" }
+    { id, email, org, dirs, state, message, polled_at_ms, next_poll_ms, windows, display_name: "", provider: "claude" }
 
 /// The same, with the person's name.
 export fn Known @with_name(name str) -> Known => {
     @id, @email, @org, @dirs, @state, @message, @polled_at_ms, @next_poll_ms, @windows,
-    display_name: name,
+    display_name: name, @provider,
+}
+
+/// The same, as a Kimi Code account.
+export fn Known @as_kimi() -> Known => {
+    @id, @email, @org, @dirs, @state, @message, @polled_at_ms, @next_poll_ms, @windows,
+    @display_name, provider: "kimi",
 }
 
 fn iso_or_empty(ms int) -> str => if ms == 0 { "" } else { moment_iso(ms) }
@@ -90,6 +98,7 @@ fn has_rows(s AccountState) -> bool =>
 fn kind_rank(kind str) -> int {
     if kind == "session" { return 0 }
     if kind == "weekly_all" { return 1 }
+    if kind == "monthly" { return 3 }
     2
 }
 
@@ -112,7 +121,12 @@ export fn in_row_order(windows []Window) -> []Window {
 
 /// The length of a window of `kind`, in seconds: one home for it (the snapshot and the
 /// database both need it -- `storage/tick.nv` derives a window's start from it).
-export fn window_sec_of(kind str) -> int => if kind == "session" { SESSION_SEC } else { WEEK_SEC }
+export fn window_sec_of(kind str) -> int {
+    if kind == "session" { return SESSION_SEC }
+    // Kimi Code's month (01.3 §3.3, 2026-09-21); the reference takes 30 days too.
+    if kind == "monthly" { return 30 * 86400 }
+    WEEK_SEC
+}
 
 fn limit_of(account_id str, w Window, th SeverityBounds, now_ms int, zone TimeZone) -> LimitView {
     ro span = window_sec_of(w.kind)
@@ -132,7 +146,7 @@ fn limit_of(account_id str, w Window, th SeverityBounds, now_ms int, zone TimeZo
 fn account_of(k Known) -> AccountView {
     ro rows = has_rows(k.state)
     {
-        id: k.id, email: k.email, org: k.org, display_name: k.display_name, dirs: k.dirs, state: k.state.to_str(),
+        id: k.id, email: k.email, org: k.org, display_name: k.display_name, provider: k.provider, dirs: k.dirs, state: k.state.to_str(),
         message: k.message, polled_at: iso_or_empty(k.polled_at_ms),
         next_poll_at: iso_or_empty(k.next_poll_ms),
         locked: rows && locked(k.windows), at_100: rows && at_100(k.windows),

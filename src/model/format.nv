@@ -68,6 +68,8 @@ export fn reset_caption(at Timestamp, now Timestamp, zone TimeZone) -> str {
 export fn row_label(kind str, model str) -> str {
     if kind == "session" { return "session 5h" }
     if kind == "weekly_all" { return "all 7d" }
+    // Kimi Code's month and its code share (01.3 §3.3, 2026-09-21).
+    if kind == "monthly" { return if model == "" { "month" } else { "month (${model})" } }
     if model == "" { return "scoped 7d" }
     "${model} 7d"
 }
