@@ -1,0 +1,219 @@
+// forecast_join.nv — the forecast of every limit row, from the history in the database
+// (plan 01.6, П1).
+//
+// `model/forecast.nv` has the arithmetic since T2.16 and nothing called it: every
+// `limits[].forecast` was `null`, and the owner's first stand showed no forecast while
+// the reference printed "296% at reset, ends ~05:44". This is the join -- PURE: the
+// rows, the clock, the offset and the zone arrive as arguments.
+//
+// THE RULE IS THE REFERENCE'S, `scripts/claude_limits.py` `forecast_of`, carried over
+// as it stands (plan 01 §0: the reference's rules move one to one):
+//
+//   * the rate is taken over the last 60 minutes for `session` and over
+//     `rate_window_days` for the weeks -- never before the current window began;
+//   * its base is the FIRST sample inside that span;
+//   * less than 30 minutes of history is no forecast at all;
+//   * `session` counts calendar minutes; the weeks count working minutes when
+//     `[forecast] working_hours` is on, calendar ones otherwise;
+//   * `runs_out_at` walks forward from now until the projected spend reaches 100 %.
+//
+// One thing of the reference is NOT carried, and on purpose: its `reset_based` branch
+// (percent from 0 when the window began inside the rate span) can never fire there --
+// `rate_start` is already the max of the two, so `limit_start > rate_start` is always
+// false. Writing the dead branch here would be inventing behaviour the reference does
+// not have.
+
+module model.forecast_join
+
+import std.time.civil.{TimeZone}
+import std.time.duration.{Timestamp}
+import claude_limits.model.forecast.{Schedule, Basis, forecast, effective_minutes, unavailable_for}
+import claude_limits.model.format.{reset_moment, duration_words}
+import claude_limits.server.dto.{SnapshotView, LimitView, ForecastView}
+import claude_limits.storage.history_rows.{HistRows, HistSample}
+import claude_limits.usage.parse.{moment_iso}
+
+/// History shorter than this predicts nothing (01.1 §2.7; the reference's HISTORY_MIN_SPAN).
+const MIN_SPAN_MS = 1_800_000
+const MINUTE_MS = 60_000
+/// The 1970-01-01 epoch was a Thursday; the week grid of `effective_minutes` starts on
+/// a Monday, three days earlier.
+const MONDAY_SHIFT_MIN = 4320
+
+fn day_index(name str) -> int =>
+    match name.to_ascii_lower() {
+        "mon" => 0
+        "tue" => 1
+        "wed" => 2
+        "thu" => 3
+        "fri" => 4
+        "sat" => 5
+        "sun" => 6
+        _ => -1
+    }
+
+/// "09:00" -> 540; anything unreadable -> `fallback`.
+///
+/// The two halves are read one at a time: a TUPLE of the two `to_int` results did not
+/// build -- the C named a tuple type over `Result[int, ParseIntError]` it never
+/// declared (CC-FAIL, measured 2026-10-02).
+fn hhmm(s str, fallback int) -> int {
+    match s.split_once(":") {
+        Some((h, m)) => {
+            ro hh = h.trim_ascii().to_int() ?? -1
+            ro mm = m.trim_ascii().to_int() ?? -1
+            if hh < 0 || mm < 0 { fallback } else { hh * 60 + mm }
+        }
+        None => fallback
+    }
+}
+
+/// What the forecast takes from `[forecast]` (01.2 §2.1).
+///
+/// ITS OWN RECORD, not `config.Forecast`: this module then needs nothing of the
+/// settings module, and the caller fills it. (The model's record was ALSO called
+/// `Forecast` until 2026-10-02 and the two collided -- see `Projection`.)
+export type ForecastRules value {
+    ro enabled bool
+    ro working_hours bool
+    ro work_days []str
+    ro work_from str
+    ro work_to str
+    ro off_hours_rate int
+    ro rate_window_days int
+}
+
+export fn ForecastRules.new(enabled bool, working_hours bool, work_days []str, work_from str, work_to str,
+                            off_hours_rate int, rate_window_days int) -> ForecastRules =>
+    { enabled, working_hours, work_days, work_from, work_to, off_hours_rate, rate_window_days }
+
+/// The working schedule, as the arithmetic wants it.
+export fn schedule_of(f ForecastRules) -> Schedule {
+    mut days = [false, false, false, false, false, false, false]
+    for d in f.work_days {
+        ro i = day_index(d)
+        if i >= 0 { days[i] = true }
+    }
+    Schedule.new(days, hhmm(f.work_from, 540), hhmm(f.work_to, 1140), f.off_hours_rate.max(0).min(100))
+}
+
+/// An instant on the week grid of `effective_minutes`: local minutes, Monday-based.
+fn grid(ms int, offset_sec int) -> int => ms / MINUTE_MS + offset_sec / 60 + MONDAY_SHIFT_MIN
+
+/// The moment `eff_min` effective minutes after `from_ms`, walking minute by minute
+/// with the schedule's weights -- the reference's backward-free "walk to 100 %".
+fn after_effective(sched Schedule, from_ms int, eff_min int, offset_sec int, limit_ms int) -> int {
+    mut t = from_ms
+    mut acc = 0
+    ro start = grid(from_ms, offset_sec)
+    mut step = 0
+    while t < limit_ms {
+        // `effective_minutes` over one minute is that minute's weight, in whole minutes
+        // after the schedule's rounding -- so the weight is read in hundredths here.
+        ro g = start + step
+        ro day = (g / 1440) % 7
+        ro in_day = g % 1440
+        ro working_day = if day < sched.days.len() { sched.days[day] } else { false }
+        ro inside = working_day && in_day >= sched.from_min && in_day < sched.to_min
+        acc += if inside { 100 } else { sched.off_hours_rate }
+        if acc >= eff_min * 100 { return t }
+        t += MINUTE_MS
+        step += 1
+    }
+    -1
+}
+
+/// "ends Tue ~12:30 (2d 17h)" -- the reset caption's moment with `~` before the time.
+fn ends_label(at_ms int, now_ms int, zone TimeZone) -> str {
+    ro moment = reset_moment(at_ms.to_unix_millis(), now_ms.to_unix_millis(), zone)
+    ro approx = match moment.rsplit_once(" ") {
+        Some((head, time)) => "${head} ~${time}"
+        None => "~${moment}"
+    }
+    "ends ${approx} (${duration_words(at_ms - now_ms)})"
+}
+
+fn view_of_forecast(percent_at_reset int, runs_out_at str, rate_milli int, basis str,
+                    sample_minutes int, label str, warning bool) -> ForecastView =>
+    { percent_at_reset, runs_out_at, rate_per_hour_milli: rate_milli, basis, sample_minutes, label, warning }
+
+/// The samples of one limit row: its account (by e-mail -- the snapshot and the
+/// database name accounts differently, 01.2 §3.6) and its window (kind and model).
+fn samples_of(v SnapshotView, l LimitView, rows HistRows) -> []HistSample {
+    mut email = ""
+    for a in v.accounts { if a.id == l.account_id { email = a.email.to_ascii_lower() } }
+    if email == "" { return [] }
+    mut db_id = ""
+    for a in rows.accounts { if a.email == email { db_id = a.id } }
+    if db_id == "" { return [] }
+    for w in rows.windows {
+        if w.account_id == db_id && w.kind == l.kind && w.model == l.model { return w.samples }
+    }
+    []
+}
+
+fn state_of(v SnapshotView, account_id str) -> str {
+    for a in v.accounts { if a.id == account_id { return a.state } }
+    "unknown"
+}
+
+/// The forecast of one row, or `None`: unavailable (01.3 §3.3 allows `null`).
+export fn forecast_of(v SnapshotView, l LimitView, rows HistRows, f ForecastRules,
+                      now_ms int, offset_sec int, zone TimeZone) -> Option[ForecastView] {
+    if !f.enabled { return None }
+    if unavailable_for(state_of(v, l.account_id), l.locked) { return None }
+    if l.resets_at == "" || l.seconds_left <= 0 { return None }
+    ro reset_ms = now_ms + l.seconds_left * 1000
+    ro calendar = l.kind == "session" || !f.working_hours
+    ro rate_span_ms = if l.kind == "session" { 60 * MINUTE_MS } else { f.rate_window_days.max(1) * 1440 * MINUTE_MS }
+    ro limit_start = reset_ms - l.window_sec * 1000
+    ro rate_start = (now_ms - rate_span_ms).max(limit_start)
+
+    mut first = HistSample{ at_ms: -1, percent: 0, resets_at_ms: 0, locked: false }
+    for s in samples_of(v, l, rows) {
+        if first.at_ms < 0 && s.at_ms >= rate_start && s.at_ms <= now_ms { first = s }
+    }
+    if first.at_ms < 0 { return None }
+    ro span_ms = now_ms - first.at_ms
+    if span_ms < MIN_SPAN_MS { return None }
+
+    ro sched = schedule_of(f)
+    ro work_min = if calendar { span_ms / MINUTE_MS } else { effective_minutes(sched, grid(first.at_ms, offset_sec), grid(now_ms, offset_sec)) }
+    ro remaining_min = if calendar { (reset_ms - now_ms) / MINUTE_MS } else { effective_minutes(sched, grid(now_ms, offset_sec), grid(reset_ms, offset_sec)) }
+    ro basis = if calendar { Basis.Clock } else { Basis.WorkingHours }
+    ro r = forecast(l.percent, l.percent - first.percent, work_min, remaining_min, span_ms / MINUTE_MS, basis)
+    if !r.available { return None }
+
+    ro out_ms = if r.runs_out_in_min < 0 {
+        -1
+    } else if calendar {
+        now_ms + r.runs_out_in_min * MINUTE_MS
+    } else {
+        after_effective(sched, now_ms, r.runs_out_in_min, offset_sec, reset_ms)
+    }
+    ro label = if out_ms < 0 { "\u{2192} ${r.percent_at_reset}% at reset" } else { ends_label(out_ms, now_ms, zone) }
+    ro runs_out_at = if out_ms < 0 { "" } else { moment_iso(out_ms) }
+    // The model keeps HUNDREDTHS, the wire THOUSANDTHS (`dto.ForecastView`): times ten.
+    ro rate_milli = r.rate_per_hour_x100 * 10
+    ro minutes = span_ms / MINUTE_MS
+    ro warn = r.warning
+    Some(view_of_forecast(r.percent_at_reset, runs_out_at, rate_milli, basis.to_str(), minutes, label, warn))
+}
+
+/// The snapshot with every row's forecast filled in from `rows`.
+export fn with_forecasts(v SnapshotView, rows HistRows, f ForecastRules,
+                         now_ms int, offset_sec int, zone TimeZone) -> SnapshotView {
+    mut limits []LimitView = []
+    for l in v.limits {
+        mut row = l
+        row.forecast = forecast_of(v, l, rows, f, now_ms, offset_sec, zone)
+        limits.push(row)
+    }
+    snapshot_with(v, limits)
+}
+
+/// `v` with other limit rows -- a new record, since `v` is the caller's and frozen.
+fn snapshot_with(v SnapshotView, limits []LimitView) -> SnapshotView => {
+    fetched_at: v.fetched_at, next_poll_at: v.next_poll_at, tz: v.tz, restored: v.restored,
+    worst: v.worst, accounts: v.accounts, limits,
+}

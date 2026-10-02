@@ -49,7 +49,12 @@ export fn Basis @to_str() -> str =>
         Unavailable => "unavailable"
     }
 
-export type Forecast value {
+/// NAMED `Projection`, NOT `Forecast`, since 2026-10-02: `config.Forecast` (the
+/// `[forecast]` settings) has a field `warning int` and this record one `warning
+/// bool`, and with both in one binary the checker typed one's fields by the other
+/// (E7301 in `handlers/config.nv`, the registry 221.1 #154 class). Two names cannot
+/// collide.
+export type Projection value {
     available bool
     percent_at_reset int
     runs_out_in_min int     // working minutes from `now`; -1 when it does not run out
@@ -67,7 +72,7 @@ export type Forecast value {
     warning bool            // runs out BEFORE the reset
 }
 
-fn Forecast.none(basis Basis) -> Forecast =>
+fn Projection.none(basis Basis) -> Projection =>
     { available: false, percent_at_reset: 0, runs_out_in_min: -1,
       rate_per_hour_x100: 0, basis, warning: false }
 
@@ -85,34 +90,41 @@ const MIN_HISTORY_MIN = 30
 /// shown to a person is a whole percent, and carrying a float here would only add a
 /// way for two implementations of the same caption to disagree in the last digit.
 export fn forecast(percent_now int, used_percent int, window_min int,
-                   remaining_min int, history_min int, basis Basis) -> Forecast {
-    if basis.to_str() == "unavailable" { return Forecast.none(Unavailable) }
-    if history_min < MIN_HISTORY_MIN { return Forecast.none(Unavailable) }
-    if window_min <= 0 { return Forecast.none(Unavailable) }
+                   remaining_min int, history_min int, basis Basis) -> Projection {
+    if basis.to_str() == "unavailable" { return Projection.none(Unavailable) }
+    if history_min < MIN_HISTORY_MIN { return Projection.none(Unavailable) }
+    if window_min <= 0 { return Projection.none(Unavailable) }
 
-    // Rate in TEN-THOUSANDTHS of a percent per minute.
+    // Rate in MILLIONTHS of a percent per minute (ten-thousandths until 2026-10-02;
+    // the history of both raises follows).
     //
     // The scale is not decoration. At hundredths, 74 % over 36 hours came out as
     // `7400 / 2160 = 3` — integer division threw away 0.42, the rate became 1.80 %/h
     // instead of 2.06, and the forecast moved by six points. Ten-thousandths keep
     // four digits, which is three more than a forecast ever shows.
-    ro rate_x10000 = (used_percent * 10000) / window_min
+    //
+    // RAISED TO MILLIONTHS 2026-10-02 by the differential with the reference (plan
+    // 01.6, П1): at ten-thousandths 15 % over 1860 minutes came out 80 instead of 80.6,
+    // the week projected 119 % instead of 120.29, and "runs out" landed 46 minutes
+    // after the reference's. `int` is 64-bit; the largest product here, 100 % * 10^6 *
+    // a month of minutes, is under 5 * 10^12.
+    ro rate_x1e6 = (used_percent * 1000000) / window_min
 
     // `rate <= 0` means the spend did not grow over the window: the honest forecast is
     // "it stays where it is", not a fall (§2.7).
-    if rate_x10000 <= 0 {
+    if rate_x1e6 <= 0 {
         return { available: true, percent_at_reset: percent_now, runs_out_in_min: -1,
                  rate_per_hour_x100: 0, basis, warning: false }
     }
 
-    ro at_reset = percent_now + (rate_x10000 * remaining_min) / 10000
+    ro at_reset = percent_now + (rate_x1e6 * remaining_min) / 1000000
     ro left = 100 - percent_now
-    ro runs_out = if at_reset < 100 { -1 } else { (left * 10000) / rate_x10000 }
+    ro runs_out = if at_reset < 100 { -1 } else { (left * 1000000) / rate_x1e6 }
 
     { available: true,
       percent_at_reset: at_reset,
       runs_out_in_min: runs_out,
-      rate_per_hour_x100: (rate_x10000 * 60) / 100,
+      rate_per_hour_x100: (rate_x1e6 * 60) / 10000,
       basis,
       // `warning` ⇔ it runs out BEFORE the reset (§2.7, and 01.3 §3.3:
       // `warning: true` ⇔ `runs_out_at` earlier than `resets_at`).

@@ -245,7 +245,10 @@ export fn one_round(r Rounds) Http PollLog Creds Dirs Time -> SnapshotView {
 /// one transaction per tick, written after the round, not during it -- the database is
 /// not held open across a network round).
 export type RoundLog effect {
-    done(view SnapshotView) -> ()
+    // The round is over: write it down, and hand back the snapshot to keep -- the
+    // binary fills the forecasts from the history it has just written (plan 01.6, П1).
+    // `conf` is the settings the store holds: the folders and `[forecast]` as they stand.
+    done(view SnapshotView, conf ConfNow) -> SnapshotView
     // Between rounds: the settings as they should stand, given what the store holds
     // (01.2 §2.2, "при каждом тике опроса: если `mtime` файла изменился --
     // перечитать"). The answer goes straight into the store's state.
@@ -273,7 +276,7 @@ fn snapshot_body(st StoreState) -> str =>
 
 /// What follows every round: write it, look at the settings file, tell the streams.
 fn after_round(mut st StoreState) RoundLog -> () {
-    RoundLog.done(st.view)
+    st.view = RoundLog.done(st.view, st.conf)
     ro s = RoundLog.settings(st.conf, st.view)
     st.conf = s.conf
     // nova:allow W_RESULT_DISCARDED -- the event's id matters to the streams, not here

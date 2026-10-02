@@ -12,7 +12,7 @@
 
 module model.forecast_test
 
-import forecast.{Schedule, Basis, Forecast, forecast, unavailable_for, effective_minutes}
+import forecast.{Schedule, Basis, Projection, forecast, unavailable_for, effective_minutes}
 
 // The vector named by 01.1 §11 item 5: 36 working hours of history, 74 % used,
 // 14 working hours until the reset.

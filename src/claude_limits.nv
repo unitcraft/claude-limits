@@ -65,6 +65,7 @@ import duckdb.db_real.{with_real_db}
 import claude_limits.server.feed.{Rounds, one_round, RoundLog, Settled, store_and_poll, tick_every, ping_every}
 import claude_limits.model.store_fiber.{Envelope, Store, ConfNow, Follower}
 import claude_limits.model.store.{Event}
+import claude_limits.model.forecast_join.{ForecastRules, with_forecasts}
 import claude_limits.server.handlers.events.{Live}
 import claude_limits.server.handlers.folders.{ProbeState, probe_body}
 import std.concurrency.nvchan.{Chan, ChanRx}
@@ -247,14 +248,18 @@ fn rounds_recorded(rx ChanRx[Envelope], rounds Rounds, paths Paths, win bool, ca
                 None => Settled.new(held, "")
             }
         }
-        done(view SnapshotView) -> () {
-            record_round(where, on_windows, view, got.items, folders)
+        done(view SnapshotView, conf ConfNow) -> SnapshotView {
+            // The folders AS THEY STAND: a folder saved since the start is discovered
+            // and written like the others.
+            ro now_folders = if conf.tag == "" { folders } else { conf.cfg.folders }
+            record_round(where, on_windows, view, got.items, now_folders)
             got.items = []
             ro today = local_day(Time.now().unix_millis())
             if today != upkept_on {
                 upkeep_round(where, on_windows, how, backups)
                 upkept_on = today
             }
+            forecast_round(where, on_windows, view, conf)
         }
     } {
         store_and_poll(rx, rounds)
@@ -499,6 +504,31 @@ fn open_live(store Store, after int) -> Live {
     ro p = Chan[Event].new(128)
     ro got = store.follow(after, Follower.unregistered(p.tx, p.rx))
     Live.new(got.id, got.fresh, got.snapshot_id, p.rx)
+}
+
+/// `[forecast]` as the forecast join takes it (its own record: see `ForecastRules`).
+fn rules_of(c Config) -> ForecastRules =>
+    ForecastRules.new(c.forecast.enabled, c.forecast.working_hours, c.forecast.work_days,
+                      c.forecast.work_from, c.forecast.work_to, c.forecast.off_hours_rate,
+                      c.forecast.rate_window_days)
+
+/// The round's snapshot with its forecasts (plan 01.6, П1), from the history the round
+/// has just written. A database that does not answer leaves the forecasts `null`, with
+/// a log line: the snapshot itself is still good.
+fn forecast_round(paths Paths, windows bool, view SnapshotView, conf ConfNow) Time -> SnapshotView {
+    ro now = Time.now().unix_millis() as int
+    // A week back covers both rate windows (60 minutes, `rate_window_days` up to 7).
+    ro from = now - (conf.cfg.forecast.rate_window_days.max(7) + 1) * 86400000
+    ro got = with Fs = real_fs(), Random = real_random() {
+        with_real_db(fn() Db Fs Random -> Result[HistFolderRows, str] => read_history_rows(paths, from, now, [], [], false, windows))
+    }
+    match got {
+        Ok(r) => with_forecasts(view, r.rows, rules_of(conf.cfg), now, Offset.local().seconds() as int, TimeZone.Fixed(Offset.local()))
+        Err(why) => {
+            println("claude-limits: no forecast this round, the history did not read: ${why}")
+            view
+        }
+    }
 }
 
 fn db_seen(r Ready, size int) -> DbAtStart =>

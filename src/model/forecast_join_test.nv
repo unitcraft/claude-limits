@@ -1,0 +1,148 @@
+// Tests for forecast_join.nv -- plan 01.6, П1: the forecast against the REFERENCE.
+//
+//   ./nova.sh test src/model/forecast_join_test.nv
+//
+// THE NUMBERS BELOW ARE THE REFERENCE'S. `scripts/claude_limits.py` `forecast_of` was run
+// on exactly these samples (2026-10-02, machine zone +03:00, the reference reads local
+// time for working hours) and said:
+//
+//   session       at_reset=52.0000   runs_out=None                  rate_per_hour=12.0000  span_min=60
+//   weekly_clock  at_reset=120.2903  runs_out=2026-10-05T08:04:00Z  rate_per_hour=0.4839   span_min=1860
+//   weekly_work   at_reset=96.6923   runs_out=None                  rate_per_hour=1.1538   span_min=1860
+//
+// The port is integral: percentages are whole, so 120.29 is 120 and 96.69 is 96. The
+// moment it runs out is the reference's to the minute -- that is what the rate's scale
+// was raised for (`model/forecast.nv`).
+
+module model.forecast_join_test
+
+import std.time.civil.{TimeZone}
+import claude_limits.server.dto.{SnapshotView, AccountView, LimitView, ForecastView}
+import claude_limits.storage.history_rows.{HistRows, HistAccount, HistWindow, HistSample}
+import forecast_join.{ForecastRules, with_forecasts, forecast_of}
+
+// 2026-10-01 09:00:00 UTC, a Thursday: 12:00 at +03:00.
+const NOW_MS = 1790845200000
+const OFFSET_SEC = 10800
+const MIN = 60000
+const HOUR = 3600000
+
+fn same(label str, want str, got str) -> bool {
+    if want == got { return true }
+    panic("${label}: want [${want}], got [${got}]")
+}
+
+fn rules(working_hours bool) -> ForecastRules =>
+    ForecastRules.new(true, working_hours, ["mon", "tue", "wed", "thu", "fri"], "09:00", "19:00", 0, 3)
+
+fn account() -> AccountView => {
+    id: "a-1", email: "Main@Example.com", org: "Org", dirs: [], state: "ok", message: "",
+    polled_at: "", next_poll_at: "", locked: false, at_100: false,
+}
+
+fn limit(kind str, percent int, seconds_left int, window_sec int) -> LimitView => {
+    account_id: "a-1", kind, model: "", label: kind, percent, severity: "normal", server_severity: "",
+    locked: false, locked_reason: "", active: false, resets_at: "2026-10-01T11:00:00Z",
+    seconds_left, reset_label: "", window_sec, elapsed_share_hundredths: 0, forecast: None,
+}
+
+fn view(l LimitView) -> SnapshotView => {
+    fetched_at: "2026-10-01T09:00:00Z", next_poll_at: "", tz: "+03:00", restored: false,
+    worst: None, accounts: [account()], limits: [l],
+}
+
+fn sample(at_ms int, percent int) -> HistSample => { at_ms, percent, resets_at_ms: 0, locked: false }
+
+fn rows(kind str, samples []HistSample) -> HistRows => {
+    accounts: [HistAccount{ id: "db-1", email: "main@example.com", color_slot: 0, polls: [] }],
+    windows: [HistWindow{ account_id: "db-1", kind, model: "", samples, locks: [], rollups: [] }],
+}
+
+/// Session: every 5 minutes over the last 90, 10 % rising to 28 % now.
+fn session_samples() -> []HistSample {
+    mut out []HistSample = []
+    for k in 0..19 { out.push(sample(NOW_MS - 90 * MIN + 5 * MIN * k, 10 + k)) }
+    out
+}
+
+/// Week: hourly over the last 72 hours, one point per two hours, 54 % now.
+fn week_samples() -> []HistSample {
+    mut out []HistSample = []
+    mut h = 72
+    while h >= 0 {
+        out.push(sample(NOW_MS - h * HOUR, 54 - h / 2))
+        h -= 1
+    }
+    out
+}
+
+fn one(l LimitView, r HistRows, working_hours bool) -> Option[ForecastView] =>
+    forecast_of(view(l), l, r, rules(working_hours), NOW_MS, OFFSET_SEC, TimeZone.Utc)
+
+test "session, as the reference: 52 % at reset, 12 %/h over the last 60 minutes" {
+    ro l = limit("session", 28, 2 * 3600, 5 * 3600)
+    match one(l, rows("session", session_samples()), false) {
+        None => panic("no forecast")
+        Some(f) => {
+            assert(f.percent_at_reset == 52)
+            assert(same("runs out", "", f.runs_out_at))
+            assert(f.rate_per_hour_milli == 12000)
+            assert(f.sample_minutes == 60)
+            assert(same("basis", "clock", f.basis))
+            assert(same("label", "\u{2192} 52% at reset", f.label))
+            assert(!f.warning)
+        }
+    }
+}
+
+test "week by the clock, as the reference: 120 %, runs out 2026-10-05 08:04 UTC" {
+    // The rate is taken from the start of the CURRENT window (31 hours ago), not from
+    // three days back: the window resets in 5d 17h of a 7-day week.
+    ro l = limit("weekly_all", 54, (5 * 24 + 17) * 3600, 7 * 86400)
+    match one(l, rows("weekly_all", week_samples()), false) {
+        None => panic("no forecast")
+        Some(f) => {
+            assert(f.percent_at_reset == 120)
+            assert(f.runs_out_at.starts_with("2026-10-05T08:04:00"))
+            assert(f.sample_minutes == 1860)
+            assert(f.warning)
+            assert(f.label.starts_with("ends "))
+            assert(f.label.contains("~08:04"))
+            assert(f.label.contains("(3d 23h)"))
+        }
+    }
+}
+
+test "week by working hours, as the reference: 96 % and it lasts" {
+    ro l = limit("weekly_all", 54, (5 * 24 + 17) * 3600, 7 * 86400)
+    match one(l, rows("weekly_all", week_samples()), true) {
+        None => panic("no forecast")
+        Some(f) => {
+            assert(f.percent_at_reset == 96)
+            assert(same("runs out", "", f.runs_out_at))
+            assert(same("basis", "working_hours", f.basis))
+        }
+    }
+}
+
+test "under 30 minutes of history there is no forecast" {
+    ro l = limit("session", 28, 2 * 3600, 5 * 3600)
+    ro short = [sample(NOW_MS - 20 * MIN, 20), sample(NOW_MS, 28)]
+    assert(one(l, rows("session", short), false).is_none())
+}
+
+test "a locked row, a stale account, or forecasting switched off: no forecast" {
+    mut locked = limit("session", 100, 2 * 3600, 5 * 3600)
+    locked.locked = true
+    assert(one(locked, rows("session", session_samples()), false).is_none())
+    ro off = ForecastRules.new(false, false, [], "09:00", "19:00", 0, 3)
+    ro l = limit("session", 28, 2 * 3600, 5 * 3600)
+    assert(forecast_of(view(l), l, rows("session", session_samples()), off, NOW_MS, OFFSET_SEC, TimeZone.Utc).is_none())
+}
+
+test "with_forecasts fills the row in the snapshot it returns" {
+    ro l = limit("session", 28, 2 * 3600, 5 * 3600)
+    ro v = with_forecasts(view(l), rows("session", session_samples()), rules(false), NOW_MS, OFFSET_SEC, TimeZone.Utc)
+    assert(v.limits.len() == 1)
+    assert(v.limits[0].forecast.is_some())
+}
