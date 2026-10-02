@@ -71,6 +71,19 @@ export fn request_for(host str, path str, token str) -> str {
     r
 }
 
+/// A form POST (`application/x-www-form-urlencoded`), serialised -- the Kimi token grant
+/// (`kimi_refresh.grant_request`). Here, beside the two GETs, so the requests have one
+/// home and `CRLF` one spelling (`check-duplicate-limits.py` refused a second copy).
+export fn request_form(host str, path str, body str) -> str {
+    mut r = "POST ${path} HTTP/1.1${CRLF}"
+    r = "${r}Host: ${host}${CRLF}"
+    r = "${r}Accept: application/json${CRLF}"
+    r = "${r}Content-Type: application/x-www-form-urlencoded${CRLF}"
+    r = "${r}Content-Length: ${body.byte_len()}${CRLF}"
+    r = "${r}Connection: close${CRLF}${CRLF}"
+    "${r}${body}"
+}
+
 /// The Kimi Code request: the same shape without Anthropic's beta header, which a
 /// foreign endpoint has no use for (the reference's `fetch_kimi_usage` sends exactly
 /// `Authorization` and `Accept`).

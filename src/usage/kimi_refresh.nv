@@ -29,14 +29,13 @@ module usage.kimi_refresh
 import std.fs.{read_text, write_atomic}
 import std.encoding.json.{Json, JsonValue, JsonObject, ParseJsonError}
 import claude_limits.accounts.login.{raw_field_str}
-import claude_limits.usage.fetch.{status_of, body_of}
+import claude_limits.usage.fetch.{status_of, body_of, request_form}
 import http.{Http}
 
 export const KIMI_AUTH_HOST = "auth.kimi.com"
 const KIMI_AUTH_PATH = "/api/oauth/token"
 /// The Kimi Code CLI's public client id (the reference's `KIMI_CLIENT_ID`).
 const KIMI_CLIENT_ID = "17e5f671-d194-4dfb-9706-5516cb48c098"
-const CRLF = "\r\n"
 
 /// What one attempt did.
 export type Renewed enum
@@ -67,13 +66,7 @@ export fn form_value(s str) -> str {
 /// The grant's request, serialised.
 export fn grant_request(refresh_token str) -> str {
     ro body = "client_id=${form_value(KIMI_CLIENT_ID)}&grant_type=refresh_token&refresh_token=${form_value(refresh_token)}"
-    mut r = "POST ${KIMI_AUTH_PATH} HTTP/1.1${CRLF}"
-    r = "${r}Host: ${KIMI_AUTH_HOST}${CRLF}"
-    r = "${r}Accept: application/json${CRLF}"
-    r = "${r}Content-Type: application/x-www-form-urlencoded${CRLF}"
-    r = "${r}Content-Length: ${body.byte_len()}${CRLF}"
-    r = "${r}Connection: close${CRLF}${CRLF}"
-    "${r}${body}"
+    request_form(KIMI_AUTH_HOST, KIMI_AUTH_PATH, body)
 }
 
 fn num_of(v JsonValue) -> int =>
