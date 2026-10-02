@@ -143,6 +143,14 @@ def main(argv):
 
         status, ctype, _ = get(base + "/")
         check("page", status == 200 and ctype.startswith("text/html"), f"{status} {ctype}")
+        # 01.3: the page carries its CSP -- without it an antivirus injected a script
+        # into the owner's page (2026-10-02). The header itself, not its consequences.
+        try:
+            with urllib.request.urlopen(base + "/", timeout=5) as r:
+                csp = r.headers.get("Content-Security-Policy", "")
+        except Exception as e:  # noqa: BLE001
+            csp = f"<{e}>"
+        check("page CSP", "script-src 'self'" in csp and "default-src 'none'" in csp, csp)
 
         status, _, body = get(base + "/api/snapshot")
         try:

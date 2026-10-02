@@ -252,8 +252,10 @@ main:has(.view-wide:not([hidden])) { max-width: var(--page-width-wide); }
   background: repeating-linear-gradient(45deg, currentColor 0 2px, transparent 2px 5px);
   color: var(--normal);
 }
-.row[data-severity="warning"] .bar-ghost { color: var(--warning); }
-.row[data-severity="critical"] .bar-ghost { color: var(--critical); }
+/* By the PROJECTION's severity (01.1 sec.2.2, 2026-09-22): the ghost carries its own
+   data-severity, so a calm row heading for the wall shows a red ghost. */
+.bar-ghost[data-severity="warning"] { color: var(--warning); }
+.bar-ghost[data-severity="critical"] { color: var(--critical); }
 
 /* The strip needs `relative` for the hatching, which is positioned against it. */
 .timebar { position: relative; height: 3px; border-radius: 2px; background: var(--track); }

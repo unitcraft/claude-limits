@@ -94,6 +94,9 @@ export function renderRow(limit, { dimmed = false } = {}) {
     // Remembered on the element so `layoutCells` can re-lay it in the cells style
     // without recomputing a forecast it does not have.
     ghost.dataset.at = String(Math.min(100, fcPct));
+    // Coloured by the PROJECTION (01.1 sec.2.2, 2026-09-22), not by the row's current
+    // percent: "40 % now, heading for 95" must read as heading somewhere bad.
+    if (limit.forecast.severity) ghost.dataset.severity = limit.forecast.severity;
     ghost.setAttribute('aria-hidden', 'true');
     bar.append(ghost);
   }

@@ -373,6 +373,19 @@ test('layoutCells re-lays the GHOST too, not only the fill (01.1 par.2.2)', () =
   }
 });
 
+test('the ghost is coloured by the PROJECTION, not by the row (01.1 sec.2.2, 2026-09-22)', () => {
+  // 40 % now is a calm row; heading for 120 % it is a red ghost. The owner saw no
+  // forecast colours at all on the first stand: the ghost took the row's colour.
+  const base = snap.limits.find((l) => l.forecast && l.resets_at);
+  const row = renderRow({ ...base, percent: 40, severity: 'normal',
+    forecast: { ...base.forecast, percent_at_reset: 120, severity: 'critical' } });
+  const ghost = row.all((n) => n.className === 'bar-ghost')[0];
+  assert.equal(ghost.dataset.severity, 'critical');
+  const calm = renderRow({ ...base, percent: 40, severity: 'normal',
+    forecast: { ...base.forecast, percent_at_reset: 60, severity: 'normal' } });
+  assert.equal(calm.all((n) => n.className === 'bar-ghost')[0].dataset.severity, 'normal');
+});
+
 test('a dimmed row draws no strip and no ghost: both are claims about NOW', () => {
   const withForecast = snap.limits.find((l) => l.forecast && l.resets_at);
   assert.ok(withForecast, 'the fixture needs a limit with both');

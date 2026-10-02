@@ -514,10 +514,12 @@ fn open_live(store Store, after int) -> Live {
 }
 
 /// `[forecast]` as the forecast join takes it (its own record: see `ForecastRules`).
-fn rules_of(c Config) -> ForecastRules =>
+fn rules_of(c Config) -> ForecastRules {
+    ro ghost = c.forecast.ghost_thresholds()
     ForecastRules.new(c.forecast.enabled, c.forecast.working_hours, c.forecast.work_days,
                       c.forecast.work_from, c.forecast.work_to, c.forecast.off_hours_rate,
-                      c.forecast.rate_window_days)
+                      c.forecast.rate_window_days).with_ghost(ghost.warning, ghost.critical)
+}
 
 /// The round's snapshot with its forecasts (plan 01.6, П1), from the history the round
 /// has just written. A database that does not answer leaves the forecasts `null`, with

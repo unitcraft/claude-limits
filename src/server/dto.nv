@@ -115,6 +115,8 @@ export type ForecastView value {
     label str
     /// True exactly when `runs_out_at` is earlier than `resets_at` (§3.3).
     warning bool
+    /// `normal | warning | critical` of the PROJECTION, by `[forecast]` thresholds (§3.3).
+    severity str
 }
 
 /// One limit row, beside its account rather than inside it.
@@ -238,6 +240,7 @@ type WireForecast value {
     ro sample_minutes int
     ro label str
     ro warning bool
+    ro severity str
 }
 
 #impl(Serialize)
@@ -303,6 +306,7 @@ fn wire_forecast(f ForecastView) -> WireForecast => {
     sample_minutes: f.sample_minutes,
     label: f.label,
     warning: f.warning,
+    severity: f.severity,
 }
 
 fn wire_limit(l LimitView) -> WireLimit => {

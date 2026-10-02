@@ -91,6 +91,7 @@ test "session, as the reference: 52 % at reset, 12 %/h over the last 60 minutes"
             assert(same("basis", "clock", f.basis))
             assert(same("label", "\u{2192} 52% at reset", f.label))
             assert(!f.warning)
+            assert(same("severity", "normal", f.severity))
         }
     }
 }
@@ -109,6 +110,8 @@ test "week by the clock, as the reference: 120 %, runs out 2026-10-05 08:04 UTC"
             assert(f.label.starts_with("ends "))
             assert(f.label.contains("~08:04"))
             assert(f.label.contains("(3d 23h)"))
+            // 120 % at reset is past the ghost's 95: red, whatever the fill says now (54 %).
+            assert(same("severity", "critical", f.severity))
         }
     }
 }
@@ -119,6 +122,7 @@ test "week by working hours, as the reference: 96 % and it lasts" {
         None => panic("no forecast")
         Some(f) => {
             assert(f.percent_at_reset == 96)
+            assert(same("severity at 96", "critical", f.severity))
             assert(same("runs out", "", f.runs_out_at))
             assert(same("basis", "working_hours", f.basis))
         }

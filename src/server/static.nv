@@ -68,7 +68,17 @@ export fn config() -> Static {
 ///
 /// `Server` is absent here as everywhere: §0 forbids any header naming the
 /// framework, and §8 п. 11 checks for it.
+/// The page's Content-Security-Policy, verbatim from 01.3 §2 ("Заголовки на страницу").
+///
+/// MISSING UNTIL 2026-10-02, and a browser showed why it matters: the owner's
+/// antivirus injected its own script into the page (requests to
+/// gc.kis.v2.scr.kaspersky-labs.com every few seconds). With `script-src 'self'` the
+/// browser refuses anything the page did not bring. The gap was named by the hunt
+/// of 2026-09-08 ("CSP: зазор назван, стража нет"); the smoke now checks the header.
+export const PAGE_CSP = "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src 'self'"
+
 fn stamp(mut resp ServerResponse) -> ServerResponse {
+    resp.header("Content-Security-Policy", PAGE_CSP)
     resp.header("X-Api-Version", "${API_VERSION}")
     resp.header("X-Content-Type-Options", "nosniff")
     resp.header("Referrer-Policy", "no-referrer")

@@ -81,11 +81,28 @@ export type ForecastRules value {
     ro work_to str
     ro off_hours_rate int
     ro rate_window_days int
+    /// The ghost's colour thresholds (01.1 §5.3: 80/95), already checked by the caller.
+    ro ghost_warning int
+    ro ghost_critical int
 }
 
 export fn ForecastRules.new(enabled bool, working_hours bool, work_days []str, work_from str, work_to str,
                             off_hours_rate int, rate_window_days int) -> ForecastRules =>
-    { enabled, working_hours, work_days, work_from, work_to, off_hours_rate, rate_window_days }
+    { enabled, working_hours, work_days, work_from, work_to, off_hours_rate, rate_window_days,
+      ghost_warning: 80, ghost_critical: 95 }
+
+/// The same, with the ghost's thresholds from the settings.
+export fn ForecastRules @with_ghost(warning int, critical int) -> ForecastRules => {
+    @enabled, @working_hours, @work_days, @work_from, @work_to, @off_hours_rate, @rate_window_days,
+    ghost_warning: warning, ghost_critical: critical,
+}
+
+/// The severity of a PROJECTION (01.1 §2.2, amendment 2026-09-22): the ghost's colour.
+export fn projection_severity(percent_at_reset int, f ForecastRules) -> str {
+    if percent_at_reset >= f.ghost_critical { return "critical" }
+    if percent_at_reset >= f.ghost_warning { return "warning" }
+    "normal"
+}
 
 /// The working schedule, as the arithmetic wants it.
 export fn schedule_of(f ForecastRules) -> Schedule {
@@ -134,8 +151,8 @@ fn ends_label(at_ms int, now_ms int, zone TimeZone) -> str {
 }
 
 fn view_of_forecast(percent_at_reset int, runs_out_at str, rate_milli int, basis str,
-                    sample_minutes int, label str, warning bool) -> ForecastView =>
-    { percent_at_reset, runs_out_at, rate_per_hour_milli: rate_milli, basis, sample_minutes, label, warning }
+                    sample_minutes int, label str, warning bool, severity str) -> ForecastView =>
+    { percent_at_reset, runs_out_at, rate_per_hour_milli: rate_milli, basis, sample_minutes, label, warning, severity }
 
 /// The samples of one limit row: its account (by e-mail -- the snapshot and the
 /// database name accounts differently, 01.2 §3.6) and its window (kind and model).
@@ -197,7 +214,8 @@ export fn forecast_of(v SnapshotView, l LimitView, rows HistRows, f ForecastRule
     ro rate_milli = r.rate_per_hour_x100 * 10
     ro minutes = span_ms / MINUTE_MS
     ro warn = r.warning
-    Some(view_of_forecast(r.percent_at_reset, runs_out_at, rate_milli, basis.to_str(), minutes, label, warn))
+    ro sev = projection_severity(r.percent_at_reset, f)
+    Some(view_of_forecast(r.percent_at_reset, runs_out_at, rate_milli, basis.to_str(), minutes, label, warn, sev))
 }
 
 /// The snapshot with every row's forecast filled in from `rows`.

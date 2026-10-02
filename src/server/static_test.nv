@@ -99,6 +99,7 @@ test "a static response carries the security headers and, by D9, no X-Request-Id
         ro w = serve("/")
         assert(hdr(w, "x-content-type-options") == "nosniff")
         assert(hdr(w, "referrer-policy") == "no-referrer")
+        assert(hdr(w, "content-security-policy") == "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src 'self'")
         assert(hdr(w, "x-frame-options") == "DENY")
         assert(hdr(w, "x-api-version") != "")
 

@@ -227,6 +227,7 @@ fn ref_forecast(f ForecastView) -> str =>
         field_int("sample_minutes", f.sample_minutes),
         field_str("label", f.label),
         field_bool("warning", f.warning),
+        field_str("severity", f.severity),
     ])
 
 fn ref_limit(l LimitView) -> str {
@@ -293,9 +294,9 @@ test "the reference's own number spelling is what section 0 writes" {
 fn sample_snapshot() -> SnapshotView {
     ro fc = ForecastView{ percent_at_reset: 103, runs_out_at: "2026-09-09T09:30:00Z",
         rate_per_hour_milli: 2060, basis: "working_hours", sample_minutes: 2160,
-        label: "ends Tue ~12:30 (2d 17h)", warning: true }
+        label: "ends Tue ~12:30 (2d 17h)", warning: true, severity: "critical" }
     ro calm = ForecastView{ percent_at_reset: 11, runs_out_at: "", rate_per_hour_milli: 2300,
-        basis: "clock", sample_minutes: 60, label: "\u{2192} 11% at reset", warning: false }
+        basis: "clock", sample_minutes: 60, label: "\u{2192} 11% at reset", warning: false, severity: "normal" }
     {
         fetched_at: "2026-09-06T18:10:00Z", next_poll_at: "", tz: "Europe/Moscow",
         restored: true,
