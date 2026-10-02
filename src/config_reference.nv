@@ -197,6 +197,10 @@ type Section value {
     ro pairs str
 }
 
+/// NOT `sec`: a free function of that name broke std's `Timestamp @to_zoned`, whose
+/// local `ro sec` lost its type -- every moment of the binary read 00:00:00Z (registry
+/// 221.1 #1657, probes/free-fn-named-like-std-local/). The name can go back once #1657
+/// is fixed; the smoke's `moment` check holds it either way.
 fn section_of(name str, array bool, pairs str) -> Section => { name, array, pairs }
 
 /// The reference's file as one JSON object.
