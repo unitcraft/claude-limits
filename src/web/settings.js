@@ -457,6 +457,13 @@ export function collect(panel) {
   }
   const rows = Array.from(panel.querySelectorAll('.folder-row'));
   out.folders = rows.map((r) => folderRef({ id: r.dataset.id || null, path: r.dataset.path }));
+  // THE ADD BOX IS SAVED TOO. It was not: only existing rows were collected and
+  // nothing turned the box into a row, so a path typed, checked and saved went
+  // nowhere -- the panel closed on an empty diff (found on the owner's stand,
+  // 2026-10-02). A path already listed is not added twice.
+  const box = Array.from(panel.querySelectorAll('.input')).find((n) => n.dataset.path === 'folders.new');
+  const typed = box && box.value ? String(box.value).trim() : '';
+  if (typed && !rows.some((r) => r.dataset.path === typed)) out.folders.push({ path: typed });
   return out;
 }
 

@@ -75,6 +75,22 @@ test('folders are sent as references, never as the objects read back', () => {
   }
 });
 
+test('a path typed into the add box is SAVED as a new folder, after the existing ones', () => {
+  const panel = build();
+  at(panel, 'folders.new').value = 'D:/Sources/.claude-accounts';
+  const body = bodyOf(panel);
+  assert.ok(body.folders, `the folder list must be sent; got ${JSON.stringify(body)}`);
+  assert.deepEqual(body.folders[body.folders.length - 1], { path: 'D:/Sources/.claude-accounts' });
+  assert.equal(body.folders.length, reply.config.folders.length + 1, 'the existing folders stay');
+});
+
+test('a typed path that is already listed is not added twice', () => {
+  const panel = build();
+  at(panel, 'folders.new').value = reply.config.folders[0].path;
+  const body = bodyOf(panel);
+  assert.ok(!body.folders, `nothing changed; got ${JSON.stringify(body)}`);
+});
+
 test('an untouched folder list is not sent at all', () => {
   const panel = build();
   at(panel, 'thresholds.warning').value = 75;
