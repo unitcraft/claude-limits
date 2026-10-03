@@ -50,6 +50,48 @@ function spansGap(t1, t2, gaps) {
 }
 
 /**
+ * The samples inside `range`, plus a point ON each edge where a segment crosses it.
+ *
+ * A column may be drawn over a SHORTER range than the series it is given: the session
+ * column shows the last 24 h of a 7- or 30-day series (stats.js `lastDayOf`). Points
+ * outside the range get an x below 0 or above the box, and the chart's `overflow:
+ * visible` painted them outside the card (2026-10-03, after the import brought a week
+ * of history into a 24 h chart). `xOf` still returns such numbers on purpose -- "callers
+ * clip" -- and this is where the line clips.
+ *
+ * The edge point is interpolated between the two samples that straddle the edge, so the
+ * line starts at the border at the height it really had, instead of at the first sample
+ * inside. Not across a gap: a segment the line refuses to draw is not interpolated.
+ */
+function clipToRange(points, range, gaps) {
+  const a = Date.parse(range.from);
+  const b = Date.parse(range.to);
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return points;
+  const at = (p) => Date.parse(p.at);
+  const edge = (p, q, t) => {
+    const t0 = at(p);
+    const t1 = at(q);
+    const k = (t - t0) / (t1 - t0);
+    return { at: new Date(t).toISOString(), percent: p.percent + (q.percent - p.percent) * k };
+  };
+  const out = [];
+  let prev = null;
+  for (const p of points) {
+    const t = at(p);
+    if (!Number.isFinite(t)) continue;
+    if (prev) {
+      const t0 = at(prev);
+      const crossed = !spansGap(t0, t, gaps);
+      if (t0 < a && t > a && crossed) out.push(edge(prev, p, a));
+      if (t0 <= b && t > b && crossed) out.push(edge(prev, p, b));
+    }
+    if (t >= a && t <= b) out.push(p);
+    prev = p;
+  }
+  return out;
+}
+
+/**
  * The polyline through the samples, as an SVG path. Straight between samples, no
  * interpolation (§6.4). Returns '' for nothing to draw — an empty `d` renders as
  * nothing, which is the honest picture of an account with no history.
@@ -58,7 +100,7 @@ export function linePath(points, range, gaps = [], box = BOX) {
   if (!points || !points.length) return '';
   const parts = [];
   let prev = null;
-  for (const p of points) {
+  for (const p of clipToRange(points, range, gaps)) {
     const t = Date.parse(p.at);
     if (!Number.isFinite(t)) continue;
     const x = round(xOf(t, range.from, range.to, box));

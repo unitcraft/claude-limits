@@ -203,6 +203,9 @@ export function renderChart(seriesList, range, opts = {}) {
   // The samples the hover snaps to, kept on the node itself. The alternative is a
   // lookup table keyed by element, which is the same thing with more moving parts.
   node.__points = (first && first.points) || [];
+  // The range THIS chart is drawn over: the session column's is the last 24 h, not the
+  // card's, and the hover has to map x back through the same one.
+  node.__range = range;
 
   // Kept alongside, so the hover can read every line and not only the first.
   node.__series = (seriesList || []).map((sr) => ({
@@ -472,7 +475,8 @@ export function attachHover(card, range) {
       const dot = chart.querySelector('.cursor-dot');
       if (cursor) { cursor.setAttribute('x1', x); cursor.setAttribute('x2', x); }
       const pts = chart.__points || [];
-      const near = nearestPoint(pts, x, range);
+      const own = chart.__range || range;
+      const near = nearestPoint(pts, x, own);
       if (dot && near) {
         dot.setAttribute('cx', near.x);
         dot.setAttribute('cy', yOf(near.point.percent));
@@ -491,7 +495,7 @@ export function attachHover(card, range) {
           const all = chart.__series || [];
           if (all.length > 1) {
             const parts = all.map((sr) => {
-              const pt = nearestPoint(sr.points, x, range);
+              const pt = nearestPoint(sr.points, x, own);
               return pt ? `${sr.label}: ${pt.point.percent}%` : null;
             }).filter(Boolean);
             readout.textContent = `${when} \u00b7 ${parts.join(' \u00b7 ')}`;
