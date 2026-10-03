@@ -127,12 +127,15 @@ fn rate(milli int) -> str => json_encode(Rate{ rate_per_hour: (milli as f64) / 1
 test "fixed-precision numbers come out as the SHORTEST decimal, never float noise" {
     // 01.3 section 0: shares are JSON numbers at 2-3 digits, and its own examples
     // write 2.3 and 2.06 -- trailing zeros are the hand writer's, not the contract's.
+    // A WHOLE share is `1.0`, not `1`, since nova #1638 (2026-10-03): `5` and `5.0`
+    // are different JSON values there, as in serde_json, and an f64 field writes the
+    // second. Same number for every reader; what this test still forbids is noise.
     assert(show("2.300", "{\"rate_per_hour\":2.3}", rate(2300)))
     assert(show("2.060", "{\"rate_per_hour\":2.06}", rate(2060)))
     assert(show("0.005", "{\"rate_per_hour\":0.005}", rate(5)))
     assert(show("0.790", "{\"rate_per_hour\":0.79}", rate(790)))
     assert(show("0.070", "{\"rate_per_hour\":0.07}", rate(70)))
-    assert(show("1.000", "{\"rate_per_hour\":1}", rate(1000)))
+    assert(show("1.000", "{\"rate_per_hour\":1.0}", rate(1000)))
     assert(show("123.450", "{\"rate_per_hour\":123.45}", rate(123450)))
     assert(show("-0.790", "{\"rate_per_hour\":-0.79}", rate(0 - 790)))
     assert(show("0.001", "{\"rate_per_hour\":0.001}", rate(1)))
@@ -167,7 +170,8 @@ test "a unit-only enum: how does it land on the wire?" {
 // writer's spelling. The reference says so here, in the one place the difference
 // is allowed, so that any OTHER difference still reddens the test.
 
-/// `n` scaled by 10^digits as the SHORTEST decimal: 2300,3 -> "2.3"; 1000,3 -> "1".
+/// `n` scaled by 10^digits as the SHORTEST decimal: 2300,3 -> "2.3"; 1000,3 -> "1.0"
+/// (a whole f64 keeps its `.0` since nova #1638 -- see the test above).
 fn shortest(n int, digits int) -> str {
     mut scale = 1
     for _ in 0..digits { scale *= 10 }
@@ -180,7 +184,7 @@ fn shortest(n int, digits int) -> str {
         width -= 1
     }
     ro sign = if neg { "-" } else { "" }
-    if width == 0 { return "${sign}${abs / scale}" }
+    if width == 0 { return "${sign}${abs / scale}.0" }
     mut text = "${frac}"
     while text.byte_len() < width { text = "0${text}" }
     "${sign}${abs / scale}.${text}"
@@ -293,10 +297,10 @@ test "the reference's own number spelling is what section 0 writes" {
     assert(shortest(2300, 3) == "2.3")
     assert(shortest(2060, 3) == "2.06")
     assert(shortest(5, 3) == "0.005")
-    assert(shortest(1000, 3) == "1")
+    assert(shortest(1000, 3) == "1.0")
     assert(shortest(79, 2) == "0.79")
     assert(shortest(7, 2) == "0.07")
-    assert(shortest(0, 2) == "0")
+    assert(shortest(0, 2) == "0.0")
     assert(shortest(0 - 79, 2) == "-0.79")
 }
 

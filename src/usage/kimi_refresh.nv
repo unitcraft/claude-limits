@@ -106,8 +106,10 @@ export fn rewritten(old_text str, fresh_text str, now_s int) -> Result[str, str]
         }
         None => {}
     }
-    ro _i = data.insert("expires_in", JsonValue.num(expires_in as f64))
-    ro _e = data.insert("expires_at", JsonValue.num((now_s + expires_in) as f64))
+    // Whole seconds are written as integers, as the Kimi CLI writes them. Through
+    // `JsonValue.num` they became `1790846100.0` once nova #1638 made it an f64.
+    ro _i = data.insert("expires_in", JsonValue.int(expires_in))
+    ro _e = data.insert("expires_at", JsonValue.int(now_s + expires_in))
     for key in ["scope", "token_type"] {
         match ff.get(key) {
             Some(v) => {

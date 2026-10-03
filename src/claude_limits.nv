@@ -65,7 +65,7 @@ import claude_limits.storage.db.{owner_changed, owner_line}
 import duckdb.db_effect.{Db}
 import duckdb.db_real.{with_real_db}
 import claude_limits.server.feed.{Rounds, one_round, RoundLog, Settled, Renew, store_and_poll, tick_every, ping_every}
-import claude_limits.usage.kimi_refresh.{Renewed, renew_kimi}
+import claude_limits.usage.kimi_refresh.{renew_kimi}
 import claude_limits.accounts.claude_refresh.{refresh_run}
 import claude_limits.accounts.discover.{expand_home, under}
 import std.os.{Command}

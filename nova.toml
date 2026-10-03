@@ -12,7 +12,7 @@
 # Dependencies are pulled by SEMVER RANGE, not by a pinned tag: the resolver takes
 # the newest matching tag, which is how every sibling package is consumed
 # (AGENTS.md, "Satellite package repositories"). Newest tags observed 2026-10-01:
-# nova-http v0.2.0, nova-polaris v0.2.3, nova-tls v0.2.0 — recorded for provenance
+# nova-http v0.2.0, nova-polaris v0.2.4, nova-tls v0.2.0 — recorded for provenance
 # only; `nova.lock.toml` is what actually fixes the build. The 0.2 line exists for
 # nova-tls `SystemRoots` (the OS store first: plan 01.5 question 9) and polaris's
 # aliased `serve` import (registry 221.1 #1097, #1419).

@@ -27,7 +27,7 @@ on:
   workflow_dispatch:
 
 env:
-  NOVA_REF: f80d61e005780e66c4cd09282fe1004d134841ff
+  NOVA_REF: 835fc322d3da685a4dcd0861bbfcb6db7a2e2af0
   DUCKDB_TAG: v0.2.2
 
 jobs:
