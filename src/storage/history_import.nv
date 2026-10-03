@@ -175,6 +175,73 @@ export const FIRST_SQL = "CREATE OR REPLACE TEMP TABLE import_first AS SELECT wi
 
 export const DROP_FIRST_SQL = "DROP TABLE IF EXISTS import_first"
 
+// ── the rest of the file: accounts, windows and cycles the database does not know ──
+//
+// (2026-10-03, the owner's "да" to "restore the maximum".) The joins above take a point
+// only into a cycle the database already holds, which left most of a week of history
+// out: the port's own database started on the day it was first run, so the older
+// cycles, and every account it never polled, had nothing to join to.
+//
+// THE REST IS BUILT, NOT GUESSED AT, from what the file does say:
+//   * an account or window that is missing is created from the points themselves
+//     (first/last seen = their first/last point);
+//   * a CYCLE that is missing is INFERRED the way the chart infers a reset
+//     (chart.js `inferredResets`): a drop of more than 30 points starts a new one. Its
+//     `starts_at` is its first point and its `resets_at` the next cycle's first point,
+//     or the earliest known cycle after it, or one second past its last point. These
+//     are not the endpoint's own moments -- the file has none -- and nothing reads
+//     them back as such: the forecast takes the window length from the row, the chart
+//     draws its own resets.
+//   * a session reset from 3 % to 1 % is not seen (no drop of 30), so two such sessions
+//     become one cycle. Samples are right either way.
+//
+// SAME BOUNDARY AS BEFORE: only points BEFORE the window's first sample, so the port's
+// own readings and the reference's are never interleaved; and a second run finds nothing
+// left to add.
+
+/// The file's points, once, so the statements below can join them.
+export const STAGE_SQL = "CREATE OR REPLACE TEMP TABLE import_pts (k VARCHAR, kind VARCHAR, model VARCHAR, taken_at TIMESTAMPTZ, pct TINYINT)"
+
+export fn drop_stage_sql() -> []str => ["DROP TABLE IF EXISTS import_pts", "DROP TABLE IF EXISTS import_el", "DROP TABLE IF EXISTS import_grp"]
+
+/// `INSERT INTO import_pts`, `CHUNK` at a time.
+export fn stage_sql(points []RefPoint) -> []str {
+    mut out []str = []
+    mut i = 0
+    while i < points.len() {
+        mut rows = ""
+        mut j = i
+        while j < points.len() && j < i + CHUNK {
+            ro r = row_sql(points[j])
+            rows = if rows == "" { r } else { "${rows}, ${r}" }
+            j += 1
+        }
+        out.push("INSERT INTO import_pts VALUES ${rows}")
+        i = j
+    }
+    out
+}
+
+/// Accounts, windows, inferred cycles and their samples, from `import_pts`. Run AFTER
+/// `import_sql` (whose points are then already samples and are left alone) and before
+/// `drop_stage_sql`. Only the last statement starts with `INSERT INTO sample`.
+export fn rebuild_sql(instance str, now_ms int) -> []str {
+    ro at = moment(now_ms)
+    ro by = quote(instance)
+    ro svc = "${at}, ${at}, ${by}, ${by}"
+    ro key = account_key_sql("a")
+    [
+        "INSERT INTO account (id, created_at, updated_at, created_by, updated_by, provider, email, cred_key, color_slot, first_seen_at, last_seen_at) SELECT uuidv7(), ${svc}, CASE WHEN starts_with(p.k, 'kimi:') THEN 'kimi' ELSE 'claude' END, CASE WHEN starts_with(p.k, 'kimi:') THEN NULL ELSE p.k END, CASE WHEN starts_with(p.k, 'kimi:') THEN substr(p.k, 6) ELSE NULL END, 0, min(p.taken_at), max(p.taken_at) FROM import_pts p WHERE NOT EXISTS (SELECT 1 FROM account a WHERE ${key} = p.k) GROUP BY p.k",
+        "INSERT INTO limit_window (id, created_at, updated_at, created_by, updated_by, account_id, kind, model, first_seen_at, last_seen_at) SELECT uuidv7(), ${svc}, a.id, p.kind, p.model, min(p.taken_at), max(p.taken_at) FROM import_pts p JOIN account a ON ${key} = p.k AND a.deleted_at IS NULL WHERE NOT EXISTS (SELECT 1 FROM limit_window w WHERE w.account_id = a.id AND w.kind = p.kind AND w.model = p.model) GROUP BY a.id, p.kind, p.model",
+        // What is left to place: not yet a sample, and before the window's first one.
+        "CREATE OR REPLACE TEMP TABLE import_el AS SELECT w.id AS window_id, p.taken_at, max(p.pct) AS pct FROM import_pts p JOIN account a ON ${key} = p.k AND a.deleted_at IS NULL JOIN limit_window w ON w.account_id = a.id AND w.kind = p.kind AND w.model = p.model WHERE p.taken_at < coalesce((SELECT f.first_at FROM import_first f WHERE f.window_id = w.id), 'infinity'::TIMESTAMPTZ) AND NOT EXISTS (SELECT 1 FROM sample s WHERE s.window_id = w.id AND s.sampled_at = p.taken_at) GROUP BY w.id, p.taken_at",
+        // Cycle number: a drop of more than 30 points opens the next one.
+        "CREATE OR REPLACE TEMP TABLE import_grp AS SELECT window_id, taken_at, pct, n, min(taken_at) OVER (PARTITION BY window_id, n) AS gs FROM (SELECT window_id, taken_at, pct, sum(CASE WHEN prev - pct > 30 THEN 1 ELSE 0 END) OVER (PARTITION BY window_id ORDER BY taken_at) AS n FROM (SELECT *, lag(pct) OVER (PARTITION BY window_id ORDER BY taken_at) AS prev FROM import_el))",
+        "INSERT INTO window_cycle (id, created_at, updated_at, created_by, updated_by, window_id, starts_at, resets_at) SELECT uuidv7(), ${svc}, x.window_id, x.s, coalesce(x.nxt, (SELECT min(c.starts_at) FROM window_cycle c WHERE c.window_id = x.window_id AND c.starts_at > x.e), x.e + INTERVAL 1 SECOND) FROM (SELECT g.*, lead(g.s) OVER (PARTITION BY g.window_id ORDER BY g.n) AS nxt FROM (SELECT window_id, n, min(taken_at) AS s, max(taken_at) AS e FROM import_grp GROUP BY window_id, n) g) x ON CONFLICT (window_id, resets_at) DO NOTHING",
+        "INSERT INTO sample (id, created_at, updated_at, created_by, updated_by, window_id, sampled_at, cycle_id, percent, locked) SELECT uuidv7(), ${svc}, g.window_id, g.taken_at, c.id, g.pct, false FROM import_grp g JOIN window_cycle c ON c.window_id = g.window_id AND c.starts_at = g.gs ON CONFLICT (window_id, sampled_at) DO NOTHING",
+    ]
+}
+
 /// The statements that write `points`, `CHUNK` at a time, between `FIRST_SQL` and
 /// `DROP_FIRST_SQL`. Each inserts only the points that join to a known account, window
 /// and cycle, before the window's first sample.

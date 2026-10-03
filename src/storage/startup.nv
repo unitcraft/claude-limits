@@ -18,7 +18,7 @@ import duckdb.db_effect.{Db, ConnRef}
 import duckdb.errors.{DbOptions, DuckError}
 import claude_limits.storage.paths.{Paths, dir_of}
 import claude_limits.storage.db.{Migration, Opened, OpenFail, pending, ensure_key, ensure_instance, open_and_read, apply_migration, claim, KNOWN_SCHEMA}
-import claude_limits.storage.history_import.{read_reference, import_sql, FIRST_SQL, DROP_FIRST_SQL}
+import claude_limits.storage.history_import.{read_reference, import_sql, FIRST_SQL, DROP_FIRST_SQL, STAGE_SQL, drop_stage_sql, stage_sql, rebuild_sql}
 import claude_limits.storage.backup.{take_backup, list_names, weekly_due, write_copy, fresh_path, swap_in_fresh}
 import claude_limits.storage.repo.{forget, Forgot}
 import std.fs.{try_exists}
@@ -397,12 +397,18 @@ export fn import_history(p Paths, body str, now_ms int, keep int, windows bool) 
         ro inserts = import_sql(parsed.points, mine, now_ms)
         mut steps = ["BEGIN TRANSACTION", FIRST_SQL]
         for s in inserts { steps.push(s) }
+        // Then what the known cycles could not take: accounts, windows and cycles built
+        // from the file itself (history_import.nv, "the rest of the file").
+        steps.push(STAGE_SQL)
+        for s in stage_sql(parsed.points) { steps.push(s) }
+        for s in rebuild_sql(mine, now_ms) { steps.push(s) }
+        for s in drop_stage_sql() { steps.push(s) }
         steps.push(DROP_FIRST_SQL)
         steps.push("COMMIT")
         for s in steps {
             if fail == "" {
                 match Db.exec(conn, s) {
-                    Ok(n) => { if s.starts_with("INSERT") { written += n } }
+                    Ok(n) => { if s.starts_with("INSERT INTO sample") { written += n } }
                     Err(e) => {
                         ro _ = Db.exec(conn, "ROLLBACK")
                         fail = "the import failed and was rolled back: ${e.message()}"
