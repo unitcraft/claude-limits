@@ -269,6 +269,21 @@ export function dateTimeIn(atMs, tz = captionZone) {
   return `${day} ${hhmm}`;
 }
 
+/**
+ * The reset caption in THREE parts — date, time, countdown — so the row can lay them
+ * out as columns that align across rows (time under time, date under date, 2026-10-03).
+ * Null when there is nothing to show; the row then falls back to the one-line form.
+ */
+export function formatResetParts(resetsAtIso, now = Date.now(), tz = captionZone) {
+  if (!resetsAtIso) return null;
+  const at = Date.parse(resetsAtIso);
+  if (Number.isNaN(at)) return null;
+  const both = dateTimeIn(at, tz);            // "2026-10-07 21:00", backend zone
+  const sp = both.indexOf(' ');
+  if (sp < 0) return null;
+  return { date: both.slice(0, sp), time: both.slice(sp + 1), left: `(${durationRef(at - now)})` };
+}
+
 /** `resets 2026-10-07 21:00 (5d 0h)` — the whole caption of the reset column, as the reference prints it. */
 export function formatReset(resetsAtIso, now = Date.now(), tz = captionZone) {
   if (!resetsAtIso) return '—';

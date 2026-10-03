@@ -6,7 +6,7 @@
 // code nobody ships. Everything here takes a document and returns nodes; no fetch,
 // no timers, no EventSource.
 import {
-  elapsedShare, cellGeometry, formatReset, rowLabel, sortLimits, severityOf, applyOrder, accountKey, wireNumber, getViewOptions, stripTooltip, percentTooltip, forecastTooltip, runsOutShare } from './format.js';
+  elapsedShare, cellGeometry, formatReset, formatResetParts, rowLabel, sortLimits, severityOf, applyOrder, accountKey, wireNumber, getViewOptions, stripTooltip, percentTooltip, forecastTooltip, runsOutShare } from './format.js';
 
 // ------------------------------------------------------------- rendering ----
 
@@ -142,13 +142,42 @@ export function renderRow(limit, { dimmed = false } = {}) {
   row.append(pct);
 
   const reset = el('div', 'row-reset');
-  reset.append(el('span', 'reset-when',
-    limit.resets_at ? formatReset(limit.resets_at)
-                    : (limit.reset_label || '—')));
+  // The caption is COLUMNAR (2026-10-03): date, time and countdown sit in fixed-width
+  // cells of a right-aligned grid, so across rows a time is always under a time and a
+  // date under a date — the one-line string made every row's pieces start wherever
+  // the previous piece happened to end. Fallback (no resets_at, or an unparseable
+  // one) keeps the single span.
+  const parts = formatResetParts(limit.resets_at);
+  if (parts) {
+    const when = el('span', 'reset-when');
+    when.append(el('span', 'reset-word', 'resets'),
+      el('span', 'reset-date', parts.date),
+      el('span', 'reset-time', parts.time),
+      el('span', 'reset-left', parts.left));
+    reset.append(when);
+  } else {
+    reset.append(el('span', 'reset-when reset-plain', limit.reset_label || '—'));
+  }
   if (fc && fc.label) {
-    const f = el('span', 'reset-forecast', fc.label);
+    // The same columnar grid as the reset line above (2026-10-03): "→ 126% at reset,
+    // ends 2026-10-04 ~01:08 (3h 15min)" is split so its date and time land under the
+    // reset's date and time. A same-day "ends ~01:08" has no date -- the cell stays
+    // empty and the time still sits in its column. The backend keeps the WORDING
+    // (the label is its line, 01.1 §2.4); the page only lays it out.
+    const m = fc.label.match(/^(.+? at reset)(?:, ends (?:(\d{4}-\d{2}-\d{2}) )?(~?\d{2}:\d{2}) (\([^)]*\)))?$/);
+    const split = m && m[3];
+    const f = el('span', split ? 'reset-forecast' : 'reset-forecast reset-plain');
     f.title = forecastTooltip(fc);
     if (fc.warning) f.dataset.warning = 'true';
+    if (fc.severity) f.dataset.severity = fc.severity;
+    if (split) {
+      f.append(el('span', 'reset-fc-head', `${m[1]}, ends`),
+        el('span', 'reset-fc-date', m[2] || ''),
+        el('span', 'reset-fc-time', m[3]),
+        el('span', 'reset-fc-left', m[4]));
+    } else {
+      f.textContent = fc.label;   // "→ 52% at reset" — nothing to split into columns
+    }
     reset.append(f);
   }
   row.append(reset);

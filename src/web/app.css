@@ -231,11 +231,13 @@ main:has(.view-wide:not([hidden])) { max-width: var(--page-width-wide); }
 
 .row {
   display: grid;
-  /* The reset column grows with its captions: the reference's words (01.1 sec.2.4,
-     amendment 2026-10-02) are longer than the card's 170 px, and a fixed column drew
-     them over the percent. */
-  grid-template-columns: 100px 1fr 44px minmax(170px, max-content);
-  gap: 12px;
+  /* The reset captions sit UNDER the bar, on the full row width (2026-10-03): a
+     right-hand column sized by its captions (minmax/max-content after the 2026-10-02
+     amendment) made the 1fr bar a different width on every row, and the width kept
+     jumping as the countdown text changed length. The reference's columns (01.1
+     sec.2.4) become name 100 px / bar / percent 44 px, with the reset line below. */
+  grid-template-columns: 100px 1fr 44px;
+  gap: 2px 12px;
   align-items: center;
   padding: 4px 6px;
   margin: 0 -6px;
@@ -279,16 +281,27 @@ main:has(.view-wide:not([hidden])) { max-width: var(--page-width-wide); }
 .row[data-severity="warning"] .row-pct { color: var(--warning); }
 .row[data-severity="critical"] .row-pct { color: var(--critical-text); }
 
-.row-reset { display: flex; flex-direction: column; align-items: flex-end; font-family: var(--font-mono); white-space: nowrap; }
+.row-reset { grid-column: 2 / 4; display: flex; flex-direction: column; align-items: flex-end; font-family: var(--font-mono); white-space: nowrap; }
+/* Columnar reset caption (2026-10-03): fixed ch widths in the mono font, right-aligned,
+   so the pieces of "resets 2026-10-04 02:10 (4h 32min)" stack across rows —
+   time under time, date under date. */
+/* Columnar reset+forecast captions (2026-10-03): one grid for both lines, fixed ch
+   widths in the mono font, right-aligned — date under date, time under time (the
+   forecast's "~01:08" shares the 6ch time column; the reset's bare "02:10" right-
+   aligns against it, digit under digit). */
+.reset-when, .reset-forecast { display: grid; grid-template-columns: auto 10ch 6ch 10ch; column-gap: 1ch; justify-content: end; text-align: right; }
+.reset-left { text-align: right; }
+.reset-plain { display: block; }   /* no columns when there is no moment to split */
 .reset-when { font-size: 11px; color: var(--fg-muted); }
-.reset-forecast { font-size: 10px; color: var(--fg-subtle); }
+/* Same size as the reset line so the shared ch columns line up; coloured by the
+   PROJECTION's severity — the caption says where the pace lands, so it wears the
+   colour of where it lands (the ghost's rule, 01.1 sec.2.2). */
+.reset-forecast { font-size: 11px; color: var(--fg-subtle); }
+.reset-forecast[data-severity="warning"] { color: var(--warning); }
+.reset-forecast[data-severity="critical"] { color: var(--critical-text); }
 
-/* Below 560 px the reset column drops under the bar (01.1 §1.3) — the one
-   adaptation the spec allows, and no other reflow. */
-@media (max-width: 560px) {
-  .row { grid-template-columns: 100px 1fr 44px; }
-  .row-reset { grid-column: 2 / 4; align-items: flex-start; }
-}
+/* The under-bar reset line is the only layout since 2026-10-03 (see `.row` above);
+   the ≤560 px exception that 01.1 §1.3 allowed is now simply how every width looks. */
 
 /* ------------------------------------------------------- cards view (§4) -- */
 /* The card IS the panel: the account block inside it gives up its own background,

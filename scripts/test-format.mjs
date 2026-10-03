@@ -8,7 +8,7 @@
 import assert from 'node:assert/strict';
 import {
   windowMs, elapsedShare, cellGeometry, formatDuration,
-  formatResetMoment, formatReset, durationRef, rowLabel, sortLimits, severityOf,
+  formatResetMoment, formatReset, formatResetParts, durationRef, rowLabel, sortLimits, severityOf,
   isRetryable, retryDelay, MAX_RETRIES, refuseFor, REFUSAL_DEFAULT_SEC, REFUSAL_MAX_SEC,
   moveTo, applyOrder, accountKey, dropIndexFor, landingIndex, orderRequest, configPut,
   footerRight, legendText, footerCounts, stripTooltip, percentTooltip, forecastTooltip,
@@ -142,6 +142,17 @@ test("reset caption is the reference's: resets, the date and time, the remainder
   assert.equal(formatReset(at, now, 'UTC'), 'resets 2026-09-10 05:00 (2d 17h)');
   assert.equal(formatReset(at, now, 'Europe/Moscow'), 'resets 2026-09-10 08:00 (2d 17h)');
   assert.equal(formatReset(null, now), '—', 'a window with no reset must not print a fake one');
+});
+
+test('reset caption in parts: date, time and countdown separately, for the columnar row', () => {
+  // 2026-10-03: the row lays these out as right-aligned columns, so a time is under a
+  // time and a date under a date across rows.
+  const now = Date.parse('2026-09-07T12:00:00Z');
+  const at = new Date(now + 2 * 86400_000 + 17 * 3600_000).toISOString();
+  assert.deepEqual(formatResetParts(at, now, 'UTC'), { date: '2026-09-10', time: '05:00', left: '(2d 17h)' });
+  assert.deepEqual(formatResetParts(at, now, 'Europe/Moscow'), { date: '2026-09-10', time: '08:00', left: '(2d 17h)' });
+  assert.equal(formatResetParts(null, now), null, 'no reset -> the row prints the plain fallback');
+  assert.equal(formatResetParts('not a date', now), null);
 });
 
 test("time left, the reference's way: 5d 0h, 3h 0min, 7min, now", () => {
