@@ -12,7 +12,7 @@
 // The real module is imported. A transcription would drift from the shipped code,
 // which is the whole reason live.js exists as its own file.
 import assert from 'node:assert/strict';
-import { createLive, silentTooLong, POLL_WHEN_DEGRADED_MS, SSE_RETRY_MS } from '../src/web/live.js';
+import { createLive, silentTooLong, POLL_WHEN_DEGRADED_MS, SSE_RETRY_MS, CONNECT_TIMEOUT_MS } from '../src/web/live.js';
 
 // ------------------------------------------------------------------ doubles --
 
@@ -63,7 +63,7 @@ function makeClock() {
 }
 
 /** A page: one dot, one snapshot counter, one event log. */
-function makePage({ serverUp = true } = {}) {
+function makePage({ serverUp = true, serverHangs = false } = {}) {
   const clock = makeClock();
   const page = {
     clock,
@@ -73,6 +73,7 @@ function makePage({ serverUp = true } = {}) {
     events: [],
     streams: [],
     serverUp,
+    serverHangs,
     live: null,
   };
   page.live = createLive({
@@ -81,7 +82,8 @@ function makePage({ serverUp = true } = {}) {
       page.streams.push(s);
       // A real EventSource connects asynchronously; a stopped server refuses on the
       // next turn of the loop, not inside the constructor.
-      clock.timers.set(() => (page.serverUp ? s.serverAccepts() : s.serverRefuses()), 1);
+      // A hanging server accepts the socket and never answers: no open, no error.
+      if (!page.serverHangs) clock.timers.set(() => (page.serverUp ? s.serverAccepts() : s.serverRefuses()), 1);
       return s;
     },
     now: clock.now,
@@ -130,6 +132,31 @@ test('stopped, then started: grey, then green, without a reload', () => {
   assert.equal(p.mode, 'live');
   assert.deepEqual(p.modes, ['connecting', 'polling', 'polling', 'live'],
     'it announces the retry as polling, not as connecting: the page is not fresh');
+});
+
+test('a stream that neither opens nor fails gives up and polls -- not "connecting" forever', () => {
+  // The owner's tab, 2026-10-03: the server healthy, the page on "connecting" for hours.
+  const p = makePage({ serverHangs: true });
+  p.live.start();
+  p.clock.advance(CONNECT_TIMEOUT_MS - 1);
+  assert.equal(p.mode, 'connecting', 'it waits its time');
+  p.clock.advance(2);
+  assert.equal(p.mode, 'polling', 'then takes the degraded path');
+  assert.ok(p.streams[0].closeCalls >= 1, 'and closes the stream it gave up on');
+  p.clock.advance(POLL_WHEN_DEGRADED_MS + 1);
+  assert.ok(p.polls >= 1, 'and actually polls');
+  // The server comes back to life: the next reconnect opens.
+  p.serverHangs = false;
+  p.clock.advance(SSE_RETRY_MS + 5);
+  assert.equal(p.mode, 'live');
+});
+
+test('the control: a stream that opens in time is never given up on', () => {
+  const p = makePage({ serverUp: true });
+  p.live.start();
+  p.clock.advance(CONNECT_TIMEOUT_MS * 3);
+  assert.equal(p.mode, 'live');
+  assert.equal(p.streams.length, 1);
 });
 
 console.log('\ndegraded mode: polling every 10 s (01.3 sec.5)');

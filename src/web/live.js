@@ -22,6 +22,13 @@
 
 export const POLL_WHEN_DEGRADED_MS = 10_000;
 export const SSE_RETRY_MS = 30_000;
+/**
+ * A stream that neither opens nor fails within this is treated as failed. A browser's
+ * EventSource can wait on a connection that was accepted and never answered for as
+ * long as the socket lives; the owner's tab sat on "connecting / waiting for the first
+ * snapshot" with the server healthy (2026-10-03), and nothing on the page ever gave up.
+ */
+export const CONNECT_TIMEOUT_MS = 15_000;
 export const SILENCE_LIMIT_MS = 90_000;
 
 /**
@@ -38,6 +45,7 @@ export function createLive(deps) {
     url = '/api/events',
     pollMs = POLL_WHEN_DEGRADED_MS,
     reconnectMs = SSE_RETRY_MS,
+    connectMs = CONNECT_TIMEOUT_MS,
   } = deps;
 
   const self = {
@@ -45,6 +53,7 @@ export function createLive(deps) {
     lastEvent: 0,
     pollTimer: null,
     reconnectTimer: null,
+    connectTimer: null,
     opens: 0,          // for tests and for a human reading the console
     attempts: 0,       // 'connecting' is the FIRST attempt only -- see start()
     isOpen: () => self.stream != null && self.stream.readyState === 1,
@@ -66,7 +75,12 @@ export function createLive(deps) {
     return (e) => { self.lastEvent = now(); onEvent(name, e && e.data); };
   }
 
+  function clearConnect() {
+    if (self.connectTimer != null) { timers.clear(self.connectTimer); self.connectTimer = null; }
+  }
+
   function onError() {
+    clearConnect();
     // Close first -- see the header. After this readyState is CLOSED and the browser
     // has stopped retrying on its own, so the 30 s below is the real schedule.
     if (self.stream) { try { self.stream.close(); } catch { /* already gone */ } }
@@ -101,8 +115,15 @@ export function createLive(deps) {
       return self;
     }
     self.stream = s;
+    // Neither `open` nor `error` in time: give up on this stream the way an error would.
+    clearConnect();
+    self.connectTimer = timers.set(() => {
+      self.connectTimer = null;
+      if (self.stream === s && !self.isOpen()) onError();
+    }, connectMs);
 
     s.addEventListener('open', () => {
+      clearConnect();
       self.opens += 1;
       self.lastEvent = now();
       setLive('live');
@@ -117,6 +138,7 @@ export function createLive(deps) {
   }
 
   function stop() {
+    clearConnect();
     if (self.stream) { try { self.stream.close(); } catch { /* already gone */ } }
     self.stream = null;
     stopPolling();

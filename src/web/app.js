@@ -236,17 +236,29 @@ function tick() {
  * person pressing the button again, never by us, because a retried write can mean
  * a second action rather than a second look.
  */
+/**
+ * A request with no answer is a failed request. Without a limit a fetch waits for as
+ * long as its socket lives: the owner's tab sat on "waiting for the first snapshot"
+ * with a healthy server and never retried (2026-10-03). Aborted, it is a network
+ * failure like any other and takes the retry below.
+ */
+const REQUEST_TIMEOUT_MS = 15_000;
+
 async function apiGet(path) {
   let lastErr = null;
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     let status = 0, res = null;
+    const abort = new AbortController();
+    const limit = setTimeout(() => abort.abort(), REQUEST_TIMEOUT_MS);
     try {
-      res = await fetch(path, { headers: { accept: 'application/json' } });
+      res = await fetch(path, { headers: { accept: 'application/json' }, signal: abort.signal });
       status = res.status;
       if (res.ok) return res;
       lastErr = new Error(`HTTP ${status}`);
     } catch (e) {
-      lastErr = e;                       // network failure: status stays 0
+      lastErr = e;                       // network failure or timeout: status stays 0
+    } finally {
+      clearTimeout(limit);
     }
     if (attempt === MAX_RETRIES || !isRetryable('GET', status)) break;
     const after = res && res.headers.get('Retry-After');
