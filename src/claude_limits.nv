@@ -43,7 +43,7 @@ import claude_limits.cli.table.{row, cli_label, reference_moment}
 import claude_limits.install.autostart.{install, uninstall, message, entry_for, Autostart, Change}
 import claude_limits.install.real_autostart.{with_real_autostart, host}
 import std.fs.{real_fs, metadata, read_text}
-import std.io.{stderr, real_io}
+import std.io.{real_io}
 import std.net.{TcpListener}
 import polaris.net.{ServerPolicy}
 import polaris.serve.{serve_router}
@@ -230,20 +230,17 @@ fn LoginTries mut @tried(path str, now_ms int) -> () {
 /// next expiry (fifteen minutes on) must get a fresh try at once.
 fn LoginTries mut @cleared(path str) -> () { @items = @without(path) }
 
-/// A log line of the running server, on STDERR.
+/// A log line of the running server, on stdout.
 ///
-/// NOT `println`: stdout is block-buffered when it is not a console -- a file, a pipe,
-/// the hidden start of autostart -- and `Stdout.flush` is a no-op, so the server's lines
-/// reached nobody until it exited, and a stopped server lost them all (measured
-/// 2026-10-02: registry 221.1 #1655, `probes/stdout-buffered-when-redirected/`; remove this
-/// detour when #1655 is fixed). stderr is written through
-/// at once. The handler is installed here, as `real_fs` is elsewhere, so the callers --
-/// some of them inside the router's closures -- need no `Io` of their own.
+/// Every `println` reaches the file at once since nova #1655 (eb2e6f26a): before it,
+/// stdout redirected to a file, a pipe or the hidden start of autostart was
+/// block-buffered with a no-op flush, the server's lines reached nobody until it
+/// exited, and from 2026-10-02 this went to stderr as a detour
+/// (`probes/stdout-buffered-when-redirected/`). The handler is installed here, as
+/// `real_fs` is elsewhere, so the callers -- some of them inside the router's
+/// closures -- need no `Io` of their own.
 fn say(line str) -> () {
-    with Io = real_io() {
-        mut e = stderr()
-        ro _ = e.write("claude-limits: ${line}\n".bytes())
-    }
+    with Io = real_io() { println("claude-limits: ${line}") }
 }
 
 /// One Kimi renewal attempt, logged as the reference logs it.

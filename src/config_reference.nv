@@ -197,11 +197,11 @@ type Section value {
     ro pairs str
 }
 
-/// NOT `sec`: a free function of that name broke std's `Timestamp @to_zoned`, whose
-/// local `ro sec` lost its type -- every moment of the binary read 00:00:00Z (registry
-/// 221.1 #1657, probes/free-fn-named-like-std-local/). The name can go back once #1657
-/// is fixed; the smoke's `moment` check holds it either way.
-fn section_of(name str, array bool, pairs str) -> Section => { name, array, pairs }
+/// Named `section_of` from 2026-10-02 to 2026-10-03: a free function `sec` broke std's
+/// `Timestamp @to_zoned`, whose local `ro sec` lost its type -- every moment of the
+/// binary read 00:00:00Z (registry 221.1 #1657, fixed by ff9166650,
+/// probes/free-fn-named-like-std-local/). The smoke's `moment` check holds it.
+fn sec(name str, array bool, pairs str) -> Section => { name, array, pairs }
 
 /// The reference's file as one JSON object.
 export fn toml_to_json(text str) -> Result[str, str] {
@@ -216,7 +216,7 @@ export fn toml_to_json(text str) -> Result[str, str] {
         cur.skip(true)
         if cur.done() { break }
         if cur.at() == '[' {
-            done.push(section_of(name, array, pairs))
+            done.push(sec(name, array, pairs))
             cur.i += 1
             array = !cur.done() && cur.at() == '['
             if array { cur.i += 1 }
@@ -247,7 +247,7 @@ export fn toml_to_json(text str) -> Result[str, str] {
         cur.skip(false)
         if !cur.done() && cur.at() != '\n' { return Err(cur.fail("one key per line")) }
     }
-    done.push(section_of(name, array, pairs))
+    done.push(sec(name, array, pairs))
 
     // The root, then each table; `[[name]]` elements gathered into one array, in order.
     mut out = ""
