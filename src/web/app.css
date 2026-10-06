@@ -264,13 +264,6 @@ main:has(.view-wide:not([hidden])) { max-width: var(--page-width-wide); }
 .bar-ghost[data-severity="warning"] { color: var(--warning); }
 .bar-ghost[data-severity="critical"] { color: var(--critical); }
 
-/* The forecast bar (owner, 2026-10-06): how much of the window the limit lasts at the
-   current pace -- green from 95%, yellow from 80%, red earlier (runsOutTone's edges). */
-.fcbar { height: 5px; border-radius: 2px; background: var(--track); overflow: hidden; }
-.fcbar-fill { height: 100%; border-radius: 2px; background: var(--normal); }
-.fcbar[data-tone="warning"] .fcbar-fill { background: var(--warning); }
-.fcbar[data-tone="critical"] .fcbar-fill { background: var(--critical); }
-
 /* The strip needs `relative` for the hatching, which is positioned against it. */
 .timebar { position: relative; height: 3px; border-radius: 2px; background: var(--track); }
 .timebar-fill { height: 100%; border-radius: 2px; background: var(--time-fill); }
@@ -283,6 +276,11 @@ main:has(.view-wide:not([hidden])) { max-width: var(--page-width-wide); }
   background: repeating-linear-gradient(45deg, currentColor 0 2px, transparent 2px 5px);
   color: var(--time-fill);
 }
+/* Coloured by where the forecast ends in the window (owner, 2026-10-06): green from
+   95%, yellow from 80%, red earlier -- the forecast caption's edges. */
+.timebar-hatch[data-tone="ok"] { color: var(--normal); }
+.timebar-hatch[data-tone="warning"] { color: var(--warning); }
+.timebar-hatch[data-tone="critical"] { color: var(--critical); }
 
 .row-pct { font: 600 13px/1 var(--font-mono); text-align: right; white-space: nowrap; }
 .row[data-severity="warning"] .row-pct { color: var(--warning); }

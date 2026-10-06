@@ -427,13 +427,13 @@ function toneOfShare(share) {
 }
 
 /**
- * The forecast bar under the usage bar (owner, 2026-10-06): how much of its window
+ * Where the time strip's hatching ends (owner, 2026-10-06): how much of its window
  * the limit lasts at the current pace, and its colour by the same edges as the
- * forecast's time. A forecast that does not run out lasts the whole window -- a full
- * green bar; no forecast at all -- null, no bar: "lasts" and "unknown" are not one
- * answer.
+ * forecast's time. A forecast that does not run out lasts the whole window -- hatched
+ * to the end, green; no forecast at all -- null, no hatch: "lasts" and "unknown" are
+ * not one answer.
  */
-export function forecastTimeBar(limit) {
+export function forecastReach(limit) {
   const fc = limit && limit.forecast;
   if (!fc) return null;
   if (!fc.runs_out_at) return { share: 100, tone: 'ok' };

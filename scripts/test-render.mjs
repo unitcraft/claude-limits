@@ -376,10 +376,11 @@ test('the strip hatches to where the forecast runs out (01.1 par.2.2)', () => {
   assert.equal(hatch.length, 1, 'the forecast says it runs out inside the window');
   assert.ok(parseFloat(hatch[0].style.width) > 0, 'a hatch of zero width shows nothing');
 
-  // No forecast, or one that does not run out: no hatching. Without this the test
-  // would pass for a strip that always hatches.
-  const calm = { ...lim, forecast: { percent_at_reset: 40, runs_out_at: null } };
-  assert.equal(renderRow(calm).all((n) => n.className === 'timebar-hatch').length, 0);
+  // No forecast: no hatching. Without this the test would pass for a strip that always
+  // hatches. (One that does not run out IS hatched since 2026-10-06 -- to the end of
+  // the window; the colour test below holds that.)
+  const none = { ...lim, forecast: undefined };
+  assert.equal(renderRow(none).all((n) => n.className === 'timebar-hatch').length, 0);
 
   // A run-out already BEHIND the elapsed point is a stale reading, not a warning:
   // hatching backwards would read as the opposite of what it means.
@@ -489,35 +490,40 @@ test('the forecast time is green from 95% of the window, yellow from 80%, red ea
   assert.equal(tone(row(99, '→ 52% at reset')), undefined);
 });
 
-test('the forecast bar shows how much of the window the limit lasts, in the same colours', () => {
-  // Owner, 2026-10-06: the coloured caption is not enough -- a bar of its own, its
-  // length the share of the window the pace lasts, green from 95, yellow from 80.
+test('the strip hatches to where the limit lasts, coloured green from 95%, yellow from 80%', () => {
+  // Owner, 2026-10-06: the forecast is the strip's OWN hatching, not a bar of its own;
+  // it ends where the pace lasts to and wears that point's colour -- and a forecast
+  // that does not run out is hatched too, to the end of the window, green.
   const now = Date.now();
   const win = 5 * 3600 * 1000;
-  const reset = now + 3600_000;
+  const reset = now + 4.5 * 3600_000;                  // 10% of the window has gone
   const start = reset - win;
   const lim = (forecast) => ({
     kind: 'session', account_id: 'a-1', percent: 70, window_sec: 5 * 3600,
-    resets_at: new Date(reset).toISOString(), seconds_left: 3600, forecast });
+    resets_at: new Date(reset).toISOString(), seconds_left: 4.5 * 3600, forecast });
   const runsOut = (share) => lim({ runs_out_at: new Date(start + win * share / 100).toISOString(),
                                    percent_at_reset: 120, label: '→ 120% at reset' });
-  const fcbar = (r) => r.all((n) => n.className === 'fcbar');
-  const bar = (l, opts) => fcbar(renderRow(l, opts))[0];
+  const hatches = (r) => r.all((n) => n.className === 'timebar-hatch');
+  const hatch = (l, opts) => hatches(renderRow(l, opts))[0];
+  const end = (h) => parseFloat(h.style.left) + parseFloat(h.style.width);
+  setViewOptions({ time_bar: true });
 
   for (const [share, tone] of [[99, 'ok'], [95, 'ok'], [94.9, 'warning'], [80, 'warning'],
                                [79.9, 'critical'], [30, 'critical']]) {
-    const b = bar(runsOut(share));
-    assert.ok(b, `a bar at ${share}%`);
-    assert.equal(b.dataset.tone, tone, `${share}% of the window`);
-    assert.ok(Math.abs(parseFloat(b.children[0].style.width) - share) < 0.11, 'the fill is the share');
+    const h = hatch(runsOut(share));
+    assert.ok(h, `a hatch to ${share}%`);
+    assert.equal(h.dataset.tone, tone, `${share}% of the window`);
+    assert.ok(Math.abs(end(h) - share) < 0.2, `the hatch ends at ${share}%, not ${end(h)}`);
   }
-  // A forecast that does not run out lasts the whole window: full and green.
-  const whole = bar(lim({ runs_out_at: null, percent_at_reset: 40, label: '→ 40% at reset' }));
+  // A forecast that does not run out: hatched to the end of the window, green.
+  const whole = hatch(lim({ runs_out_at: null, percent_at_reset: 40, label: '→ 40% at reset' }));
+  assert.ok(whole, 'a forecast that lasts is shown too');
   assert.equal(whole.dataset.tone, 'ok');
-  assert.equal(parseFloat(whole.children[0].style.width), 100);
-  // No forecast, or a dimmed row (no pace known): no bar at all.
-  assert.equal(fcbar(renderRow(lim(undefined))).length, 0);
-  assert.equal(fcbar(renderRow(runsOut(50), { dimmed: true })).length, 0);
+  assert.ok(Math.abs(end(whole) - 100) < 0.2);
+  // No separate forecast bar: the strip is the one place for it.
+  assert.equal(renderRow(runsOut(50)).all((n) => n.className === 'fcbar').length, 0);
+  // A dimmed row (no pace known) draws no strip, so no hatch.
+  assert.equal(hatches(renderRow(runsOut(50), { dimmed: true })).length, 0);
 });
 
 console.log(`\n${passed} passed${process.exitCode ? ', SOME FAILED' : ''}`);

@@ -6,7 +6,7 @@
 // code nobody ships. Everything here takes a document and returns nodes; no fetch,
 // no timers, no EventSource.
 import {
-  elapsedShare, cellGeometry, formatReset, formatResetParts, rowLabel, sortLimits, severityOf, applyOrder, accountKey, wireNumber, getViewOptions, stripTooltip, percentTooltip, forecastTooltip, runsOutShare, runsOutTone, forecastTimeBar } from './format.js';
+  elapsedShare, cellGeometry, formatReset, formatResetParts, rowLabel, sortLimits, severityOf, applyOrder, accountKey, wireNumber, getViewOptions, stripTooltip, percentTooltip, forecastTooltip, runsOutTone, forecastReach } from './format.js';
 
 // ------------------------------------------------------------- rendering ----
 
@@ -102,22 +102,6 @@ export function renderRow(limit, { dimmed = false } = {}) {
   }
   bars.append(bar);
 
-  // The forecast bar (owner, 2026-10-06): how far into the window the limit lasts at
-  // the current pace, green from 95%, yellow from 80%, red earlier -- the same edges
-  // as the forecast's time caption. Not on a dimmed row: `fc` is null there.
-  const ftb = fc ? forecastTimeBar(limit) : null;
-  if (ftb) {
-    const fbar = el('div', 'fcbar');
-    const ffill = el('div', 'fcbar-fill');
-    ffill.style.width = `${ftb.share.toFixed(1)}%`;
-    fbar.dataset.tone = ftb.tone;
-    fbar.title = ftb.share >= 100 ? 'forecast: lasts the whole window'
-                                  : `forecast: runs out at ${Math.round(ftb.share)}% of the window`;
-    fbar.setAttribute('aria-hidden', 'true');   // the caption below says it in words
-    fbar.append(ffill);
-    bars.append(fbar);
-  }
-
   // The time strip is computed here, not sent: only resets_at and kind are needed
   // (01.1 §2.6). Reading: fill left of the strip's end means a pace below the window.
   let elapsed = null;
@@ -134,14 +118,19 @@ export function renderRow(limit, { dimmed = false } = {}) {
     // grep found zero uses on the page -- so the strip showed only how much of the
     // window had gone, never that it was going to end early.
     //
+    // A forecast that does NOT run out is hatched too, to the end of the window (owner,
+    // 2026-10-06, replacing "runs out only"), and the hatch wears the colour of where
+    // it ends: green from 95% of the window, yellow from 80%, red earlier.
+    //
     // Drawn only when the run-out lies AHEAD of the elapsed point: a forecast already
     // behind the present is not a warning, it is a reading that has gone stale, and
     // hatching backwards would read as the opposite of what it means.
-    const out = runsOutShare(limit);
-    if (out != null && out > share * 100) {
+    const reach = forecastReach(limit);
+    if (reach && reach.share > share * 100) {
       const hatch = el('div', 'timebar-hatch');
       hatch.style.left = `${(share * 100).toFixed(1)}%`;
-      hatch.style.width = `${(Math.min(100, out) - share * 100).toFixed(1)}%`;
+      hatch.style.width = `${(reach.share - share * 100).toFixed(1)}%`;
+      hatch.dataset.tone = reach.tone;
       strip.append(hatch);
     }
     strip.title = stripTooltip(limit, elapsed);
