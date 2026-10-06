@@ -417,10 +417,30 @@ export function runsOutShare(limit) {
  */
 export function runsOutTone(limit) {
   const share = runsOutShare(limit);
-  if (share == null) return null;
+  return share == null ? null : toneOfShare(share);
+}
+
+function toneOfShare(share) {
   if (share >= 95) return 'ok';
   if (share >= 80) return 'warning';
   return 'critical';
+}
+
+/**
+ * The forecast bar under the usage bar (owner, 2026-10-06): how much of its window
+ * the limit lasts at the current pace, and its colour by the same edges as the
+ * forecast's time. A forecast that does not run out lasts the whole window -- a full
+ * green bar; no forecast at all -- null, no bar: "lasts" and "unknown" are not one
+ * answer.
+ */
+export function forecastTimeBar(limit) {
+  const fc = limit && limit.forecast;
+  if (!fc) return null;
+  if (!fc.runs_out_at) return { share: 100, tone: 'ok' };
+  const share = runsOutShare(limit);
+  if (share == null) return null;
+  const clamped = Math.max(0, Math.min(100, share));
+  return { share: clamped, tone: toneOfShare(share) };
 }
 
 export function stripTooltip(limit, elapsedPct) {

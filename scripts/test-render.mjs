@@ -489,4 +489,35 @@ test('the forecast time is green from 95% of the window, yellow from 80%, red ea
   assert.equal(tone(row(99, '→ 52% at reset')), undefined);
 });
 
+test('the forecast bar shows how much of the window the limit lasts, in the same colours', () => {
+  // Owner, 2026-10-06: the coloured caption is not enough -- a bar of its own, its
+  // length the share of the window the pace lasts, green from 95, yellow from 80.
+  const now = Date.now();
+  const win = 5 * 3600 * 1000;
+  const reset = now + 3600_000;
+  const start = reset - win;
+  const lim = (forecast) => ({
+    kind: 'session', account_id: 'a-1', percent: 70, window_sec: 5 * 3600,
+    resets_at: new Date(reset).toISOString(), seconds_left: 3600, forecast });
+  const runsOut = (share) => lim({ runs_out_at: new Date(start + win * share / 100).toISOString(),
+                                   percent_at_reset: 120, label: '→ 120% at reset' });
+  const fcbar = (r) => r.all((n) => n.className === 'fcbar');
+  const bar = (l, opts) => fcbar(renderRow(l, opts))[0];
+
+  for (const [share, tone] of [[99, 'ok'], [95, 'ok'], [94.9, 'warning'], [80, 'warning'],
+                               [79.9, 'critical'], [30, 'critical']]) {
+    const b = bar(runsOut(share));
+    assert.ok(b, `a bar at ${share}%`);
+    assert.equal(b.dataset.tone, tone, `${share}% of the window`);
+    assert.ok(Math.abs(parseFloat(b.children[0].style.width) - share) < 0.11, 'the fill is the share');
+  }
+  // A forecast that does not run out lasts the whole window: full and green.
+  const whole = bar(lim({ runs_out_at: null, percent_at_reset: 40, label: '→ 40% at reset' }));
+  assert.equal(whole.dataset.tone, 'ok');
+  assert.equal(parseFloat(whole.children[0].style.width), 100);
+  // No forecast, or a dimmed row (no pace known): no bar at all.
+  assert.equal(fcbar(renderRow(lim(undefined))).length, 0);
+  assert.equal(fcbar(renderRow(runsOut(50), { dimmed: true })).length, 0);
+});
+
 console.log(`\n${passed} passed${process.exitCode ? ', SOME FAILED' : ''}`);

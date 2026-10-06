@@ -6,7 +6,7 @@
 // code nobody ships. Everything here takes a document and returns nodes; no fetch,
 // no timers, no EventSource.
 import {
-  elapsedShare, cellGeometry, formatReset, formatResetParts, rowLabel, sortLimits, severityOf, applyOrder, accountKey, wireNumber, getViewOptions, stripTooltip, percentTooltip, forecastTooltip, runsOutShare, runsOutTone } from './format.js';
+  elapsedShare, cellGeometry, formatReset, formatResetParts, rowLabel, sortLimits, severityOf, applyOrder, accountKey, wireNumber, getViewOptions, stripTooltip, percentTooltip, forecastTooltip, runsOutShare, runsOutTone, forecastTimeBar } from './format.js';
 
 // ------------------------------------------------------------- rendering ----
 
@@ -101,6 +101,22 @@ export function renderRow(limit, { dimmed = false } = {}) {
     bar.append(ghost);
   }
   bars.append(bar);
+
+  // The forecast bar (owner, 2026-10-06): how far into the window the limit lasts at
+  // the current pace, green from 95%, yellow from 80%, red earlier -- the same edges
+  // as the forecast's time caption. Not on a dimmed row: `fc` is null there.
+  const ftb = fc ? forecastTimeBar(limit) : null;
+  if (ftb) {
+    const fbar = el('div', 'fcbar');
+    const ffill = el('div', 'fcbar-fill');
+    ffill.style.width = `${ftb.share.toFixed(1)}%`;
+    fbar.dataset.tone = ftb.tone;
+    fbar.title = ftb.share >= 100 ? 'forecast: lasts the whole window'
+                                  : `forecast: runs out at ${Math.round(ftb.share)}% of the window`;
+    fbar.setAttribute('aria-hidden', 'true');   // the caption below says it in words
+    fbar.append(ffill);
+    bars.append(fbar);
+  }
 
   // The time strip is computed here, not sent: only resets_at and kind are needed
   // (01.1 §2.6). Reading: fill left of the strip's end means a pace below the window.
