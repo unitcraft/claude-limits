@@ -39,8 +39,8 @@
 | HTTP API: маршруты, тела, коды, заголовки, доступ, отклонения | [01.3-api.md](plans/01.3-api.md) |
 | пакет привязки DuckDB (сиблинг-репо `nova-duckdb`) | [01.4-nova-duckdb.md](plans/01.4-nova-duckdb.md) |
 | задачи с входами, выходами и критерием готовности | [01.5-work-breakdown.md](plans/01.5-work-breakdown.md) |
-| конвенция по БД и её чек-лист (§17) | [conventions/database.md](conventions/database.md) |
-| конвенция по API и её чек-лист (§20) | [conventions/api.md](conventions/api.md) |
+| конвенция по БД и её чек-лист (§17) | [engineering-conventions/database.md](https://github.com/unitcraft/engineering-conventions/blob/main/database.md) |
+| конвенция по API и её чек-лист (§20) | [engineering-conventions/api.md](https://github.com/unitcraft/engineering-conventions/blob/main/api.md) |
 | эталон разметки страницы: артборды `*.dc.html`, генератор диаграмм, токены цвета | [design/browser-page/](design/browser-page/README.md) |
 | эталон данных и правил опроса: `scripts/claude_limits.py` (Python 3.11+, только stdlib) | [scripts/](../scripts/) |
 | вердикт спайка DuckDB | [spikes/duckdb-static/VERDICT.md](../spikes/duckdb-static/VERDICT.md) |
