@@ -138,11 +138,17 @@ def children_of(parent):
 
 
 def dedupe(entries):
-    """(dir, kind) pairs, first kind wins, deduped by resolved path."""
+    """(dir, kind) pairs, first kind wins, deduped by resolved path. A path that
+    cannot be resolved (a WSL distro that is down: \\\\wsl.localhost answers
+    WinError 67 / 1326) keys by its absolute spelling -- one dead login must not
+    take the whole snapshot down; it is reported as unreachable later."""
     seen, out = set(), []
     for d, kind in entries:
         d = Path(d).expanduser()
-        key = str(d.resolve()).lower()
+        try:
+            key = str(d.resolve()).lower()
+        except OSError:
+            key = str(d.absolute()).lower()
         if key not in seen:
             seen.add(key)
             out.append((d, kind))
