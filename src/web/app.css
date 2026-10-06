@@ -299,6 +299,12 @@ main:has(.view-wide:not([hidden])) { max-width: var(--page-width-wide); }
 .reset-forecast { font-size: 11px; color: var(--fg-subtle); }
 .reset-forecast[data-severity="warning"] { color: var(--warning); }
 .reset-forecast[data-severity="critical"] { color: var(--critical-text); }
+/* A forecast that names when the limit ends wears the colour of THAT moment (owner,
+   2026-10-06): ends at 95%+ of the window green, 80%+ yellow, earlier red. Declared
+   after the severity rules so it wins over them. */
+.reset-forecast[data-time-tone="ok"] { color: var(--normal); }
+.reset-forecast[data-time-tone="warning"] { color: var(--warning); }
+.reset-forecast[data-time-tone="critical"] { color: var(--critical-text); }
 
 /* The under-bar reset line is the only layout since 2026-10-03 (see `.row` above);
    the ≤560 px exception that 01.1 §1.3 allowed is now simply how every width looks. */

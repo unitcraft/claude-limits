@@ -409,6 +409,20 @@ export function runsOutShare(limit) {
   return ((at - startOfWindow) / (win * 1000)) * 100;
 }
 
+/**
+ * The colour of the forecast's TIME (owner, 2026-10-06): how far into its window the
+ * limit lasts. Runs out at 95% of the window or later -- 'ok' (it practically reaches
+ * the reset); from 80% -- 'warning'; earlier -- 'critical'. null when the forecast
+ * names no run-out moment: there is no time to colour.
+ */
+export function runsOutTone(limit) {
+  const share = runsOutShare(limit);
+  if (share == null) return null;
+  if (share >= 95) return 'ok';
+  if (share >= 80) return 'warning';
+  return 'critical';
+}
+
 export function stripTooltip(limit, elapsedPct) {
   const head = `time elapsed ${elapsedPct}%`;
   const win = Number(limit && limit.window_sec);

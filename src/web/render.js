@@ -6,7 +6,7 @@
 // code nobody ships. Everything here takes a document and returns nodes; no fetch,
 // no timers, no EventSource.
 import {
-  elapsedShare, cellGeometry, formatReset, formatResetParts, rowLabel, sortLimits, severityOf, applyOrder, accountKey, wireNumber, getViewOptions, stripTooltip, percentTooltip, forecastTooltip, runsOutShare } from './format.js';
+  elapsedShare, cellGeometry, formatReset, formatResetParts, rowLabel, sortLimits, severityOf, applyOrder, accountKey, wireNumber, getViewOptions, stripTooltip, percentTooltip, forecastTooltip, runsOutShare, runsOutTone } from './format.js';
 
 // ------------------------------------------------------------- rendering ----
 
@@ -170,6 +170,11 @@ export function renderRow(limit, { dimmed = false } = {}) {
     f.title = forecastTooltip(fc);
     if (fc.warning) f.dataset.warning = 'true';
     if (fc.severity) f.dataset.severity = fc.severity;
+    // A line that names when the limit ends is coloured by THAT moment, not by the
+    // percent at reset (owner, 2026-10-06): green from 95% of the window, yellow from
+    // 80%, red earlier -- see runsOutTone. The attribute outranks severity in app.css.
+    const tone = split ? runsOutTone(limit) : null;
+    if (tone) f.dataset.timeTone = tone;
     if (split) {
       f.append(el('span', 'reset-fc-head', `${m[1]}, ends`),
         el('span', 'reset-fc-date', m[2] || ''),

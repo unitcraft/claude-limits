@@ -462,4 +462,31 @@ test('`stale` and `error` still replace the rows, because there is nothing to sh
     'a dead token is not a transient failure and gets no retry badge');
 });
 
+test('the forecast time is green from 95% of the window, yellow from 80%, red earlier', () => {
+  // Owner, 2026-10-06: the line that says WHEN the limit ends is coloured by that
+  // moment's place in the window, not by the percent at reset. Edges included: 95
+  // is still green, 80 still yellow.
+  const now = Date.now();
+  const win = 5 * 3600 * 1000;                         // session window, 01.1 2.6
+  const reset = now + 3600_000;
+  const start = reset - win;
+  const at = (share) => new Date(start + win * share / 100).toISOString();
+  const row = (share, label = '→ 120% at reset, ends ~01:08 (3h 15min)') => renderRow({
+    kind: 'session', account_id: 'a-1', percent: 70, window_sec: 5 * 3600,
+    resets_at: new Date(reset).toISOString(), seconds_left: 3600,
+    forecast: { runs_out_at: share == null ? null : at(share), percent_at_reset: 120,
+                label, severity: 'critical' },
+  });
+  const tone = (r) => r.find((n) => String(n.className).startsWith('reset-forecast')).dataset.timeTone;
+  assert.equal(tone(row(99)), 'ok');
+  assert.equal(tone(row(95)), 'ok', '95% is the green edge');
+  assert.equal(tone(row(94.9)), 'warning');
+  assert.equal(tone(row(80)), 'warning', '80% is the yellow edge');
+  assert.equal(tone(row(79.9)), 'critical');
+  assert.equal(tone(row(30)), 'critical');
+  // No moment to colour: no run-out, or a line without "ends" -- severity alone.
+  assert.equal(tone(row(null)), undefined);
+  assert.equal(tone(row(99, '→ 52% at reset')), undefined);
+});
+
 console.log(`\n${passed} passed${process.exitCode ? ', SOME FAILED' : ''}`);
