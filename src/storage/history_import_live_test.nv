@@ -179,10 +179,10 @@ fn run_rebuilt(ps []RefPoint, runs int, queries []str) Io -> []str {
 
 fn rebuilt_points() -> []RefPoint => [
     // An account the database never saw: two cycles, the 80 -> 5 drop opens the second.
-    pt("new@acc.io", "weekly_all", "", STARTS - 10 * HOUR, 60),
-    pt("new@acc.io", "weekly_all", "", STARTS - 9 * HOUR, 80),
-    pt("new@acc.io", "weekly_all", "", STARTS - 8 * HOUR, 5),
-    pt("new@acc.io", "weekly_all", "", STARTS - 7 * HOUR, 9),
+    pt("new@example.com", "weekly_all", "", STARTS - 10 * HOUR, 60),
+    pt("new@example.com", "weekly_all", "", STARTS - 9 * HOUR, 80),
+    pt("new@example.com", "weekly_all", "", STARTS - 8 * HOUR, 5),
+    pt("new@example.com", "weekly_all", "", STARTS - 7 * HOUR, 9),
     // A Kimi login never seen, and a known account's window missing so far.
     pt("kimi:other-env", "monthly", "", STARTS - 5 * HOUR, 30),
     pt("a@b.c", "session", "", STARTS - 5 * HOUR, 11),
@@ -197,13 +197,13 @@ test "accounts, windows and cycles the database did not know are built from the 
         "SELECT (SELECT count(*) FROM account)::VARCHAR || '/' || (SELECT count(*) FROM limit_window)::VARCHAR || '/' || (SELECT count(*) FROM sample)::VARCHAR",
         "SELECT string_agg(provider || ':' || coalesce(email, cred_key), ',' ORDER BY coalesce(email, cred_key)) FROM account",
         // The two cycles of the new account: the first ends where the second begins.
-        "SELECT count(*)::VARCHAR FROM window_cycle c JOIN limit_window w ON w.id = c.window_id JOIN account a ON a.id = w.account_id WHERE a.email = 'new@acc.io'",
-        "SELECT string_agg(percent::VARCHAR, ',' ORDER BY sampled_at) FROM sample s JOIN limit_window w ON w.id = s.window_id JOIN account a ON a.id = w.account_id WHERE a.email = 'new@acc.io'",
+        "SELECT count(*)::VARCHAR FROM window_cycle c JOIN limit_window w ON w.id = c.window_id JOIN account a ON a.id = w.account_id WHERE a.email = 'new@example.com'",
+        "SELECT string_agg(percent::VARCHAR, ',' ORDER BY sampled_at) FROM sample s JOIN limit_window w ON w.id = s.window_id JOIN account a ON a.id = w.account_id WHERE a.email = 'new@example.com'",
         "SELECT count(*)::VARCHAR FROM sample s JOIN window_cycle c ON c.id = s.cycle_id WHERE s.sampled_at < c.starts_at OR s.sampled_at >= c.resets_at",
     ])
     // accounts: seed 2 + 2 new; windows: seed 2 + 3 new; samples: seed 1 + 7 placed.
     if a[0] != "4/5/8" { panic("counts: ${a[0]}") }
-    assert(a[1] == "claude:a@b.c,kimi:kimi-env,claude:new@acc.io,kimi:other-env")
+    assert(a[1] == "claude:a@b.c,kimi:kimi-env,claude:new@example.com,kimi:other-env")
     assert(a[2] == "2")
     assert(a[3] == "60,80,5,9")
     // Every sample sits inside its own cycle.
