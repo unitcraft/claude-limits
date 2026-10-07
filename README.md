@@ -257,13 +257,21 @@ it names your logins); copy `claude-limits.example.toml` and edit:
 interval_sec = 300
 accounts = [{ dir = "~/.claude", kind = "claude" },                 # individual dirs
             { dir = "D:/accounts", kind = "claude", children = true }, # every child dir
-            { dir = "~/.kimi-code", kind = "kimi" }]               # a Kimi Code home
+            { dir = "~/.kimi-code", kind = "kimi" },               # a Kimi Code home
+            { dir = "~/.codex", kind = "codex" }]                  # a Codex home
 ```
 
 `kind` is mandatory: `claude` looks for `.credentials.json`, `kimi` for
-`credentials/*.json`, `auto` accepts either. Without a config file the tool
-falls back to `~/.claude`, `CLAUDE_CONFIG_DIR` and `~/.kimi-code`
-(`KIMI_CODE_HOME`). Directories on the command line override the config
+`credentials/*.json`, `codex` for `auth.json`, `auto` accepts any of them.
+Without a config file the tool falls back to `~/.claude`, `CLAUDE_CONFIG_DIR`,
+`~/.kimi-code` (`KIMI_CODE_HOME`) and `~/.codex` (`CODEX_HOME`).
+
+Codex is read-only: the access token in `auth.json` lives about ten days and is
+**never renewed by this tool**, because OpenAI's refresh token is single-use and a
+renewal that did not reach the file would sign the Codex CLI out. An expired
+Codex login is reported with advice to start Codex once; the tool picks the new
+token up on the next cycle. Windows are named by length: a free plan shows one
+`month limit`, a paid one `5h limit` and `weekly limit`. Directories on the command line override the config
 (implicit `auto`). Python 3.11+.
 
 Every limit row carries a progress bar, `[████░░░░]`, the filled part

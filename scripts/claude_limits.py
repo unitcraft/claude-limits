@@ -10,10 +10,11 @@ Where the accounts come from, in order of precedence
   2. claude-limits.toml (see claude-limits.example.toml):
        accounts = [{ dir = "~/.claude", kind = "claude" },
                    { dir = "D:/accounts", kind = "claude", children = true },
-                   { dir = "~/.kimi-code", kind = "kimi" }]
+                   { dir = "~/.kimi-code", kind = "kimi" },
+                   { dir = "~/.codex", kind = "codex" }]
        interval_sec = 300
-  3. with no config file: ~/.claude, $CLAUDE_CONFIG_DIR and ~/.kimi-code
-     ($KIMI_CODE_HOME).
+  3. with no config file: ~/.claude, $CLAUDE_CONFIG_DIR, ~/.kimi-code
+     ($KIMI_CODE_HOME) and ~/.codex ($CODEX_HOME).
 
 Every directory is scanned for the kind of login its entry names: claude
 looks for .credentials.json with a token, kimi for credentials/*.json with
@@ -58,9 +59,18 @@ stale and auto-refresh is on, the tool renews it itself (OAuth refresh_token
 grant against auth.kimi.com, credentials file rewritten atomically -- see
 "Token lifetime" in the README). With auto-refresh off, an expired login is
 reported with advice to start Kimi Code under that profile.
+
+Codex (ChatGPT) logins come last: ~/.codex/auth.json ($CODEX_HOME), asked at
+chatgpt.com/backend-api/wham/usage with the access token and the account id
+from that file. Windows are named by their length (5h, weekly, month), so a
+free plan's single 30-day window reads "month limit". The access token lives
+~10 days and is NEVER renewed here: OpenAI's refresh token is single-use, and
+a renewal that missed auth.json would sign the Codex CLI out. An expired
+login is reported with advice to start Codex under that profile.
 """
 
 import argparse
+import base64
 import json
 import os
 import shutil
@@ -80,6 +90,7 @@ BETA_HEADER = "oauth-2025-04-20"
 KIMI_USAGE_URL = "https://api.kimi.com/coding/v1/usages"
 KIMI_OAUTH_URL = "https://auth.kimi.com/api/oauth/token"
 KIMI_CLIENT_ID = "17e5f671-d194-4dfb-9706-5516cb48c098"   # public client_id of the Kimi Code CLI
+CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"   # what the Codex CLI's /status asks
 DEFAULT_INTERVAL = 300
 MIN_INTERVAL = 60
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -127,6 +138,8 @@ def env_dirs():
         dirs.append(Path(env))
     kimi_home = os.environ.get("KIMI_CODE_HOME")
     dirs.append(Path(kimi_home).expanduser() if kimi_home else Path.home() / ".kimi-code")
+    codex_home = os.environ.get("CODEX_HOME")
+    dirs.append(Path(codex_home).expanduser() if codex_home else Path.home() / ".codex")
     return dirs
 
 
@@ -503,6 +516,98 @@ def kimi_extra_usage_line(usage):
     return line
 
 
+# ------------------------------------------------------------ codex (openai) --
+
+def jwt_claims(token):
+    """The payload of a JWT, {} when it is not one. Read for `exp` and `email`
+    only -- the token itself is never printed."""
+    try:
+        part = token.split(".")[1]
+        part += "=" * (-len(part) % 4)
+        return json.loads(base64.urlsafe_b64decode(part))
+    except (AttributeError, IndexError, ValueError):
+        return {}
+
+
+def codex_login_of(f, home_label=None):
+    """`auth.json` of a Codex CLI home -> login dict, or None without a ChatGPT
+    login (an API-key login has no usage endpoint to ask)."""
+    try:
+        creds = json.loads(f.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    tokens = creds.get("tokens") if isinstance(creds, dict) else None
+    if not isinstance(tokens, dict) or not tokens.get("access_token") or not tokens.get("account_id"):
+        return None
+    email = jwt_claims(tokens.get("id_token") or "").get("email") or ""
+    name = email or "codex"
+    label = f"Codex ({name})"
+    if home_label:
+        label += f"  [{home_label}]"
+    exp = jwt_claims(tokens["access_token"]).get("exp")
+    return {"name": name, "label": label, "path": f,
+            "token": tokens["access_token"], "account_id": tokens["account_id"],
+            "expired": isinstance(exp, (int, float)) and exp <= time.time()}
+
+
+def codex_logins_of(dirs):
+    """Codex logins found in dirs, detected BY CONTENT: a dir holding auth.json
+    with a ChatGPT access token. One account per home."""
+    out = []
+    multi = len(dirs) > 1
+    for d in dirs:
+        f = d / "auth.json"
+        if f.is_file():
+            login = codex_login_of(f, short_name(d) if multi else None)
+            if login:
+                out.append(login)
+    return out
+
+
+def fetch_codex_usage(token, account_id):
+    req = urllib.request.Request(
+        CODEX_USAGE_URL,
+        headers={"Authorization": "Bearer " + token, "chatgpt-account-id": account_id,
+                 "User-Agent": "codex_cli_rs/claude-limits", "Accept": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return json.loads(r.read().decode("utf-8"))
+
+
+def codex_window_name(seconds):
+    """A window is named by its length, so it lands in the forecast's class
+    (5h -> session, 7d -> weekly, 30d -> monthly) the way Kimi's do."""
+    if not isinstance(seconds, (int, float)) or seconds <= 0:
+        return "rate limit"
+    if seconds == 604800:
+        return "weekly limit"
+    if seconds in (2592000, 2678400, 2505600, 2419200):
+        return "month limit"
+    if seconds % 3600 == 0:
+        return f"{seconds / 3600:g}h limit"
+    return f"{seconds / 60:g}min limit"
+
+
+def codex_rows_of(usage):
+    """One row per window the plan has: a free plan serves one (30 days), a paid
+    one a primary and a secondary. Each row: (kind, percent, severity, reset
+    label, reset epoch or None) -- the epoch feeds the forecast."""
+    limit = usage.get("rate_limit")
+    if not isinstance(limit, dict):
+        return
+    for key in ("primary_window", "secondary_window"):
+        w = limit.get(key)
+        if not isinstance(w, dict) or not isinstance(w.get("used_percent"), (int, float)):
+            continue
+        reset_at = w.get("reset_at")
+        if not isinstance(reset_at, (int, float)):
+            after = w.get("reset_after_seconds")
+            reset_at = time.time() + after if isinstance(after, (int, float)) else None
+        iso = datetime.fromtimestamp(reset_at, timezone.utc).isoformat() if reset_at else None
+        yield (codex_window_name(w.get("limit_window_seconds")), float(w["used_percent"]),
+               None, local_time(iso), reset_at)
+
+
 # ------------------------------------------------------------------ config --
 
 def load_config(path):
@@ -518,12 +623,12 @@ def load_config(path):
         return tomllib.load(f)
 
 
-LOGIN_KINDS = ("auto", "claude", "kimi")
+LOGIN_KINDS = ("auto", "claude", "kimi", "codex")
 
 
 def kinded(items):
     """Config entries -> (path, kind, children) triples. Every entry MUST be
-    a table { dir = ..., kind = "auto"|"claude"|"kimi" }: a bare path is
+    a table { dir = ..., kind = "auto"|"claude"|"kimi"|"codex" }: a bare path is
     rejected so the kind of login is always a conscious choice, never
     guessed. children = true stands for every child directory of dir, each
     child keeping the entry's kind."""
@@ -531,12 +636,12 @@ def kinded(items):
     for item in items:
         if isinstance(item, str):
             sys.exit(f"accounts entry {item!r} is a bare path; give it a kind: "
-                     "{ dir = \"...\", kind = \"auto\"|\"claude\"|\"kimi\" }")
+                     "{ dir = \"...\", kind = \"auto\"|\"claude\"|\"kimi\"|\"codex\" }")
         if isinstance(item, dict) and isinstance(item.get("dir"), str):
             kind = item.get("kind")
             if kind is None:
                 sys.exit(f"accounts entry for {item['dir']!r} has no kind; use "
-                         "{ dir = \"...\", kind = \"auto\"|\"claude\"|\"kimi\" }")
+                         "{ dir = \"...\", kind = \"auto\"|\"claude\"|\"kimi\"|\"codex\" }")
             if kind not in LOGIN_KINDS:
                 sys.exit(f"unknown kind {kind!r} for {item['dir']!r} in the config; "
                          f"use one of: {', '.join(LOGIN_KINDS)}")
@@ -546,7 +651,7 @@ def kinded(items):
             out.append((item["dir"], kind, children))
         else:
             sys.exit(f"cannot read accounts entry {item!r}; use "
-                     "{ dir = \"...\", kind = \"auto\"|\"claude\"|\"kimi\" }")
+                     "{ dir = \"...\", kind = \"auto\"|\"claude\"|\"kimi\"|\"codex\" }")
     return out
 
 
@@ -1336,17 +1441,91 @@ def snapshot(dirs, paint, bar_style, offline_dir=None, refresher=None, kimi_refr
             print("  " + note)
         else:
             seen_signatures[tuple(sig)] = login["label"]
+    codex_found = codex_backoff = 0
+    for login in codex_logins_of([d for d, kind in dirs if kind in ("auto", "codex")]):
+        codex_found += 1
+        series = "codex:" + login["name"]
+        # No renewal here, unlike Kimi: OpenAI's refresh_token is single-use, so a
+        # renewal that did not reach auth.json would sign the Codex CLI out. The
+        # access token lives ~10 days and Codex itself renews it whenever it runs.
+        if login["expired"]:
+            print("\n" + paint.dead(login["label"]))
+            print("  access token expired on disk: start Codex under this profile to refresh it")
+            continue
+        if offline_dir:
+            fixture = Path(offline_dir) / "codex.json"
+            try:
+                usage = json.loads(fixture.read_text(encoding="utf-8"))
+            except (FileNotFoundError, json.JSONDecodeError) as e:
+                print("\n" + paint.unknown(login["label"]))
+                print(f"  offline: {e}")
+                continue
+            print("\n" + paint.live(login["label"]))
+            for kind, pct, sev, reset, _reset_epoch in codex_rows_of(usage):
+                print_limit_row(kind, pct, sev, reset, None, paint, bar_style)
+            continue
+        if next_try is not None and now < next_try.get(series, 0):
+            left = int(next_try[series] - now)
+            print("\n" + paint.unknown(login["label"]))
+            print(f"  still throttled by the server; next try in {left // 60} min {left % 60} s")
+            if last_good is not None and series in last_good:
+                print_stale_rows(last_good[series], paint, bar_style)
+            continue
+        try:
+            usage = fetch_codex_usage(login["token"], login["account_id"])
+        except (urllib.error.HTTPError, OSError, ValueError) as e:
+            if isinstance(e, urllib.error.HTTPError) and e.code == 429:
+                wait = retry_after_of(e)
+                codex_backoff = max(codex_backoff, wait or MIN_INTERVAL)
+                if next_try is not None:
+                    next_try[series] = now + (wait or MIN_INTERVAL)
+                asked = f"server asks to wait {wait} s" if wait else "no Retry-After given"
+                head, msg = paint.unknown(login["label"]), f"HTTP 429: too many requests; {asked}"
+            elif isinstance(e, urllib.error.HTTPError) and e.code in (401, 403):
+                head, msg = paint.dead(login["label"]), f"HTTP {e.code}: token rejected"
+            elif isinstance(e, urllib.error.HTTPError):
+                body = e.read().decode("utf-8", "replace").strip().replace("\n", " ")
+                head, msg = paint.unknown(login["label"]), f"HTTP {e.code}: {body[:160]}"
+            else:
+                head, msg = paint.unknown(login["label"]), f"network error: {e}"
+            print("\n" + head)
+            print("  " + msg)
+            if last_good is not None and series in last_good:
+                print_stale_rows(last_good[series], paint, bar_style)
+            continue
+        print("\n" + paint.live(login["label"]))
+        good_rows = []
+        sig = []
+        for kind, pct, sev, reset, reset_epoch in codex_rows_of(usage):
+            if history is not None:
+                record_sample(history, series, kind, pct, now)
+            cls = kind_class_of(kind)
+            fr = (forecast_of(history, f"{series}|{kind}", cls, pct, reset_epoch, now, sched)
+                  if history is not None and sched and sched["enabled"] and cls else None)
+            print_limit_row(kind, pct, sev, reset, fr, paint, bar_style,
+                          (sched["warning"], sched["critical"]) if sched else (80, 95),
+                          thresholds=thresholds)
+            good_rows.append((kind, pct, severity_of(sev, pct, thresholds), reset))
+            sig.append((kind, round(pct, 1) if pct is not None else None,
+                        int(reset_epoch // 60) if reset_epoch else None))
+        if last_good is not None:
+            last_good[series] = (now, good_rows)
+        note = signature_note(tuple(sig), seen_signatures)
+        if note:
+            print("  " + note)
+        else:
+            seen_signatures[tuple(sig)] = login["label"]
     if history is not None and history_path and not offline_dir:
         backup_history(history_path, now)
         save_history(history_path, history, now)
-    if not accounts and not kimi_found:
-        print("\nno Claude Code or Kimi Code logins found in:",
+    if not accounts and not kimi_found and not codex_found:
+        print("\nno Claude Code, Kimi Code or Codex logins found in:",
               ", ".join(str(d) for d, _ in dirs))
     # With per-account gating the throttled login sleeps in next_try, not in
     # the loop's interval -- a fresh 429 no longer stretches everyone else's
     # cycle. Without gating (one-shot), the server-asked backoff is returned.
-    return len(accounts) + kimi_found, (0 if next_try is not None
-                                        else max(backoff, kimi_backoff))
+    return len(accounts) + kimi_found + codex_found, (0 if next_try is not None
+                                                      else max(backoff, kimi_backoff, codex_backoff))
 
 
 def parse_args(argv):

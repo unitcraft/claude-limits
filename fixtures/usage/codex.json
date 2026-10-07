@@ -1,0 +1,21 @@
+{
+  "_comment": "Codex (ChatGPT) usage reply, GET chatgpt.com/backend-api/wham/usage; free plan: ONE window of 30 days, secondary_window null. Only read by the reference tool in --offline mode when a Codex login is present.",
+  "user_id": "user-fixture",
+  "account_id": "fixture-account",
+  "email": "codex@example.com",
+  "plan_type": "free",
+  "rate_limit": {
+    "allowed": true,
+    "limit_reached": false,
+    "primary_window": {
+      "used_percent": 12,
+      "limit_window_seconds": 2592000,
+      "reset_after_seconds": 2000000,
+      "reset_at": 1793000000
+    },
+    "secondary_window": null
+  },
+  "code_review_rate_limit": null,
+  "additional_rate_limits": null,
+  "credits": null
+}

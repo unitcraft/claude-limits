@@ -24,13 +24,15 @@ bar_style = "blocks"
 # backslashes literal in TOML:
 #   { dir = '\\wsl.localhost\<distro>\home\<user>\.claude', kind = "claude" }
 # Every entry MUST be a table with an explicit kind: "claude" looks for
-# .credentials.json, "kimi" for credentials/*.json, "auto" accepts either.
+# .credentials.json, "kimi" for credentials/*.json, "codex" for auth.json (the
+# default Codex home is ~/.codex or $CODEX_HOME), "auto" accepts any of them.
 # children = true takes every child directory of dir -- the multi-account
 # layout, one CLAUDE_CONFIG_DIR (or Kimi Code home) per child:
 #   { dir = "D:/accounts", kind = "claude", children = true }
 accounts = [
     { dir = "~/.claude", kind = "claude" },
     { dir = "~/.kimi-code", kind = "kimi" },
+    { dir = "~/.codex", kind = "codex" },
     { dir = "D:/accounts", kind = "claude", children = true },
 ]
 
