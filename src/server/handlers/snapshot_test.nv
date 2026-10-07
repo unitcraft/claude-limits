@@ -215,6 +215,17 @@ test "a Kimi Code account keeps its place in the order by its name, not by its p
     assert(arrange(v, [], ["kimi:kimi-env-0e4f"], false).accounts.len() == 2)
 }
 
+test "a Codex account is ordered and hidden by codex:<address>, lowered, apart from a Claude one of the same address" {
+    mut c = acc("c", "")
+    c.provider = "codex"
+    c.display_name = "Me@Example.com"
+    ro v = SnapshotView{ fetched_at: "", next_poll_at: "", tz: "+03:00", restored: false, worst: None,
+        accounts: [acc("a", "a@example.org"), acc("m", "me@example.com"), c], limits: [] }
+    ro got = arrange(v, ["codex:me@example.com", "a@example.org"], [], false)
+    assert(got.accounts[0].id == "c")
+    assert(arrange(v, [], ["codex:me@example.com"], false).accounts.len() == 2)
+}
+
 test "an account nobody arranged does not jump into the middle" {
     // "By first appearance", not by e-mail: a new account must not push itself
     // between two a person put next to each other.

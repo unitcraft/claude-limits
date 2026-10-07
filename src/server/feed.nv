@@ -38,6 +38,7 @@ import std.time.civil.{TimeZone}
 import claude_limits.accounts.discover.{Dirs, LoginDir, scan}
 import claude_limits.accounts.login.{Login, TokenState, Creds, read_login, read_token}
 import claude_limits.accounts.kimi_home.{KimiLogin, kimi_logins_at, read_kimi_token}
+import claude_limits.accounts.codex_home.{CodexLogin, codex_logins_at, read_codex_token}
 import claude_limits.accounts.discover.{leaf}
 import claude_limits.config.{Refresh}
 import claude_limits.accounts.group.{group}
@@ -109,22 +110,36 @@ export type Found value {
     ro display_name str
     /// A Kimi Code login: `email` is then the key `kimi:<name>`, not an address.
     ro kimi bool
+    /// A Codex login: `email` is then the key `codex:<address>`, not an address.
+    ro codex bool
+    /// The ChatGPT account a Codex login is asked about; "" for the others.
+    ro account_id str
 }
 
-/// A Kimi token a minute from expiry is already stale, as a Claude one is.
+/// A Kimi or Codex token a minute from expiry is already stale, as a Claude one is.
 const KIMI_GUARD_MS = 60_000
 
-fn kimi_state(k KimiLogin, now_ms int) -> TokenState {
-    if !k.has_token { return TokenState.NoToken }
-    if k.expires_at_ms != 0 && k.expires_at_ms <= now_ms + KIMI_GUARD_MS { return TokenState.Stale }
+fn expiry_state(has_token bool, expires_at_ms int, now_ms int) -> TokenState {
+    if !has_token { return TokenState.NoToken }
+    if expires_at_ms != 0 && expires_at_ms <= now_ms + KIMI_GUARD_MS { return TokenState.Stale }
     TokenState.Ok
 }
 
 fn kimi_found(k KimiLogin, now_ms int) -> Found => {
     email: "kimi:${k.name}", org: "", dirs: [DirView { id: stable_id("dir", k.home), path: k.home, name: leaf(k.home) }],
-    state: kimi_state(k, now_ms), expires_at_ms: k.expires_at_ms, cred_path: k.path, expired_dirs: [],
-    display_name: k.name, kimi: true,
+    state: expiry_state(k.has_token, k.expires_at_ms, now_ms), expires_at_ms: k.expires_at_ms, cred_path: k.path, expired_dirs: [],
+    display_name: k.name, kimi: true, codex: false, account_id: "",
 }
+
+fn codex_found(c CodexLogin, now_ms int) -> Found => {
+    email: "codex:${c.name}", org: "", dirs: [DirView { id: stable_id("dir", c.home), path: c.home, name: leaf(c.home) }],
+    state: expiry_state(c.has_token, c.expires_at_ms, now_ms), expires_at_ms: c.expires_at_ms, cred_path: c.path, expired_dirs: [],
+    display_name: c.name, kimi: false, codex: true, account_id: c.account_id,
+}
+
+/// Codex's usage endpoint (the reference's `CODEX_USAGE_URL`).
+export fn codex_host() -> str => "chatgpt.com"
+export fn codex_path() -> str => "/backend-api/wham/usage"
 
 /// The line under an account that is asked with one directory's token while others
 /// have expired -- the reference's "(4px, MGTS: token expired on disk)". Nothing to
@@ -163,7 +178,7 @@ export fn found_in(folders []str, now_ms int) Dirs Creds -> []Found {
             i += 1
         }
         out.push(Found { email: acc.email, org: acc.org, dirs, state: acc.state, expires_at_ms: acc.expires_at_ms, cred_path: cred,
-                         expired_dirs: acc.expired_dirs, display_name: acc.display_name, kimi: false })
+                         expired_dirs: acc.expired_dirs, display_name: acc.display_name, kimi: false, codex: false, account_id: "" })
     }
     // Kimi Code homes in the same folders (plan 01.6, П3): one account per credentials
     // file. A file reached through two folders is one account, not two.
@@ -172,6 +187,14 @@ export fn found_in(folders []str, now_ms int) Dirs Creds -> []Found {
             mut dup = false
             for o in out { if o.email == "kimi:${k.name}" { dup = true } }
             if !dup { out.push(kimi_found(k, now_ms)) }
+        }
+    }
+    // Codex homes likewise (plan 01.7): one account per `auth.json`, keyed by its e-mail.
+    for f in folders {
+        for c in codex_logins_at(f) {
+            mut dup = false
+            for o in out { if o.email == "codex:${c.name}" { dup = true } }
+            if !dup { out.push(codex_found(c, now_ms)) }
         }
     }
     out
@@ -276,10 +299,13 @@ export type Renew effect {
 /// any directory. One that still reports through another directory is left alone --
 /// silencing its "token expired on disk" note would spend a request on limits that are
 /// in nobody's way (the reference's `targets`). `all_expired` takes the other choice.
-fn renew_expired(found []Found, r Refresh) Renew -> bool {
+export fn renew_expired(found []Found, r Refresh) Renew -> bool {
     if !r.enabled { return false }
     mut any = false
     for f in found {
+        // Codex's refresh token is single-use: a renewal that missed `auth.json` would sign
+        // the Codex CLI out, so a dead Codex login is only reported (plan 01.7).
+        if f.codex { continue }
         if f.kimi {
             if f.state == TokenState.Stale && f.cred_path != "" {
                 if Renew.kimi(f.cred_path, f.display_name, r.cooldown_sec) { any = true }
@@ -436,7 +462,9 @@ export fn poll_round(found []Found, before []Known, now_ms int, next_ms int, zon
         ro id = stable_id("account", f.email)
         ro p = previous(before, id)
         if f.state != TokenState.Ok || f.cred_path == "" {
-            ro msg = if f.kimi {
+            ro msg = if f.codex {
+                "token expired · start Codex under this login"
+            } else if f.kimi {
                 // No self-refresh yet (plan 01.6, П4): the advice is the reference's
                 // with auto-refresh off.
                 "token expired · start Kimi Code under this login"
@@ -448,14 +476,15 @@ export fn poll_round(found []Found, before []Known, now_ms int, next_ms int, zon
             out.push(shown(f, Known.new(id, address_of(f), f.org, f.dirs, AccountState.Stale, msg, prev_polled(p), 0, [])))
             continue
         }
-        ro got = if f.kimi { read_kimi_token(f.cred_path) } else { read_token(f.cred_path) }
+        ro got = if f.codex { read_codex_token(f.cred_path) } else if f.kimi { read_kimi_token(f.cred_path) } else { read_token(f.cred_path) }
         match got {
             None => {
-                out.push(shown(f, Known.new(id, address_of(f), f.org, f.dirs, AccountState.Stale, "no token · start Claude Code under this login", prev_polled(p), 0, [])))
+                ro none_msg = if f.codex { "no token · start Codex under this login" } else { "no token · start Claude Code under this login" }
+                out.push(shown(f, Known.new(id, address_of(f), f.org, f.dirs, AccountState.Stale, none_msg, prev_polled(p), 0, [])))
             }
             Some(consume secret) => {
                 ro token = secret.into_secret()
-                ro target = if f.kimi { PollTarget.for_kimi(f.email, kimi_host(), kimi_path(), token) } else { PollTarget.new(f.email, usage_host(), 443, true, usage_path(), token) }
+                ro target = if f.codex { PollTarget.for_codex(f.email, codex_host(), codex_path(), token, f.account_id) } else if f.kimi { PollTarget.for_kimi(f.email, kimi_host(), kimi_path(), token) } else { PollTarget.new(f.email, usage_host(), 443, true, usage_path(), token) }
                 ro r = poll_once(target, now_ms)
                 ro fresh = r.outcome.state == AccountState.Ok && r.usage.outcome == PollOutcome.Parsed
                 if fresh {
@@ -471,11 +500,12 @@ export fn poll_round(found []Found, before []Known, now_ms int, next_ms int, zon
     out
 }
 
-/// The e-mail a person reads: none for Kimi, whose `email` field is only a key.
-fn address_of(f Found) -> str => if f.kimi { "" } else { f.email }
+/// The e-mail a person reads: none for Kimi and Codex, whose `email` field is only a key.
+fn address_of(f Found) -> str => if f.kimi || f.codex { "" } else { f.email }
 
 /// The account as it is shown: its name, and its service.
 fn shown(f Found, k Known) -> Known {
     ro named = k.with_name(f.display_name)
+    if f.codex { return named.with_provider("codex") }
     if f.kimi { named.with_provider("kimi") } else { named }
 }

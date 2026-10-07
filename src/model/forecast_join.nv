@@ -181,8 +181,10 @@ fn samples_of(v SnapshotView, l LimitView, rows HistRows) -> []HistSample {
 /// file's stem (`feed.kimi_found`). Matched by e-mail alone, every Kimi row had no
 /// samples and no forecast (measured 2026-10-02 on the stand, 632 monthly points).
 fn key_of(a AccountView) -> str {
-    if a.provider == "kimi" {
+    if a.provider == "kimi" || a.provider == "codex" {
         if a.display_name == "" { return "" }
+        // Codex's key is the lowered address, as `repo.account_match` writes it.
+        if a.provider == "codex" { return "codex:${a.display_name.to_ascii_lower()}" }
         return "kimi:${a.display_name}"
     }
     a.email.to_ascii_lower()

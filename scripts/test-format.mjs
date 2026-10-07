@@ -359,6 +359,14 @@ test('a Kimi account is ordered by kimi:<name>, the server\'s key, not by its po
     ['Kimi-Env', 'a@x', 'b@x']);
 });
 
+test('a Codex account is ordered by codex:<address>, apart from a Claude account of that address', () => {
+  const codex = { provider: 'codex', display_name: 'Me@Example.com' };
+  assert.equal(accountKey(codex), 'codex:me@example.com');
+  assert.equal(accountKey({ email: 'me@example.com' }), 'me@example.com');
+  assert.deepEqual(applyOrder([{ email: 'a@x' }, codex], ['codex:me@example.com']).map((a) => a.email || a.display_name),
+    ['Me@Example.com', 'a@x']);
+});
+
 test('applyOrder: named first in order, the rest in discovery order', () => {
   const accs = [{ email: 'a@x' }, { email: 'b@x' }, { email: 'c@x' }, { email: 'd@x' }];
   assert.deepEqual(applyOrder(accs, ['c@x', 'a@x']).map((a) => a.email),

@@ -164,6 +164,22 @@ test "a Kimi row finds its history by the credentials file, not by an e-mail it 
     assert(forecast_of(v2, l, r, rules(false), NOW_MS, OFFSET_SEC, TimeZone.Utc).is_none())
 }
 
+test "a Codex row finds its history by codex:<lowered address>, not by the Claude account of that address" {
+    mut a = account()
+    a.email = ""
+    a.provider = "codex"
+    a.display_name = "Me@Example.com"
+    ro l = limit("monthly", 54, 18 * 86400, 30 * 86400)
+    ro v = SnapshotView{ fetched_at: "2026-10-01T09:00:00Z", next_poll_at: "", tz: "+03:00", restored: false,
+        worst: None, accounts: [a], limits: [l] }
+    ro r = HistRows{
+        accounts: [HistAccount{ id: "db-c", email: "codex:me@example.com", color_slot: 0, polls: [] },
+                   HistAccount{ id: "db-m", email: "me@example.com", color_slot: 1, polls: [] }],
+        windows: [HistWindow{ account_id: "db-c", kind: "monthly", model: "", samples: week_samples(), locks: [], rollups: [] }],
+    }
+    assert(forecast_of(v, l, r, rules(false), NOW_MS, OFFSET_SEC, TimeZone.Utc).is_some())
+}
+
 test "with_forecasts fills the row in the snapshot it returns" {
     ro l = limit("session", 28, 2 * 3600, 5 * 3600)
     ro v = with_forecasts(view(l), rows("session", session_samples()), rules(false), NOW_MS, OFFSET_SEC, TimeZone.Utc)

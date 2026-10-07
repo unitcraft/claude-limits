@@ -1,7 +1,7 @@
 {
   "_comment": "Codex (ChatGPT) usage reply, GET chatgpt.com/backend-api/wham/usage; free plan: ONE window of 30 days, secondary_window null. Only read by the reference tool in --offline mode when a Codex login is present.",
-  "user_id": "user-fixture",
-  "account_id": "fixture-account",
+  "user_id": "0192f3a4-0000-7000-8000-0000000000c1",
+  "account_id": "0192f3a4-0000-7000-8000-0000000000c2",
   "email": "codex@example.com",
   "plan_type": "free",
   "rate_limit": {

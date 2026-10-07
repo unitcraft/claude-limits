@@ -11,13 +11,13 @@ module server.feed_test
 import std.time.civil.{TimeZone}
 import http.{Http, HttpError}
 import claude_limits.accounts.discover.{Dirs}
-import claude_limits.accounts.login.{Creds}
+import claude_limits.accounts.login.{Creds, TokenState}
 import claude_limits.usage.poller.{PollLog, Reading}
 import claude_limits.model.live.{Known, view_of}
 import claude_limits.model.snapshot.{SeverityBounds}
 import claude_limits.model.snapshot.{AccountState}
 import feed.{Found, stable_id, found_in, poll_round, expiry_text}
-import feed.{Rounds, RoundLog, Settled, Renew, store_and_poll}
+import feed.{Rounds, RoundLog, Settled, Renew, store_and_poll, renew_expired}
 import claude_limits.model.store_fiber.{Envelope, Store, ConfNow}
 import claude_limits.server.dto.{SnapshotView}
 import std.concurrency.nvchan.{Chan}
@@ -143,6 +143,113 @@ test "one e-mail in two directories is ONE account with both, paths and names pa
     assert(same("path 1", "/acc/home", f[0].dirs[1].path))
     assert(same("creds", "/acc/work/.credentials.json", f[0].cred_path))
     assert(same("org", "Example Inc", f[0].org))
+}
+
+// ── Codex homes (plan 01.7) ──────────────────────────────────────────────────
+
+const CX_ID = "eyJhbGciOiJub25lIn0.eyJlbWFpbCI6Ik1lQEV4YW1wbGUuY29tIn0.sig"
+const CX_LIVE = "eyJhbGciOiJub25lIn0.eyJleHAiOjE3OTMwMDAwMDB9.sig"
+const CX_DEAD = "eyJhbGciOiJub25lIn0.eyJleHAiOjE3OTAwMDAwMDB9.sig"
+
+fn cx_auth(access str) -> str =>
+    "{\"tokens\":{\"id_token\":\"${CX_ID}\",\"access_token\":\"${access}\",\"refresh_token\":\"rt\",\"account_id\":\"acct-1\"}}"
+
+fn cx_text(path str) -> str {
+    if path == "/cx/live/auth.json" { return cx_auth(CX_LIVE) }
+    if path == "/cx/dead/auth.json" { return cx_auth(CX_DEAD) }
+    ""
+}
+
+fn cx_disk[T](body fn() Dirs Creds -> T) -> T =>
+    with Dirs = effect Dirs {
+        list(path) -> []str { [] }
+        exists(path) -> bool { path == "/cx/live/auth.json" || path == "/cx/dead/auth.json" }
+        is_dir(path) -> bool { path.starts_with("/cx") }
+    } {
+        with Creds = effect Creds {
+            read(path) -> str { cx_text(path) }
+        } {
+            body()
+        }
+    }
+
+fn cx_endpoint[T](mut a Asked, raw str, body fn() Http PollLog Creds -> T) -> T =>
+    with Http = effect Http {
+        send(host, port, secure, request) -> Result[str, HttpError] {
+            a.n += 1
+            Ok(raw)
+        }
+    } {
+        with PollLog = effect PollLog {
+            record(email str, state str, message str, at_ms int) -> () {}
+            reading(r Reading) -> () {}
+        } {
+            with Creds = effect Creds {
+                read(path) -> str { cx_text(path) }
+            } {
+                body()
+            }
+        }
+    }
+
+fn cx_reply() -> str =>
+    "HTTP/1.1 200 OK${EOL}Content-Type: application/json${EOL}${EOL}{\"rate_limit\":{\"primary_window\":{\"used_percent\":12,\"limit_window_seconds\":2592000,\"reset_at\":1793000000},\"secondary_window\":null}}"
+
+fn cx_found(folder str) -> []Found {
+    ro now = NOW_MS
+    ro f = folder
+    cx_disk(fn() Dirs Creds -> []Found => found_in([f], now))
+}
+
+test "a Codex home is an account keyed codex:<e-mail>, named by the address, which is not an e-mail field" {
+    ro f = cx_found("/cx/live")
+    assert(f.len() == 1)
+    assert(same("key", "codex:me@example.com", f[0].email))
+    assert(same("name", "me@example.com", f[0].display_name))
+    assert(f[0].codex && !f[0].kimi)
+    assert(same("account", "acct-1", f[0].account_id))
+    assert(same("state", "ok", if f[0].state == TokenState.Ok { "ok" } else { "other" }))
+}
+
+test "a live Codex token is asked once and its month arrives under provider codex; the address stays out of email" {
+    mut a = Asked.new()
+    ro f = cx_found("/cx/live")
+    ro now = NOW_MS
+    ro k = cx_endpoint(a, cx_reply(), fn() Http PollLog Creds -> []Known => poll_round(f, [], now, now + 300000, TimeZone.Utc))
+    assert(a.n == 1)
+    assert(same("state", "ok", k[0].state.to_str()))
+    assert(k[0].windows.len() == 1)
+    assert(same("kind", "monthly", k[0].windows[0].kind))
+    assert(same("provider", "codex", k[0].provider))
+    assert(same("email", "", k[0].email))
+    assert(same("name", "me@example.com", k[0].display_name))
+}
+
+test "a dead Codex token is NOT asked and is NOT renewed; the text says what to do" {
+    mut a = Asked.new()
+    ro f = cx_found("/cx/dead")
+    ro now = NOW_MS
+    assert(f[0].state == TokenState.Stale)
+    ro k = cx_endpoint(a, cx_reply(), fn() Http PollLog Creds -> []Known => poll_round(f, [], now, now + 300000, TimeZone.Utc))
+    assert(a.n == 0)
+    assert(same("state", "stale", k[0].state.to_str()))
+    assert(same("message", "token expired · start Codex under this login", k[0].message))
+    mut renewals = 0
+    ro refresh = refresh_cfg(true)
+    ro renewed = with Renew = effect Renew {
+        kimi(path str, name str, cooldown_sec int) -> bool {
+            renewals += 1
+            false
+        }
+        claude(path str, name str, model str, timeout_sec int, cooldown_sec int) -> bool {
+            renewals += 1
+            false
+        }
+    } {
+        renew_expired(f, refresh)
+    }
+    assert(!renewed)
+    assert(renewals == 0)
 }
 
 // ── one round ────────────────────────────────────────────────────────────────

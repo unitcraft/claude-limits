@@ -78,7 +78,7 @@ export type Disclosure enum Loopback | Lan | Anonymous
 /// was saved in the order as "?2" -- its position -- and lost its place on reload.
 export fn AccountView @order_key() -> str {
     if @email != "" { return @email.to_ascii_lower() }
-    if @provider == "kimi" && @display_name != "" { return "kimi:${@display_name}".to_ascii_lower() }
+    if (@provider == "kimi" || @provider == "codex") && @display_name != "" { return "${@provider}:${@display_name}".to_ascii_lower() }
     ""
 }
 

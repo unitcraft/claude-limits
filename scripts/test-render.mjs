@@ -269,6 +269,12 @@ test('a Kimi Code account is headed by its name and says which service it is', (
   assert.equal(block.all((n) => n.className === 'account-org')[0].textContent, 'Kimi Code');
 });
 
+test('a Codex account is headed by its address and says which service it is', () => {
+  const block = renderAccount({ provider: 'codex', email: null, display_name: 'me@example.com', state: 'ok' }, []);
+  assert.equal(block.all((n) => n.className === 'account-email')[0].textContent, 'me@example.com');
+  assert.equal(block.all((n) => n.className === 'account-org')[0].textContent, 'Codex');
+});
+
 test('a live account shows its note, and one without a note shows none', () => {
   const noted = renderAccount({ email: 'a@x', state: 'ok', message: 'MGTS: token expired on disk' }, []);
   const notes = noted.all((n) => n.className === 'account-note');
