@@ -74,6 +74,11 @@ export function folderNote(folder, accountsFound = []) {
   }
   const dirIds = new Set(dirs.map((d) => d.id));
   const account = accountsFound.find((a) => (a.dirs || []).some((d) => dirIds.has(d.id)));
+  // A Kimi Code or Codex home has no `.credentials.json`: the probe finds no Claude login
+  // there, but the snapshot holds the account, and its directory is this folder's path.
+  const service = { kimi: 'Kimi Code', codex: 'Codex' };
+  const other = account ? null : accountsFound.find((a) => service[a.provider] && (a.dirs || []).some((d) => d.path === folder.path));
+  if (other) return { text: `${service[other.provider]} login · ${other.display_name}`, tone: null };
   if (!account) return { text: 'no .credentials.json here', tone: 'warning' };
   // The same login in two folders is ONE account, and saying so here prevents the
   // reasonable-but-wrong conclusion that adding the folder adds a login (§5.4).

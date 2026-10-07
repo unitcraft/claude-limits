@@ -130,6 +130,21 @@ test('a folder with no credentials is amber and says why', () => {
   assert.equal(note.tone, 'warning');
 });
 
+test('a Kimi Code or Codex home is a login of its service, not a folder without credentials', () => {
+  const found = [
+    { id: 'c', provider: 'codex', display_name: 'me@example.com', dirs: [{ id: 'd1', path: '~/.codex', name: '.codex' }] },
+    { id: 'k', provider: 'kimi', display_name: 'kimi-env', dirs: [{ id: 'd2', path: '~/.kimi-code', name: '.kimi-code' }] },
+  ];
+  const codex = folderNote({ path: '~/.codex', kind: 'empty', login_dirs: [], problem: null }, found);
+  assert.equal(codex.text, 'Codex login · me@example.com');
+  assert.equal(codex.tone, null);
+  assert.equal(folderNote({ path: '~/.kimi-code', kind: 'empty', login_dirs: [], problem: null }, found).text,
+    'Kimi Code login · kimi-env');
+  // The control: a folder no account lives in still says so.
+  assert.equal(folderNote({ path: '~/.other', kind: 'empty', login_dirs: [], problem: null }, found).text,
+    'no .credentials.json here');
+});
+
 console.log('\nthe probe line (§5.4, 01.3 §3.9)');
 
 test('a parent path lists what is inside it', () => {
