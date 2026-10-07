@@ -1,0 +1,79 @@
+// codex.nv — the usage reply of Codex (ChatGPT), read into the same windows as Claude's
+// (plan 01.7, stage 2).
+//
+// Source: the reference, `scripts/claude_limits.py` `codex_window_name` / `codex_rows_of`.
+// The endpoint is `GET https://chatgpt.com/backend-api/wham/usage`, the one the Codex CLI
+// reads. `rate_limit.primary_window` and `secondary_window` (or `null`) each carry
+// `used_percent`, `limit_window_seconds` and `reset_at` (epoch seconds).
+//
+// A WINDOW IS NAMED BY ITS LENGTH, as the reference does: 5 hours -> `session`,
+// 7 days -> `weekly_all`, about 30 days -> `monthly` (a free plan serves that one only).
+// A window of any other length has no `kind` in 01.3 and is left out rather than squeezed
+// into one -- the same narrowing as Kimi's `limits[]`. `additional_rate_limits` and
+// `code_review_rate_limit` are not read (plan 01.7, "Не входит").
+//
+// One deliberate narrowing: the reference falls back to `now + reset_after_seconds` when
+// `reset_at` is missing. A parser has no clock, so the reset is then 0 (unknown); the
+// endpoint has always sent `reset_at`.
+
+module usage.codex
+
+import std.encoding.json.{Json, JsonValue}
+import claude_limits.window.{Window}
+import claude_limits.usage.parse.{Usage, PollOutcome}
+import claude_limits.usage.kimi.{round_percent}
+
+fn member(obj JsonValue, key str) -> Option[JsonValue] =>
+    match obj.object() {
+        Some(fields) => fields.get(key)
+        None => None
+    }
+
+/// The window's kind by its length in seconds; "" for a length with no kind.
+export fn kind_of_seconds(seconds int) -> str {
+    if seconds == 18000 { return "session" }
+    if seconds == 604800 { return "weekly_all" }
+    // 30 days, and the 31-, 29- and 28-day months the reference accepts.
+    if seconds == 2592000 || seconds == 2678400 || seconds == 2505600 || seconds == 2419200 { return "monthly" }
+    ""
+}
+
+/// One window object as a row; `None` when it is not an object or has no percent.
+fn one_window(w JsonValue) -> Option[Window] {
+    if w.object().is_none() { return None }
+    ro used = member(w, "used_percent")?.num()?
+    ro seconds = match member(w, "limit_window_seconds") {
+        Some(s) => (s.num() ?? 0.0) as int
+        None => 0
+    }
+    ro kind = kind_of_seconds(seconds)
+    if kind == "" { return None }
+    ro reset_s = match member(w, "reset_at") {
+        Some(r) => (r.num() ?? 0.0) as int
+        None => 0
+    }
+    // Hundredths of a percent keep the half that rounding needs (half to even, as `%.0f`).
+    Some(Window.new(kind, "", round_percent((used * 100.0) as int), reset_s * 1000, ""))
+}
+
+/// The reply, read. `BadJson` when it is not a JSON object; `NoWindows` when nothing in
+/// it is a window with a kind.
+export fn parse_codex(body str) -> Usage {
+    ro root = Json.parse(body) ?? return Usage.new([], PollOutcome.BadJson, false)
+    if root.object().is_none() { return Usage.new([], PollOutcome.BadJson, false) }
+
+    mut out []Window = []
+    match member(root, "rate_limit") {
+        Some(limit) => {
+            for key in ["primary_window", "secondary_window"] {
+                match member(limit, key) {
+                    Some(w) => match one_window(w) { Some(row) => out.push(row), None => {} }
+                    None => {}
+                }
+            }
+        }
+        None => {}
+    }
+    if out.len() == 0 { return Usage.new([], PollOutcome.NoWindows, false) }
+    Usage.new(out, PollOutcome.Parsed, false)
+}

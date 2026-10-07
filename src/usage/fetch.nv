@@ -24,6 +24,7 @@
 module usage.fetch
 
 import claude_limits.usage.kimi.{parse_kimi}
+import claude_limits.usage.codex.{parse_codex}
 import http.{Http, HttpError}
 import claude_limits.usage.outcome.{Outcome, of_status, bad_body, transport_failed}
 import claude_limits.usage.parse.{Usage, PollOutcome}
@@ -38,6 +39,11 @@ import claude_limits.usage.parse as usage_reply
 // module prefix, so any other module declaring `CRLF` collides
 // (`probes/exported-const-loses-module-prefix/`). Private keeps the prefix.
 const CRLF = "\r\n"
+
+// Which service a poll talks to; private for the same reason as `CRLF`.
+const SERVICE_CLAUDE = 0
+const SERVICE_KIMI = 1
+const SERVICE_CODEX = 2
 
 /// What one request came back with: how it went, and what the body said.
 ///
@@ -91,6 +97,19 @@ export fn request_kimi(host str, path str, token str) -> str {
     mut r = "GET ${path} HTTP/1.1${CRLF}"
     r = "${r}Host: ${host}${CRLF}"
     r = "${r}Authorization: Bearer ${token}${CRLF}"
+    r = "${r}Accept: application/json${CRLF}"
+    r = "${r}Connection: close${CRLF}${CRLF}"
+    r
+}
+
+/// The Codex request (the reference's `fetch_codex_usage`): the ChatGPT account in a header
+/// and the CLI's own product token, which the endpoint expects.
+export fn request_codex(host str, path str, token str, account_id str) -> str {
+    mut r = "GET ${path} HTTP/1.1${CRLF}"
+    r = "${r}Host: ${host}${CRLF}"
+    r = "${r}Authorization: Bearer ${token}${CRLF}"
+    r = "${r}chatgpt-account-id: ${account_id}${CRLF}"
+    r = "${r}User-Agent: codex_cli_rs/claude-limits${CRLF}"
     r = "${r}Accept: application/json${CRLF}"
     r = "${r}Connection: close${CRLF}${CRLF}"
     r
@@ -213,7 +232,14 @@ export fn fetch(host str, port int, secure bool, path str, token str) Http -> Re
 
 /// One poll of either service: `kimi` picks the request and the reader of the reply.
 export fn fetch_with(host str, port int, secure bool, path str, token str, kimi bool) Http -> Reply {
-    ro request = if kimi { request_kimi(host, path, token) } else { request_for(host, path, token) }
+    if kimi { exchange(host, port, secure, request_kimi(host, path, token), SERVICE_KIMI) } else { exchange(host, port, secure, request_for(host, path, token), SERVICE_CLAUDE) }
+}
+
+/// One poll of Codex: its request carries the ChatGPT account the usage is asked about.
+export fn fetch_codex(host str, port int, secure bool, path str, token str, account_id str) Http -> Reply =>
+    exchange(host, port, secure, request_codex(host, path, token, account_id), SERVICE_CODEX)
+
+fn exchange(host str, port int, secure bool, request str, service int) Http -> Reply {
     match Http.send(host, port, secure, request) {
         // The request never arrived. `unknown`, and the last good reading stays.
         Err(_) => Reply.new(transport_failed(), Usage.empty())
@@ -225,7 +251,7 @@ export fn fetch_with(host str, port int, secure bool, path str, token str, kimi 
             ro out = of_status(status, retry_after_of(raw))
             if !out.body_usable { return Reply.new(out, Usage.empty()) }
 
-            ro usage = if kimi { parse_kimi(body_of(raw)) } else { usage_reply.parse(body_of(raw)) }
+            ro usage = if service == SERVICE_KIMI { parse_kimi(body_of(raw)) } else if service == SERVICE_CODEX { parse_codex(body_of(raw)) } else { usage_reply.parse(body_of(raw)) }
             // A 200 whose body will not parse is `error`, per 01.1 §3.2 -- see the
             // note in `outcome_test` about the fixture that says `unknown` instead.
             if usage.outcome == PollOutcome.BadJson {

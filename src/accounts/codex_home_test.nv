@@ -1,0 +1,74 @@
+// Tests for codex_home.nv -- plan 01.7, stage 2: a Codex home read by content.
+//
+//   ./nova.sh test src/accounts/codex_home_test.nv
+//
+// The JWTs are built by the reference's own recipe (url-safe base64, no padding):
+//   id_token     payload {"email":"Me@Example.com"}
+//   access_token payload {"exp":1793000000}
+// The signature part is a stub; it is never checked.
+
+module accounts.codex_home_test
+
+import codex_home.{CodexLogin, codex_logins_at, read_codex_token, jwt_claims}
+import claude_limits.accounts.discover.{Dirs}
+import claude_limits.accounts.login.{Creds}
+
+const ID = "eyJhbGciOiJub25lIn0.eyJlbWFpbCI6Ik1lQEV4YW1wbGUuY29tIn0.sig"
+const ACCESS = "eyJhbGciOiJub25lIn0.eyJleHAiOjE3OTMwMDAwMDB9.sig"
+
+fn chatgpt_login() -> str =>
+    "{\"auth_mode\":\"chatgpt\",\"OPENAI_API_KEY\":null,\"tokens\":{\"id_token\":\"${ID}\",\"access_token\":\"${ACCESS}\",\"refresh_token\":\"rt\",\"account_id\":\"acct-1\"},\"last_refresh\":\"2026-10-01T00:00:00Z\"}"
+
+fn api_key_login() -> str => "{\"auth_mode\":\"apikey\",\"OPENAI_API_KEY\":\"sk-xxx\"}"
+
+fn file_text(path str) -> str {
+    if path == "/h/codex/auth.json" { return chatgpt_login() }
+    if path == "/h/key/auth.json" { return api_key_login() }
+    ""
+}
+
+fn on_disk[T](body fn() Dirs Creds -> T) -> T =>
+    with Dirs = effect Dirs {
+        list(path) -> []str { [] }
+        exists(path) -> bool { path == "/h/codex/auth.json" || path == "/h/key/auth.json" }
+        is_dir(path) -> bool { path == "/h/codex" || path == "/h/key" || path == "/h/none" }
+    } {
+        with Creds = effect Creds {
+            read(path) -> str { file_text(path) }
+        } {
+            body()
+        }
+    }
+
+fn found(dir str) -> []CodexLogin {
+    ro d = dir
+    on_disk(fn() Dirs Creds -> []CodexLogin => codex_logins_at(d))
+}
+
+test "a ChatGPT login: named by the lowered e-mail, expiry from the access token's exp, in ms" {
+    ro got = found("/h/codex")
+    assert(got.len() == 1)
+    assert(got[0].name == "me@example.com")
+    assert(got[0].account_id == "acct-1")
+    assert(got[0].expires_at_ms == 1793000000000)
+    assert(got[0].path == "/h/codex/auth.json")
+    assert(got[0].has_token)
+}
+
+test "an API-key login, and a folder with no auth.json, are not logins" {
+    assert(found("/h/key").len() == 0)
+    assert(found("/h/none").len() == 0)
+}
+
+test "the claims of something that is not a JWT are empty" {
+    assert(jwt_claims("") == "")
+    assert(jwt_claims("no-dots") == "")
+    assert(jwt_claims(ID).contains("Me@Example.com"))
+}
+
+test "the access token is read for the one caller that sends it" {
+    ro secret = on_disk(fn() Dirs Creds -> bool => read_codex_token("/h/codex/auth.json").is_some())
+    assert(secret)
+    ro none = on_disk(fn() Dirs Creds -> bool => read_codex_token("/h/key/auth.json").is_none())
+    assert(none)
+}

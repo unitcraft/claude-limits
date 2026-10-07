@@ -35,7 +35,7 @@
 
 module usage.poller
 
-import claude_limits.usage.fetch.{fetch_with}
+import claude_limits.usage.fetch.{fetch_with, fetch_codex}
 import claude_limits.usage.outcome.{Outcome}
 import claude_limits.usage.schedule.{Interval, PollSchedule, due, polled, refresh_allowed}
 import claude_limits.usage.parse.{Usage}
@@ -59,16 +59,24 @@ export type PollTarget value {
     ro token str
     /// Kimi Code rather than Claude: another request and another reply (plan 01.6).
     ro kimi bool
+    /// Codex (ChatGPT) rather than Claude: its request names the ChatGPT account (plan 01.7).
+    ro codex bool
+    /// The ChatGPT account of a Codex login; "" for the others.
+    ro account_id str
 }
 
 export fn PollTarget.new(email str, host str, port int, secure bool, path str,
                      token str) -> PollTarget =>
-    { email, host, port, secure, path, token, kimi: false }
+    { email, host, port, secure, path, token, kimi: false, codex: false, account_id: "" }
 
 /// A Kimi Code account. `key` stands where the e-mail would: Kimi has none, and the
 /// journal needs a name (`kimi:<credentials stem>`).
 export fn PollTarget.for_kimi(key str, host str, path str, token str) -> PollTarget =>
-    { email: key, host, port: 443, secure: true, path, token, kimi: true }
+    { email: key, host, port: 443, secure: true, path, token, kimi: true, codex: false, account_id: "" }
+
+/// A Codex account. `key` is `codex:<e-mail>`, standing where the e-mail would.
+export fn PollTarget.for_codex(key str, host str, path str, token str, account_id str) -> PollTarget =>
+    { email: key, host, port: 443, secure: true, path, token, kimi: false, codex: true, account_id }
 
 /// What one poll produced, for a caller that wants the numbers rather than the state.
 export type Reading value {
@@ -126,7 +134,7 @@ export fn may_ask(state TokenState) -> bool =>
 /// decision from the act is what makes both testable -- `due` without a network, and
 /// this without a clock.
 export fn poll_once(a PollTarget, now_ms int) Http PollLog -> Reading {
-    ro got = fetch_with(a.host, a.port, a.secure, a.path, a.token, a.kimi)
+    ro got = if a.codex { fetch_codex(a.host, a.port, a.secure, a.path, a.token, a.account_id) } else { fetch_with(a.host, a.port, a.secure, a.path, a.token, a.kimi) }
     // WRITTEN BEFORE ANYTHING ELSE CAN GO WRONG. Every outcome is recorded, including
     // the ones nobody wants to look at: a 429 that is not in `poll` is a 429 nobody
     // can explain the next morning.

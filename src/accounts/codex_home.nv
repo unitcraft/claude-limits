@@ -1,0 +1,78 @@
+// codex_home.nv — Codex (OpenAI / ChatGPT) logins in a folder (plan 01.7, stage 2).
+//
+// Source: the reference, `scripts/claude_limits.py` `codex_login_of` / `codex_logins_of`.
+// A folder is a Codex home when `auth.json` holds `tokens.access_token` and
+// `tokens.account_id` -- a login by API key has no usage endpoint to ask. ONE ACCOUNT PER
+// HOME, named by the e-mail in the `id_token`'s claims (lowered), `codex` when it has none.
+//
+// Detected BY CONTENT, as the reference does: the default home is `~/.codex`
+// (`$CODEX_HOME`), but a person may point the tool anywhere.
+//
+// NO TOKEN LEAVES THIS FILE except through `read_codex_token`, for the one caller that
+// sends it -- the same split as `kimi_home.read_kimi_token`. The tokens are JWTs; their
+// payload (the claims) is read for the e-mail and the expiry, never printed.
+//
+// THE TOKEN IS NEVER RENEWED, and this module has no write operation at all (`Creds`
+// reads): OpenAI's refresh token is single-use, and a renewal that did not reach
+// `auth.json` would sign the Codex CLI out.
+
+module accounts.codex_home
+
+import std.encoding.base64.{Base64}
+import claude_limits.accounts.discover.{Dirs, normalise, under}
+import claude_limits.accounts.login.{Creds, Secret, raw_field_str, raw_field_int}
+
+/// One Codex login: an `auth.json`. No token in it.
+export type CodexLogin value {
+    /// The account's name: the lowered e-mail of the `id_token`, or `codex`.
+    ro name str
+    /// The Codex home it was found in.
+    ro home str
+    /// The `auth.json` itself.
+    ro path str
+    /// The ChatGPT account the usage endpoint is asked about (a header, not a secret).
+    ro account_id str
+    /// Unix milliseconds, from the access token's `exp`; 0 when it says none.
+    ro expires_at_ms int
+    ro has_token bool
+}
+
+fn codex_login(name str, home str, path str, account_id str, expires_at_ms int, has_token bool) -> CodexLogin =>
+    { name, home, path, account_id, expires_at_ms, has_token }
+
+/// The claims of a JWT as JSON text; "" when it is not one. The signature is not checked:
+/// the claims are only read to name the account and to know when to stop asking.
+export fn jwt_claims(token str) -> str {
+    ro parts = token.split(".").collect()
+    if parts.len() < 2 { return "" }
+    match Base64.decode_url(parts[1]) {
+        Ok(bytes) => bytes.to_str_lossy()
+        Err(_) => ""
+    }
+}
+
+/// Every Codex login in `dir`; none when it is not a Codex home.
+export fn codex_logins_at(dir str) Dirs Creds -> []CodexLogin {
+    ro home = normalise(dir)
+    ro path = under(home, "auth.json")
+    mut out []CodexLogin = []
+    if !Dirs.exists(path) { return out }
+    ro text = Creds.read(path)
+    ro access = raw_field_str(text, "access_token")
+    ro account_id = raw_field_str(text, "account_id")
+    // An API-key login holds neither: not a login this tool can ask (the reference skips it).
+    if access == "" || account_id == "" { return out }
+    ro email = raw_field_str(jwt_claims(raw_field_str(text, "id_token")), "email").trim_ascii().to_ascii_lower()
+    ro name = if email == "" { "codex" } else { email }
+    ro exp_s = raw_field_int(jwt_claims(access), "exp")
+    out.push(codex_login(name, home, path, account_id, exp_s * 1000, true))
+    out
+}
+
+/// The access token of one Codex login, for the one caller that sends it.
+export fn read_codex_token(path str) Creds -> Option[Secret] {
+    if path == "" { return None }
+    ro secret = raw_field_str(Creds.read(path), "access_token")
+    if secret == "" { return None }
+    Some(Secret.new(secret))
+}
