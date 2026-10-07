@@ -1,0 +1,44 @@
+{
+  "inbound": "any",
+  "task_fields": [
+    "goal",
+    "criteria",
+    "boundaries",
+    "open_questions"
+  ],
+  "acceptance": [
+    {
+      "id": "done-when",
+      "text": "Все команды из «готово, когда» карточки прогнаны приёмщиком сам, вывод совпадает с ожидаемым (executor-brief §5)",
+      "required": true
+    },
+    {
+      "id": "reverse-probe",
+      "text": "В отчёте есть обратная проба: что сломано → что покраснело → вернули → зелёный (executor-brief §5)",
+      "required": true
+    },
+    {
+      "id": "report",
+      "text": "Есть docs/reports/<id>.md по шаблону executor-brief §6, «Проверено» с выводом команд",
+      "required": true
+    },
+    {
+      "id": "tests-intact",
+      "text": "Тесты не ослаблены и не удалены ради зелёного (executor-brief §5)",
+      "required": true
+    },
+    {
+      "id": "git",
+      "text": "Один коммит, сообщение по-английски, только нужные файлы, без файлов владельца (executor-brief §7)",
+      "required": true
+    },
+    {
+      "id": "conventions",
+      "text": "Задача трогает схему или API — пройдены чек-листы БД §17 / API §20; не трогает — так и написать",
+      "required": true
+    }
+  ],
+  "worktrees": "../worktrees",
+  "worktree_name": "{repo}-{n}-{slug}",
+  "branch_name": "task/{n}-{slug}"
+}
