@@ -131,14 +131,24 @@ export fn kimi_key(key str) -> Option[str] {
 
 /// The account's key in SQL, as the live model writes it: the e-mail, or `kimi:` and
 /// the stem -- what a reader compares with `Reading.email` and `AccountView.email`.
-export fn account_key_sql(a str) -> str => "coalesce(${a}.email, '${KIMI_PREFIX}' || ${a}.cred_key)"
+export fn account_key_sql(a str) -> str =>
+    "coalesce(${a}.email, CASE WHEN ${a}.provider = 'codex' THEN ${a}.cred_key ELSE '${KIMI_PREFIX}' || ${a}.cred_key END)"
+
+const CODEX_PREFIX = "codex:"
+
+/// Is this key a Codex (ChatGPT) login's? Its `cred_key` holds the WHOLE key, lowered
+/// (migration 0003): the e-mail column is Claude's, and one address may hold both
+/// logins.
+export fn is_codex_key(key str) -> bool => key.starts_with(CODEX_PREFIX)
 
 /// The condition naming the account of `key`, by the column that keys it.
-fn account_match(key str) -> str =>
+fn account_match(key str) -> str {
+    if is_codex_key(key) { return "cred_key = ${quote(key.to_ascii_lower())}" }
     match kimi_key(key) {
         Some(stem) => "cred_key = ${quote(stem)}"
         None => "email = ${quote(key.to_ascii_lower())}"
     }
+}
 
 /// Upsert the account, touching `last_seen_at` and the service set (01.2 §3.1).
 ///
@@ -148,9 +158,13 @@ fn account_match(key str) -> str =>
 /// files differing in case are two logins.
 export fn upsert_account_sql(t Tick, id str) -> str {
     ro at = moment(t.at_ms)
-    ro (provider, email, stem, target) = match kimi_key(t.email) {
-        Some(s) => ("kimi", "NULL", quote(s), "cred_key")
-        None => ("claude", quote(t.email.to_ascii_lower()), "NULL", "email")
+    ro (provider, email, stem, target) = if is_codex_key(t.email) {
+        ("codex", "NULL", quote(t.email.to_ascii_lower()), "cred_key")
+    } else {
+        match kimi_key(t.email) {
+            Some(s) => ("kimi", "NULL", quote(s), "cred_key")
+            None => ("claude", quote(t.email.to_ascii_lower()), "NULL", "email")
+        }
     }
     "INSERT INTO account (id, created_at, updated_at, created_by, updated_by, provider, email, cred_key, org_name, color_slot, first_seen_at, last_seen_at) VALUES (${quote(id)}, ${at}, ${at}, ${quote(t.instance)}, ${quote(t.instance)}, '${provider}', ${email}, ${stem}, ${sql_opt(t.org)}, 0, ${at}, ${at}) ON CONFLICT (${target}) DO UPDATE SET last_seen_at = excluded.last_seen_at, updated_at = excluded.updated_at, updated_by = excluded.updated_by"
 }

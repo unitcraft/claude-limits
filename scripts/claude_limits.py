@@ -540,7 +540,7 @@ def codex_login_of(f, home_label=None):
     if not isinstance(tokens, dict) or not tokens.get("access_token") or not tokens.get("account_id"):
         return None
     email = jwt_claims(tokens.get("id_token") or "").get("email") or ""
-    name = email or "codex"
+    name = email.lower() or "codex"
     label = f"Codex ({name})"
     if home_label:
         label += f"  [{home_label}]"

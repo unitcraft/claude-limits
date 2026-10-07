@@ -61,7 +61,7 @@ fn km(kind str, model str) -> KindModel => { kind, model }
 /// no window for.
 export fn port_kind(raw str) -> Option[KindModel] {
     if raw == "session" || raw == "5h limit" { return Some(km("session", "")) }
-    if raw == "weekly_all" { return Some(km("weekly_all", "")) }
+    if raw == "weekly_all" || raw == "weekly limit" { return Some(km("weekly_all", "")) }
     if raw.starts_with("weekly_scoped:") {
         ro model = raw["weekly_scoped:".byte_len()..]
         if model == "" { return None }
@@ -73,7 +73,8 @@ export fn port_kind(raw str) -> Option[KindModel] {
 }
 
 /// The reference's series -> the port's account key: a Claude e-mail lowered as the
-/// database stores it; a Kimi login as the live model names it. `None` otherwise.
+/// database stores it; a Kimi or Codex login as the live model names it (Codex lowered, as its
+/// key is stored). `None` otherwise.
 export fn port_key(series str) -> Option[str] {
     if series.starts_with("claude:") {
         ro email = series["claude:".byte_len()..].trim_ascii().to_ascii_lower()
@@ -81,6 +82,7 @@ export fn port_key(series str) -> Option[str] {
         return Some(email)
     }
     if series.starts_with("kimi:") && series.byte_len() > "kimi:".byte_len() { return Some(series) }
+    if series.starts_with("codex:") && series.byte_len() > "codex:".byte_len() { return Some(series.to_ascii_lower()) }
     None
 }
 
@@ -231,7 +233,7 @@ export fn rebuild_sql(instance str, now_ms int) -> []str {
     ro svc = "${at}, ${at}, ${by}, ${by}"
     ro key = account_key_sql("a")
     [
-        "INSERT INTO account (id, created_at, updated_at, created_by, updated_by, provider, email, cred_key, color_slot, first_seen_at, last_seen_at) SELECT uuidv7(), ${svc}, CASE WHEN starts_with(p.k, 'kimi:') THEN 'kimi' ELSE 'claude' END, CASE WHEN starts_with(p.k, 'kimi:') THEN NULL ELSE p.k END, CASE WHEN starts_with(p.k, 'kimi:') THEN substr(p.k, 6) ELSE NULL END, 0, min(p.taken_at), max(p.taken_at) FROM import_pts p WHERE NOT EXISTS (SELECT 1 FROM account a WHERE ${key} = p.k) GROUP BY p.k",
+        "INSERT INTO account (id, created_at, updated_at, created_by, updated_by, provider, email, cred_key, color_slot, first_seen_at, last_seen_at) SELECT uuidv7(), ${svc}, CASE WHEN starts_with(p.k, 'kimi:') THEN 'kimi' WHEN starts_with(p.k, 'codex:') THEN 'codex' ELSE 'claude' END, CASE WHEN starts_with(p.k, 'kimi:') OR starts_with(p.k, 'codex:') THEN NULL ELSE p.k END, CASE WHEN starts_with(p.k, 'kimi:') THEN substr(p.k, 6) WHEN starts_with(p.k, 'codex:') THEN p.k ELSE NULL END, 0, min(p.taken_at), max(p.taken_at) FROM import_pts p WHERE NOT EXISTS (SELECT 1 FROM account a WHERE ${key} = p.k) GROUP BY p.k",
         "INSERT INTO limit_window (id, created_at, updated_at, created_by, updated_by, account_id, kind, model, first_seen_at, last_seen_at) SELECT uuidv7(), ${svc}, a.id, p.kind, p.model, min(p.taken_at), max(p.taken_at) FROM import_pts p JOIN account a ON ${key} = p.k AND a.deleted_at IS NULL WHERE NOT EXISTS (SELECT 1 FROM limit_window w WHERE w.account_id = a.id AND w.kind = p.kind AND w.model = p.model) GROUP BY a.id, p.kind, p.model",
         // What is left to place: not yet a sample, and before the window's first one.
         "CREATE OR REPLACE TEMP TABLE import_el AS SELECT w.id AS window_id, p.taken_at, max(p.pct) AS pct FROM import_pts p JOIN account a ON ${key} = p.k AND a.deleted_at IS NULL JOIN limit_window w ON w.account_id = a.id AND w.kind = p.kind AND w.model = p.model WHERE p.taken_at < coalesce((SELECT f.first_at FROM import_first f WHERE f.window_id = w.id), 'infinity'::TIMESTAMPTZ) AND NOT EXISTS (SELECT 1 FROM sample s WHERE s.window_id = w.id AND s.sampled_at = p.taken_at) GROUP BY w.id, p.taken_at",

@@ -508,3 +508,14 @@ test "the control: a Claude account is still keyed by its e-mail" {
     assert(sql.contains("'claude', 'work@example.org', NULL"))
     assert(sql.contains("ON CONFLICT (email)"))
 }
+
+test "a Codex key is written whole into cred_key, lowered, never as an e-mail" {
+    // 0003: the e-mail column is Claude's; one address may hold a Claude and a Codex login.
+    ro t = tick_with_email("codex:Person@Example.COM")
+    ro sql = upsert_account_sql(t, "id-account")
+    assert(sql.contains("'codex', NULL, 'codex:person@example.com'"))
+    assert(sql.contains("ON CONFLICT (cred_key)"))
+    for s in plan_sql(t, ids()) {
+        assert(!s.contains("email ="))
+    }
+}
