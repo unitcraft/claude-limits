@@ -15,10 +15,11 @@ import { el, renderList, renderCards, layoutCells } from './render.js';
 import { createReorder } from './reorder.js';
 import { renderStats, RANGES } from './stats.js';
 import { renderFolders } from './folders.js';
+import { planNotifications } from './notify.js';
 import {
   renderSettings, bodyOf, isEmptyDiff, showErrors, unmatchedErrors, probeSummary,
   showConflict, clearConflict, conflictCurrent, syncFolders, collectBrowser, saveBrowser,
-  savedNote, checkFailed } from './settings.js';
+  savedNote, checkFailed, permissionLine } from './settings.js';
 
 const VIEWS = ['list', 'cards', 'stats'];
 // The transport's own numbers (10 s degraded poll, 30 s reconnect, 90 s silence)
@@ -391,7 +392,38 @@ function applySnapshot(snap) {
   // the next poll, which is five minutes away by default.
   renderCards(accounts, snap.limits, state.order);
   tick();
+  notifyThresholds(snap);
   document.dispatchEvent(new CustomEvent('snapshot', { detail: snap }));
+}
+
+/**
+ * Task #9: show the notifications the snapshot owes. The rules live in notify.js; this
+ * only reads and writes localStorage (`notify`, `notified`) and raises the browser's
+ * Notification. Every step may fail quietly -- a missing permission or a private-mode
+ * store must never break drawing the page.
+ */
+function notifyThresholds(snap) {
+  let enabled = false;
+  let told = {};
+  try {
+    enabled = localStorage.getItem('notify') === 'true';
+    told = JSON.parse(localStorage.getItem('notified') || '{}') || {};
+  } catch { /* unreadable: start from nothing */ }
+  const granted = typeof Notification !== 'undefined' && Notification.permission === 'granted';
+  const names = {};
+  for (const a of snap.accounts || []) names[a.id] = a.email || a.display_name || a.id;
+  const plan = planNotifications(snap.limits, told, { enabled: enabled && granted, names });
+  try { localStorage.setItem('notified', JSON.stringify(plan.told)); } catch { /* private mode */ }
+  for (const n of plan.fire) {
+    try { new Notification(n.title, { body: n.body, tag: n.key }); } catch { /* ignore */ }
+  }
+}
+
+async function askNotifyPermission(btn) {
+  if (typeof Notification === 'undefined') return;
+  try { await Notification.requestPermission(); } catch { /* ignore */ }
+  const note = btn.parentElement && btn.parentElement.querySelector('.notify-state');
+  if (note) note.textContent = permissionLine();
 }
 
 window.addEventListener('resize', layoutCells);
@@ -533,6 +565,7 @@ function onPanelClick(e) {
   }
   if (action === 'reload-settings') { reloadSettings(); return; }
   if (action === 'probe') { probeFolder(); return; }
+  if (action === 'notify-permission') { askNotifyPermission(target); return; }
   if (action === 'save') { saveSettings(); }
 }
 

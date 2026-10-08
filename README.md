@@ -377,7 +377,7 @@ python scripts/claude_limits.py --parent C:/accounts # every child dir instead o
 - [x] Nova core: same table as the script, byte-for-byte (`--once`)
 - [ ] local backend: `/api/snapshot`, `/api/events` (SSE), embedded page with one bar per account per window -- done but for the live SSE stream (the page polls instead)
 - [x] history: every round is recorded in the encrypted database (readings, lock periods, which login sat in which folder), and `/api/history` serves it by account or by folder, over 24 h / 7 d / 30 d; the statistics views read it
-- [ ] threshold notifications
+- [x] threshold notifications: the page raises a browser notification when a window passes 70 % or 90 % (off by default, switch and permission button in Settings)
 - [ ] after the first release: optional widget (`--widget`) — always-on-top window and tray icon on Windows and Linux (StatusNotifier)
 
 ## License

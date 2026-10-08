@@ -15,7 +15,7 @@ installDocument({});
 const {
   renderSettings, collect, bodyOf, diffConfig, isEmptyDiff, folderRef,
   folderNote, showErrors, unmatchedErrors, probeSummary, BROWSER_ONLY,
-  showConflict, clearConflict, conflictCurrent, syncFolders, savedNote, checkFailed,
+  showConflict, clearConflict, conflictCurrent, syncFolders, savedNote, checkFailed, collectBrowser,
 } = await import('../src/web/settings.js');
 
 let passed = 0;
@@ -62,6 +62,17 @@ test('NO browser-only setting can reach the body', () => {
   for (const key of BROWSER_ONLY) {
     assert.ok(!flat.includes(`"${key}"`), `${key} is a localStorage setting, not a config key`);
   }
+});
+
+test('the notifications switch is a browser-side setting, off by default, and never in the body', () => {
+  const panel = build();
+  const t = at(panel, 'ui.notify');
+  assert.equal(t.dataset.store, 'browser');
+  assert.equal(t.getAttribute('aria-checked'), 'false');
+  t.setAttribute('aria-checked', 'true');
+  assert.equal(collectBrowser(panel).notify, true);
+  assert.ok(isEmptyDiff(bodyOf(panel)), 'localStorage only: the PUT body stays empty');
+  assert.ok(panel.all((n) => n.dataset && n.dataset.action === 'notify-permission').length === 1);
 });
 
 test('folders are sent as references, never as the objects read back', () => {
