@@ -21,7 +21,7 @@ Each card is one account; each row is one limit window.
 | what you see | what it means |
 |---|---|
 | **thick bar**, green / yellow / red | the share of the limit already used; yellow from 70%, red from 90% (`[thresholds]`) |
-| **hatching at the end of the thick bar** | where the current pace lands by the reset, e.g. `-> 46% at reset`; green below 80%, yellow from 80%, red from 95% (`[forecast]`). A red hatch on a calm bar means the quota will run out before the window does |
+| **hatching at the end of the thick bar** | where the current pace lands by the reset, e.g. `-> 46% at reset`; green below 80%, yellow from 80%, red from 95% (`[forecast]`). Over 100% the quota runs out before the window does; between 80% and 100% it only comes close |
 | **thin line under the bar** | how much of the window has passed; compare it with the bar: the bar ahead of the line means you spend faster than time goes |
 | **hatching on the thin line** | how far into the window the quota lasts at the current pace: green if it reaches the reset (95% of the window or more), yellow from 80%, red if it ends earlier |
 | **`resets ... (2h 10min)`** | when the window starts over, and how long that is |
