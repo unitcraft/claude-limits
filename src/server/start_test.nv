@@ -11,7 +11,7 @@ import claude_limits.config.{Config, ConfigError}
 import claude_limits.server.handlers.history.{HistoryAsk, HistoryLoad}
 import claude_limits.storage.config_file.{Loaded}
 import claude_limits.storage.paths.{Paths}
-import start.{Start, decide_start, health_at, sources_at_start, conf_at_start, folders_seen, accounts_seen, DbAtStart}
+import start.{Start, decide_start, health_at, HealthLive, sources_at_start, conf_at_start, folders_seen, accounts_seen, DbAtStart}
 import claude_limits.server.dto.{AccountView, DirView}
 import claude_limits.model.store_fiber.{ConfNow}
 import claude_limits.server.handlers.config.{Committed}
@@ -105,13 +105,87 @@ fn some_paths() -> Paths => {
 }
 
 test "health at start says what is true of this process" {
-    ro h = health_at(Config.defaults(), some_paths(), "2026-09-30T09:00:00Z", DbAtStart.none())
+    ro h = health_at(Config.defaults(), some_paths(), "2026-09-30T09:00:00Z", DbAtStart.none(), idle(1790758800000))
     assert(same("started", "2026-09-30T09:00:00Z", h.started_at))
     assert(same("config", "C:/cfg/claude-limits.toml", h.config_path))
     assert(h.port == 7391)
     // No database is open in this process yet: saying otherwise would be a claim.
     assert(!h.encrypted)
     assert(h.history_days == 0)
+    assert(h.accounts_total == 0)
+}
+
+fn idle(now_ms int) -> HealthLive => { now_ms, view: nothing_yet(), hidden: [], days: 0 }
+
+fn state_account(email str, state str, dirs []DirView) -> AccountView => {
+    id: "a-${email}", email, org: "Org", dirs, state, message: "", polled_at: "",
+    next_poll_at: "", locked: false, display_name: "", provider: "claude", at_100: false, same_quota_as: "", extra_usage: None,
+}
+
+/// Three accounts of different states, one of them hidden, four login directories.
+fn live_view() -> SnapshotView => {
+    fetched_at: "2026-09-30T09:10:00Z", next_poll_at: "2026-09-30T09:15:00Z", tz: "+03:00", restored: false,
+    worst: None, limits: [],
+    accounts: [
+        state_account("a@example.com", "ok", [dir("C:/l/one", "one"), dir("C:/l/two", "two")]),
+        state_account("b@example.org", "stale", [dir("C:/l/three", "three")]),
+        state_account("c@example.org", "error", [dir("C:/l/four", "four")]),
+    ],
+}
+
+fn live_at(now_ms int, hidden []str, days int) -> HealthLive => { now_ms, view: live_view(), hidden, days }
+
+test "health counts what the store holds, not zeros" {
+    // Started 09:00:00Z, asked at 09:12:30Z: 750 s.
+    ro h = health_at(Config.defaults(), some_paths(), "2026-09-30T09:00:00Z", DbAtStart.none(), live_at(1790759550000, [], 17))
+    assert(h.uptime_sec == 750)
+    assert(same("last", "2026-09-30T09:10:00Z", h.poll_last_at))
+    assert(same("next", "2026-09-30T09:15:00Z", h.poll_next_at))
+    assert(h.accounts_total == 3)
+    assert(h.accounts_ok == 1)
+    assert(h.accounts_stale == 1)
+    assert(h.accounts_unknown == 0)
+    assert(h.accounts_error == 1)
+    assert(h.accounts_hidden == 0)
+    assert(h.login_dirs == 4)
+    assert(h.history_days == 17)
+}
+
+test "a hidden account is counted as hidden, once, and not in its state" {
+    ro h = health_at(Config.defaults(), some_paths(), "2026-09-30T09:00:00Z", DbAtStart.none(), live_at(1790759550000, ["B@Example.org"], 0))
+    assert(h.accounts_total == 3)
+    assert(h.accounts_hidden == 1)
+    assert(h.accounts_stale == 0)
+    assert(h.accounts_ok == 1)
+    assert(h.accounts_error == 1)
+    // Its folder is still a folder of this machine.
+    assert(h.login_dirs == 4)
+}
+
+test "before the first round the poll moments are empty and the clock before the start is no negative uptime" {
+    ro h = health_at(Config.defaults(), some_paths(), "2026-09-30T09:00:00Z", DbAtStart.none(), idle(1790758000000))
+    assert(h.uptime_sec == 0)
+    assert(same("last", "", h.poll_last_at))
+    assert(same("next", "", h.poll_next_at))
+}
+
+test "the version health reports is the one version, not the placeholder" {
+    ro h = health_at(Config.defaults(), some_paths(), "2026-09-30T09:00:00Z", DbAtStart.none(), idle(1790758800000))
+    assert(same("version", "0.1.0", h.app_version))
+}
+
+test "the router a start builds reports the live counts and the days of the history" {
+    // The SAME composition `--serve` listens with: the store's view and the database's
+    // days reach the wire, and none of them is the start's zero.
+    ro w = ask_days("/api/health", fn() -> SnapshotView => live_view(), 9)
+    assert(w.starts_with("HTTP/1.1 200"))
+    assert(w.contains("\"accounts\":{\"total\":3,\"ok\":1,\"stale\":1,\"unknown\":0,\"error\":1,\"hidden\":0}"))
+    assert(w.contains("\"login_dirs\":4"))
+    assert(w.contains("\"history_days\":9"))
+    assert(w.contains("\"last_at\":\"2026-09-30T09:10:00Z\""))
+    assert(w.contains("\"next_at\":\"2026-09-30T09:15:00Z\""))
+    assert(w.contains("\"app_version\":\"0.1.0\""))
+    assert(!w.contains("\"uptime_sec\":0,"))
 }
 
 // -- the production composition, through the router --------------------------
@@ -138,11 +212,17 @@ fn ask(path str) Time Random -> str => ask_with(path, fn() -> SnapshotView => no
 fn ask_with(path str, current fn() -> SnapshotView) Time Random -> str =>
     ask_conf(path, current, fn() -> ConfNow => defaults_now())
 
-fn ask_conf(path str, current fn() -> SnapshotView, conf fn() -> ConfNow) Time Random -> str {
+fn ask_conf(path str, current fn() -> SnapshotView, conf fn() -> ConfNow) Time Random -> str =>
+    ask_all(path, current, conf, 0)
+
+fn ask_days(path str, current fn() -> SnapshotView, days int) Time Random -> str =>
+    ask_all(path, current, fn() -> ConfNow => defaults_now(), days)
+
+fn ask_all(path str, current fn() -> SnapshotView, conf fn() -> ConfNow, days int) Time Random -> str {
     ro r = api_router(sources_at_start(Config.defaults(), some_paths(), "2026-09-30T09:00:00Z", 1790758800000, DbAtStart.none(), current,
         fn(a HistoryAsk) -> HistoryLoad => no_database(a), conf, fn(c Config) -> Committed => never_written(),
         fn(a int) -> Option[Live] => no_stream(a), fn(st ProbeState, p str) -> str => no_disk(),
-        fn() -> bool => no_round()))!!
+        fn() -> bool => no_round(), fn() -> int => days))!!
     wire_text(serve_once(r, "GET ${path} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"))
 }
 

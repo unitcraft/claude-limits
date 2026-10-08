@@ -27,7 +27,7 @@ import duckdb.types.{Value}
 import claude_limits.storage.repo.{write_tick, config_history_sql}
 import claude_limits.storage.tick.{tick_of, fresh_ids}
 import claude_limits.usage.poller.{Reading}
-import claude_limits.storage.history_read.{read_history, read_folder_history}
+import claude_limits.storage.history_read.{read_history, read_folder_history, read_history_days}
 import claude_limits.storage.history_rows.{HistRows, HistFolderRows}
 import claude_limits.storage.discovery_write.{Discovered, DiscoveryIds, record_discovery}
 import std.identifiers.uuid.{Uuid}
@@ -457,6 +457,33 @@ export fn read_history_rows(p Paths, from_ms int, to_ms int, accounts []str, dir
     match got {
         Ok(rows) => Ok(rows)
         Err(e) => Err("the history was not read: ${e.message()}")
+    }
+}
+
+/// How many calendar days the database holds readings for, for `/api/health`.
+///
+/// Opened, read and closed per call, like `read_history_rows`. A database that does
+/// not answer is `Err`, and the caller reports 0 days (the log says why).
+export fn read_history_days_in(p Paths, windows bool) Db Fs Random -> Result[int, str] {
+    ro key_file = p.key_file
+    ro key = ensure_key(key_file, dir_of(key_file, windows)).map_err(fn(f OpenFail) -> str => f.message(key_file))?
+    mut opts = DbOptions.defaults()
+    opts.encryption_key = key
+    opts.temp_dir = p.temp_dir
+    ro db = Db.open(p.db_file, opts).map_err(fn(e DuckError) -> str => "the database did not open: ${e.message()}")?
+    ro conn = match Db.connect(db) {
+        Ok(c) => c
+        Err(e) => {
+            Db.close_db(db)
+            return Err("the database refused a connection: ${e.message()}")
+        }
+    }
+    ro got = read_history_days(conn)
+    Db.close_conn(conn)
+    Db.close_db(db)
+    match got {
+        Ok(n) => Ok(n)
+        Err(e) => Err("the history days were not counted: ${e.message()}")
     }
 }
 

@@ -148,6 +148,20 @@ export fn read_history(conn ConnRef, from_ms int, to_ms int, accounts []str) Db 
     Ok(HistRows{ accounts: out_accounts, windows })
 }
 
+// ── how many days the history spans (`/api/health` storage.history_days) ───
+
+/// Distinct calendar days with a reading: a day kept as samples, or - after retention
+/// has folded it - as a rollup row. UTC days for samples and the rollup's own zone for
+/// rollups; a day near midnight may count twice, which is the honest cost of two zones.
+export fn history_days_sql() -> str =>
+    "SELECT count(*)::BIGINT FROM (SELECT CAST(sampled_at AS DATE) AS d FROM sample UNION SELECT day_on AS d FROM daily_rollup)"
+
+export fn read_history_days(conn ConnRef) Db -> Result[int, DuckError] {
+    ro rows = cells_of(conn, history_days_sql())?
+    if rows.len() == 0 { return Ok(0) }
+    Ok(int_of(rows[0][0]))
+}
+
 // ── `by=folder` ─────────────────────────────────────────────────────────────
 
 /// The login directories `by=folder` shows: every live one, and a removed one whose
