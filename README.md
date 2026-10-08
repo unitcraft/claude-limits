@@ -151,9 +151,12 @@ By hand: `python scripts/refresh_token.py <dir>` or `--all`
 
 ## Install
 
-There are no prebuilt binaries yet; the tool is built from source with the
-[Nova](https://nv-lang.org) toolchain. On Windows (Linux cannot link the database
-yet -- see below):
+**Ready-made (Windows x64):** download `claude-limits-<version>-windows-x64.zip` and
+`SHA256SUMS.txt` from the [Releases](https://github.com/unitcraft/claude-limits/releases)
+page, check the sum (`sha256sum -c SHA256SUMS.txt`), unpack, run `claude-limits.exe --serve`.
+
+**From source:** the tool is built with the [Nova](https://nv-lang.org) toolchain. On
+Windows (Linux cannot link the database yet -- see below):
 
 Keep the three checkouts side by side -- `nova/`, `nova-duckdb/` and this
 repository in one parent directory; `./nova.sh` finds the compiler there. Elsewhere,
