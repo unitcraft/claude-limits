@@ -115,7 +115,7 @@ test "health at start says what is true of this process" {
     assert(h.accounts_total == 0)
 }
 
-fn idle(now_ms int) -> HealthLive => { now_ms, view: nothing_yet(), hidden: [], days: 0 }
+fn idle(now_ms int) -> HealthLive => { now_ms, view: nothing_yet(), hidden: [], days: 0, sse_clients: 0 }
 
 fn state_account(email str, state str, dirs []DirView) -> AccountView => {
     id: "a-${email}", email, org: "Org", dirs, state, message: "", polled_at: "",
@@ -133,7 +133,7 @@ fn live_view() -> SnapshotView => {
     ],
 }
 
-fn live_at(now_ms int, hidden []str, days int) -> HealthLive => { now_ms, view: live_view(), hidden, days }
+fn live_at(now_ms int, hidden []str, days int) -> HealthLive => { now_ms, view: live_view(), hidden, days, sse_clients: 0 }
 
 test "health counts what the store holds, not zeros" {
     // Started 09:00:00Z, asked at 09:12:30Z: 750 s.
@@ -188,6 +188,18 @@ test "the router a start builds reports the live counts and the days of the hist
     assert(!w.contains("\"uptime_sec\":0,"))
 }
 
+test "health reports the live streams the store counts, not the start's zero" {
+    // 01.3 section 3.2: `sse_clients` is how many pages follow `/api/events` right now.
+    // It read 0 whatever was open until the binary asked the store (task 7).
+    ro w = ask_streams("/api/health", fn() -> SnapshotView => live_view(), fn() -> ConfNow => defaults_now(), 0, 3)
+    assert(w.starts_with("HTTP/1.1 200"))
+    assert(w.contains("\"sse_clients\":3"))
+    // The control: nobody following is a zero, not a stale count.
+    ro none = ask_streams("/api/health", fn() -> SnapshotView => live_view(), fn() -> ConfNow => defaults_now(), 0, 0)
+    assert(none.contains("\"sse_clients\":0"))
+    assert(!none.contains("\"sse_clients\":3"))
+}
+
 // -- the production composition, through the router --------------------------
 
 fn wire_text(wire []u8) -> str => unsafe { wire.to_str_unchecked() }
@@ -218,11 +230,14 @@ fn ask_conf(path str, current fn() -> SnapshotView, conf fn() -> ConfNow) Time R
 fn ask_days(path str, current fn() -> SnapshotView, days int) Time Random -> str =>
     ask_all(path, current, fn() -> ConfNow => defaults_now(), days)
 
-fn ask_all(path str, current fn() -> SnapshotView, conf fn() -> ConfNow, days int) Time Random -> str {
+fn ask_all(path str, current fn() -> SnapshotView, conf fn() -> ConfNow, days int) Time Random -> str =>
+    ask_streams(path, current, conf, days, 0)
+
+fn ask_streams(path str, current fn() -> SnapshotView, conf fn() -> ConfNow, days int, streams int) Time Random -> str {
     ro r = api_router(sources_at_start(Config.defaults(), some_paths(), "2026-09-30T09:00:00Z", 1790758800000, DbAtStart.none(), current,
         fn(a HistoryAsk) -> HistoryLoad => no_database(a), conf, fn(c Config) -> Committed => never_written(),
         fn(a int) -> Option[Live] => no_stream(a), fn(st ProbeState, p str) -> str => no_disk(),
-        fn() -> bool => no_round(), fn() -> int => days))!!
+        fn() -> bool => no_round(), fn() -> int => days, fn() -> int => streams))!!
     wire_text(serve_once(r, "GET ${path} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"))
 }
 

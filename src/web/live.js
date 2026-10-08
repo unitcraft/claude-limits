@@ -37,7 +37,7 @@ export const SILENCE_LIMIT_MS = 90_000;
  * @param deps.timers      { set, clear, setEvery, clearEvery } — setTimeout & friends
  * @param deps.setLive     (mode) => void, mode is 'live' | 'polling' | 'connecting'
  * @param deps.poll        () => void — fetch one snapshot now
- * @param deps.onEvent     (name, data) => void — 'snapshot' | 'notice' | 'config' | 'ping'
+ * @param deps.onEvent     (name, data) => void — 'snapshot' | 'notice' | 'config' | 'ping' | 'bye'
  */
 export function createLive(deps) {
   const {
@@ -133,6 +133,13 @@ export function createLive(deps) {
     for (const name of ['snapshot', 'notice', 'config', 'ping']) {
       s.addEventListener(name, mark(name));
     }
+    // `bye` (01.3 sec.3.4): the server is stopping and says so. The stream is over on
+    // purpose, so the page takes the degraded path at once -- polling, a reconnect on
+    // our 30 s -- instead of waiting for the socket to drop or the browser to retry.
+    s.addEventListener('bye', (e) => {
+      mark('bye')(e);
+      if (self.stream === s) onError();
+    });
     s.addEventListener('error', onError);
     return self;
   }

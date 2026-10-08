@@ -476,7 +476,8 @@ function handleEvent(name, data) {
     if (state.panel) refreshOpenPanel();
     fetchSnapshot();
   }
-  // 'ping' says only that the connection is alive, which live.js has already recorded.
+  // 'ping' says only that the connection is alive, which live.js has already recorded;
+  // 'bye' ends the stream, and live.js has already turned to polling.
 }
 
 // --------------------------------------------------------------- settings ---
