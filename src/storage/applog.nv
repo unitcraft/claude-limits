@@ -224,27 +224,10 @@ export fn append_within(path str, windows bool, record str, limit int) Fs -> Res
 const ENV_FILE = "CLAUDE_LIMITS_LOG_FILE"
 const ENV_WIN = "CLAUDE_LIMITS_LOG_WIN"
 
-/// The longest log path, in bytes, the file log accepts.
-///
-/// A Nova runtime defect (task #6, registry row to be numbered): in the `--serve` binary
-/// the FIRST libuv file call on a path of about 120 bytes or more -- `stat`, `mkdir`,
-/// whichever comes first -- dies with an access violation that the runtime reports as
-/// "fiber stack overflow in slot 0" (exit 139 / 0xC0000005). The cut-off moves with every
-/// build; a minimal program does not reproduce it. The database, opened by DuckDB's own
-/// file code in the same directory, is not affected. Until the runtime is fixed a
-/// path past this limit gets no log FILE (the console keeps every line) and the start
-/// says so, instead of dying before it listens.
-export const MAX_PATH_BYTES = 100
-
-/// May the file log be written to `path` without risking the crash above?
-export fn loggable(path str) -> bool => path.byte_len() <= MAX_PATH_BYTES
-
-/// Switch the file log on for this process; `false` when `path` is too long for it.
-export fn enable(path str, windows bool) Os -> bool {
-    if !loggable(path) { return false }
+/// Switch the file log on for this process.
+export fn enable(path str, windows bool) Os -> () {
     ro _ = env(ENV_FILE, path)
     ro _ = env(ENV_WIN, if windows { "1" } else { "0" })
-    true
 }
 
 /// Write one record to the log file if `enable` was called; never fails the caller.
