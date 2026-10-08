@@ -23,4 +23,4 @@ export fn version_line() -> str => "claude-limits ${version()}"
 
 /// The version alone -- what `/api/health` reports as `app_version`. One home for
 /// the number, so the line and the API cannot drift apart.
-export fn version() -> str => "0.0.0"
+export fn version() -> str => "0.1.0"

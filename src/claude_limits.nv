@@ -54,11 +54,12 @@ import claude_limits.config_reference.{carry}
 import claude_limits.server.app.{api_router}
 import claude_limits.server.handlers.config.{base_url, Committed, applies_live, folders_changed, render_state}
 import claude_limits.server.start.{real_paths_input, decide_start, sources_at_start, conf_at_start, config_now, DbAtStart}
-import claude_limits.storage.startup.{migrations_in, bundled, open_for_serve, record_readings, read_history_rows, record_found, Ready, StartFail, Upkeep, Upkept, forget_account, ForgetDone, upkeep_daily, record_config_version, import_history, Imported}
+import claude_limits.storage.startup.{migrations_in, bundled, open_for_serve, record_readings, read_history_rows, read_history_days_in, record_found, Ready, StartFail, Upkeep, Upkept, forget_account, ForgetDone, upkeep_daily, record_config_version, import_history, Imported}
 import claude_limits.storage.maintenance.{machine_rollup_tz}
 import claude_limits.storage.discovery_write.{Discovered, discovered}
 import claude_limits.storage.history_rows.{HistFolderRows}
 import claude_limits.storage.paths.{Paths}
+import claude_limits.storage.applog.{Level, record, enable}
 import claude_limits.server.handlers.history.{HistoryAsk, HistoryLoad}
 import claude_limits.server.dto.{Disclosure}
 import claude_limits.storage.db.{owner_changed, owner_line}
@@ -239,8 +240,20 @@ fn LoginTries mut @cleared(path str) -> () { @items = @without(path) }
 /// (`probes/stdout-buffered-when-redirected/`). The handler is installed here, as
 /// `real_fs` is elsewhere, so the callers -- some of them inside the router's
 /// closures -- need no `Io` of their own.
-fn say(line str) -> () {
+fn say(line str) -> () => say_at(Level.Info, line)
+
+/// A line the reader should not miss: something did not work, and the app goes on.
+fn say_warn(line str) -> () => say_at(Level.Warn, line)
+
+/// A line that says the start or a round failed.
+fn say_err(line str) -> () => say_at(Level.Error, line)
+
+/// The console line as it always was, and the same line, with a moment and a level, in
+/// the log file when `--serve` switched it on (`storage.applog`). A file that cannot be
+/// written costs the file line only.
+fn say_at(level Level, line str) -> () {
     with Io = real_io() { println("claude-limits: ${line}") }
+    with Os = real_os(), Fs = real_fs() { record(level, line) }
 }
 
 /// One Kimi renewal attempt, logged as the reference logs it.
@@ -279,7 +292,7 @@ fn renew_one(mut tries LoginTries, path str, name str, cooldown_sec int) Http Ti
         }
         Renewed.Failed(why) => {
             tries.tried(path, now)
-            say("auto-refresh ${name}: failed -- ${why}")
+            say_warn("auto-refresh ${name}: failed -- ${why}")
             false
         }
     }
@@ -327,7 +340,7 @@ fn renew_claude(mut tries LoginTries, path str, name str, model str, timeout_sec
     if code == 0 {
         say("auto-refresh ${name}: started; Claude Code renews the file, the next round reads it")
     } else {
-        say("auto-refresh ${name}: could not be started (exit ${code})")
+        say_warn("auto-refresh ${name}: could not be started (exit ${code})")
     }
     false
 }
@@ -445,7 +458,7 @@ fn upkeep_round(at Paths, windows bool, u Upkeep, keep int) Io Time -> () {
         with_real_db(fn() Db Fs Random -> Result[Upkept, StartFail] => upkeep_daily(paths, how, now, backups, win))
     }
     match r {
-        Err(f) => say("the daily upkeep did not run: ${f.message(paths.key_file)}")
+        Err(f) => say_warn("the daily upkeep did not run: ${f.message(paths.key_file)}")
         Ok(d) => {
             if d.zone != "" { say("${d.zone}") }
             if d.retention_fail != "" { say("the retention pass did not run: ${d.retention_fail}") }
@@ -475,7 +488,7 @@ fn record_round(at Paths, windows bool, view SnapshotView, readings []Reading, f
     }
     match recorded {
         Ok(_) => ()
-        Err(f) => say("the history was not written: ${f.message(paths.key_file)}")
+        Err(f) => say_err("the history was not written: ${f.message(paths.key_file)}")
     }
     ro found_at = Time.now().unix_millis()
     ro found = discovered(folders, found_at)
@@ -484,7 +497,7 @@ fn record_round(at Paths, windows bool, view SnapshotView, readings []Reading, f
     }
     match noted {
         Ok(_) => ()
-        Err(f) => say("the folders were not written: ${f.message(paths.key_file)}")
+        Err(f) => say_err("the folders were not written: ${f.message(paths.key_file)}")
     }
 }
 
@@ -520,6 +533,21 @@ fn history_from_db(paths Paths, windows bool, view SnapshotView, a HistoryAsk) -
     }
 }
 
+/// `/api/health`'s `history_days`: counted in the database per request, 0 (and a log
+/// line) when it does not answer - health must stay up when the file is busy.
+fn history_days_from_db(paths Paths, windows bool) -> int {
+    ro got = with Fs = real_fs(), Random = real_random() {
+        with_real_db(fn() Db Fs Random -> Result[int, str] => read_history_days_in(paths, windows))
+    }
+    match got {
+        Ok(n) => n
+        Err(why) => {
+            say("health: ${why}")
+            0
+        }
+    }
+}
+
 /// `config_history` in the database, for `config_file.save` (01.2 §3.14).
 ///
 /// A ROW THAT CANNOT BE WRITTEN DOES NOT STOP THE SAVE, and the log says so. The two
@@ -542,7 +570,7 @@ fn keep_version(paths Paths, windows bool, toml str, source str, at_ms int) -> (
     }
     match got {
         Ok(_) => ()
-        Err(e) => say("the previous settings were saved without a history row: ${e}")
+        Err(e) => say_warn("the previous settings were saved without a history row: ${e}")
     }
 }
 
@@ -667,7 +695,7 @@ fn forecast_round(paths Paths, windows bool, view SnapshotView, conf ConfNow) Ti
     match got {
         Ok(r) => with_forecasts(view, r.rows, rules_of(conf.cfg), now, Offset.local().seconds() as int, TimeZone.Fixed(Offset.local()))
         Err(why) => {
-            say("no forecast this round, the history did not read: ${why}")
+            say_warn("no forecast this round, the history did not read: ${why}")
             view
         }
     }
@@ -843,10 +871,12 @@ fn forget_mode(exe str, config_override str, email str) Io Time -> int {
 fn serve_mode(exe str, config_override str) Io Net Time Detach -> int {
     ro input = with Os = real_os(), Fs = real_fs() { real_paths_input(exe, config_override) }
     ro paths = resolve(input)
+    with Os = real_os() { enable(paths.log_file, input.windows) }
+    say("log file ${paths.log_file}")
     ro loaded = with Fs = real_fs() { load(paths.config_file) }
     match decide_start(loaded) {
         Start.Refuse(lines) => {
-            say("the settings in ${paths.config_file} do not allow a start:")
+            say_err("the settings in ${paths.config_file} do not allow a start:")
             for l in lines { println("  ${l}") }
             return EXIT_CONFIG
         }
@@ -855,7 +885,7 @@ fn serve_mode(exe str, config_override str) Io Net Time Detach -> int {
             ro addr = listen_addr(cfg)
             match TcpListener.bind(addr) {
                 Err(e) => {
-                    say("cannot listen on ${addr}: ${e}")
+                    say_err("cannot listen on ${addr}: ${e}")
                     say("is another copy already running? The port is [server] port in ${paths.config_file}")
                     return EXIT_OTHER
                 }
@@ -881,7 +911,7 @@ fn serve_mode(exe str, config_override str) Io Net Time Detach -> int {
                     ro db_state = match opened {
                         Ok(r) => db_seen(r, announced(r, paths.db_file))
                         Err(f) => {
-                            say("${f.message(paths.key_file)}")
+                            say_err("${f.message(paths.key_file)}")
                             return f.exit_code()
                         }
                     }
@@ -897,7 +927,7 @@ fn serve_mode(exe str, config_override str) Io Net Time Detach -> int {
                     // fails with a certificate error -- plan 01.5 question 9 was exactly that.
                     match system_roots() {
                         Ok(r) => say("TLS roots: ${r.source} (${r.detail}), ${r.count}")
-                        Err(e) => say("TLS roots could not be loaded: ${e}")
+                        Err(e) => say_warn("TLS roots could not be loaded: ${e}")
                     }
                     // THE ROUNDS REPEAT (T2.27, 2026-10-01). The store with its poller runs
                     // in THIS fiber (`feed.store_and_poll`: D446 refuses the poll in a
@@ -921,7 +951,8 @@ fn serve_mode(exe str, config_override str) Io Net Time Detach -> int {
                         fn(c Config) -> Committed => commit_settings(paths, win, store, c),
                         fn(a int) -> Option[Live] => Some(open_live(store, a)),
                         fn(st ProbeState, p str) -> str => probe_on_disk(st, p),
-                        fn() -> bool => store.tick()))!!
+                        fn() -> bool => store.tick(),
+                        fn() -> int => history_days_from_db(paths, win)))!!
                     say("listening on ${base_url(cfg)}/  (Ctrl+C to stop)")
                     ro every = cfg.poll.interval_sec
                     ro rx = pair.rx

@@ -217,12 +217,19 @@ edit it by hand while the tool is stopped. Where things live:
 | database key | beside the settings, `claude-limits.key` | the same |
 | database | `%LOCALAPPDATA%\claude-limits\claude-limits.duckdb` | `$XDG_DATA_HOME/claude-limits/` (`~/.local/share/...`) |
 | backups | `backup\` beside the database | the same |
-| log | `%LOCALAPPDATA%\claude-limits\logs\` | `$XDG_STATE_HOME/claude-limits/` |
+| log | `%LOCALAPPDATA%\claude-limits\logs\claude-limits.log` | `$XDG_STATE_HOME/claude-limits/claude-limits.log` (`~/.local/state/...`) |
 
 Overrides, strongest first: `--config <file>` (the key follows the settings file),
 `CLAUDE_LIMITS_CONFIG`, `CLAUDE_LIMITS_DATA` or `[storage] data_dir`,
 `CLAUDE_LIMITS_DB_KEY_FILE`. **Portable mode:** put a `claude-limits.toml` beside
-the binary and everything -- settings, key, database -- lives beside it.
+the binary and everything -- settings, key, database -- lives beside it (the log
+in `logs\`). `CLAUDE_LIMITS_DATA` moves the Windows log with the database
+(`<data>\logs\`); `--config` moves the settings and the key, not the log.
+
+**The log** is written by `--serve` only: the lines the console shows, each with a
+UTC moment and a level (`INFO`, `WARN`, `ERROR`), appended to `claude-limits.log`.
+At 1 MiB the file becomes `claude-limits.log.1` (then `.2`); three files are kept.
+Tokens never go into it, and the first line of a start names its path.
 
 The minimum is the folders that hold logins:
 

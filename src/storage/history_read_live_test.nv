@@ -14,7 +14,7 @@ import duckdb.db_effect.{Db, ConnRef}
 import duckdb.db_real.{with_real_db}
 import duckdb.errors.{DbOptions}
 import claude_limits.storage.repo.{Tick, WindowRow, Ids, plan_sql}
-import history_read.{read_history}
+import history_read.{read_history, read_history_days}
 import history_rows.{HistRows}
 
 const INST = "01900000-0000-7000-8000-000000000001"
@@ -97,6 +97,12 @@ fn rollup_line(conn ConnRef, from_ms int, to_ms int, accounts []str) Db -> str =
         Err(e) => "READ ${e.message()}"
     }
 
+fn days_line(conn ConnRef) Db -> str =>
+    match read_history_days(conn) {
+        Ok(n) => "days=${n}"
+        Err(e) => "DAYS ${e.message()}"
+    }
+
 fn read_line(conn ConnRef, from_ms int, to_ms int, accounts []str) Db -> str =>
     match read_history(conn, from_ms, to_ms, accounts) {
         Ok(r) => line_of(r)
@@ -139,6 +145,8 @@ fn run_with(name str, extra []str, asks [](int, int, []str)) Io -> []str {
                             out.push(read_line(conn, f, t, acc))
                             out.push(rollup_line(conn, f, t, acc))
                         }
+                        // LAST, so the indexes of the asks above stay what they were.
+                        out.push(days_line(conn))
                     }
                     Db.close_conn(conn)
                     Db.close_db(db)
@@ -212,4 +220,15 @@ test "an account forget has marked is gone from the history at once (01.2 sectio
     assert(same("marked", "w=0 a=0", gone[0]))
     ro kept = run_with("unmarked", [], [(T0 - 60000, T0 + 5 * MIN5, [])])
     assert(kept[0].starts_with("w=2 "))
+}
+
+test "the days of history: one day of samples is one day" {
+    ro got = run("days-one", [])
+    assert(same("one day", "days=1", got[got.len() - 1]))
+}
+
+test "a rollup day that retention left behind is a day too, and a sample day is not counted twice" {
+    // The samples are of 2025-09-08; the rollup row is of 2025-09-01.
+    ro got = run_with("days-two", [rollup_sql()], [])
+    assert(same("two days", "days=2", got[got.len() - 1]))
 }

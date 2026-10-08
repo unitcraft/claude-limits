@@ -9,10 +9,16 @@
 
 module claude_limits.version_test
 
-import claude_limits.version.{version_line}
+import claude_limits.version.{version_line, version}
 
-test "version line is exactly what T0.0 acceptance expects" {
-    assert(version_line() == "claude-limits 0.0.0")
+test "version line is the product name and the one version" {
+    assert(version_line() == "claude-limits 0.1.0")
+}
+
+test "the version alone is the number /api/health reports, not the placeholder" {
+    assert(version() == "0.1.0")
+    assert(version() != "0.0.0")
+    assert(version_line() == "claude-limits ${version()}")
 }
 
 test "version line names the product and carries a version, not a placeholder" {

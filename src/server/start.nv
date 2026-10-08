@@ -22,6 +22,8 @@
 // * History: the database IS opened with its key at the start (storage.startup, since
 //   2026-09-30), and `health` reports its schema and `encrypted: true`; no tick is
 //   written yet, so `history_days` stays 0 -- what is true of this process.
+//   (Since 2026-10-08 `health` is read live: uptime, the last round, the account
+//   counts, the login directories and the days in the database -- `health_at`.)
 // * Stopping on a signal with `bye` to SSE subscribers: std has no OS signal hook to
 //   stop on. Ctrl+C ends the process; the page's live connection reconnects.
 
@@ -45,7 +47,7 @@ import claude_limits.server.handlers.folders.{ProbeState, Look}
 import claude_limits.server.handlers.token.{TokenEndpointState}
 import claude_limits.server.handlers.exporter.{ExportState}
 import claude_limits.server.handlers.history.{HistoryAsk, HistoryLoad, HistoryEnv}
-import claude_limits.server.dto.{Disclosure, SnapshotView, render_snapshot}
+import claude_limits.server.dto.{Disclosure, SnapshotView, render_snapshot, is_listed}
 import claude_limits.model.store.{Registry}
 import claude_limits.config.{render}
 import claude_limits.version.{version}
@@ -131,41 +133,95 @@ export type DbAtStart value {
 /// No database in this process (the tests, and a start that has not opened one).
 export fn DbAtStart.none() -> DbAtStart => { schema_version: 0, encrypted: false, size_bytes: 0 }
 
-/// `/api/health` of this process at start (01.3 §3.2).
-///
-/// Counts the store owns are zero until the store is wired; the database fields say
-/// what is true of this process -- the schema it opened and whether its key is in
-/// use; `history_days` stays 0 until ticks are written -- and not the design.
-export fn health_at(cfg Config, paths Paths, started_at str, db DbAtStart) -> HealthState => {
+/// What `/api/health` reads fresh on every request, beside what the start fixed.
+export type HealthLive value {
+    ro now_ms int
+    ro view SnapshotView
+    /// `ui.hidden_accounts` as they stand now (the same list `/api/snapshot` applies).
+    ro hidden []str
+    /// Calendar days the database holds readings for.
+    ro days int
+}
+
+/// Accounts of the view in `state`, the hidden ones apart: `total` is the sum of the
+/// five counts, as the example of 01.3 §3.2 has it.
+fn in_state(v SnapshotView, hidden []str, state str) -> int {
+    mut n = 0
+    for a in v.accounts {
+        if a.state == state && !is_listed(hidden, a.order_key()) { n += 1 }
+    }
+    n
+}
+
+fn hidden_count(v SnapshotView, hidden []str) -> int {
+    mut n = 0
+    for a in v.accounts { if is_listed(hidden, a.order_key()) { n += 1 } }
+    n
+}
+
+/// Login directories of every account, each counted once (two accounts never share one,
+/// but one account may hold several).
+fn dirs_in(v SnapshotView) -> int {
+    mut seen []str = []
+    for a in v.accounts {
+        for d in a.dirs {
+            ro key = path_key(d.path)
+            mut known = false
+            for s in seen { if s == key { known = true } }
+            if !known { seen.push(key) }
+        }
+    }
+    seen.len()
+}
+
+fn uptime_of(started_at str, now_ms int) -> int {
+    ro began = moment_ms(started_at)
+    if began <= 0 || now_ms < began { return 0 }
+    (now_ms - began) / 1000
+}
+
+/// `/api/health` of this process (01.3 §3.2): what the start fixed (listener, paths,
+/// the database it opened) from `cfg`, `paths` and `db`, and what changes from `live`
+/// -- the clock, the store's last round, the settings' hidden list, the history.
+export fn health_at(cfg Config, paths Paths, started_at str, db DbAtStart, live HealthLive) -> HealthState => {
     app_version: version(),
     started_at,
-    uptime_sec: 0,
+    uptime_sec: uptime_of(started_at, live.now_ms),
     bind: cfg.server.bind,
     port: cfg.server.port,
     allow_lan: cfg.server.allow_lan,
     tls: false,
     poll_interval_sec: cfg.poll.interval_sec,
-    poll_last_at: "",
-    poll_next_at: "",
+    poll_last_at: live.view.fetched_at,
+    poll_next_at: live.view.next_poll_at,
     sse_clients: 0,
-    accounts_total: 0,
-    accounts_ok: 0,
-    accounts_stale: 0,
-    accounts_unknown: 0,
-    accounts_error: 0,
-    accounts_hidden: 0,
-    login_dirs: 0,
+    accounts_total: live.view.accounts.len(),
+    accounts_ok: in_state(live.view, live.hidden, "ok"),
+    accounts_stale: in_state(live.view, live.hidden, "stale"),
+    accounts_unknown: in_state(live.view, live.hidden, "unknown"),
+    accounts_error: in_state(live.view, live.hidden, "error"),
+    accounts_hidden: hidden_count(live.view, live.hidden),
+    login_dirs: dirs_in(live.view),
     config_path: paths.config_file,
     db_path: paths.db_file,
     db_size_bytes: db.size_bytes,
     schema_version: db.schema_version,
-    history_days: 0,
+    history_days: live.days,
     encrypted: db.encrypted,
     key_store: "file",
     widget_enabled: false,
     widget_running: false,
     config_error: "",
     disclosure: Disclosure.Loopback,
+}
+
+fn live_of(now_ms int, view SnapshotView, hidden []str, days int) -> HealthLive => { now_ms, view, hidden, days }
+
+/// The clock and the history are read here, per request, for the reason
+/// `history_env_now` gives; the view and the hidden list are the store's.
+fn health_now(cfg Config, paths Paths, started_at str, db DbAtStart, v SnapshotView, c ConfNow, days fn() -> int) Time -> HealthState {
+    ro now_ms = Time.now().unix_millis() as int
+    health_at(cfg, paths, started_at, db, live_of(now_ms, v, c.cfg.ui.hidden_accounts, days()))
 }
 
 // ── the sources of the first release's router ───────────────────────────────
@@ -334,10 +390,10 @@ fn history_env_now(keep_days int) Time -> HistoryEnv => { now_ms: Time.now().uni
 /// describe a listener that does not exist.
 export fn sources_at_start(cfg Config, paths Paths, started_at str, now_ms int, db DbAtStart, current fn() -> SnapshotView,
                            history fn(HistoryAsk) -> HistoryLoad, conf fn() -> ConfNow, commit ConfigCommit,
-                           follow Follow, look Look, kick Kick) -> Sources {
+                           follow Follow, look Look, kick Kick, days fn() -> int) -> Sources {
     ro keep = cfg.history.keep_days
     Sources.new(
-        fn() -> HealthState => health_at(cfg, paths, started_at, db),
+        fn() -> HealthState => health_now(cfg, paths, started_at, db, current(), conf(), days),
         fn() -> SnapshotState => snapshot_now(current(), conf()),
         fn() -> RefreshState => refresh_now(cfg, current()),
         kick,
