@@ -11,6 +11,29 @@ currently locked. All accounts side by side, without switching logins.
 Kimi Code and Codex (OpenAI / ChatGPT) logins are shown on the same page, next
 to the Claude ones, each card marked with its service.
 
+## What the page shows
+
+![The page over invented accounts: a calm one, one that will run out early, a locked one, an expired login, a rate-limited one, Kimi Code and Codex](docs/img/limits-demo.png)
+
+All names and numbers in the picture are made up (`scripts/readme_shot.py` draws it).
+Each card is one account; each row is one limit window.
+
+| what you see | what it means |
+|---|---|
+| **thick bar**, green / yellow / red | the share of the limit already used; yellow from 70%, red from 90% (`[thresholds]`) |
+| **hatching at the end of the thick bar** | where the current pace lands by the reset, e.g. `-> 46% at reset`; green below 80%, yellow from 80%, red from 95% (`[forecast]`). A red hatch on a calm bar means the quota will run out before the window does |
+| **thin line under the bar** | how much of the window has passed; compare it with the bar: the bar ahead of the line means you spend faster than time goes |
+| **hatching on the thin line** | how far into the window the quota lasts at the current pace: green if it reaches the reset (95% of the window or more), yellow from 80%, red if it ends earlier |
+| **`resets ... (2h 10min)`** | when the window starts over, and how long that is |
+| **red card, 100%** | locked: the limit is reached, the account waits for the reset |
+| **faded rows and a `HTTP 429` badge** | the server asked to wait; the last good reading stays on screen, dated |
+| **a card with only a message** | no reading: the login's token has expired (`start Claude Code under this login`) or the answer was rejected |
+| **`Kimi Code` / `Codex` next to the name** | the service of that login; Claude cards show the organisation instead |
+
+The `session 5h` row is the five-hour window, `all 7d` the weekly window over all
+models, `Opus 7d` a weekly window for one model, `month` the monthly window of Kimi Code
+and of a free Codex plan.
+
 ## Why
 
 Claude Code keeps one login per config directory. With several accounts
