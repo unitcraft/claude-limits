@@ -1,0 +1,180 @@
+// Tests for applog.nv -- the application's log file (task #3), both directions.
+//
+//   ./nova.sh test src/storage/ --filter applog
+//
+// The file system is the in-memory one: no test writes a real log. The paths of the
+// file for each platform, portable mode and each override are checked here as well,
+// next to what is written into them (`paths_test` holds the rest of the table).
+
+module storage.applog_test
+
+import std.fs.{mock_fs, MemFs, read_text, write_text, try_exists}
+import paths.{PathsInput, resolve}
+import applog.{Level, scrub, format_line, numbered, must_rotate, older_number, append_record, append_within, LIMIT_BYTES, KEEP_FILES}
+
+fn win_input() -> PathsInput => {
+    windows: true,
+    exe_dir: "D:\\Apps\\claude-limits",
+    home: "C:\\Users\\dev",
+    appdata: "C:\\Users\\dev\\AppData\\Roaming",
+    local_appdata: "C:\\Users\\dev\\AppData\\Local",
+    xdg_config: "",
+    xdg_data: "",
+    xdg_state: "",
+    portable: false,
+    config_override: "",
+    data_override: "",
+    log_override: "",
+    key_override: "",
+}
+
+fn nix_input() -> PathsInput => {
+    windows: false,
+    exe_dir: "/opt/claude-limits",
+    home: "/home/dev",
+    appdata: "",
+    local_appdata: "",
+    xdg_config: "",
+    xdg_data: "",
+    xdg_state: "",
+    portable: false,
+    config_override: "",
+    data_override: "",
+    log_override: "",
+    key_override: "",
+}
+
+// ── where the file is ───────────────────────────────────────────────────────
+
+test "log path: Windows default, Linux default and XDG_STATE_HOME" {
+    assert(resolve(win_input()).log_file == "C:\\Users\\dev\\AppData\\Local\\claude-limits\\logs\\claude-limits.log")
+    assert(resolve(nix_input()).log_file == "/home/dev/.local/state/claude-limits/claude-limits.log")
+    mut i = nix_input()
+    i.xdg_state = "/st"
+    assert(resolve(i).log_file == "/st/claude-limits/claude-limits.log")
+}
+
+test "log path: portable mode puts it beside the binary" {
+    mut w = win_input()
+    w.portable = true
+    assert(resolve(w).log_file == "D:\\Apps\\claude-limits\\logs\\claude-limits.log")
+    mut n = nix_input()
+    n.portable = true
+    assert(resolve(n).log_file == "/opt/claude-limits/logs/claude-limits.log")
+}
+
+test "log path: CLAUDE_LIMITS_DATA moves it on Windows, --config leaves it, --log wins" {
+    mut w = win_input()
+    w.data_override = "E:\\tmp\\data"
+    assert(resolve(w).log_file == "E:\\tmp\\data\\logs\\claude-limits.log")
+    // --config moves the settings, not the log.
+    mut c = win_input()
+    c.config_override = "E:\\tmp\\t.toml"
+    assert(resolve(c).log_file == resolve(win_input()).log_file)
+    mut l = win_input()
+    l.log_override = "E:\\logs\\x.log"
+    assert(resolve(l).log_file == "E:\\logs\\claude-limits.log")
+}
+
+// ── the record ──────────────────────────────────────────────────────────────
+
+test "a record has the moment, the level and the text, on one line" {
+    assert(format_line("2026-10-08T11:35:12Z", Level.Info, "listening") == "2026-10-08T11:35:12Z INFO claude-limits: listening\n")
+    assert(format_line("t", Level.Warn, "a") == "t WARN claude-limits: a\n")
+    assert(format_line("t", Level.Error, "a") == "t ERROR claude-limits: a\n")
+    // Not two records from one.
+    assert(format_line("t", Level.Info, "a\nb\r\nc") == "t INFO claude-limits: a b  c\n")
+}
+
+// ── secrets ─────────────────────────────────────────────────────────────────
+
+const SECRET = "sk-ant-fixture-AbCdEf0123456789"
+const LONG = "Zm9vYmFyYmF6cXV4MDEyMzQ1Njc4OWFiY2RlZmdoaWo"
+
+test "scrub: tokens go, in every position" {
+    assert(!scrub("token ${SECRET} rejected").contains(SECRET))
+    assert(!scrub("token=${SECRET}").contains(SECRET))
+    assert(!scrub("{\"access_token\":\"${SECRET}\"}").contains("fixture"))
+    assert(!scrub("Authorization: Bearer abc.def").contains("abc"))
+    assert(!scrub("refresh ${LONG}.").contains(LONG))
+    assert(!scrub("eyJhbGciOiJIUzI1NiJ9.e30.sig").contains("eyJ"))
+    assert(scrub("token ${SECRET} rejected").contains("[redacted]"))
+}
+
+test "scrub: ordinary lines are left alone" {
+    ro ok = "auto-refresh me: refreshed; db C:\\Users\\me\\AppData\\Local\\claude-limits\\claude-limits.duckdb, backup claude-limits.corrupt-20260930-0900.duckdb, owner 0192f3a4-7b1c-7d2e-9a3b-4c5d6e7f8091 at http://127.0.0.1:7391/"
+    assert(scrub(ok) == ok)
+    assert(scrub("/home/me/.kimi-code/credentials/kimi-code.json") == "/home/me/.kimi-code/credentials/kimi-code.json")
+}
+
+test "a secret in a line never reaches the file" {
+    mut fs = MemFs.new()
+    with Fs = mock_fs(fs) {
+        ro rec = format_line("t", Level.Error, "poll failed: ${SECRET} and ${LONG}")
+        match append_record("/s/claude-limits.log", false, rec) { Ok(_) => (), Err(_) => assert(false) }
+        match read_text("/s/claude-limits.log".to_path()) {
+            Ok(text) => {
+                assert(!text.contains(SECRET))
+                assert(!text.contains(LONG))
+                assert(text.contains("poll failed"))
+            }
+            Err(_) => assert(false)
+        }
+    }
+}
+
+// ── rotation ────────────────────────────────────────────────────────────────
+
+test "must_rotate: over the limit yes, under no, an empty file never" {
+    assert(!must_rotate(0, LIMIT_BYTES * 2, LIMIT_BYTES))
+    assert(!must_rotate(100, 100, LIMIT_BYTES))
+    assert(must_rotate(LIMIT_BYTES - 10, 11, LIMIT_BYTES))
+    assert(!must_rotate(LIMIT_BYTES - 10, 10, LIMIT_BYTES))
+    assert(LIMIT_BYTES == 1_048_576)
+}
+
+test "numbers of the older files" {
+    assert(numbered("/a/x.log", 0) == "/a/x.log")
+    assert(numbered("/a/x.log", 2) == "/a/x.log.2")
+    assert(older_number("x.log", "x.log.1") == 1)
+    assert(older_number("x.log", "x.log.12") == 12)
+    assert(older_number("x.log", "x.log") == -1)
+    assert(older_number("x.log", "x.log.") == -1)
+    assert(older_number("x.log", "x.log.bak") == -1)
+    assert(older_number("x.log", "y.log.1") == -1)
+}
+
+const BIG = "0123456789012345678901234567890123456789012345678901234567890123456789\n"
+
+test "crossing the limit shifts the files and drops the extra ones" {
+    mut fs = MemFs.new()
+    with Fs = mock_fs(fs) {
+        ro p = "/s/claude-limits.log"
+        ro big = BIG
+        ro _b = write_text(p.to_path(), big)
+        ro _c = write_text("/s/claude-limits.log.1".to_path(), "one")
+        ro _d = write_text("/s/claude-limits.log.2".to_path(), "two")
+        ro _e = write_text("/s/claude-limits.log.5".to_path(), "five")
+        ro _f = write_text("/s/other.txt".to_path(), "mine")
+        match append_within(p, false, "0123456789\n", 80) { Ok(_) => (), Err(_) => assert(false) }
+        match read_text(p.to_path()) { Ok(t) => assert(t == "0123456789\n"), Err(_) => assert(false) }
+        match read_text("/s/claude-limits.log.1".to_path()) { Ok(t) => assert(t == big), Err(_) => assert(false) }
+        match read_text("/s/claude-limits.log.2".to_path()) { Ok(t) => assert(t == "one"), Err(_) => assert(false) }
+        // "two" fell out, and the stray number past the keep count went too.
+        assert(KEEP_FILES == 3)
+        match try_exists("/s/claude-limits.log.3".to_path()) { Ok(b) => assert(!b), Err(_) => assert(false) }
+        match try_exists("/s/claude-limits.log.5".to_path()) { Ok(b) => assert(!b), Err(_) => assert(false) }
+        match read_text("/s/other.txt".to_path()) { Ok(t) => assert(t == "mine"), Err(_) => assert(false) }
+    }
+}
+
+test "under the limit the records are appended to the same file" {
+    mut fs = MemFs.new()
+    with Fs = mock_fs(fs) {
+        ro p = "/s/claude-limits.log"
+        match append_record(p, false, "a\n") { Ok(_) => (), Err(_) => assert(false) }
+        match append_record(p, false, "b\n") { Ok(_) => (), Err(_) => assert(false) }
+        match read_text(p.to_path()) { Ok(t) => assert(t == "a\nb\n"), Err(_) => assert(false) }
+        match try_exists("/s/claude-limits.log.1".to_path()) { Ok(b) => assert(!b), Err(_) => assert(false) }
+    }
+}

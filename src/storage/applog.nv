@@ -1,0 +1,240 @@
+// applog.nv -- the application's log file (task #3, README "Configuration" paths).
+//
+//   ./nova.sh test src/storage/ --filter applog
+//
+// WHAT IT IS. `--serve` prints its lines on stdout, and a hidden window or an
+// autostart throws them away. The same lines, with a moment and a level, are also
+// appended to `claude-limits.log` in `paths.log_file` (01.2 section 1). The console
+// output is unchanged; this is a second copy.
+//
+// FORMAT. `2026-10-08T11:35:12Z INFO claude-limits: <line>` -- one record, one line,
+// the moment in ISO 8601 UTC, the level one of INFO, WARN, ERROR.
+//
+// ROTATION BY SIZE. When the next record would carry the file past `LIMIT_BYTES` the
+// file is shifted: `claude-limits.log` becomes `.log.1`, `.1` becomes `.2`, and so on;
+// `KEEP_FILES` files stay in all (the live one and the older ones), anything beyond is
+// deleted. A single record larger than the limit is still written, into a fresh file.
+//
+// NO SECRET REACHES THE FILE. A log is copied into bug reports and outlives the
+// process; the message strings are written by people who do not think of what they
+// interpolate. `scrub` is the last line of defence, applied to every record: it
+// replaces what has the shape of a token -- `sk-ant-...`, a JWT, `Bearer ...`, a long
+// unbroken run of letters and digits -- and the callers are not trusted to have done
+// it. It errs towards redacting: a lost hash in a log line costs nothing.
+//
+// A FAILURE TO LOG IS NOT A FAILURE OF THE APP. `append_line` returns the error and the
+// caller drops it (the console still has the line).
+
+module storage.applog
+
+import std.os.{env}
+import std.time.{Time}
+import claude_limits.usage.parse.{moment_iso}
+import std.fs.{metadata, read_dir, remove_file, rename, create_dir_all, File}
+import claude_limits.storage.paths.{dir_of}
+
+export const LIMIT_BYTES = 1_048_576
+export const KEEP_FILES = 3
+
+export type Level enum
+    | Info
+    | Warn
+    | Error
+
+export fn Level @label() -> str =>
+    match @ {
+        Info => "INFO"
+        Warn => "WARN"
+        Error => "ERROR"
+    }
+
+const REDACTED = "[redacted]"
+
+// ── scrub ───────────────────────────────────────────────────────────────────
+
+/// A character a token is made of -- and a path or a file name too, which is why the
+/// rules below look at the whole run, not at single characters.
+fn is_word(c char) -> bool =>
+    (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.' || c == '+' || c == '/'
+
+fn uuid_shaped(run str) -> bool {
+    if run.byte_len() != 36 { return false }
+    mut i = 0
+    for c in run.chars() {
+        ro dash = i == 8 || i == 13 || i == 18 || i == 23
+        if dash {
+            if c != '-' { return false }
+        } else {
+            ro hex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+            if !hex { return false }
+        }
+        i += 1
+    }
+    true
+}
+
+/// Does this unbroken run look like a secret?
+fn secret_shaped(run str) -> bool {
+    if run.starts_with("sk-ant-") || run.starts_with("eyJ") { return true }
+    // A path or a file name (`claude-limits-20260930-0900.duckdb`) is not one.
+    if run.contains("/") || run.contains(".") { return false }
+    if run.byte_len() < 32 { return false }
+    !uuid_shaped(run)
+}
+
+/// A run as it goes to the file. Dots at its end are the sentence's, not the token's:
+/// `... rejected ${token}.` must not shelter the token behind the full stop.
+fn judged(run str, after_bearer bool) -> str {
+    mut core = run
+    mut dots = ""
+    loop {
+        match core.strip_suffix(".") {
+            Some(rest) => {
+                core = rest
+                dots = "${dots}."
+            }
+            None => break
+        }
+    }
+    if after_bearer || secret_shaped(core) { return "${REDACTED}${dots}" }
+    run
+}
+
+/// `text` with every secret-shaped run replaced, and line breaks turned into spaces.
+export fn scrub(text str) -> str {
+    mut out = ""
+    mut run = ""
+    mut after_bearer = false
+    for c in text.chars() {
+        if is_word(c) {
+            run = "${run}${c}"
+        } else {
+            if run != "" {
+                out = "${out}${judged(run, after_bearer)}"
+                after_bearer = false
+                run = ""
+            }
+            // `Bearer <token>`: whatever follows the word is the token.
+            if c == ' ' && out.ends_with("Bearer") { after_bearer = true }
+            ro plain = if c == '\n' || c == '\r' { ' ' } else { c }
+            out = "${out}${plain}"
+        }
+    }
+    if run != "" { out = "${out}${judged(run, after_bearer)}" }
+    out
+}
+
+// ── the record ──────────────────────────────────────────────────────────────
+
+/// One record, newline included. `iso` is the moment already formatted (UTC).
+export fn format_line(iso str, level Level, line str) -> str =>
+    "${iso} ${level.label()} claude-limits: ${scrub(line)}\n"
+
+// ── rotation ────────────────────────────────────────────────────────────────
+
+/// The name of the n-th file: 0 is the live one, 1.. the older ones.
+export fn numbered(path str, n int) -> str => if n == 0 { path } else { "${path}.${n}" }
+
+/// Must the file be shifted before `incoming` more bytes are appended to `size`?
+/// An empty file never is: a record bigger than the limit goes into the fresh file.
+export fn must_rotate(size int, incoming int, limit int) -> bool => size > 0 && size + incoming > limit
+
+/// The older-file number of a directory entry name (`claude-limits.log.7` -> 7), -1
+/// when the name is not one of the log's.
+export fn older_number(base_name str, entry str) -> int {
+    ro stem = "${base_name}."
+    if !entry.starts_with(stem) { return -1 }
+    ro tail = entry.strip_prefix(stem) ?? ""
+    if tail == "" { return -1 }
+    mut n = 0
+    for c in tail.chars() {
+        if c < '0' || c > '9' { return -1 }
+        n = n * 10 + (c as int) - ('0' as int)
+    }
+    n
+}
+
+fn file_name(path str, windows bool) -> str {
+    ro dir = dir_of(path, windows)
+    if dir == path { return path }
+    ro cut = dir.byte_len() + 1
+    path.split_at(cut).1
+}
+
+/// Shift the files by one and delete what falls out of `KEEP_FILES`, including files
+/// numbered past it that an earlier build or a hand left behind.
+export fn rotate(path str, windows bool) Fs -> () {
+    ro dir = dir_of(path, windows)
+    ro base_name = file_name(path, windows)
+    ro entries = read_dir(dir.to_path()) ?? []DirEntry.new()
+    for e in entries {
+        match e.name.to_str() {
+            Some(s) => {
+                ro n = older_number(base_name, s)
+                if n >= KEEP_FILES - 1 {
+                    ro join_sep = if windows { "\\" } else { "/" }
+                    ro _ = remove_file("${dir}${join_sep}${s}".to_path())
+                }
+            }
+            None => ()
+        }
+    }
+    mut n = KEEP_FILES - 2
+    while n >= 0 {
+        ro _ = rename(numbered(path, n).to_path(), numbered(path, n + 1).to_path())
+        n -= 1
+    }
+}
+
+// ── the file ────────────────────────────────────────────────────────────────
+
+/// Append a ready record, rotating first when it would pass the limit. Creates the
+/// directory on the first write.
+export fn append_record(path str, windows bool, record str) Fs -> Result[(), IoError] =>
+    append_within(path, windows, record, LIMIT_BYTES)
+
+/// `append_record` with the size limit as a parameter, so that a test need not write a
+/// megabyte to cross it.
+export fn append_within(path str, windows bool, record str, limit int) Fs -> Result[(), IoError] {
+    create_dir_all(dir_of(path, windows).to_path())?
+    ro size = match metadata(path.to_path()) {
+        Ok(m) => m.size
+        Err(_) => 0
+    }
+    if must_rotate(size, record.byte_len(), limit) { rotate(path, windows) }
+    match File.append(path.to_path()) {
+        Err(e) => return Err(e)
+        Ok(consume f) => {
+            ro wrote = f.write(record.bytes())
+            ro closed = f.close()
+            wrote?
+            closed?
+        }
+    }
+    Ok(())
+}
+
+// ── the process-wide switch ─────────────────────────────────────────────────
+//
+// `say` is called from closures of the router and of the rounds that have no `Paths`
+// in reach, and Nova has no globals. The server therefore says where the log is ONCE,
+// at its start, in two private environment variables of its own process; `record`
+// reads them. Not set -- every mode but `--serve` -- means no file is written.
+
+const ENV_FILE = "CLAUDE_LIMITS_LOG_FILE"
+const ENV_WIN = "CLAUDE_LIMITS_LOG_WIN"
+
+/// Switch the file log on for this process.
+export fn enable(path str, windows bool) Os -> () {
+    ro _ = env(ENV_FILE, path)
+    ro _ = env(ENV_WIN, if windows { "1" } else { "0" })
+}
+
+/// Write one record to the log file if `enable` was called; never fails the caller.
+export fn record(level Level, line str) Os Fs Time -> () {
+    ro path = env(ENV_FILE) ?? ""
+    if path == "" { return () }
+    ro windows = (env(ENV_WIN) ?? "0") == "1"
+    ro iso = moment_iso(Time.now().unix_millis())
+    ro _ = append_record(path, windows, format_line(iso, level, line))
+}
