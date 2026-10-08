@@ -26,7 +26,7 @@ import { el } from './render.js';
  * the written record of which settings those are -- checked against the panel by
  * scripts/test-settings.mjs, so the two cannot drift apart in silence.
  */
-export const BROWSER_ONLY = ['view', 'bar_style', 'countdown', 'stats_range', 'stats_group'];
+export const BROWSER_ONLY = ['view', 'bar_style', 'countdown', 'stats_range', 'stats_group', 'notify'];
 
 const isObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 
@@ -213,6 +213,14 @@ function browserPref(key, fallback) {
   }
 }
 
+/** What the browser says about notification permission, in words. */
+export function permissionLine(perm = typeof Notification === 'undefined' ? 'unsupported' : Notification.permission) {
+  if (perm === 'granted') return 'the browser allows notifications';
+  if (perm === 'denied') return 'blocked in the browser: allow it in the site settings';
+  if (perm === 'unsupported') return 'this browser has no notifications';
+  return 'the browser has not been asked yet';
+}
+
 const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
 
 // ------------------------------------------------------------------- panel --
@@ -245,6 +253,17 @@ export function renderSettings(reply) {
            [['rounded', 'Rounded'], ['blocks', 'Blocks']], 'browser')));
   view.append(field('Reset time',
     toggle('ui.countdown', browserCountdown(), 'browser'), '\u00b7 show countdown'));
+  // Task #9: browser notifications at 70 % / 90 %. Off until asked for; the button is
+  // the only place the permission prompt is raised from (a page that asks on load
+  // gets the prompt blocked).
+  view.append(field('Notifications',
+    toggle('ui.notify', browserPref('notify', 'false') === 'true', 'browser'),
+    '· when a window passes 70 % or 90 %'));
+  const ask = el('button', 'btn', 'Allow notifications');
+  ask.setAttribute('type', 'button');
+  ask.dataset.action = 'notify-permission';
+  view.append(ask);
+  view.append(el('span', 'field-hint notify-state', permissionLine()));
   view.append(field('Hide logins with an expired token',
     toggle('ui.hide_stale', cfg.ui && cfg.ui.hide_stale)));
 
