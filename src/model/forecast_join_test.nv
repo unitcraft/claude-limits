@@ -19,7 +19,7 @@ module model.forecast_join_test
 import std.time.civil.{TimeZone}
 import claude_limits.server.dto.{SnapshotView, AccountView, LimitView, ForecastView}
 import claude_limits.storage.history_rows.{HistRows, HistAccount, HistWindow, HistSample}
-import forecast_join.{ForecastRules, with_forecasts, forecast_of}
+import forecast_join.{ForecastRules, with_forecasts, forecast_of, paces_of}
 
 // 2026-10-01 09:00:00 UTC, a Thursday: 12:00 at +03:00.
 const NOW_MS = 1790845200000
@@ -185,4 +185,39 @@ test "with_forecasts fills the row in the snapshot it returns" {
     ro v = with_forecasts(view(l), rows("session", session_samples()), rules(false), NOW_MS, OFFSET_SEC, TimeZone.Utc)
     assert(v.limits.len() == 1)
     assert(v.limits[0].forecast.is_some())
+}
+
+/// A snapshot of one provider's account carrying a forecast on its monthly row.
+fn paced(provider str, email str, name str) -> SnapshotView {
+    mut a = account()
+    a.email = email
+    a.provider = provider
+    a.display_name = name
+    mut l = limit("monthly", 54, 18 * 86400, 30 * 86400)
+    l.forecast = Some(ForecastView{ percent_at_reset: 120, runs_out_at: "2026-10-05T08:04:00Z", rate_per_hour_milli: 483,
+        basis: "calendar", sample_minutes: 1860, label: "ends", warning: true, severity: "warn" })
+    SnapshotView{ fetched_at: "2026-10-01T09:00:00Z", next_poll_at: "", tz: "+03:00", restored: false,
+        worst: None, accounts: [a], limits: [l] }
+}
+
+test "a Kimi account's pace is found by kimi:<name>, a Codex one by codex:<lowered address>, a Claude one by e-mail" {
+    ro r = HistRows{
+        accounts: [HistAccount{ id: "db-k", email: "kimi:kimi-code-env-0e4f", color_slot: 0, polls: [] },
+                   HistAccount{ id: "db-c", email: "codex:me@example.com", color_slot: 1, polls: [] },
+                   HistAccount{ id: "db-m", email: "main@example.com", color_slot: 2, polls: [] }],
+        windows: [],
+    }
+    ro k = paces_of(paced("kimi", "", "kimi-code-env-0e4f"), r)
+    assert(k.len() == 1 && k[0].account_id == "db-k" && k[0].rate_per_hour_milli == 483)
+    ro c = paces_of(paced("codex", "", "Me@Example.com"), r)
+    assert(c.len() == 1 && c[0].account_id == "db-c")
+    ro m = paces_of(paced("claude", "Main@Example.com", ""), r)
+    assert(m.len() == 1 && m[0].account_id == "db-m")
+}
+
+test "no pace for an account the history does not know, nor for one with no name to key it by" {
+    ro r = HistRows{ accounts: [HistAccount{ id: "db-k", email: "kimi:other", color_slot: 0, polls: [] }], windows: [] }
+    assert(paces_of(paced("kimi", "", "kimi-code-env-0e4f"), r).len() == 0)
+    assert(paces_of(paced("kimi", "", ""), r).len() == 0)
+    assert(paces_of(paced("claude", "", ""), HistRows{ accounts: [HistAccount{ id: "x", email: "", color_slot: 0, polls: [] }], windows: [] }).len() == 0)
 }

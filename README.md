@@ -240,8 +240,9 @@ path = "~/.codex"         # a Codex home (auth.json)
 port = 7391
 ```
 
-The server reads the list of folders once, at start: after adding a folder in
-the settings, restart `--serve` to see its logins.
+The list of folders is read again every round: a folder added in the settings (or
+by editing the file) gives its accounts on the next round, and a removed one takes its
+logins off the page. The history already in the database stays.
 
 ## Pin the browser window
 

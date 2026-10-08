@@ -22,7 +22,7 @@ import claude_limits.model.store_fiber.{Envelope, Store, ConfNow}
 import claude_limits.server.dto.{SnapshotView}
 import std.concurrency.nvchan.{Chan}
 import std.testing.handlers.{fixed_ms}
-import claude_limits.config.{Refresh}
+import claude_limits.config.{Refresh, Config}
 
 // 2026-09-30 09:00:00 UTC; the live token expires a day later, the dead one a day ago.
 const NOW_MS = 1790758800000
@@ -381,4 +381,61 @@ test "after every round the loop looks at the settings file, the first round inc
     // keep a hand-edited file unseen until the first save collided with it.
     ro said = loop_with_one_tick()
     assert(said.looked == said.rounds)
+}
+
+/// Three rounds over the loop, the settings changing its folder list between them: what
+/// each round's snapshot held. `lists` is what `RoundLog.settings` hands the store after
+/// round 1, 2, ...; the start's own list is `["/acc/old"]`.
+type Counted {
+    mut accounts []int
+    mut calls int
+}
+
+fn loop_with_folders(lists [][]str) -> []int {
+    mut said = Counted{ accounts: [], calls: 0 }
+    mut a = Asked.new()
+    ro pair = Chan[Envelope].new(4)
+    ro store = Store.new(pair.tx)
+    assert(store.tick())
+    assert(store.tick())
+    pair.tx.close()
+    ro rounds = Rounds.new(["/acc/old"], 300, SeverityBounds.new(70, 90), TimeZone.Utc, "+00:00", refresh_cfg(false))
+    ro now = NOW_MS
+    ro plan = lists
+    with Time = fixed_ms(now as u64), Renew = effect Renew {
+        kimi(path str, name str, cooldown_sec int) -> bool { false }
+        claude(path str, name str, model str, timeout_sec int, cooldown_sec int) -> bool { false }
+    }, RoundLog = effect RoundLog {
+        done(view SnapshotView, conf ConfNow) -> SnapshotView {
+            said.accounts.push(view.accounts.len())
+            view
+        }
+        settings(held ConfNow, view SnapshotView) -> Settled {
+            ro i = said.calls
+            said.calls += 1
+            if i >= plan.len() { return Settled.new(held, "") }
+            mut c = Config.defaults()
+            c.folders = plan[i]
+            Settled.new(ConfNow.new(c, "t${i}", held.loaded), "")
+        }
+    } {
+        on_disk(fn() Dirs Creds -> () => endpoint(a, reply_ok(), fn() Http PollLog Creds -> () => store_and_poll(pair.rx, rounds)))
+    }
+    said.accounts
+}
+
+test "a folder saved between rounds gives its account on the next round, and one removed takes its logins away" {
+    // Round 1: the start's list, one login. The settings then add `/acc/work` (one more
+    // account, `main`); then drop `/acc/old`. A loop that kept the start's list would
+    // say 1, 1, 1 -- the stand's "restart to see the folder" (2026-10-02).
+    ro got = loop_with_folders([["/acc/old", "/acc/work"], ["/acc/work"]])
+    assert(got.len() == 3)
+    assert(got[0] == 1)
+    assert(got[1] == 2)
+    assert(got[2] == 1)
+}
+
+test "with the settings unchanged the folder list stays the start's" {
+    ro got = loop_with_folders([])
+    assert(got.len() == 3 && got[0] == 1 && got[1] == 1 && got[2] == 1)
 }

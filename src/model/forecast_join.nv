@@ -30,6 +30,7 @@ import std.time.duration.{Timestamp}
 import claude_limits.model.forecast.{Schedule, Basis, forecast, effective_minutes, unavailable_for}
 import claude_limits.model.format.{date_time, duration_ref}
 import claude_limits.server.dto.{SnapshotView, AccountView, LimitView, ForecastView}
+import claude_limits.server.handlers.history.{HistPace}
 import claude_limits.storage.history_rows.{HistRows, HistSample}
 import claude_limits.usage.parse.{moment_iso}
 
@@ -188,6 +189,33 @@ fn key_of(a AccountView) -> str {
         return "kimi:${a.display_name}"
     }
     a.email.to_ascii_lower()
+}
+
+/// The live forecasts of the round, keyed by the HISTORY's account ids.
+///
+/// The snapshot and the database name an account differently -- the snapshot by its
+/// discovery id, the database by the row's UUID -- and both by the account's key
+/// (`key_of`): the lowered e-mail, `kimi:<name>` or `codex:<address>`. Matched by e-mail
+/// alone, a Kimi or Codex account (whose snapshot e-mail is empty) had no pace.
+export fn paces_of(view SnapshotView, rows HistRows) -> []HistPace {
+    mut out []HistPace = []
+    for l in view.limits {
+        match l.forecast {
+            None => ()
+            Some(f) => {
+                mut key = ""
+                for a in view.accounts { if a.id == l.account_id { key = key_of(a) } }
+                for a in rows.accounts {
+                    if key != "" && a.email == key {
+                        out.push(HistPace{ account_id: a.id, kind: l.kind, model: l.model,
+                                           rate_per_hour_milli: f.rate_per_hour_milli,
+                                           runs_out_at: f.runs_out_at, label: f.label })
+                    }
+                }
+            }
+        }
+    }
+    out
 }
 
 fn state_of(v SnapshotView, account_id str) -> str {

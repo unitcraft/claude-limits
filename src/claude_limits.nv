@@ -57,9 +57,9 @@ import claude_limits.server.start.{real_paths_input, decide_start, sources_at_st
 import claude_limits.storage.startup.{migrations_in, bundled, open_for_serve, record_readings, read_history_rows, record_found, Ready, StartFail, Upkeep, Upkept, forget_account, ForgetDone, upkeep_daily, record_config_version, import_history, Imported}
 import claude_limits.storage.maintenance.{machine_rollup_tz}
 import claude_limits.storage.discovery_write.{Discovered, discovered}
-import claude_limits.storage.history_rows.{HistRows, HistFolderRows}
+import claude_limits.storage.history_rows.{HistFolderRows}
 import claude_limits.storage.paths.{Paths}
-import claude_limits.server.handlers.history.{HistoryAsk, HistoryLoad, HistPace}
+import claude_limits.server.handlers.history.{HistoryAsk, HistoryLoad}
 import claude_limits.server.dto.{Disclosure}
 import claude_limits.storage.db.{owner_changed, owner_line}
 import duckdb.db_effect.{Db}
@@ -71,7 +71,7 @@ import claude_limits.accounts.discover.{expand_home, under}
 import std.os.{Command}
 import claude_limits.model.store_fiber.{Envelope, Store, ConfNow, Follower}
 import claude_limits.model.store.{Event}
-import claude_limits.model.forecast_join.{ForecastRules, with_forecasts}
+import claude_limits.model.forecast_join.{ForecastRules, with_forecasts, paces_of}
 import claude_limits.server.handlers.events.{Live}
 import claude_limits.server.handlers.folders.{ProbeState, probe_body}
 import std.concurrency.nvchan.{Chan, ChanRx}
@@ -499,32 +499,6 @@ fn emails_of(v SnapshotView) -> []str {
 fn orgs_of(v SnapshotView) -> []str {
     mut out []str = []
     for a in v.accounts { out.push(a.org) }
-    out
-}
-
-/// The live forecasts of the round, keyed by the HISTORY's account ids.
-///
-/// The snapshot and the database name an account differently -- the snapshot by its
-/// discovery id, the database by the row's UUID -- and both by the same e-mail, which
-/// the database stores lower-cased (01.2 section 3.6). So the join is by e-mail.
-fn paces_of(view SnapshotView, rows HistRows) -> []HistPace {
-    mut out []HistPace = []
-    for l in view.limits {
-        match l.forecast {
-            None => ()
-            Some(f) => {
-                mut email = ""
-                for a in view.accounts { if a.id == l.account_id { email = a.email.to_ascii_lower() } }
-                for a in rows.accounts {
-                    if email != "" && a.email == email {
-                        out.push(HistPace{ account_id: a.id, kind: l.kind, model: l.model,
-                                           rate_per_hour_milli: f.rate_per_hour_milli,
-                                           runs_out_at: f.runs_out_at, label: f.label })
-                    }
-                }
-            }
-        }
-    }
     out
 }
 
