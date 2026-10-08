@@ -32,7 +32,7 @@ src = "src"
 
 [package]
 name = "claude_limits"
-version = "0.0.0"
+version = "0.1.0"
 description = "Usage limits of several Claude accounts: local backend with a browser page, optional always-on-top widget"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/unitcraft/claude-limits"

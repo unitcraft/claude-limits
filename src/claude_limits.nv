@@ -1007,7 +1007,8 @@ fn serve_mode(exe str, config_override str) Io Net Time Detach -> int {
                         fn(a int) -> Option[Live] => Some(open_live(store, a)),
                         fn(st ProbeState, p str) -> str => probe_on_disk(st, p),
                         fn() -> bool => store.tick(),
-                        fn() -> int => history_days_from_db(paths, win)))!!
+                        fn() -> int => history_days_from_db(paths, win),
+                        fn() -> int => store.clients()))!!
                     say("listening on ${base_url(cfg)}/  (Ctrl+C to stop)")
                     ro every = cfg.poll.interval_sec
                     ro rx = pair.rx

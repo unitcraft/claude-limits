@@ -1,0 +1,158 @@
+# release — claude-limits.exe for Windows, built on a `v*` tag, left as a DRAFT release.
+#
+# The build steps are ci.yml's, copied (same NOVA_REF, same DUCKDB_TAG, same cache keys,
+# so a release build on a warm cache costs minutes, and the DuckDB cache ci.yml saved is
+# reused). Differences, deliberately: the package suite, the page checks and the guards
+# are NOT rerun (ci.yml runs them on every push to main -- tag a commit that is green
+# there); and the end is a zip + SHA256SUMS.txt + a draft release instead of a smoke.
+# Keep NOVA_REF / DUCKDB_TAG equal to ci.yml's when either is bumped (no guard compares them).
+#
+# Nothing is published by this workflow: the release is a draft, and the owner presses
+# "Publish". A manual run (workflow_dispatch) has no tag; it makes the draft `v<version>`
+# on the chosen commit, and the tag is created only when the draft is published.
+
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  NOVA_REF: 835fc322d3da685a4dcd0861bbfcb6db7a2e2af0
+  DUCKDB_TAG: v0.2.2
+
+permissions:
+  contents: write # the draft release; nothing else is written
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout claude-limits
+        uses: actions/checkout@v4
+        with:
+          path: pkg
+
+      - name: Checkout nova (compiler, runtime, std)
+        uses: actions/checkout@v4
+        with:
+          repository: nv-lang/nova
+          ref: ${{ env.NOVA_REF }}
+          path: nova
+          submodules: recursive
+
+      - name: Checkout nova-duckdb (source; the libraries are built below)
+        uses: actions/checkout@v4
+        with:
+          repository: nv-lang/nova-duckdb
+          ref: ${{ env.DUCKDB_TAG }}
+          path: nova-duckdb
+          submodules: recursive
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache the nova build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: nova/nova-cli -> target
+          cache-on-failure: true
+
+      - name: Build nova
+        working-directory: nova/nova-cli
+        run: cargo build --release
+
+      - name: Restore Boehm GC
+        id: gc
+        uses: actions/cache/restore@v4
+        with:
+          path: C:/vcpkg/installed/x64-windows-static
+          key: bdwgc-x64-windows-static-v1
+
+      - name: Install Boehm GC
+        if: steps.gc.outputs.cache-hit != 'true'
+        run: vcpkg install bdwgc:x64-windows-static
+
+      - name: Save Boehm GC
+        if: steps.gc.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: C:/vcpkg/installed/x64-windows-static
+          key: bdwgc-x64-windows-static-v1
+
+      - name: The DuckDB submodule commit (the cache key)
+        id: duck
+        run: echo "commit=$(git -C nova-duckdb/native/duckdb rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the built DuckDB
+        id: duckcache
+        uses: actions/cache/restore@v4
+        with:
+          path: nova-duckdb/native/lib
+          key: duckdb-win-${{ env.DUCKDB_TAG }}-${{ steps.duck.outputs.commit }}-${{ hashFiles('nova-duckdb/scripts/build-duckdb.ps1', 'nova-duckdb/scripts/build-crypto.ps1', 'nova-duckdb/native/duckdb_mbedtls_prefix.h', 'nova-duckdb/native/os_nonce_crypto.cpp') }}
+
+      - name: Build DuckDB (long on a cold cache)
+        shell: pwsh
+        run: pwsh -File nova-duckdb/scripts/build-duckdb.ps1
+
+      - name: Save the built DuckDB
+        if: steps.duckcache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: nova-duckdb/native/lib
+          key: ${{ steps.duckcache.outputs.cache-primary-key }}
+
+      - name: The DuckDB build carries no unprefixed mbedTLS symbol
+        run: python nova-duckdb/scripts/check-mbedtls-prefix.py
+
+      - name: Point duckdb at the built checkout
+        working-directory: pkg
+        run: printf '[replace]\nduckdb = { path = "../nova-duckdb" }\n' > nova.override.toml
+
+      - name: Build the binary
+        working-directory: pkg
+        env:
+          NOVA_RT_DIR: ${{ github.workspace }}/nova/compiler-codegen/nova_rt
+          NOVA_CG_INCLUDE: ${{ github.workspace }}/nova/compiler-codegen
+          NOVA_STD_PATH: ${{ github.workspace }}/nova/std/src
+          NOVA_GC_LIB_DIR: C:/vcpkg/installed/x64-windows-static/lib
+          NOVA_INCLUDE_DIR: C:/vcpkg/installed/x64-windows-static/include
+          NOVA_GC_INCLUDE_DIR: C:/vcpkg/installed/x64-windows-static/include
+        run: '"$GITHUB_WORKSPACE/nova/nova-cli/target/release/nova.exe" build src/claude_limits.nv -o target/claude-limits.exe'
+
+      - name: Smoke of --serve (no network, no real credentials)
+        working-directory: pkg
+        run: python scripts/smoke_server.py target/claude-limits.exe
+
+      # --version, src/version.nv, nova.toml and (on a tag) the tag must be one number;
+      # the script refuses to write a zip otherwise. It also checks the zip's contents
+      # and the sum it wrote.
+      - name: Package (version check, zip, SHA256SUMS.txt)
+        id: pack
+        working-directory: pkg
+        env:
+          TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+        run: |
+          set -euo pipefail
+          python scripts/package_release.py --exe target/claude-limits.exe --out dist ${TAG:+--tag "$TAG"} | tee pack.out
+          echo "version=$(sed -n 's/^version //p' pack.out)" >> "$GITHUB_OUTPUT"
+          echo "notes=$(sed -n 's/^notes   //p' pack.out)" >> "$GITHUB_OUTPUT"
+          (cd dist && sha256sum -c SHA256SUMS.txt)
+
+      - name: Draft the release
+        working-directory: pkg
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.pack.outputs.version }}
+          NOTES: ${{ steps.pack.outputs.notes }}
+        run: |
+          set -euo pipefail
+          gh release create "v$VERSION" --draft \
+            --target "$GITHUB_SHA" --title "claude-limits $VERSION" \
+            --notes-file "$NOTES" \
+            "dist/claude-limits-$VERSION-windows-x64.zip" dist/SHA256SUMS.txt

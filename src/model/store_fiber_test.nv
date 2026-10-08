@@ -296,3 +296,76 @@ test "a stream that reads is not dropped by the pings" {
     })
     assert(alive)
 }
+
+// -- the count `/api/health.sse_clients` reads, and the keep-alive at silence (task 7) --
+
+type Counts value { ro open int, ro after_leave int }
+// A list through the harness's channel: boxed. [M-chan-envelope-workaround]
+type Names value { ro items []str }
+fn Names.new(items []str) -> Names => { items }
+fn Counts.new(open int, after_leave int) -> Counts => { open, after_leave }
+
+test "the store counts the open streams, and a client that went away leaves the count" {
+    // A closed tab stops reading (Polaris says nothing when a client leaves). Its
+    // backlog then fills, and the pings take it off the count; the tab that keeps
+    // reading stays counted.
+    ro c = with_store(Snapshot.empty(), fn(s Store) -> Counts {
+        ro reading = stream_pair()
+        ro _a = s.follow(-1, reading)
+        ro _b = s.follow(-1, stream_pair())
+        ro open = s.clients()
+        mut k = 0
+        while k < STALE_BACKLOG + 1 {
+            assert(s.ping("2026-10-08T00:00:00Z"))
+            ro _v = s.view()
+            // nova:allow W_RESULT_DISCARDED -- the reader only drains; what it read is the other test's
+            ro _r = reading.rx.try_recv()
+            k += 1
+        }
+        Counts.new(open, s.clients())
+    })
+    assert(c.open == 2)
+    assert(c.after_leave == 1)
+}
+
+test "a refused stream is not counted, and a store with no streams counts zero" {
+    ro c = with_store(Snapshot.empty(), fn(s Store) -> Counts {
+        ro none = s.clients()
+        mut i = 0
+        while i < 33 {
+            ro _ = s.follow(-1, stream_pair())
+            i += 1
+        }
+        Counts.new(none, s.clients())
+    })
+    assert(c.open == 0)
+    assert(c.after_leave == 32)
+}
+
+test "the keep-alive goes out at silence, and not right after an event" {
+    // 01.3 section 3.4: `ping` every 30 s "при тишине". A round's snapshot is traffic:
+    // the tick after it sends nothing, the tick after that -- silence -- pings.
+    ro got = with_store(Snapshot.empty(), fn(s Store) -> Names {
+        ro f = stream_pair()
+        ro _ = s.follow(-1, f)
+        assert(s.ping("2026-10-08T00:00:00Z"))
+        ro _e = s.publish("snapshot", "{}")
+        assert(s.ping("2026-10-08T00:00:30Z"))
+        assert(s.ping("2026-10-08T00:01:00Z"))
+        ro _v = s.view()
+        mut out []str = []
+        mut more = true
+        while more {
+            match f.rx.try_recv() {
+                Some(e) => out.push("${e.name} ${e.data}")
+                None => { more = false }
+            }
+        }
+        Names.new(out)
+    })
+    ro names = got.items
+    assert(names.len() == 3)
+    assert(names[0] == "ping {\"at\":\"2026-10-08T00:00:00Z\"}")
+    assert(names[1] == "snapshot {}")
+    assert(names[2] == "ping {\"at\":\"2026-10-08T00:01:00Z\"}")
+}

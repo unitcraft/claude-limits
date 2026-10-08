@@ -151,9 +151,12 @@ By hand: `python scripts/refresh_token.py <dir>` or `--all`
 
 ## Install
 
-There are no prebuilt binaries yet; the tool is built from source with the
-[Nova](https://nv-lang.org) toolchain. On Windows (Linux cannot link the database
-yet -- see below):
+**Ready-made (Windows x64):** download `claude-limits-<version>-windows-x64.zip` and
+`SHA256SUMS.txt` from the [Releases](https://github.com/unitcraft/claude-limits/releases)
+page, check the sum (`sha256sum -c SHA256SUMS.txt`), unpack, run `claude-limits.exe --serve`.
+
+**From source:** the tool is built with the [Nova](https://nv-lang.org) toolchain. On
+Windows (Linux cannot link the database yet -- see below):
 
 Keep the three checkouts side by side -- `nova/`, `nova-duckdb/` and this
 repository in one parent directory; `./nova.sh` finds the compiler there. Elsewhere,
@@ -283,9 +286,9 @@ login sat in which folder -- which `/api/history` and the statistics views read.
 Once a day it rolls up and drops what is older than `[history] keep_days` and takes
 the weekly backup. TLS trusts the operating system's certificate store first (so a
 TLS-inspecting antivirus with its own root works); the start says which source it
-loaded. What is not here yet: the page's live stream (`/api/events`) sends the
-current snapshot and closes, so the page refreshes by polling and shows `polling`
-rather than `live`.
+loaded. The page follows the live stream (`/api/events`): every round and every
+settings change reaches it as an event, and it shows `live`; if the stream drops it
+polls every 10 s and reconnects.
 
 Codex works in the Nova binary too (plan [01.7](docs/plans/01.7-codex.md)): a
 folder holding `auth.json` is a Codex login, asked at
@@ -374,9 +377,9 @@ python scripts/claude_limits.py --parent C:/accounts # every child dir instead o
 
 - [x] reference script: discovery (default dir, `CLAUDE_CONFIG_DIR`, configured list, parent dir), same-account grouping, 429 backoff, daemon mode
 - [x] Nova core: same table as the script, byte-for-byte (`--once`)
-- [ ] local backend: `/api/snapshot`, `/api/events` (SSE), embedded page with one bar per account per window -- done but for the live SSE stream (the page polls instead)
+- [x] local backend: `/api/snapshot`, `/api/events` (SSE), embedded page with one bar per account per window
 - [x] history: every round is recorded in the encrypted database (readings, lock periods, which login sat in which folder), and `/api/history` serves it by account or by folder, over 24 h / 7 d / 30 d; the statistics views read it
-- [ ] threshold notifications
+- [x] threshold notifications: the page raises a browser notification when a window passes 70 % or 90 % (off by default, switch and permission button in Settings)
 - [ ] after the first release: optional widget (`--widget`) — always-on-top window and tray icon on Windows and Linux (StatusNotifier)
 
 ## License
