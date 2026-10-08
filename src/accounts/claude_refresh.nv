@@ -50,6 +50,7 @@
 
 module accounts.claude_refresh
 
+import std.fs.{try_exists}
 import claude_limits.accounts.discover.{normalise}
 
 /// What to start for one directory: a launcher that returns at once.
@@ -131,4 +132,55 @@ export fn refresh_run(dir str, model str, timeout_sec int) -> RefreshRun {
         args: ["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden",
                "-Command", launcher_script(refresh_script(dir, model, timeout_sec))],
     }
+}
+
+// ── what became of a launch ─────────────────────────────────────────────────
+//
+// The launcher returns at once, so the server never sees what Claude Code did: it exited
+// 1, wrote nothing, hung until the wrapper's kill, or is not installed. All four leave
+// the same trace -- the credentials file is as old as it was. `launch_verdict` reads that
+// trace on a later round; `launch_note` says what the launcher itself reported.
+
+/// What a later round makes of one launch.
+export type Verdict enum
+    | Waiting
+    | Renewed
+    | Unchanged
+
+/// Judge a launch made at `launched_ms` when the file's mtime was `before_ms`. A file
+/// that moved is `Renewed`. One that did not is `Waiting` until the wrapper's own limit
+/// (plus a grace for starting and for the kill) has passed -- the run may still be going
+/// -- and `Unchanged` after it, whichever way Claude Code failed.
+export fn launch_verdict(before_ms int, after_ms int, launched_ms int, now_ms int, timeout_sec int) -> Verdict {
+    if after_ms != before_ms { return Verdict.Renewed }
+    if now_ms - launched_ms < (timeout_sec + 15) * 1000 { return Verdict.Waiting }
+    Verdict.Unchanged
+}
+
+/// The log line for a launch's own result: `code` is the launcher's exit code, -1 when
+/// the process could not be started at all. `on_path` is whether `claude.cmd` was found
+/// (WSL directories pass `true`: that lookup happens inside the distro).
+export fn launch_note(name str, code int, on_path bool) -> str {
+    if !on_path { return "auto-refresh ${name}: claude.cmd is not on PATH; the login stays expired" }
+    if code == 0 { return "auto-refresh ${name}: started; Claude Code renews the file, the next round reads it" }
+    if code == -1 { return "auto-refresh ${name}: could not be started (powershell.exe did not run)" }
+    "auto-refresh ${name}: could not be started (exit ${code})"
+}
+
+export fn unchanged_note(name str, timeout_sec int) -> str =>
+    "auto-refresh ${name}: the credentials file did not change within ${timeout_sec} s; Claude Code failed, timed out or is not installed, and the login stays expired"
+
+export fn renewed_note(name str) -> str => "auto-refresh ${name}: the credentials file was rewritten"
+
+/// Is `claude.cmd` in one of the directories of a Windows PATH value?
+export fn claude_on_path(path_var str) Fs -> bool {
+    for dir in path_var.split(";") {
+        if dir == "" { continue }
+        ro sep = if dir.ends_with("\\") { "" } else { "\\" }
+        match try_exists("${dir}${sep}claude.cmd".to_path()) {
+            Ok(true) => return true
+            _ => ()
+        }
+    }
+    false
 }

@@ -375,6 +375,16 @@ test "the FIRST round obeys the start's [refresh], before the settings reach the
     assert(loop_with_refresh(refresh_cfg(true)).renewed > 0)
 }
 
+test "a renewal that changed nothing (exit 1, silence, a hang, no claude) does not stop the rounds" {
+    // `Renew.claude` answers false for every one of those outcomes: the launcher cannot
+    // tell them apart. The expired login stays expired, is offered again each round, and
+    // both rounds still run and are said to RoundLog.
+    ro said = loop_with_refresh(refresh_cfg(true))
+    assert(said.renewed == 2)
+    assert(said.rounds == 2)
+    assert(said.accounts > 0)
+}
+
 test "after every round the loop looks at the settings file, the first round included" {
     // 01.2 section 2.2: a hand edit is picked up on the next tick. A loop that looked
     // only on ticks would leave the first interval blind; one that never looked would

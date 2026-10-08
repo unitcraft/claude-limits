@@ -8,9 +8,9 @@
 
 module storage.applog_test
 
-import std.fs.{mock_fs, MemFs, read_text, write_text, try_exists}
+import std.fs.{mock_fs, MemFs, read, read_text, write_text, try_exists}
 import paths.{PathsInput, resolve}
-import applog.{Level, scrub, format_line, numbered, must_rotate, older_number, append_record, append_within, LIMIT_BYTES, KEEP_FILES}
+import applog.{Level, scrub, format_line, numbered, must_rotate, older_number, append_record, append_within, LIMIT_BYTES, KEEP_FILES, loggable, MAX_PATH_BYTES}
 
 fn win_input() -> PathsInput => {
     windows: true,
@@ -177,4 +177,51 @@ test "under the limit the records are appended to the same file" {
         match read_text(p.to_path()) { Ok(t) => assert(t == "a\nb\n"), Err(_) => assert(false) }
         match try_exists("/s/claude-limits.log.1".to_path()) { Ok(b) => assert(!b), Err(_) => assert(false) }
     }
+}
+
+test "a non-ASCII path reaches the file as UTF-8, byte for byte" {
+    // The owner's profile folder is `Евгений`; PowerShell without -Encoding utf8 shows
+    // such a file as `Р•РІРіРµРЅРёР№`, and the bytes were right all along (task #6).
+    mut fs = MemFs.new()
+    with Fs = mock_fs(fs) {
+        ro rec = format_line("t", Level.Info, "log file C:\\Users\\Евгений\\x.log")
+        match append_record("/s/claude-limits.log", false, rec) { Ok(_) => (), Err(_) => assert(false) }
+        match read("/s/claude-limits.log".to_path()) {
+            Ok(bytes) => {
+                // "Ев" is D0 95 D0 B2; the whole word is 14 bytes, not 28.
+                ro text = rec.bytes()
+                assert(bytes.len() == text.len())
+                mut at = 0
+                mut i = 0
+                while i + 3 < bytes.len() {
+                    if bytes[i] == 0xD0 && bytes[i + 1] == 0x95 && bytes[i + 2] == 0xD0 && bytes[i + 3] == 0xB2 { at = i }
+                    i += 1
+                }
+                assert(at > 0)
+                assert(bytes[at + 4] == 0xD0 && bytes[at + 5] == 0xB3)
+                assert(rec.byte_len() == rec.chars().count() + 7)
+            }
+            Err(_) => assert(false)
+        }
+    }
+}
+
+test "a log path past the safe length gets no file; Cyrillic counts in bytes" {
+    // The runtime dies on the first file call on a path of ~120 bytes (see MAX_PATH_BYTES);
+    // the owner's folder `Евгений` is 14 bytes for 7 letters.
+    ro dir = "C:\\Users\\Евгений\\AppData\\Local\\claude-limits\\logs\\claude-limits.log"
+    assert(loggable(dir))
+    assert(dir.byte_len() > dir.chars().count())
+    assert(loggable(pad_to(MAX_PATH_BYTES)))
+    assert(!loggable(pad_to(MAX_PATH_BYTES + 1)))
+    assert(!loggable(pad_to(122)))
+    assert(!loggable(pad_to(200)))
+    // 60 letters of Cyrillic are 120 bytes: past the limit though only 60 characters.
+    assert(!loggable("C:\\Евгений_Евгений_Евгений_Евгений_Евгений_Евгений_Евгений_\\x.log"))
+}
+
+fn pad_to(n int) -> str {
+    mut s = "C:\\\\"
+    while s.byte_len() < n { s = "${s}a" }
+    s
 }

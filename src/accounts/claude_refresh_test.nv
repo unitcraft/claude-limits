@@ -5,7 +5,8 @@
 
 module accounts.claude_refresh_test
 
-import claude_refresh.{refresh_run, refresh_script, launcher_script, wsl_parts}
+import std.fs.{mock_fs, MemFs, write_text}
+import claude_refresh.{refresh_run, refresh_script, launcher_script, wsl_parts, launch_verdict, launch_note, unchanged_note, renewed_note, claude_on_path, Verdict}
 
 test "a Windows directory runs claude.cmd under its CLAUDE_CONFIG_DIR, bounded by the script" {
     ro s = refresh_script("D:/Sources/.claude-accounts/MGTS", "claude-haiku-4-5-20251001", 120)
@@ -53,4 +54,43 @@ test "no -EncodedCommand anywhere: the owner's antivirus flags it (event 4662, 2
     for a in r.args { assert(!a.contains("EncodedCommand")) }
     ro w = refresh_run("\\\\wsl.localhost\\U\\home\\me\\.claude", "m", 60)
     for a in w.args { assert(!a.contains("EncodedCommand")) }
+}
+
+// ── what became of a launch ─────────────────────────────────────────────────
+
+const T0 = 1_000_000
+
+test "exit 0 with the file untouched is Unchanged once the limit has passed, Waiting before" {
+    // A claude that exits 0 having written nothing, one that exited 1, and one the
+    // wrapper killed leave the same trace: the mtime did not move.
+    assert(launch_verdict(500, 500, T0, T0 + 10_000, 120) == Verdict.Waiting)
+    assert(launch_verdict(500, 500, T0, T0 + (120 + 15) * 1000, 120) == Verdict.Unchanged)
+    assert(launch_verdict(500, 500, T0, T0 + 3_600_000, 120) == Verdict.Unchanged)
+}
+
+test "a moved mtime is Renewed at once, whatever the time" {
+    assert(launch_verdict(500, 900, T0, T0 + 1000, 120) == Verdict.Renewed)
+    assert(launch_verdict(500, 900, T0, T0 + 3_600_000, 120) == Verdict.Renewed)
+}
+
+test "every outcome of a launch has its own log line" {
+    assert(launch_note("a", 0, true).contains("started"))
+    assert(launch_note("a", 1, true).contains("exit 1"))
+    assert(launch_note("a", -1, true).contains("did not run"))
+    assert(launch_note("a", 0, false).contains("not on PATH"))
+    assert(unchanged_note("a", 120).contains("did not change within 120 s"))
+    assert(renewed_note("a").contains("rewritten"))
+    // No token and no path of the user leaks through these: they carry the name only.
+    assert(!launch_note("a", 0, false).contains("sk-ant"))
+}
+
+test "claude.cmd is found in a PATH directory, and not found when no entry holds it" {
+    mut fs = MemFs.new()
+    with Fs = mock_fs(fs) {
+        ro _ = write_text("C:\\bin\\claude.cmd".to_path(), "@exit /b 0")
+        assert(claude_on_path("C:\\Windows;C:\\bin"))
+        assert(claude_on_path("C:\\bin\\"))
+        assert(!claude_on_path("C:\\Windows;C:\\other"))
+        assert(!claude_on_path(""))
+    }
 }

@@ -229,7 +229,9 @@ in `logs\`). `CLAUDE_LIMITS_DATA` moves the Windows log with the database
 **The log** is written by `--serve` only: the lines the console shows, each with a
 UTC moment and a level (`INFO`, `WARN`, `ERROR`), appended to `claude-limits.log`.
 At 1 MiB the file becomes `claude-limits.log.1` (then `.2`); three files are kept.
-Tokens never go into it, and the first line of a start names its path.
+Tokens never go into it, and the first line of a start names its path. A log path
+longer than 100 bytes gets no file (the runtime's file calls crash on such a path);
+the start says so and the console keeps every line. Keep the data folder short.
 
 The minimum is the folders that hold logins:
 
