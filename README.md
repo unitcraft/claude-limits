@@ -8,6 +8,9 @@ For every Claude Code login on the machine it shows the same numbers that
 (all models and per model), when each resets, and whether the account is
 currently locked. All accounts side by side, without switching logins.
 
+Kimi Code and Codex (OpenAI / ChatGPT) logins are shown on the same page, next
+to the Claude ones, each card marked with its service.
+
 ## Why
 
 Claude Code keeps one login per config directory. With several accounts
@@ -106,13 +109,13 @@ A refresh costs one small request on that account's own limits, so:
   brings back the old behaviour -- report the stale login and leave it alone.
 
 By hand: `python scripts/refresh_token.py <dir>` or `--all`
-(`scripts
-efresh-token.ps1` is a wrapper over it).
+(`scripts\refresh-token.ps1` is a wrapper over it).
 
 ## Rules
 
-- A token leaves the machine only towards `api.anthropic.com`. It is never
-  logged, never displayed, never written anywhere.
+- A token leaves the machine only towards the service it belongs to:
+  `api.anthropic.com` for Claude, the Kimi Code API for Kimi, `chatgpt.com` for
+  Codex. It is never logged, never displayed, never written anywhere.
 - The tool never writes into Claude Code's directories ITSELF. Auto-refresh is
   not an exception to that: it starts Claude Code, which writes its own files.
   The tool reads one thing from `.credentials.json` besides the token it sends --
@@ -198,15 +201,24 @@ Overrides, strongest first: `--config <file>` (the key follows the settings file
 `CLAUDE_LIMITS_DB_KEY_FILE`. **Portable mode:** put a `claude-limits.toml` beside
 the binary and everything -- settings, key, database -- lives beside it.
 
-The minimum is the folders that hold Claude Code logins:
+The minimum is the folders that hold logins:
 
 ```toml
 [[folders]]
-path = "D:/accounts"      # a login directory, or a folder of them
+path = "D:/accounts"      # a Claude login directory, or a folder of them
+
+[[folders]]
+path = "~/.kimi-code"     # a Kimi Code home
+
+[[folders]]
+path = "~/.codex"         # a Codex home (auth.json)
 
 [server]
 port = 7391
 ```
+
+The server reads the list of folders once, at start: after adding a folder in
+the settings, restart `--serve` to see its logins.
 
 ## Pin the browser window
 
@@ -241,6 +253,11 @@ TLS-inspecting antivirus with its own root works); the start says which source i
 loaded. What is not here yet: the page's live stream (`/api/events`) sends the
 current snapshot and closes, so the page refreshes by polling and shows `polling`
 rather than `live`.
+
+Codex works in the Nova binary too (plan [01.7](docs/plans/01.7-codex.md)): a
+folder holding `auth.json` is a Codex login, asked at
+`chatgpt.com/backend-api/wham/usage`. The access token is never renewed (see
+below), and a free plan shows one `month` window.
 
 A path with non-ASCII characters (a Cyrillic user name, say) works since the Nova
 runtime reads the command line and the environment as UTF-8 (nova `2488a47be`; the
