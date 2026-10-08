@@ -128,9 +128,12 @@ export type StoreAsk enum
     /// Open a live stream: register the channel, put into it what the client missed
     /// after `after` (-1: it has seen nothing), and say how the stream opens.
     | Follow(int, Follower, ChanTx[Followed])
-    /// Thirty seconds have passed (§3.4): a `ping` to every stream, with the moment;
-    /// abandoned streams are dropped here. No reply.
+    /// Thirty seconds have passed (§3.4): a `ping` to every stream if nothing else went
+    /// out since the last one, with the moment; abandoned streams are dropped here. No
+    /// reply.
     | Ping(str)
+    /// How many live streams are open (`/api/health.sse_clients`, 01.3 §3.2).
+    | Clients(ChanTx[int])
     /// Time for a poll round. Sent by a timer fiber; acted on by the loop that owns the
     /// poller, because the poll cannot run in a spawned fiber (D446 refuses the chain).
     | Tick
@@ -212,6 +215,9 @@ export type StoreState {
     mut view SnapshotView
     mut conf ConfNow
     mut followers []Follower
+    /// An event went out since the last `Ping`: the next one is not due (§3.4, "при
+    /// тишине").
+    mut spoke bool
 }
 
 /// The state a store starts in. See `run` for why the snapshot is replayed, not copied.
@@ -220,7 +226,7 @@ export fn StoreState.new(start Snapshot) -> StoreState {
     for slot in start.accounts { merge(snap, slot) }
     snap.fetched_at_ms = start.fetched_at_ms
     snap.restored = start.restored
-    { snap, reg: Registry.new(), view: nothing_yet(), conf: ConfNow.none(), followers: [] }
+    { snap, reg: Registry.new(), view: nothing_yet(), conf: ConfNow.none(), followers: [], spoke: false }
 }
 
 /// Answer one request. `Tick` is not answered here: it asks for a poll round, which
@@ -243,6 +249,8 @@ export fn step(mut st StoreState, ask StoreAsk) -> () {
             ro _ = reply.send(follow(st, after, f))
         }
         StoreAsk.Ping(at) => { ping(st, at) }
+        // nova:allow W_RESULT_DISCARDED -- the asker is gone; there is nothing to do and nobody to tell
+        StoreAsk.Clients(reply) => { ro _ = reply.send(st.followers.len()) }
         // nova:allow W_RESULT_DISCARDED -- the asker is gone; there is nothing to do and nobody to tell
         StoreAsk.Since(after, reply) => { ro _ = reply.send(Events.new(since(st.reg, after))) }
         // nova:allow W_RESULT_DISCARDED -- the asker is gone; there is nothing to do and nobody to tell
@@ -276,6 +284,7 @@ export fn announce(mut st StoreState, name str, data str) -> Event {
         }
     }
     st.followers = keep
+    st.spoke = true
     ev
 }
 
@@ -307,16 +316,27 @@ export fn follow(mut st StoreState, after int, f Follower) -> Followed {
     { id, fresh, snapshot_id }
 }
 
-/// A `ping` to every stream; one that has stopped reading is dropped.
+/// A `ping` to every stream when the streams were silent since the last one; a stream
+/// that has stopped reading is dropped either way.
 ///
 /// The ping does NOT take an id (§3.4 numbers what can be replayed, and a ping cannot
 /// be): it carries the last one published, so a client that reconnects after a ping
 /// asks for exactly what it has not seen.
+///
+/// ONLY AT SILENCE (§3.4: "раз в 30 с при тишине"): an event since the last tick was
+/// traffic already. The page counts ninety seconds without a word as a dead stream
+/// (`web/live.js`, `SILENCE_LIMIT_MS`), and at most two ticks pass between words.
+///
+/// THE REAPING DOES NOT WAIT FOR SILENCE. A closed tab is noticed by its backlog, and
+/// events fill that backlog as surely as pings do; skipping the check after an event
+/// would keep a gone tab counted for as long as the rounds keep coming.
 export fn ping(mut st StoreState, at str) -> () {
+    ro due = !st.spoke
+    st.spoke = false
     ro ev = Event.new(st.reg.next_id - 1, "ping", "{\"at\":\"${at}\"}")
     mut keep []Follower = []
     for f in st.followers {
-        if f.rx.len() < STALE_BACKLOG && f.tx.try_send(ev) {
+        if f.rx.len() < STALE_BACKLOG && (!due || f.tx.try_send(ev)) {
             keep.push(f)
         } else {
             unsubscribe(st.reg, f.id)
@@ -438,6 +458,14 @@ export fn Store @follow(after int, f Follower) -> Followed {
 /// The ping timer's request. `false` means the store is gone.
 export fn Store @ping(at str) -> bool {
     @tx.send(Envelope.new(StoreAsk.Ping(at)))
+}
+
+/// How many live streams are open. With the store gone, zero: nothing streams.
+export fn Store @clients() -> int {
+    ro pair = Chan[int].new(1)
+    // nova:allow W_RESULT_DISCARDED -- a failed send surfaces as `None` below, answered with zero
+    ro _ = @tx.send(Envelope.new(StoreAsk.Clients(pair.tx)))
+    pair.rx.recv() ?? 0
 }
 
 /// Ask for a poll round. `false` means the store is gone -- the timer's cue to stop.

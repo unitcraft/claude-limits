@@ -297,4 +297,72 @@ test('a constructor that throws lands in the same degraded mode', () => {
   assert.equal(polls, 1);
 });
 
+console.log('\na stream that stays open (task 7: /api/events no longer ends after one event)');
+
+test('an open stream stays live through rounds and pings: no polling, no reconnect', () => {
+  // The server keeps the stream and sends a `snapshot` per round (60 s here) and a
+  // `ping` at silence. Ten minutes of that is one stream, a green dot, zero polls.
+  const p = makePage({ serverUp: true });
+  p.live.start();
+  p.clock.advance(5);
+  const s = p.streams[0];
+  for (let t = 0; t < 20; t++) {
+    p.clock.advance(30_000);
+    s.emit(t % 2 ? 'snapshot' : 'ping', '{}');
+    assert.equal(silentTooLong(p.live, p.clock.now()), false, 'a stream that talks is alive');
+  }
+  assert.equal(p.mode, 'live');
+  assert.deepEqual(p.modes, ['connecting', 'live'], 'never grey while the stream talks');
+  assert.equal(p.polls, 0, 'the events are the updates: polling as well would ask twice');
+  assert.equal(p.streams.length, 1, 'nothing reconnects a stream that is fine');
+  assert.equal(p.events.filter(([n]) => n === 'snapshot').length, 10);
+});
+
+test('a stream the server ends after its first snapshot falls back to polling (the old server)', () => {
+  // What every page saw before task 7: the opening snapshot, then the end of the
+  // response -- which an EventSource reports as `error`.
+  const p = makePage({ serverUp: true });
+  p.live.start();
+  p.clock.advance(5);
+  p.streams[0].emit('snapshot', '{}');
+  p.streams[0].serverRefuses();
+  assert.equal(p.mode, 'polling');
+  p.clock.advance(POLL_WHEN_DEGRADED_MS);
+  assert.equal(p.polls, 1, 'the fallback is the 10 s poll');
+  p.clock.advance(SSE_RETRY_MS);
+  assert.equal(p.streams.length, 2, 'and the stream is tried again on our schedule');
+  assert.equal(p.mode, 'live');
+});
+
+test('`bye` turns the page to polling at once and reconnects in 30 s, not sooner', () => {
+  const p = makePage({ serverUp: true });
+  p.live.start();
+  p.clock.advance(5);
+  const s = p.streams[0];
+  s.emit('bye', '{"reason":"shutdown"}');
+  assert.equal(p.mode, 'polling', 'the server said it is going: the dot does not stay green');
+  assert.equal(s.closeCalls, 1, 'closed by us, so the browser does not retry on its own schedule');
+  assert.deepEqual(p.events.at(-1), ['bye', '{"reason":"shutdown"}'], 'handed on like every event');
+  p.serverUp = false;                     // it is really gone
+  p.clock.advance(SSE_RETRY_MS - 10);
+  assert.equal(p.streams.length, 1, 'no early reconnect');
+  assert.ok(p.polls >= 2, 'polling meanwhile');
+  p.serverUp = true;                      // and back
+  p.clock.advance(SSE_RETRY_MS + 20);
+  assert.equal(p.mode, 'live');
+});
+
+test('`bye` from a stream already replaced does not tear down the new one', () => {
+  const p = makePage({ serverUp: true });
+  p.live.start();
+  p.clock.advance(5);
+  const old = p.streams[0];
+  old.serverRefuses();                       // dropped
+  p.clock.advance(SSE_RETRY_MS + 5);         // reconnected
+  assert.equal(p.mode, 'live');
+  old.emit('bye', '{"reason":"shutdown"}');  // a late word from the dead one
+  assert.equal(p.mode, 'live');
+  assert.equal(p.streams[1].closeCalls, 0);
+});
+
 console.log(`\n${passed} passed${process.exitCode ? ', SOME FAILED' : ''}`);

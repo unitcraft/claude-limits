@@ -17,8 +17,11 @@ import claude_limits.model.live.{Known, view_of}
 import claude_limits.model.snapshot.{SeverityBounds}
 import claude_limits.model.snapshot.{AccountState}
 import feed.{Found, stable_id, found_in, poll_round, expiry_text}
-import feed.{Rounds, RoundLog, Settled, Renew, store_and_poll, renew_expired}
-import claude_limits.model.store_fiber.{Envelope, Store, ConfNow}
+import feed.{Rounds, RoundLog, Settled, Renew, store_and_poll, renew_expired, ping_every}
+import claude_limits.model.store_fiber.{Envelope, Store, ConfNow, StoreAsk, Follower, Followed}
+import claude_limits.model.store.{Event}
+import std.time.duration
+import claude_limits.usage.parse.{moment_iso}
 import claude_limits.server.dto.{SnapshotView}
 import std.concurrency.nvchan.{Chan}
 import std.testing.handlers.{fixed_ms}
@@ -438,4 +441,99 @@ test "a folder saved between rounds gives its account on the next round, and one
 test "with the settings unchanged the folder list stays the start's" {
     ro got = loop_with_folders([])
     assert(got.len() == 3 && got[0] == 1 && got[1] == 1 && got[2] == 1)
+}
+
+// ── the live stream between rounds (task 7) ──────────────────────────────────
+
+/// A stream that followed the store after its first round, then one tick: what the
+/// stream's channel holds once the loop has ended.
+fn followed_through_a_round() -> []Event {
+    mut a = Asked.new()
+    ro pair = Chan[Envelope].new(4)
+    ro store = Store.new(pair.tx)
+    ro stream = Chan[Event].new(128)
+    ro reply = Chan[Followed].new(1)
+    // The page opens `/api/events`: the store registers its channel. Queued BEFORE the
+    // tick, so the stream is open when that round ends.
+    assert(pair.tx.send(Envelope.new(StoreAsk.Follow(-1, Follower.unregistered(stream.tx, stream.rx), reply.tx))))
+    assert(store.tick())
+    pair.tx.close()
+    ro rounds = Rounds.new(["/acc"], 300, SeverityBounds.new(70, 90), TimeZone.Utc, "+00:00", refresh_cfg(false))
+    with Time = fixed_ms(NOW_MS as u64), Renew = effect Renew {
+        kimi(path str, name str, cooldown_sec int) -> bool { false }
+        claude(path str, name str, model str, timeout_sec int, cooldown_sec int) -> bool { false }
+    }, RoundLog = effect RoundLog {
+        done(view SnapshotView, conf ConfNow) -> SnapshotView { view }
+        settings(held ConfNow, view SnapshotView) -> Settled { Settled.new(held, "") }
+    } {
+        on_disk(fn() Dirs Creds -> () => endpoint(a, reply_ok(), fn() Http PollLog Creds -> () => store_and_poll(pair.rx, rounds)))
+    }
+    match reply.rx.try_recv() {
+        Some(f) => assert(f.id > 0 && f.fresh)
+        None => panic("the store never answered the follow")
+    }
+    mut out []Event = []
+    mut more = true
+    while more {
+        match stream.rx.try_recv() {
+            Some(e) => out.push(e)
+            None => { more = false }
+        }
+    }
+    out
+}
+
+test "an open stream gets the round's snapshot without asking: the event, not a poll" {
+    // 01.3 section 3.4: `snapshot` "после каждого опроса". The page shows `live` and
+    // stops polling, so a round that told no stream would freeze it on the old numbers.
+    ro got = followed_through_a_round()
+    assert(got.len() == 1)
+    assert(got[0].name == "snapshot")
+    // The body is `GET /api/snapshot`'s: the account the round polled is in it.
+    assert(got[0].data.contains("\"accounts\":["))
+    assert(got[0].data.contains("@example"))
+    assert(got[0].id > 0)
+}
+
+/// What the ping timer did: the moments it sent, and the waits it asked for.
+type Pinged {
+    mut ats []str
+    mut slept_ms []int
+}
+
+test "the keep-alive timer asks the store for a ping every 30 s, and stops when the store is gone" {
+    ro pair = Chan[Envelope].new(8)
+    ro store = Store.new(pair.tx)
+    mut seen = Pinged{ ats: [], slept_ms: [] }
+    mut clock_ms = NOW_MS
+    with Time = effect Time {
+        sleep(d Duration) -> () {
+            seen.slept_ms.push(d.millis())
+            clock_ms += d.millis()
+            // The store goes away during the third wait: the ping after it is refused,
+            // and the timer must end rather than spin.
+            if seen.slept_ms.len() == 3 { pair.tx.close() }
+        }
+        now() -> Timestamp => clock_ms.to_unix_millis()
+        now_monotonic() -> Monotonic => (clock_ms * 1_000_000).to_monotonic_nanos()
+        local_offset_sec() -> int => 0
+    } {
+        ping_every(store, 30)
+    }
+    mut more = true
+    while more {
+        match pair.rx.recv() {
+            Some(env) => match env.req {
+                StoreAsk.Ping(at) => seen.ats.push(at)
+                _ => ()
+            }
+            None => { more = false }
+        }
+    }
+    assert(seen.slept_ms.len() == 3)
+    for ms in seen.slept_ms { assert(ms == 30000) }
+    // Two pings, thirty seconds apart, each stamped with the moment it went out.
+    assert(seen.ats.len() == 2)
+    assert(seen.ats[0] == moment_iso(NOW_MS + 30000))
+    assert(seen.ats[1] == moment_iso(NOW_MS + 60000))
 }
