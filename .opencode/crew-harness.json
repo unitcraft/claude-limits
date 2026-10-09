@@ -209,5 +209,8 @@
       }
     }
   },
-  "profile_set": "codex-light"
+  "profile_set": "codex-light",
+  "merge_precheck": "required",
+  "accepted_slot": "free",
+  "cleanup_limit": 10
 }
