@@ -2,15 +2,18 @@
 //
 //   ./nova.sh test src/storage/ --filter applog
 //
-// The file system is the in-memory one: no test writes a real log. The paths of the
-// file for each platform, portable mode and each override are checked here as well,
-// next to what is written into them (`paths_test` holds the rest of the table).
+// The file system is the in-memory one, but for one live test that writes a real log
+// at a long path in the system temp directory. The paths of the file for each
+// platform, portable mode and each override are checked here as well, next to what is
+// written into them (`paths_test` holds the rest of the table).
 
 module storage.applog_test
 
-import std.fs.{mock_fs, MemFs, read, read_text, write_text, try_exists}
+import std.fs.{mock_fs, MemFs, real_fs, read, read_text, write_text, try_exists, remove_dir_all}
+import std.os.{real_os, temp_dir}
+import std.runtime.gc
 import paths.{PathsInput, resolve}
-import applog.{Level, scrub, format_line, numbered, must_rotate, older_number, append_record, append_within, LIMIT_BYTES, KEEP_FILES, loggable, MAX_PATH_BYTES}
+import applog.{Level, scrub, format_line, numbered, must_rotate, older_number, append_record, append_within, LIMIT_BYTES, KEEP_FILES}
 
 fn win_input() -> PathsInput => {
     windows: true,
@@ -206,22 +209,51 @@ test "a non-ASCII path reaches the file as UTF-8, byte for byte" {
     }
 }
 
-test "a log path past the safe length gets no file; Cyrillic counts in bytes" {
-    // The runtime dies on the first file call on a path of ~120 bytes (see MAX_PATH_BYTES);
-    // the owner's folder `Евгений` is 14 bytes for 7 letters.
-    ro dir = "C:\\Users\\Евгений\\AppData\\Local\\claude-limits\\logs\\claude-limits.log"
-    assert(loggable(dir))
-    assert(dir.byte_len() > dir.chars().count())
-    assert(loggable(pad_to(MAX_PATH_BYTES)))
-    assert(!loggable(pad_to(MAX_PATH_BYTES + 1)))
-    assert(!loggable(pad_to(122)))
-    assert(!loggable(pad_to(200)))
-    // 60 letters of Cyrillic are 120 bytes: past the limit though only 60 characters.
-    assert(!loggable("C:\\Евгений_Евгений_Евгений_Евгений_Евгений_Евгений_Евгений_\\x.log"))
+test "live: a log path of 200+ characters with Cyrillic in it is written" {
+    // Task #6 saw `--serve` die on its first file call once the log path passed ~120
+    // characters and skipped the log for long paths. The length was never the cause:
+    // the `with Fs = real_fs()` handler lived only in a thread-local slot that the
+    // collector does not scan, and a collection inside the block freed it (nova
+    // registry 1857, fixed in the runtime). So: each record in a fresh `with Fs`, after
+    // garbage and a collection, at 220 characters -- past the old cut-off, under
+    // Windows MAX_PATH (260), with the owner's Cyrillic folder name in it.
+    ro base = with Os = real_os() { temp_dir().display().replace("\\", "/") }
+    ro top = "${base}/claude-limits-applog-test-Евгений"
+    ro path = "${top}/${pad_dir(220 - top.chars().count() - "/logs/claude-limits.log".chars().count() - 1)}/logs/claude-limits.log"
+    assert(path.chars().count() == 220)
+    assert(path.byte_len() > path.chars().count())
+    with Fs = real_fs() { ro _ = remove_dir_all(top.to_path()) }
+    mut written = 0
+    for i in 0..5 {
+        with Fs = real_fs() {
+            ro n = churn(i)
+            gc.collect()
+            match append_record(path, false, format_line("t", Level.Info, "round ${i} Евгений")) {
+                Ok(_) => { written += 1 }
+                Err(_) => ()
+            }
+            assert(n == 2000)
+        }
+    }
+    assert(written == 5)
+    ro text = with Fs = real_fs() { read_text(path.to_path()) ?? "" }
+    assert(text.contains("round 0 Евгений"))
+    assert(text.contains("round 4 Евгений"))
+    mut lines = 0
+    for l in text.lines() { if l != "" { lines += 1 } }
+    assert(lines == 5)
+    with Fs = real_fs() { ro _ = remove_dir_all(top.to_path()) }
 }
 
-fn pad_to(n int) -> str {
-    mut s = "C:\\\\"
-    while s.byte_len() < n { s = "${s}a" }
+fn pad_dir(n int) -> str {
+    mut s = ""
+    while s.chars().count() < n { s = "${s}a" }
     s
+}
+
+/// Garbage for the collector to find, as nova's p1857 fixture makes it.
+fn churn(round int) -> int {
+    mut xs = []str.new()
+    for i in 0..2000 { xs.push("churn-${round}-${i}") }
+    xs.len()
 }

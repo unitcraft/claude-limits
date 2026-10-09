@@ -59,7 +59,7 @@ import claude_limits.storage.maintenance.{machine_rollup_tz}
 import claude_limits.storage.discovery_write.{Discovered, discovered}
 import claude_limits.storage.history_rows.{HistFolderRows}
 import claude_limits.storage.paths.{Paths}
-import claude_limits.storage.applog.{Level, record, enable, MAX_PATH_BYTES}
+import claude_limits.storage.applog.{Level, record, enable}
 import claude_limits.server.handlers.history.{HistoryAsk, HistoryLoad}
 import claude_limits.server.dto.{Disclosure}
 import claude_limits.storage.db.{owner_changed, owner_line}
@@ -922,12 +922,8 @@ fn forget_mode(exe str, config_override str, email str) Io Time -> int {
 fn serve_mode(exe str, config_override str) Io Net Time Detach -> int {
     ro input = with Os = real_os(), Fs = real_fs() { real_paths_input(exe, config_override) }
     ro paths = resolve(input)
-    ro logging = with Os = real_os() { enable(paths.log_file, input.windows) }
-    if logging {
-        say("log file ${paths.log_file}")
-    } else {
-        say("log file ${paths.log_file} is NOT written: the path is longer than ${MAX_PATH_BYTES} bytes, which crashes the runtime's file calls; shorten the data folder (CLAUDE_LIMITS_DATA)")
-    }
+    with Os = real_os() { enable(paths.log_file, input.windows) }
+    say("log file ${paths.log_file}")
     ro loaded = with Fs = real_fs() { load(paths.config_file) }
     match decide_start(loaded) {
         Start.Refuse(lines) => {
