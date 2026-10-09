@@ -210,7 +210,7 @@ export fn health_at(cfg Config, paths Paths, started_at str, db DbAtStart, live 
     schema_version: db.schema_version,
     history_days: live.days,
     encrypted: db.encrypted,
-    key_store: "file",
+    key_store: if db.encrypted { "file" } else { "none" },
     widget_enabled: false,
     widget_running: false,
     config_error: "",

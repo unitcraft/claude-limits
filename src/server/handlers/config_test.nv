@@ -533,6 +533,29 @@ test "a folder by path replaces the list; a folder by id is refused, not dropped
     assert(kept.folders[0] == "C:/accounts")
 }
 
+test "storage encryption JSON parity rejects non-booleans and requires restart" {
+    assert(!merged_of("{}").0.storage.encrypted)
+    for value in ["true", "false"] {
+        ro (cfg, errors, _field) = merged_of("{\"storage\":{\"encrypted\":${value}}}")
+        assert(errors == 0)
+        assert(cfg.storage.encrypted == (value == "true"))
+        assert(render_state(state_from(cfg)).contains("\"encrypted\":${value}"))
+        assert(applies_live(base_cfg(), cfg) == (value == "false"))
+    }
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro st = current()
+        ro w = serve_with(st, fn(c Config) -> Committed => written_for_next_start(), put_req(st.etag, "{\"storage\":{\"encrypted\":true}}"))
+        assert(status_of(w) == "HTTP/1.1 200 OK")
+        assert(body_of(w).contains("\"restart_required\":true"))
+        assert(body_of(w).contains("\"encrypted\":true"))
+        for value in ["1", "0", "null", "\"true\"", "[]", "{}"] {
+            ro refused = serve_with(st, fn(c Config) -> Committed => never_commit(), put_req(st.etag, "{\"storage\":{\"encrypted\":${value}}}"))
+            assert(status_of(refused).contains("422"))
+            assert(body_of(refused).contains("\"field\":\"storage.encrypted\""))
+        }
+    }
+}
+
 test "an empty folders list is a deletion, and it is allowed" {
     ro (c, n, _f) = merged_of("{\"folders\":[]}")
     assert(n == 0)
@@ -578,8 +601,14 @@ fn lan() -> ConfigState {
 
 /// Whole-body comparison with both bodies in the failure (T2.29).
 fn same_body(label str, reference str, now str) -> bool {
-    if reference == now { return true }
-    panic("${label} REFERENCE=${reference} NOW=${now}")
+    // #13's exact contract amendment to the frozen 2026-09-30 captures below.
+    // Static replacements only: every byte, including each new ETag, is compared.
+    ro amended = reference.replace("\"storage\":{\"data_dir\":", "\"storage\":{\"encrypted\":false,\"data_dir\":")
+        .replace("985c7ed0a441dcef", "af6f111f8313f991")
+        .replace("f8067c34e72b507b", "01f032b3775849d5")
+        .replace("95b4a69244c3ec1e", "eed2c217631f4034")
+    if amended == now { return true }
+    panic("${label} REFERENCE=${amended} NOW=${now}")
 }
 
 // -- T2.29: GET and PUT bodies are serde's now --

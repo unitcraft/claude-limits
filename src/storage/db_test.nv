@@ -17,8 +17,8 @@
 
 module storage.db_test
 
-import std.fs.{mock_fs, MemFs, write_text}
-import db.{Migration, pending, too_new, owner_changed, owner_line, session_sql, ensure_key, ensure_instance, open_and_read, KNOWN_SCHEMA}
+import std.fs.{mock_fs, MemFs, write_text, try_exists}
+import db.{Migration, pending, too_new, owner_changed, owner_line, session_sql, ensure_key, database_key, ensure_instance, open_and_read, KNOWN_SCHEMA}
 import duckdb.db_effect.{Db, DbRef, ConnRef, ResultRef}
 import duckdb.errors.{DuckError}
 import duckdb.types.{Value}
@@ -126,13 +126,13 @@ test "the too-new message names both numbers" {
 test "an empty directory gets a key, and reopening gives the SAME one" {
     mut fs = MemFs.new()
     ro first = with Fs = mock_fs(fs), Random = th.seeded(7) {
-        ensure_key(KEY_PATH, CFG_DIR)
+        ensure_key(KEY_PATH, CFG_DIR, true)
     }
     assert(first.is_ok())
     assert(first!!.byte_len() > 0)
 
     ro second = with Fs = mock_fs(fs), Random = th.seeded(99) {
-        ensure_key(KEY_PATH, CFG_DIR)
+        ensure_key(KEY_PATH, CFG_DIR, false)
     }
     // A DIFFERENT seed on purpose: if the second call generated instead of reading,
     // the seed would show it. Same seed would hide exactly the bug being looked for.
@@ -163,13 +163,50 @@ test "an unreadable key is told apart from an absent one" {
         ro _ = write_text(KEY_PATH.to_path(), "a-key")
     }
     ro got = with Fs = mock_fs(fs), Random = th.seeded(7) {
-        ensure_key(KEY_PATH, CFG_DIR)
+        ensure_key(KEY_PATH, CFG_DIR, false)
     }
     assert(got.is_ok())
     assert(got!! == "a-key")
 }
 
 // ── the database, under a mock ───────────────────────────────────────────────
+
+test "plain mode never creates or reads a key" {
+    mut fs = MemFs.new()
+    with Fs = mock_fs(fs), Random = th.seeded(7) {
+        assert(database_key(DB_PATH, KEY_PATH, CFG_DIR, false, true)!! == "")
+        assert(!(try_exists(KEY_PATH.to_path()) ?? true))
+        ro _ = write_text(KEY_PATH.to_path(), "ignored-key")
+        assert(database_key(DB_PATH, KEY_PATH, CFG_DIR, false, false)!! == "")
+    }
+}
+
+test "existing database or WAL never receives a replacement key" {
+    mut fs = MemFs.new()
+    with Fs = mock_fs(fs), Random = th.seeded(7) {
+        ro _ = write_text(DB_PATH.to_path(), "existing database")
+        assert(database_key(DB_PATH, KEY_PATH, CFG_DIR, true, true).is_err())
+        assert(database_key(DB_PATH, KEY_PATH, CFG_DIR, true, false).is_err())
+        assert(!(try_exists(KEY_PATH.to_path()) ?? true))
+    }
+    mut wal_fs = MemFs.new()
+    with Fs = mock_fs(wal_fs), Random = th.seeded(7) {
+        ro _ = write_text("${DB_PATH}.wal".to_path(), "existing WAL")
+        assert(database_key(DB_PATH, KEY_PATH, CFG_DIR, true, true).is_err())
+        assert(!(try_exists(KEY_PATH.to_path()) ?? true))
+    }
+}
+
+test "empty keys fail and only a fresh startup can create a key" {
+    mut fs = MemFs.new()
+    with Fs = mock_fs(fs), Random = th.seeded(7) {
+        assert(database_key(DB_PATH, KEY_PATH, CFG_DIR, true, false).is_err())
+        assert(!(try_exists(KEY_PATH.to_path()) ?? true))
+        assert(database_key(DB_PATH, KEY_PATH, CFG_DIR, true, true).is_ok())
+        ro _ = write_text(KEY_PATH.to_path(), " \n")
+        assert(database_key(DB_PATH, KEY_PATH, CFG_DIR, true, true).is_err())
+    }
+}
 
 /// Where the mock's result cursor stands.
 type Cursor {

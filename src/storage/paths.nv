@@ -43,6 +43,8 @@ export type PathsInput value {
 
 /// Every path the app needs, resolved. Directories have no trailing separator.
 export type Paths value {
+    /// Physical mode captured once at startup; rereading TOML cannot change it.
+    ro encrypted bool
     ro config_dir str
     ro data_dir str
     ro log_dir str
@@ -58,6 +60,15 @@ export type Paths value {
 }
 
 const APP = "claude-limits"
+
+/// Pin the physical mode alongside the paths used by every runtime database call.
+export fn Paths @with_encryption(encrypted bool) -> Paths => {
+    encrypted,
+    @config_dir, @data_dir, @log_dir,
+    @config_file, @db_file, @wal_file,
+    @temp_dir, @backup_dir, @log_file,
+    @key_file, @instance_file, @portable,
+}
 
 /// Join with the platform's separator, tolerating a trailing one on the left.
 ///
@@ -124,6 +135,7 @@ export fn resolve(input PathsInput) -> Paths {
     }
 
     {
+        encrypted: false,
         config_dir: cfg_dir,
         data_dir: dat_dir,
         log_dir: lg_dir,

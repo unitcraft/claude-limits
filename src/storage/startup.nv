@@ -17,7 +17,7 @@ import std.fs.{create_dir_all}
 import duckdb.db_effect.{Db, ConnRef}
 import duckdb.errors.{DbOptions, DuckError}
 import claude_limits.storage.paths.{Paths, dir_of}
-import claude_limits.storage.db.{Migration, Opened, OpenFail, pending, ensure_key, ensure_instance, open_and_read, apply_migration, claim, KNOWN_SCHEMA}
+import claude_limits.storage.db.{Migration, Opened, OpenFail, pending, database_key, ensure_instance, open_and_read, apply_migration, claim, KNOWN_SCHEMA}
 import claude_limits.storage.history_import.{read_reference, import_sql, FIRST_SQL, DROP_FIRST_SQL, STAGE_SQL, drop_stage_sql, stage_sql, rebuild_sql}
 import claude_limits.storage.backup.{take_backup, list_names, weekly_due, write_copy, fresh_path, swap_in_fresh}
 import claude_limits.storage.repo.{forget, Forgot}
@@ -137,7 +137,7 @@ export fn StartFail @message(key_path str) -> str =>
 /// no weekly backup, ever). It never stops the start: a failed pass is a log line, and
 /// the history it would have tidied is still there to read.
 export fn open_for_serve(p Paths, all []Migration, now_ms int, keep int, windows bool, u Upkeep) Db Fs Random -> Result[Ready, StartFail] {
-    ro key = ensure_key(p.key_file, dir_of(p.key_file, windows)).map_err(fn(f OpenFail) -> StartFail => StartFail.Open(f))?
+    ro key = database_key(p.db_file, p.key_file, dir_of(p.key_file, windows), p.encrypted, true).map_err(fn(f OpenFail) -> StartFail => StartFail.Open(f))?
     ro mine = ensure_instance(p.instance_file, dir_of(p.instance_file, windows))
     // DuckDB creates the file, not its directory.
     ro _ = create_dir_all(p.data_dir.to_path())
@@ -169,7 +169,7 @@ export fn open_for_serve(p Paths, all []Migration, now_ms int, keep int, windows
 /// are read from their files again rather than passed around: a key held in a value
 /// the server carries is a key one log line away from the log.
 export fn record_readings(p Paths, rs []Reading, emails []str, orgs []str, windows bool) Db Fs Random -> Result[int, StartFail] {
-    ro key = ensure_key(p.key_file, dir_of(p.key_file, windows)).map_err(fn(f OpenFail) -> StartFail => StartFail.Open(f))?
+    ro key = database_key(p.db_file, p.key_file, dir_of(p.key_file, windows), p.encrypted, false).map_err(fn(f OpenFail) -> StartFail => StartFail.Open(f))?
     ro mine = ensure_instance(p.instance_file, dir_of(p.instance_file, windows))
     mut opts = DbOptions.defaults()
     opts.encryption_key = key
@@ -204,7 +204,7 @@ export fn record_readings(p Paths, rs []Reading, emails []str, orgs []str, windo
 /// midnight"): the same pass a start runs, on the database the start already opened
 /// and migrated -- so never as a first start, and the weekly backup only when due.
 export fn upkeep_daily(p Paths, u Upkeep, now_ms int, keep int, windows bool) Db Fs Random -> Result[Upkept, StartFail] {
-    ro key = ensure_key(p.key_file, dir_of(p.key_file, windows)).map_err(fn(f OpenFail) -> StartFail => StartFail.Open(f))?
+    ro key = database_key(p.db_file, p.key_file, dir_of(p.key_file, windows), p.encrypted, false).map_err(fn(f OpenFail) -> StartFail => StartFail.Open(f))?
     ro mine = ensure_instance(p.instance_file, dir_of(p.instance_file, windows))
     mut opts = DbOptions.defaults()
     opts.encryption_key = key
@@ -224,7 +224,7 @@ export fn upkeep_daily(p Paths, u Upkeep, now_ms int, keep int, windows bool) Db
 }
 
 export fn record_found(p Paths, d Discovered, at_ms int, windows bool) Db Fs Random -> Result[int, StartFail] {
-    ro key = ensure_key(p.key_file, dir_of(p.key_file, windows)).map_err(fn(f OpenFail) -> StartFail => StartFail.Open(f))?
+    ro key = database_key(p.db_file, p.key_file, dir_of(p.key_file, windows), p.encrypted, false).map_err(fn(f OpenFail) -> StartFail => StartFail.Open(f))?
     ro mine = ensure_instance(p.instance_file, dir_of(p.instance_file, windows))
     mut opts = DbOptions.defaults()
     opts.encryption_key = key
@@ -262,7 +262,7 @@ export fn record_found(p Paths, d Discovered, at_ms int, windows bool) Db Fs Ran
 /// database is not held open across requests.
 export fn record_config_version(p Paths, toml str, source str, at_ms int, windows bool) Db Fs Random -> Result[(), str] {
     ro key_file = p.key_file
-    ro key = ensure_key(key_file, dir_of(key_file, windows)).map_err(fn(f OpenFail) -> str => f.message(key_file))?
+    ro key = database_key(p.db_file, key_file, dir_of(key_file, windows), p.encrypted, false).map_err(fn(f OpenFail) -> str => f.message(key_file))?
     ro mine = ensure_instance(p.instance_file, dir_of(p.instance_file, windows))
     mut opts = DbOptions.defaults()
     opts.encryption_key = key
@@ -305,7 +305,7 @@ export type ForgetDone enum
 /// deleted: removing a person's backups is not a decision a command makes on its own.
 export fn forget_account(p Paths, email str, now_ms int, keep int, windows bool) Db Fs Random -> Result[ForgetDone, StartFail] {
     if !(try_exists(p.db_file.to_path()) ?? false) { return Ok(ForgetDone.NoDatabase) }
-    ro key = ensure_key(p.key_file, dir_of(p.key_file, windows)).map_err(fn(f OpenFail) -> StartFail => StartFail.Open(f))?
+    ro key = database_key(p.db_file, p.key_file, dir_of(p.key_file, windows), p.encrypted, false).map_err(fn(f OpenFail) -> StartFail => StartFail.Open(f))?
     ro mine = ensure_instance(p.instance_file, dir_of(p.instance_file, windows))
     mut opts = DbOptions.defaults()
     opts.encryption_key = key
@@ -371,7 +371,7 @@ export fn import_history(p Paths, body str, now_ms int, keep int, windows bool) 
     if !(try_exists(p.db_file.to_path()) ?? false) { return Ok(Imported.NoDatabase) }
     ro parsed = read_reference(body).map_err(fn(m str) -> str => "the file is ${m}")?
     ro key_file = p.key_file
-    ro key = ensure_key(key_file, dir_of(key_file, windows)).map_err(fn(f OpenFail) -> str => f.message(key_file))?
+    ro key = database_key(p.db_file, key_file, dir_of(key_file, windows), p.encrypted, false).map_err(fn(f OpenFail) -> str => f.message(key_file))?
     ro mine = ensure_instance(p.instance_file, dir_of(p.instance_file, windows))
     ro opened = open_and_read(p.db_file, key, p.temp_dir, mine).map_err(fn(f OpenFail) -> str => f.message(key_file))?
     if opened.schema_version < KNOWN_SCHEMA { return Ok(Imported.Older(opened.schema_version)) }
@@ -435,7 +435,7 @@ export fn import_history(p Paths, body str, now_ms int, keep int, windows bool) 
 /// `occupancy` come back empty.
 export fn read_history_rows(p Paths, from_ms int, to_ms int, accounts []str, dirs []str, by_folder bool, windows bool) Db Fs Random -> Result[HistFolderRows, str] {
     ro key_file = p.key_file
-    ro key = ensure_key(key_file, dir_of(key_file, windows)).map_err(fn(f OpenFail) -> str => f.message(key_file))?
+    ro key = database_key(p.db_file, key_file, dir_of(key_file, windows), p.encrypted, false).map_err(fn(f OpenFail) -> str => f.message(key_file))?
     mut opts = DbOptions.defaults()
     opts.encryption_key = key
     opts.temp_dir = p.temp_dir
@@ -466,7 +466,7 @@ export fn read_history_rows(p Paths, from_ms int, to_ms int, accounts []str, dir
 /// not answer is `Err`, and the caller reports 0 days (the log says why).
 export fn read_history_days_in(p Paths, windows bool) Db Fs Random -> Result[int, str] {
     ro key_file = p.key_file
-    ro key = ensure_key(key_file, dir_of(key_file, windows)).map_err(fn(f OpenFail) -> str => f.message(key_file))?
+    ro key = database_key(p.db_file, key_file, dir_of(key_file, windows), p.encrypted, false).map_err(fn(f OpenFail) -> str => f.message(key_file))?
     mut opts = DbOptions.defaults()
     opts.encryption_key = key
     opts.temp_dir = p.temp_dir

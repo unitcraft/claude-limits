@@ -752,16 +752,17 @@ fn forecast_round(paths Paths, windows bool, view SnapshotView, conf ConfNow) Ti
     }
 }
 
-fn db_seen(r Ready, size int) -> DbAtStart =>
-    { schema_version: r.opened.schema_version + r.applied, encrypted: true, size_bytes: size }
+fn db_seen(r Ready, size int, encrypted bool) -> DbAtStart =>
+    { schema_version: r.opened.schema_version + r.applied, encrypted, size_bytes: size }
 
 /// Say what the start did to the database, and answer the file's size for `health`.
 ///
 /// ONE CALL IN THE `match` ARM, on purpose: with the lines and the size written out
 /// in the arm, the arm's value came out as `()` (measured 2026-09-30).
-fn announced(r Ready, db_file str) Io -> int {
+fn announced(r Ready, db_file str, encrypted bool) Io -> int {
     if r.opened.first_start {
-        say("new database ${db_file}, encrypted")
+        ro mode = if encrypted { "encrypted" } else { "unencrypted (key store: none)" }
+        say("new database ${db_file}, ${mode}")
     } else if r.applied > 0 {
         say("database migrated to schema ${r.opened.schema_version + r.applied} (backup ${r.backup})")
     }
@@ -784,8 +785,10 @@ fn announced(r Ready, db_file str) Io -> int {
 /// database, where it joins a cycle the database already knows (`history_import.nv`).
 fn import_mode(exe str, config_override str, file str) Io Time -> int {
     ro input = with Os = real_os(), Fs = real_fs() { real_paths_input(exe, config_override) }
-    ro paths = resolve(input)
-    ro loaded = with Fs = real_fs() { load(paths.config_file) }
+    ro locations = resolve(input)
+    ro loaded = with Fs = real_fs() { load(locations.config_file) }
+    if loaded.errors.len() > 0 { return EXIT_CONFIG }
+    ro paths = locations.with_encryption(loaded.cfg.storage.encrypted)
     ro keep = loaded.cfg.storage.backups_keep
     ro now = Time.now().unix_millis() as int
     ro win = input.windows
@@ -828,8 +831,9 @@ fn import_mode(exe str, config_override str, file str) Io Time -> int {
 /// running server takes the file on its next round (`taken_from_disk`).
 fn import_config_mode(exe str, config_override str, file str) Io Time -> int {
     ro input = with Os = real_os(), Fs = real_fs() { real_paths_input(exe, config_override) }
-    ro paths = resolve(input)
-    ro loaded = with Fs = real_fs() { load(paths.config_file) }
+    ro locations = resolve(input)
+    ro loaded = with Fs = real_fs() { load(locations.config_file) }
+    ro paths = locations.with_encryption(loaded.cfg.storage.encrypted)
     if loaded.errors.len() > 0 {
         println("claude-limits: the settings in ${paths.config_file} have errors; fix them first, nothing was imported")
         for e in loaded.errors { println("  ${e.field}: ${e.message}") }
@@ -878,8 +882,10 @@ fn import_config_mode(exe str, config_override str, file str) Io Time -> int {
 /// into a terminal scroll-back or a redirected log is one more copy.
 fn forget_mode(exe str, config_override str, email str) Io Time -> int {
     ro input = with Os = real_os(), Fs = real_fs() { real_paths_input(exe, config_override) }
-    ro paths = resolve(input)
-    ro loaded = with Fs = real_fs() { load(paths.config_file) }
+    ro locations = resolve(input)
+    ro loaded = with Fs = real_fs() { load(locations.config_file) }
+    if loaded.errors.len() > 0 { return EXIT_CONFIG }
+    ro paths = locations.with_encryption(loaded.cfg.storage.encrypted)
     ro keep = loaded.cfg.storage.backups_keep
     ro now = Time.now().unix_millis()
     ro win = input.windows
@@ -921,17 +927,18 @@ fn forget_mode(exe str, config_override str, email str) Io Time -> int {
 /// a line that is false on a busy port, printed right above the refusal.
 fn serve_mode(exe str, config_override str) Io Net Time Detach -> int {
     ro input = with Os = real_os(), Fs = real_fs() { real_paths_input(exe, config_override) }
-    ro paths = resolve(input)
-    with Os = real_os() { enable(paths.log_file, input.windows) }
-    say("log file ${paths.log_file}")
-    ro loaded = with Fs = real_fs() { load(paths.config_file) }
+    ro locations = resolve(input)
+    with Os = real_os() { enable(locations.log_file, input.windows) }
+    say("log file ${locations.log_file}")
+    ro loaded = with Fs = real_fs() { load(locations.config_file) }
     match decide_start(loaded) {
         Start.Refuse(lines) => {
-            say_err("the settings in ${paths.config_file} do not allow a start:")
+            say_err("the settings in ${locations.config_file} do not allow a start:")
             for l in lines { println("  ${l}") }
             return EXIT_CONFIG
         }
         Start.Go(cfg, repairs) => {
+            ro paths = locations.with_encryption(cfg.storage.encrypted)
             for r in repairs { say("${r}") }
             ro addr = listen_addr(cfg)
             match TcpListener.bind(addr) {
@@ -960,7 +967,7 @@ fn serve_mode(exe str, config_override str) Io Net Time Detach -> int {
                     }
                     // NOT `db`: a module of that name is in the unit, and the name resolved to it (registry 221.1 #1400).
                     ro db_state = match opened {
-                        Ok(r) => db_seen(r, announced(r, paths.db_file))
+                        Ok(r) => db_seen(r, announced(r, paths.db_file, paths.encrypted), paths.encrypted)
                         Err(f) => {
                             say_err("${f.message(paths.key_file)}")
                             return f.exit_code()

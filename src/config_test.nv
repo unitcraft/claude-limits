@@ -9,6 +9,25 @@
 module claude_limits.config_test
 
 import claude_limits.config.{Config, ConfigError, parse, validate, repair_for_start, render}
+
+test "storage encryption is opt-in and survives TOML roundtrip" {
+    assert(!Config.defaults().storage.encrypted)
+    assert(!parse("")!!.0.storage.encrypted)
+    assert(!parse("[storage]\nthreads = 2\n")!!.0.storage.encrypted)
+    for value in ["true", "false"] {
+        ro got = parse("[storage]\nencrypted = ${value}\n")!!
+        assert(got.1.len() == 0)
+        assert(got.0.storage.encrypted == (value == "true"))
+        ro again = parse(render(got.0))!!
+        assert(again.1.len() == 0)
+        assert(again.0.storage.encrypted == got.0.storage.encrypted)
+    }
+    for value in ["1", "\"true\"", "[]", ""] {
+        ro got = parse("[storage]\nencrypted = ${value}\n")!!
+        assert(got.1.len() == 1)
+        assert(got.1[0].field == "storage.encrypted")
+    }
+}
 // The fixtures come in through `embed_str`, a COMPILE-TIME intrinsic, so the tests
 // touch no filesystem and carry no `Fs` effect. Two reasons, and the second is the
 // one that decided it:

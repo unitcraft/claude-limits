@@ -451,3 +451,12 @@ test "GET /api/health: whole body, every level, filled and empty, against the re
     assert(n == 6)
 }
 
+test "plain health has full JSON parity with no key store" {
+    for d in [Disclosure.Loopback, Disclosure.Lan, Disclosure.Anonymous] {
+        mut st = health_at(d, true)
+        st.encrypted = false
+        st.key_store = "none"
+        assert(show("plain health", ref_health(st), render_health(st)))
+    }
+}
+

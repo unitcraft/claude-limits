@@ -50,8 +50,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 
 
-def database_health_ok(health):
-    """Require the current migration, encryption and a real database file."""
+def database_health_ok(health, *, encrypted=False):
+    """Require schema 3, the exact requested mode/key store and a real file."""
     if not isinstance(health, dict):
         return False
     storage = health.get("storage")
@@ -60,7 +60,8 @@ def database_health_ok(health):
     schema = storage.get("schema_version")
     size = storage.get("db_size_bytes")
     # src/storage/db.nv KNOWN_SCHEMA / migrations/0003_codex_accounts.sql.
-    return (storage.get("encrypted") is True
+    return (type(encrypted) is bool and storage.get("encrypted") is encrypted
+            and storage.get("key_store") == ("file" if encrypted else "none")
             and type(schema) is int and schema == 3
             and type(size) is int and size > 0)
 
@@ -168,7 +169,7 @@ def main(argv):
 
         status, _, body = get(base + "/api/health")
         check("health", status == 200 and '"ok":true' in body, f"{status} {body[:120]}")
-        # The database this start opened: encrypted, exact current schema, a real file.
+        # The default database is plain, with exact current schema and a real file.
         try:
             health = json.loads(body)
             st = health.get("storage", {}) if isinstance(health, dict) else {}

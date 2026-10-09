@@ -8,13 +8,17 @@
 
 module storage.startup_test
 
-import std.fs.{real_fs, try_exists, create_dir_all, remove_dir_all, read_text}
+import std.fs.{real_fs, try_exists, create_dir_all, remove_dir_all, read_text, read, remove_file, write_text, read_dir}
+import std.encoding.base64.{Base64}
 import std.os.{real_os, temp_dir}
 import std.testing.handlers.{seeded}
 import duckdb.db_real.{with_real_db}
 import claude_limits.storage.paths.{Paths}
 import claude_limits.storage.db.{Migration, KNOWN_SCHEMA}
-import startup.{version_of, migrations_in, bundled, open_for_serve, record_readings, Ready, StartFail, Upkeep, Upkept, forget_account, ForgetDone, upkeep_daily, record_config_version}
+import startup.{version_of, migrations_in, bundled, open_for_serve, record_readings, Ready, StartFail, Upkeep, Upkept, forget_account, ForgetDone, upkeep_daily, record_config_version, read_history_rows, read_history_days_in, record_found, import_history, Imported}
+import claude_limits.storage.history_rows.{HistFolderRows}
+import claude_limits.storage.discovery_write.{Discovered}
+import claude_limits.storage.backup.{backup_name}
 import duckdb.{Database, DbOptions}
 import duckdb.types.{Value}
 import claude_limits.usage.poller.{Reading}
@@ -64,6 +68,7 @@ fn place(name str) Io -> Paths {
         ro _ = create_dir_all(d.to_path())
     }
     {
+        encrypted: true,
         config_dir: "${d}/cfg", data_dir: "${d}/data", log_dir: "${d}/log",
         config_file: "${d}/cfg/claude-limits.toml", db_file: "${d}/data/claude-limits.duckdb",
         wal_file: "${d}/data/claude-limits.duckdb.wal", temp_dir: "${d}/data/tmp",
@@ -384,8 +389,114 @@ test "a kept version lands in config_history with its source, as it was handed o
 }
 
 test "keeping a version with no database refuses, and says why" {
-    // The key is created on demand, the file is not: `Db.open` of a file that was never
-    // started would CREATE an empty database without the schema, and the insert fails.
+    // A per-call write must not create a key, even without a database.
     ro p = place("config-version-none")
     assert(keep_version(p, "schema = 1", T0, 8).starts_with("FAIL "))
+}
+
+fn file_bytes(path str) Io -> str => with Fs = real_fs() { Base64.encode_url(read(path.to_path())!!) }
+
+fn history_ok(p Paths) Io -> bool => with Fs = real_fs(), Random = seeded(7) {
+    with_real_db(fn() Db Fs Random -> Result[HistFolderRows, str] => read_history_rows(p, T0 - 1, T0 + 60000, [], [], false, true)).is_ok()
+}
+
+fn days_ok(p Paths) Io -> bool => with Fs = real_fs(), Random = seeded(7) {
+    with_real_db(fn() Db Fs Random -> Result[int, str] => read_history_days_in(p, true)).is_ok()
+}
+
+fn no_discovery() -> Discovered => { folders: [], dirs: [] }
+
+fn discovery_ok(p Paths) Io -> bool => with Fs = real_fs(), Random = seeded(7) {
+    with_real_db(fn() Db Fs Random -> Result[int, StartFail] => record_found(p, no_discovery(), T0, true)).is_ok()
+}
+
+fn import_ok(p Paths) Io -> bool => with Fs = real_fs(), Random = seeded(7) {
+    with_real_db(fn() Db Fs Random -> Result[Imported, str] => import_history(p, "{}", T0 + 120000, 5, true)).is_ok()
+}
+
+fn can_open(path str, key str) Io -> bool {
+    mut opts = DbOptions.defaults()
+    opts.encryption_key = key
+    mut ok = false
+    with Fail[DuckError] = |e| { ok = false } {
+        consume db = Database.open(path, opts)!! {
+            consume con = db.connect()!! {
+                consume r = con.query("SELECT count(*) FROM schema_meta")!! { ok = true }
+            }
+        }
+    }
+    ok
+}
+
+test "plain startup writes reads imports backs up and compacts without a key" {
+    ro p = place("plain-lifecycle").with_encryption(false)
+    assert(start_at(p, migrations_in(bundled()), 7, T0, "UTC").is_ok())
+    assert(!is_on_disk(p.key_file))
+    assert(same("plain tick", "written=1", record(p, [a_reading(T0)], 8)))
+    assert(same("plain rows", "1/Example Inc/2/2/1", rows(p)))
+    assert(history_ok(p))
+    assert(days_ok(p))
+    assert(discovery_ok(p))
+    assert(same("config", "kept", keep_version(p, "schema = 1", T0, 8)))
+    assert(same("config rows", "ui|schema = 1", versions(p)))
+    assert(import_ok(p))
+    assert(!daily_line(p, T0 + 86400000, 8).starts_with("FAIL"))
+    assert(can_open("${p.backup_dir}/${backup_name(T0 + 120000)}", ""))
+    assert(forget_line(p, "work@example.org", T0 + 180000, 9).starts_with("forgotten backup=true"))
+    assert(same("plain compacted", "0/0/0", counts(p)))
+    assert(can_open(p.db_file, ""))
+    assert(!is_on_disk(p.key_file))
+}
+
+fn all_refuse(p Paths) Io -> () {
+    assert(start(p, migrations_in(bundled()), 9).starts_with("FAIL "))
+    assert(record(p, [a_reading(T0)], 9).starts_with("FAIL "))
+    assert(keep_version(p, "schema = 1", T0, 9).starts_with("FAIL "))
+    assert(forget_line(p, "work@example.org", T0, 9).starts_with("FAIL "))
+    assert(daily_line(p, T0, 9).starts_with("FAIL "))
+    assert(!history_ok(p))
+    assert(!days_ok(p))
+    assert(!discovery_ok(p))
+    assert(!import_ok(p))
+}
+
+test "encrypted database and backup require original key and all missing-key paths preserve bytes" {
+    ro p = place("lost-key")
+    assert(start_at(p, migrations_in(bundled()), 7, T0, "UTC").is_ok())
+    assert(same("tick", "written=1", record(p, [a_reading(T0)], 8)))
+    assert(import_ok(p))
+    ro key = with Fs = real_fs() { read_text(p.key_file.to_path())!! }
+    ro backup = "${p.backup_dir}/${backup_name(T0 + 120000)}"
+    assert(can_open(p.db_file, key))
+    assert(can_open(backup, key))
+    assert(!can_open(p.db_file, ""))
+    assert(!can_open(backup, ""))
+    ro before = file_bytes(p.db_file)
+    with Fs = real_fs() { remove_file(p.key_file.to_path())!! }
+    ro entries = with Fs = real_fs() { read_dir(p.config_dir.to_path())!!.len() }
+    all_refuse(p)
+    assert(!is_on_disk(p.key_file))
+    assert(file_bytes(p.db_file) == before)
+    assert(with Fs = real_fs() { read_dir(p.config_dir.to_path())!!.len() } == entries)
+    all_refuse(p.with_encryption(false))
+    assert(!is_on_disk(p.key_file))
+    assert(file_bytes(p.db_file) == before)
+    for bad in [" \n", "incorrect-key"] {
+        with Fs = real_fs() { write_text(p.key_file.to_path(), bad)!! }
+        all_refuse(p)
+        assert(file_bytes(p.db_file) == before)
+        assert(with Fs = real_fs() { read_text(p.key_file.to_path())!! } == bad)
+    }
+    // A directory in place of the file is present but unreadable as a key.
+    with Fs = real_fs() {
+        remove_file(p.key_file.to_path())!!
+        create_dir_all(p.key_file.to_path())!!
+    }
+    all_refuse(p)
+    assert(file_bytes(p.db_file) == before)
+    assert(with Fs = real_fs() { read_dir(p.key_file.to_path())!!.len() } == 0)
+    with Fs = real_fs() { remove_dir_all(p.key_file.to_path())!! }
+    with Fs = real_fs() { write_text(p.key_file.to_path(), key)!! }
+    assert(history_ok(p))
+    assert(days_ok(p))
 }

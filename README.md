@@ -266,20 +266,34 @@ chrome --app=http://127.0.0.1:7391
 
 ## Backups and the key
 
-The database is encrypted (AES-GCM) with the key in `claude-limits.key`, created
-on the first start. **Keep the key**: without it the history cannot be read, and
-nothing can recover it. The settings are unaffected -- they are plain TOML.
+New databases are **unencrypted by default**. Nova's TOML setting is:
+
+```toml
+[storage]
+encrypted = false
+```
+
+Plain mode never reads or creates `claude-limits.key`; health reports
+`encrypted: false` and `key_store: "none"`. To create an encrypted database
+(AES-GCM), explicitly set `encrypted = true`. A key is created only for a new
+database. **Keep the original key**: an existing encrypted database refuses to
+open with a missing, empty, unreadable or wrong key. No replacement is generated.
+
+Changing this setting requires a restart and **does not convert existing data**.
+For an older encrypted database, set `encrypted = true` and restore its original
+key. Setting `false` cannot recover that history. The settings remain plain TOML.
 
 A backup is written to `backup\` before every schema migration (the last five are
-kept, `[storage] backups_keep`). A backup is ciphertext too and opens only with
-the same key, which is NOT copied into `backup\` -- back the key up separately. To
+kept, `[storage] backups_keep`). Backups and compacted copies preserve the active
+mode: plain backups need no key; encrypted backups need the same original key,
+which is NOT copied into `backup\` -- back the key up separately. To
 restore, stop the tool and copy a backup over `claude-limits.duckdb`.
 
 ## Status
 
 **The Nova binary runs** (`--serve`): it finds the logins, asks the endpoint
 every `[poll] interval_sec` (five minutes by default), serves the page, and writes
-every round to its encrypted database -- the readings, the lock periods, and which
+every round to its database -- the readings, the lock periods, and which
 login sat in which folder -- which `/api/history` and the statistics views read.
 Once a day it rolls up and drops what is older than `[history] keep_days` and takes
 the weekly backup. TLS trusts the operating system's certificate store first (so a
@@ -376,7 +390,7 @@ python scripts/claude_limits.py --parent C:/accounts # every child dir instead o
 - [x] reference script: discovery (default dir, `CLAUDE_CONFIG_DIR`, configured list, parent dir), same-account grouping, 429 backoff, daemon mode
 - [x] Nova core: same table as the script, byte-for-byte (`--once`)
 - [x] local backend: `/api/snapshot`, `/api/events` (SSE), embedded page with one bar per account per window
-- [x] history: every round is recorded in the encrypted database (readings, lock periods, which login sat in which folder), and `/api/history` serves it by account or by folder, over 24 h / 7 d / 30 d; the statistics views read it
+- [x] history: every round is recorded in the database (optionally encrypted: `[storage] encrypted = true`), and `/api/history` serves it by account or by folder, over 24 h / 7 d / 30 d; the statistics views read it
 - [x] threshold notifications: the page raises a browser notification when a window passes 70 % or 90 % (off by default, switch and permission button in Settings)
 - [ ] after the first release: optional widget (`--widget`) — always-on-top window and tray icon on Windows and Linux (StatusNotifier)
 

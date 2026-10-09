@@ -224,6 +224,7 @@ type ConfHistory value {
 
 #impl(Serialize)
 type ConfStorage value {
+    ro encrypted bool
     ro data_dir Option[str]
     ro backups_keep int
     ro memory_limit str
@@ -312,7 +313,7 @@ fn conf_tree(c Config, folders []ConfFolder) -> ConfTree => {
               x: c.widget.x, y: c.widget.y, visible: c.widget.visible },
     history: { keep_days: c.history.keep_days, rollup_keep_days: c.history.rollup_keep_days,
                config_versions_keep: c.history.config_versions_keep },
-    storage: { data_dir: opt(c.storage.data_dir), backups_keep: c.storage.backups_keep,
+    storage: { encrypted: c.storage.encrypted, data_dir: opt(c.storage.data_dir), backups_keep: c.storage.backups_keep,
                memory_limit: c.storage.memory_limit, threads: c.storage.threads },
 }
 
@@ -609,6 +610,8 @@ fn merge_storage(mut c Config, obj JsonObject, mut errs []FieldError) -> () {
             Some((k, v)) => {
                 if k == "data_dir" {
                     c.storage.data_dir = read_str(v, "storage.data_dir", errs, c.storage.data_dir)
+                } else if k == "encrypted" {
+                    c.storage.encrypted = read_bool(v, "storage.encrypted", errs, c.storage.encrypted)
                 } else if k == "backups_keep" {
                     c.storage.backups_keep = read_int(v, "storage.backups_keep", errs, c.storage.backups_keep)
                 } else if k == "memory_limit" {

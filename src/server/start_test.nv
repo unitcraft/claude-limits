@@ -96,6 +96,7 @@ test "the address: IPv4 as is, IPv6 in brackets" {
 }
 
 fn some_paths() -> Paths => {
+    encrypted: false,
     config_dir: "C:/cfg", data_dir: "C:/data", log_dir: "C:/log",
     config_file: "C:/cfg/claude-limits.toml", db_file: "C:/data/claude-limits.duckdb",
     wal_file: "C:/data/claude-limits.duckdb.wal", temp_dir: "C:/data/tmp",

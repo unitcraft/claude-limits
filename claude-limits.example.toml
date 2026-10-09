@@ -83,3 +83,8 @@ refresh_timeout_sec = 120
 # revoked, logged out -- would otherwise cost a request every single cycle.
 refresh_cooldown_sec = 3600
 
+# Nova binary only (this file otherwise remains the Python reference format):
+# In Nova's own config, [storage] encrypted = false is the default.
+# Set encrypted = true explicitly for encryption; requires a restart, never
+# converts an existing database, and needs its original key for encrypted history.
+# Use import-config to carry reference settings into Nova's sectioned format.

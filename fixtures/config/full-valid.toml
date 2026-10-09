@@ -53,6 +53,7 @@ rollup_keep_days = 400
 config_versions_keep = 20
 
 [storage]
+encrypted = false                         # opt-in encryption; restart required (owner decision #13)
 # data_dir = ...   # умолчания в инвентаре нет
 backups_keep = 5
 memory_limit = "512MB"

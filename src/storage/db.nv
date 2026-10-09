@@ -76,10 +76,10 @@ export fn OpenFail @exit_code() -> int =>
 /// part of the acceptance, and a message assembled where it is printed drifts.
 export fn OpenFail @message(key_path str) -> str =>
     match @ {
-        NoKey => "no database key at ${key_path}: the history cannot be read without it. The settings in claude-limits.toml are unaffected; restore the key from a backup, or delete the database to start a new history."
+        NoKey => "no database key at ${key_path}: the history cannot be read without it. The settings in claude-limits.toml are unaffected. Check storage.encrypted and restore the original key from a backup; no replacement key or database was created."
         KeyUnreadable => "the database key at ${key_path} could not be read"
         SchemaTooNew(found) => "the database was written by a newer version (schema ${found}, this build knows ${KNOWN_SCHEMA}). Run the newer claude-limits, or restore a backup."
-        DbRefused(why) => "the database did not open: ${why}"
+        DbRefused(why) => "the database did not open: ${why}. Check storage.encrypted and the original key; changing the setting does not convert an existing database."
     }
 
 /// What opening produced.
@@ -151,20 +151,22 @@ export fn session_sql(temp_dir str) -> str => "SET temp_directory = '${temp_dir}
 
 /// Read the key, or make one on first start.
 ///
-/// A MISSING KEY IS NOT AN ERROR ON A FRESH MACHINE and IS an error once a database
-/// exists -- but this function cannot tell those apart, so it does not try: it
-/// creates when absent and the caller decides what that means. Putting the judgement
-/// here would need the database path, and then this function would know about two
-/// things instead of one.
-export fn ensure_key(key_path str, dir str) Fs Random -> Result[str, OpenFail] {
+/// Creation is allowed only by the initial open of a genuinely absent database.
+/// Every later call is read-only, even if the database itself disappears.
+export fn ensure_key(key_path str, dir str, allow_create bool) Fs Random -> Result[str, OpenFail] {
     match try_exists(key_path.to_path()) {
         Ok(true) => {
             match read_text(key_path.to_path()) {
-                Ok(s) => Ok(s.trim_ascii())
+                Ok(s) => {
+                    ro key = s.trim_ascii()
+                    if key == "" { return Err(NoKey) }
+                    Ok(key)
+                }
                 Err(_) => Err(KeyUnreadable)
             }
         }
         Ok(false) => {
+            if !allow_create { return Err(NoKey) }
             ro fresh = Base64.encode_url(Random.bytes(KEY_BYTES))
             match create_dir_all(dir.to_path()) {
                 Err(_) => return Err(NoKey)
@@ -182,6 +184,15 @@ export fn ensure_key(key_path str, dir str) Fs Random -> Result[str, OpenFail] {
         }
         Err(_) => Err(KeyUnreadable)
     }
+}
+
+/// One policy for startup, reads, writes and maintenance. Plain mode never touches
+/// the key path. An existence error must never be mistaken for a fresh database.
+export fn database_key(path str, key_path str, dir str, encrypted bool, starting bool) Fs Random -> Result[str, OpenFail] {
+    if !encrypted { return Ok("") }
+    ro present = try_exists(path.to_path()).map_err(fn(_ IoError) -> OpenFail => KeyUnreadable)?
+    ro wal_exists = try_exists("${path}.wal".to_path()).map_err(fn(_ IoError) -> OpenFail => KeyUnreadable)?
+    ensure_key(key_path, dir, starting && !present && !wal_exists)
 }
 
 /// This installation's id, created once (01.2 §1: UUID v7, the author of rows).

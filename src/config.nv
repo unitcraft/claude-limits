@@ -100,6 +100,7 @@ export type History value {
 }
 
 export type Storage value {
+    encrypted bool
     data_dir str
     backups_keep int
     memory_limit str
@@ -163,7 +164,7 @@ export fn Config.defaults() -> Config => {
     widget: { enabled: false, always_on_top: true, x: 1480, y: 820, visible: true },
     history: { keep_days: 30, rollup_keep_days: 400, config_versions_keep: 20 },
     refresh: { enabled: true, all_expired: false, claude_model: "claude-haiku-4-5-20251001", timeout_sec: 120, cooldown_sec: 3600 },
-    storage: { data_dir: "", backups_keep: 5, memory_limit: "512MB", threads: 2 },
+    storage: { encrypted: false, data_dir: "", backups_keep: 5, memory_limit: "512MB", threads: 2 },
 }
 
 // ── the texts, verbatim from 01.1 §5 ─────────────────────────────────────────
@@ -732,7 +733,12 @@ fn assign(section str, key str, value str, mut cfg Config, mut errs []ConfigErro
     }
 
     if section == "storage" {
-        if key == "data_dir" {
+        if key == "encrypted" {
+            match set_bool(field, value, errs) {
+                Some(b) => { cfg.storage.encrypted = b }
+                None => {}
+            }
+        } else if key == "data_dir" {
             match set_str(field, value, errs) {
                 Some(s) => { cfg.storage.data_dir = s }
                 None => {}
@@ -870,6 +876,7 @@ fn render_text(cfg Config, secret bool) -> str {
     out = "${out}config_versions_keep = ${cfg.history.config_versions_keep}\n"
 
     out = "${out}\n[storage]\n"
+    out = "${out}encrypted = ${bool_of(cfg.storage.encrypted)}\n"
     out = "${out}data_dir = ${toml_quote(cfg.storage.data_dir)}\n"
     out = "${out}backups_keep = ${cfg.storage.backups_keep}\n"
     out = "${out}memory_limit = ${toml_quote(cfg.storage.memory_limit)}\n"
