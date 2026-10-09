@@ -50,6 +50,21 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 
 
+def database_health_ok(health):
+    """Require the current migration, encryption and a real database file."""
+    if not isinstance(health, dict):
+        return False
+    storage = health.get("storage")
+    if not isinstance(storage, dict):
+        return False
+    schema = storage.get("schema_version")
+    size = storage.get("db_size_bytes")
+    # src/storage/db.nv KNOWN_SCHEMA / migrations/0003_codex_accounts.sql.
+    return (storage.get("encrypted") is True
+            and type(schema) is int and schema == 3
+            and type(size) is int and size > 0)
+
+
 def free_port():
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
@@ -115,6 +130,8 @@ def main(argv):
         print(f"CANNOT RUN: no binary at {exe} -- build it first (./nova.sh build src/claude_limits.nv -o target/claude-limits.exe)")
         return 2
 
+    # CreateProcess does not reliably resolve a relative forward-slash path on Windows.
+    exe = os.path.abspath(exe)
     tmp = tempfile.mkdtemp(prefix="claude-limits-smoke-")
     port = free_port()
     ok_cfg, lan_cfg = fixture(tmp, port)
@@ -122,6 +139,9 @@ def main(argv):
     # data directory. Without this the smoke would create a key and an encrypted file
     # in the real profile of whoever runs it. Every launch below gets `env`.
     env = dict(os.environ,
+               CLAUDE_LIMITS_DATA=os.path.join(tmp, "data"),
+               CLAUDE_LIMITS_CONFIG=ok_cfg,
+               CLAUDE_LIMITS_DB_KEY_FILE=os.path.join(tmp, "claude-limits.key"),
                LOCALAPPDATA=os.path.join(tmp, "local"), APPDATA=os.path.join(tmp, "roaming"),
                XDG_DATA_HOME=os.path.join(tmp, "xdg-data"), XDG_CONFIG_HOME=os.path.join(tmp, "xdg-config"),
                XDG_STATE_HOME=os.path.join(tmp, "xdg-state"),
@@ -148,11 +168,11 @@ def main(argv):
 
         status, _, body = get(base + "/api/health")
         check("health", status == 200 and '"ok":true' in body, f"{status} {body[:120]}")
-        # The database this start opened: encrypted, the binary's schema (0002 since
-        # 2026-10-02), a real file.
+        # The database this start opened: encrypted, exact current schema, a real file.
         try:
-            st = json.loads(body).get("storage", {})
-            db_ok = st.get("encrypted") is True and st.get("schema_version") == 2 and st.get("db_size_bytes", 0) > 0
+            health = json.loads(body)
+            st = health.get("storage", {}) if isinstance(health, dict) else {}
+            db_ok = database_health_ok(health)
         except ValueError:
             st, db_ok = {}, False
         check("database", db_ok, f"storage {st}")

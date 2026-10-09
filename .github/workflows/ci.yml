@@ -159,7 +159,26 @@ jobs:
           # stands since NOVA_REF 0dfec1135 (#1579 closed by the #1616 fix).
           python scripts/ci-test-verdict.py test.out
 
-      - name: Build the binary
+      # -O0 does not expose Nova #1857; keep the real-Fs/GC regression optimized.
+      - name: Release-mode applog regression
+        working-directory: pkg
+        env:
+          NOVA_DIAG_SEGV: "1"
+          NOVA_RT_DIR: ${{ github.workspace }}/nova/compiler-codegen/nova_rt
+          NOVA_CG_INCLUDE: ${{ github.workspace }}/nova/compiler-codegen
+          NOVA_STD_PATH: ${{ github.workspace }}/nova/std/src
+          NOVA_GC_LIB_DIR: C:/vcpkg/installed/x64-windows-static/lib
+          NOVA_INCLUDE_DIR: C:/vcpkg/installed/x64-windows-static/include
+          NOVA_GC_INCLUDE_DIR: C:/vcpkg/installed/x64-windows-static/include
+        run: '"$GITHUB_WORKSPACE/nova/nova-cli/target/release/nova.exe" test src/storage/applog_test.nv --mode release'
+
+      - name: Offline forecast and smoke regressions
+        working-directory: pkg
+        run: |
+          python -m unittest discover -s scripts -p test_forecast.py -v
+          python -m unittest discover -s scripts -p test_smoke_server.py -v
+
+      - name: Build the release binary
         working-directory: pkg
         env:
           NOVA_RT_DIR: ${{ github.workspace }}/nova/compiler-codegen/nova_rt
@@ -168,7 +187,7 @@ jobs:
           NOVA_GC_LIB_DIR: C:/vcpkg/installed/x64-windows-static/lib
           NOVA_INCLUDE_DIR: C:/vcpkg/installed/x64-windows-static/include
           NOVA_GC_INCLUDE_DIR: C:/vcpkg/installed/x64-windows-static/include
-        run: '"$GITHUB_WORKSPACE/nova/nova-cli/target/release/nova.exe" build src/claude_limits.nv -o target/claude-limits.exe'
+        run: '"$GITHUB_WORKSPACE/nova/nova-cli/target/release/nova.exe" build --mode release src/claude_limits.nv -o target/claude-limits.exe'
 
       - name: Smoke of --serve (no network, no real credentials)
         working-directory: pkg

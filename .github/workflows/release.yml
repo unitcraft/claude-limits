@@ -114,7 +114,7 @@ jobs:
         working-directory: pkg
         run: printf '[replace]\nduckdb = { path = "../nova-duckdb" }\n' > nova.override.toml
 
-      - name: Build the binary
+      - name: Build the release binary
         working-directory: pkg
         env:
           NOVA_RT_DIR: ${{ github.workspace }}/nova/compiler-codegen/nova_rt
@@ -123,7 +123,7 @@ jobs:
           NOVA_GC_LIB_DIR: C:/vcpkg/installed/x64-windows-static/lib
           NOVA_INCLUDE_DIR: C:/vcpkg/installed/x64-windows-static/include
           NOVA_GC_INCLUDE_DIR: C:/vcpkg/installed/x64-windows-static/include
-        run: '"$GITHUB_WORKSPACE/nova/nova-cli/target/release/nova.exe" build src/claude_limits.nv -o target/claude-limits.exe'
+        run: '"$GITHUB_WORKSPACE/nova/nova-cli/target/release/nova.exe" build --mode release src/claude_limits.nv -o target/claude-limits.exe'
 
       - name: Smoke of --serve (no network, no real credentials)
         working-directory: pkg
