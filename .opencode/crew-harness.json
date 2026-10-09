@@ -134,6 +134,24 @@
         "tier": "task"
       }
     },
+    "codex-light": {
+      "develop": {
+        "family": "codex",
+        "tier": "light"
+      },
+      "accept": {
+        "family": "codex",
+        "tier": "light"
+      },
+      "plan": {
+        "family": "codex",
+        "tier": "light"
+      },
+      "plan_accept": {
+        "family": "codex",
+        "tier": "light"
+      }
+    },
     "kimi": {
       "develop": {
         "family": "kimi",
@@ -170,5 +188,6 @@
         "tier": "task"
       }
     }
-  }
+  },
+  "profile_set": "codex-light"
 }
