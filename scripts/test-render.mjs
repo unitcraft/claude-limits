@@ -90,6 +90,19 @@ test('the forecast ghost appears only where the forecast is ahead', () => {
   assert.deepEqual(ghosts, [1, 1, 0], 'session 9->11 and all 74->103 have one; Opus has no forecast');
 });
 
+test('weekly 1% with null forecast preserves facts without a ghost hatch or forecast date', () => {
+  setViewOptions({ time_bar: true });
+  const limit = { ...snap.limits[1], kind: 'weekly_all', percent: 1, severity: 'normal', forecast: null };
+  const row = renderRow(limit);
+  assert.equal(row.dataset.severity, 'normal');
+  assert.equal(row.find(n => n.className === 'row-pct').textContent, '1%');
+  assert.equal(row.find(n => n.className === 'row-pct').title, 'forecast later');
+  assert.equal(row.dataset.resetsAt, limit.resets_at);
+  assert.equal(row.all(n => n.className === 'bar-ghost').length, 0);
+  assert.equal(row.all(n => n.className === 'timebar-hatch').length, 0);
+  assert.equal(row.all(n => n.className.includes('reset-forecast')).length, 0);
+});
+
 test('bar width is the percent, clamped', () => {
   const fills = draw().children[0].all((n) => n.className === 'bar-fill').map((n) => n.style.width);
   assert.deepEqual(fills, ['9%', '74%', '12%']);

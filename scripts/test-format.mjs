@@ -502,7 +502,7 @@ test('the strip tooltip adds the run-out clause only when there is one', () => {
 test('a limit with no forecast says one is coming, rather than nothing', () => {
   // 01.1 line 218. The percentage had no tooltip at all, so a reader saw a bare
   // number and no hint that a forecast needs history first.
-  assert.equal(percentTooltip({ percent: 9 }), 'forecast after 30 min of history');
+  assert.equal(percentTooltip({ percent: 9 }), 'forecast later');
   assert.match(percentTooltip({ percent: 74, forecast: { percent_at_reset: 80 } }),
                /74% used/);
 });

@@ -72,6 +72,7 @@ login is reported with advice to start Codex under that profile.
 import argparse
 import base64
 import json
+import math
 import os
 import shutil
 import sys
@@ -588,6 +589,16 @@ def codex_window_name(seconds):
     return f"{seconds / 60:g}min limit"
 
 
+def codex_window_seconds(usage, kind):
+    """Actual duration without changing the shared five-field row shape."""
+    for w in (usage.get("rate_limit") or {}).values():
+        if isinstance(w, dict):
+            seconds = w.get("limit_window_seconds")
+            if codex_window_name(seconds) == kind:
+                return seconds
+    return None
+
+
 def codex_rows_of(usage):
     """One row per window the plan has: a free plan serves one (30 days), a paid
     one a primary and a secondary. Each row: (kind, percent, severity, reset
@@ -796,7 +807,7 @@ def iso_epoch(iso):
 
 HISTORY_DAYS = 7          # retention; the forecast needs at most 3 working days
 HISTORY_BACKUPS_KEPT = 7  # daily copies kept alongside the live file
-HISTORY_MIN_SPAN = 1800   # < 30 min of history -> forecast unavailable (spec 01.1 §2.7)
+HISTORY_MIN_SPAN = 1800   # floor; also wait for 5% of the window (spec 01.1 §2.7)
 
 WORK_DAY_NAMES = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 
@@ -975,14 +986,15 @@ def record_sample(history, series, kind, pct, now):
     history.setdefault(f"{series}|{kind}", []).append([mark, round(float(pct), 4)])
 
 
-def forecast_of(history, series, kind_class, pct, reset_epoch, now, sched):
+def forecast_of(history, series, kind_class, pct, reset_epoch, now, sched, window_seconds=None):
     """The spec 01.1 §2.7 formula: rate over the recent window (last 60 min
     for session, last 3 days for weekly, from the reset when it sits inside),
     extrapolated over the REMAINING working time to the reset.
 
     Returns (percent_at_reset, runs_out_epoch | None, rate_per_hour, sample_min)
     or None when the forecast is unavailable: no reset time, reset already
-    past, no samples, or less than 30 minutes of history."""
+    past, no samples, or a sample span below max(30 min, ceil(window / 20)).
+    This is a history sufficiency heuristic, not a precision guarantee."""
     if reset_epoch is None or reset_epoch <= now or pct is None:
         return None
     samples = []
@@ -995,6 +1007,8 @@ def forecast_of(history, series, kind_class, pct, reset_epoch, now, sched):
     samples = [s for s in samples if s[0] <= now]
     calendar = kind_class == "session"
     window = {"session": 5 * 3600, "weekly": 7 * 86400}.get(kind_class, 30 * 86400)
+    if isinstance(window_seconds, (int, float)) and window_seconds > 0:
+        window = window_seconds
     limit_start = reset_epoch - window
     rate_start = max(now - (3600 if calendar else sched["rate_window_days"] * 86400), limit_start)
     reset_based = limit_start > rate_start
@@ -1003,12 +1017,12 @@ def forecast_of(history, series, kind_class, pct, reset_epoch, now, sched):
         # counts from the window start (0 right after the reset)
         rate_start = limit_start
     rate_start = int(rate_start)      # sample timestamps are whole seconds
-    inside = [s for s in samples if s[0] >= rate_start]
+    inside = [s for s in samples if s[0] >= rate_start and s[0] >= limit_start]
     if not inside:
         return None
     base_pct = 0.0 if reset_based else inside[0][1]
     span = now - inside[0][0]
-    if span < HISTORY_MIN_SPAN:
+    if span < max(HISTORY_MIN_SPAN, math.ceil(window / 20)):
         return None
     used = float(pct) - float(base_pct)
     work = work_between(sched, inside[0][0], now, calendar)
@@ -1500,7 +1514,8 @@ def snapshot(dirs, paint, bar_style, offline_dir=None, refresher=None, kimi_refr
             if history is not None:
                 record_sample(history, series, kind, pct, now)
             cls = kind_class_of(kind)
-            fr = (forecast_of(history, f"{series}|{kind}", cls, pct, reset_epoch, now, sched)
+            fr = (forecast_of(history, f"{series}|{kind}", cls, pct, reset_epoch, now, sched,
+                              window_seconds=codex_window_seconds(usage, kind))
                   if history is not None and sched and sched["enabled"] and cls else None)
             print_limit_row(kind, pct, sev, reset, fr, paint, bar_style,
                           (sched["warning"], sched["critical"]) if sched else (80, 95),

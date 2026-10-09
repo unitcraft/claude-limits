@@ -465,14 +465,14 @@ export function stripTooltip(limit, elapsedPct) {
 }
 
 /**
- * The percentage's tooltip. `forecast after 30 min of history` when there is no
+ * The percentage's tooltip. `forecast later` when there is no
  * forecast yet (01.1 §2.7 line 218) -- the page had no tooltip on the number at all,
  * so a reader saw a bare percentage and no hint that a forecast was coming.
  */
 export function percentTooltip(limit) {
   const fc = limit && limit.forecast;
   if (fc) return `${Math.round(wireNumber(limit.percent) ?? 0)}% used`;
-  return 'forecast after 30 min of history';
+  return 'forecast later';
 }
 
 /**

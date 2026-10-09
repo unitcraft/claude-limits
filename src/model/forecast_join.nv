@@ -12,7 +12,8 @@
 //   * the rate is taken over the last 60 minutes for `session` and over
 //     `rate_window_days` for the weeks -- never before the current window began;
 //   * its base is the FIRST sample inside that span;
-//   * less than 30 minutes of history is no forecast at all;
+//   * a calendar sample span below max(30 minutes, ceil(window seconds / 20))
+//     is no forecast at all -- a sufficiency heuristic, not a precision guarantee;
 //   * `session` counts calendar minutes; the weeks count working minutes when
 //     `[forecast] working_hours` is on, calendar ones otherwise;
 //   * `runs_out_at` walks forward from now until the projected spend reaches 100 %.
@@ -34,7 +35,7 @@ import claude_limits.server.handlers.history.{HistPace}
 import claude_limits.storage.history_rows.{HistRows, HistSample}
 import claude_limits.usage.parse.{moment_iso}
 
-/// History shorter than this predicts nothing (01.1 §2.7; the reference's HISTORY_MIN_SPAN).
+/// Minimum floor, also constrained by 5% of the actual window (01.1 §2.7).
 const MIN_SPAN_MS = 1_800_000
 const MINUTE_MS = 60_000
 /// The 1970-01-01 epoch was a Thursday; the week grid of `effective_minutes` starts on
@@ -241,7 +242,8 @@ export fn forecast_of(v SnapshotView, l LimitView, rows HistRows, f ForecastRule
     }
     if first.at_ms < 0 { return None }
     ro span_ms = now_ms - first.at_ms
-    if span_ms < MIN_SPAN_MS { return None }
+    ro min_span_ms = MIN_SPAN_MS.max(((l.window_sec + 19) / 20) * 1000)
+    if span_ms < min_span_ms { return None }
 
     ro sched = schedule_of(f)
     ro work_min = if calendar { span_ms / MINUTE_MS } else { effective_minutes(sched, grid(first.at_ms, offset_sec), grid(now_ms, offset_sec)) }

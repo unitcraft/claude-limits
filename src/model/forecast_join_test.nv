@@ -134,6 +134,66 @@ test "under 30 minutes of history there is no forecast" {
     assert(one(l, rows("session", short), false).is_none())
 }
 
+test "weekly 1 percent with 30 to 60 minutes of history keeps facts without a red projection" {
+    for minutes in [30, 60] {
+        ro l = limit("weekly_all", 1, 7 * 86400 - minutes * 60, 7 * 86400)
+        ro r = rows("weekly_all", [sample(NOW_MS - minutes * MIN, 0), sample(NOW_MS, 1)])
+        ro v = with_forecasts(view(l), r, rules(false), NOW_MS, OFFSET_SEC, TimeZone.Utc)
+        assert(v.limits[0].forecast.is_none())
+        assert(v.limits[0].percent == 1)
+        assert(v.limits[0].severity == "normal")
+        assert(v.limits[0].resets_at == l.resets_at)
+        assert(paces_of(v, r).len() == 0)
+    }
+}
+
+fn boundary(kind str, window_sec int, minimum_sec int, working bool) {
+    ro l = limit(kind, 1, window_sec - minimum_sec, window_sec)
+    ro short = rows(kind, [sample(NOW_MS - (minimum_sec - 1) * 1000, 0), sample(NOW_MS, 1)])
+    assert(one(l, short, working).is_none())
+    ro enough = rows(kind, [sample(NOW_MS - minimum_sec * 1000, 0), sample(NOW_MS, 1)])
+    assert(one(l, enough, working).is_some())
+}
+
+test "session weekly monthly exact calendar span boundaries in both forecast bases" {
+    for working in [false, true] {
+        boundary("session", 5 * 3600, 1800, working)
+        boundary("weekly_all", 7 * 86400, 30240, working)
+        boundary("monthly", 30 * 86400, 129600, working)
+    }
+}
+
+test "actual window duration sets the minimum rounded up to whole seconds" {
+    boundary("monthly", 31 * 86400, 133920, false)
+    boundary("weekly_all", 604801, 30241, false)
+}
+
+test "old window age and samples before the current window cannot replace observed span" {
+    ro late = limit("weekly_all", 1, 6 * 86400, 7 * 86400)
+    ro short = rows("weekly_all", [sample(NOW_MS - 30 * MIN, 0), sample(NOW_MS, 1)])
+    assert(one(late, short, false).is_none())
+    ro fresh = limit("weekly_all", 1, 7 * 86400 - 1800, 7 * 86400)
+    ro old = rows("weekly_all", [sample(NOW_MS - 24 * HOUR, 0), sample(NOW_MS - 30 * MIN, 0), sample(NOW_MS, 1)])
+    assert(one(fresh, old, false).is_none())
+}
+
+test "missing reset no history and stale accounts stay unavailable" {
+    mut l = limit("session", 28, 2 * 3600, 5 * 3600)
+    ro r = rows("session", session_samples())
+    l.resets_at = ""
+    assert(one(l, r, false).is_none())
+    l.resets_at = "2026-10-01T11:00:00Z"
+    l.seconds_left = 0
+    assert(one(l, r, false).is_none())
+    l.seconds_left = 7200
+    assert(one(l, rows("session", []), false).is_none())
+    mut a = account()
+    a.state = "stale"
+    mut v = view(l)
+    v.accounts = [a]
+    assert(forecast_of(v, l, r, rules(false), NOW_MS, OFFSET_SEC, TimeZone.Utc).is_none())
+}
+
 test "a locked row, a stale account, or forecasting switched off: no forecast" {
     mut locked = limit("session", 100, 2 * 3600, 5 * 3600)
     locked.locked = true
