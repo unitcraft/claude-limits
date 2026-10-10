@@ -1,0 +1,209 @@
+// Audit-only integration probes for UI settings. No product implementation changes.
+// Run only: ./nova.sh test src/server/ui_settings_audit_test.nv
+//
+// These run the production polling/store/model functions with entirely synthetic
+// Dirs/Creds/Http effects. The HTTP effect never opens a socket.
+
+module server.ui_settings_audit_test
+
+import std.time.civil.{TimeZone}
+import http.{Http, HttpError}
+import claude_limits.accounts.discover.{Dirs}
+import claude_limits.accounts.login.{Creds}
+import claude_limits.usage.poller.{PollLog, Reading}
+import claude_limits.model.snapshot.{SeverityBounds}
+import claude_limits.model.store_fiber.{Envelope, Store, ConfNow}
+import claude_limits.server.dto.{SnapshotView}
+import claude_limits.config.{Config, Refresh}
+import claude_limits.storage.history_rows.{HistRows, HistAccount, HistWindow, HistSample}
+import claude_limits.model.forecast_join.{ForecastRules, with_forecasts}
+import claude_limits.server.feed.{Rounds, RoundLog, Settled, Renew, Found, found_in, store_and_poll, one_round}
+import std.concurrency.nvchan.{Chan}
+import std.testing.handlers.{fixed_ms}
+
+const NOW_MS = 1790758800000
+const EOL = "\r\n"
+const EXPIRES_MS = 1790845200000
+
+type Asked { mut calls int, mut percent int }
+fn Asked.new(percent int) -> Asked => { calls: 0, percent }
+
+type AuditRounds {
+    mut rounds int
+    mut enabled []bool
+    mut forecast []bool
+}
+fn AuditRounds.new() -> AuditRounds => { rounds: 0, enabled: [], forecast: [] }
+
+fn refresh_off() -> Refresh => {
+    enabled: false, all_expired: false, claude_model: "unused",
+    timeout_sec: 120, cooldown_sec: 3600,
+}
+
+fn login_dirs() -> []str => ["/synthetic", "/synthetic/login"]
+fn login_files() -> []str => ["/synthetic/login/.claude.json", "/synthetic/login/.credentials.json"]
+
+fn login_text(path str) -> str {
+    if path == "/synthetic/login/.claude.json" {
+        return "{\"oauthAccount\":{\"emailAddress\":\"audit@example.invalid\",\"organizationName\":\"Synthetic\"}}"
+    }
+    if path == "/synthetic/login/.credentials.json" {
+        return "{\"claudeAiOauth\":{\"accessToken\":\"sk-ant-fixture-no-network\",\"expiresAt\":${EXPIRES_MS}}}"
+    }
+    ""
+}
+
+fn with_login[T](body fn() Dirs Creds -> T) -> T =>
+    with Dirs = effect Dirs {
+        list(path) -> []str { if path == "/synthetic" { ["login"] } else { [] } }
+        exists(path) -> bool { login_dirs().contains(path) || login_files().contains(path) }
+        is_dir(path) -> bool { login_dirs().contains(path) }
+    } {
+        with Creds = effect Creds {
+            read(path) -> str { login_text(path) }
+        } {
+            body()
+        }
+    }
+
+fn reply(percent int) -> str =>
+    "HTTP/1.1 200 OK${EOL}Content-Type: application/json${EOL}${EOL}{\"five_hour\":{\"utilization\":${percent}.0,\"resets_at\":\"2026-09-30T10:00:00Z\"},\"seven_day\":{\"utilization\":20.0,\"resets_at\":\"2026-10-07T09:00:00Z\"}}"
+
+fn with_endpoint[T](mut a Asked, body fn() Http PollLog Creds -> T) -> T =>
+    with Http = effect Http {
+        send(host, port, secure, request) -> Result[str, HttpError] {
+            a.calls += 1
+            Ok(reply(a.percent))
+        }
+    } {
+        with PollLog = effect PollLog {
+            record(email str, state str, message str, at_ms int) -> () {}
+            reading(r Reading) -> () {}
+        } {
+            with Creds = effect Creds {
+                read(path) -> str { login_text(path) }
+            } {
+                body()
+            }
+        }
+    }
+
+fn rules_of(c Config) -> ForecastRules {
+    ro ghost = c.forecast.ghost_thresholds()
+    ForecastRules.new(c.forecast.enabled, c.forecast.working_hours, c.forecast.work_days,
+        c.forecast.work_from, c.forecast.work_to, c.forecast.off_hours_rate,
+        c.forecast.rate_window_days).with_ghost(ghost.warning, ghost.critical)
+}
+
+fn history_for(v SnapshotView) -> HistRows {
+    ro email = v.accounts[0].email.to_ascii_lower()
+    mut windows []HistWindow = []
+    for l in v.limits {
+        ro samples = if l.kind == "session" {
+            [
+                HistSample{ at_ms: NOW_MS - 45 * 60000, percent: 10, resets_at_ms: 0, locked: false },
+                HistSample{ at_ms: NOW_MS - 15 * 60000, percent: 20, resets_at_ms: 0, locked: false },
+                HistSample{ at_ms: NOW_MS, percent: 30, resets_at_ms: 0, locked: false },
+            ]
+        } else {
+            [
+                HistSample{ at_ms: NOW_MS - 48 * 3600000, percent: 10, resets_at_ms: 0, locked: false },
+                HistSample{ at_ms: NOW_MS - 24 * 3600000, percent: 20, resets_at_ms: 0, locked: false },
+                HistSample{ at_ms: NOW_MS, percent: 30, resets_at_ms: 0, locked: false },
+            ]
+        }
+        windows.push(HistWindow{ account_id: "history-account", kind: l.kind, model: l.model,
+            samples, locks: [], rollups: [] })
+    }
+    {
+        accounts: [HistAccount{ id: "history-account", email, color_slot: 0, polls: [] }],
+        windows,
+    }
+}
+
+fn session_forecast(v SnapshotView) -> bool {
+    for l in v.limits { if l.kind == "session" { return l.forecast.is_some() } }
+    false
+}
+
+fn loop_with_forecast_setting(file_enabled bool) -> AuditRounds {
+    mut out = AuditRounds.new()
+    mut a = Asked.new(30)
+    ro pair = Chan[Envelope].new(4)
+    ro store = Store.new(pair.tx)
+    mut file_cfg = Config.defaults()
+    file_cfg.forecast.enabled = file_enabled
+    file_cfg.refresh.enabled = false
+    file_cfg.folders = ["/synthetic"]
+    ro file_conf = ConfNow.new(file_cfg, "synthetic-settings", ConfNow.none().loaded)
+    ro now_ms = NOW_MS
+    // Match serve_mode: enqueue the settings and one Tick before starting the loop.
+    assert(store.set_conf(file_conf))
+    assert(store.tick())
+    pair.tx.close()
+    ro rounds = Rounds.new(["/synthetic"], 60, SeverityBounds.new(70, 90),
+        TimeZone.Utc, "+00:00", refresh_off())
+    with Time = fixed_ms(NOW_MS as u64), Renew = effect Renew {
+        kimi(path str, name str, cooldown_sec int) -> bool { false }
+        claude(path str, name str, model str, timeout_sec int, cooldown_sec int) -> bool { false }
+    }, RoundLog = effect RoundLog {
+        done(view SnapshotView, conf ConfNow) -> SnapshotView {
+            out.rounds += 1
+            assert(view.accounts.len() == 1)
+            assert(view.limits.len() == 2)
+            out.enabled.push(conf.cfg.forecast.enabled)
+            ro joined = with_forecasts(view, history_for(view), rules_of(conf.cfg),
+                now_ms, 0, TimeZone.Utc)
+            out.forecast.push(session_forecast(joined))
+            joined
+        }
+        settings(held ConfNow, view SnapshotView) -> Settled {
+            // The serve loop re-reads the file after each round. The binary's first
+            // poll begins with ConfNow.none(); the first re-read installs this file.
+            Settled.new(file_conf, "")
+        }
+    } {
+        with_login(fn() Dirs Creds -> () =>
+            with_endpoint(a, fn() Http PollLog Creds -> () => store_and_poll(pair.rx, rounds)))
+    }
+    assert(a.calls == 2)
+    out
+}
+
+fn assert_backend_severity(warning int, critical int, percent int, want str) -> () {
+    mut a = Asked.new(percent)
+    ro rounds = Rounds.new(["/synthetic"], 60, SeverityBounds.new(warning, critical),
+        TimeZone.Utc, "+00:00", refresh_off())
+    ro view = with Time = fixed_ms(NOW_MS as u64), Renew = effect Renew {
+        kimi(path str, name str, cooldown_sec int) -> bool { false }
+        claude(path str, name str, model str, timeout_sec int, cooldown_sec int) -> bool { false }
+    } {
+        with_login(fn() Dirs Creds -> SnapshotView =>
+            with_endpoint(a, fn() Http PollLog Creds -> SnapshotView => one_round(rounds)))
+    }
+    assert(a.calls == 1)
+    assert(view.limits[0].severity == want)
+}
+
+test "synthetic login is discovered locally" {
+    ro found = with_login(fn() Dirs Creds -> []Found => found_in(["/synthetic"], NOW_MS))
+    assert(found.len() == 1)
+}
+
+test "backend first and next poll: saved forecast=false is missed on first round, honored on next" {
+    ro disabled_file = loop_with_forecast_setting(false)
+    assert(disabled_file.rounds == 2)
+    assert(disabled_file.enabled[0] == true && disabled_file.forecast[0] == true)
+    assert(disabled_file.enabled[1] == false && disabled_file.forecast[1] == false)
+
+    // Reverse/control: when the saved file says true, both first and next round forecast.
+    ro enabled_file = loop_with_forecast_setting(true)
+    assert(enabled_file.rounds == 2)
+    assert(enabled_file.forecast[0] == true && enabled_file.forecast[1] == true)
+}
+
+test "backend thresholds change severity for identical synthetic 80 percent usage" {
+    assert_backend_severity(70, 90, 80, "warning")
+    assert_backend_severity(85, 95, 80, "normal")
+    assert_backend_severity(70, 90, 95, "critical")
+}
