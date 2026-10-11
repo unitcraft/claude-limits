@@ -278,24 +278,13 @@ test('the interval field repeats the minimum under itself', () => {
   assert.match(hint.textContent, /minimum is 60 s/);
 });
 
-test('Layout and Bar style radio choices update ARIA and save browser preferences', () => {
+test('settings do not offer a second account layout choice; bar style stays available', () => {
   const panel = build();
-  const layout = at(panel, 'ui.view');
-  const cards = layout.children.find((n) => n.dataset.value === 'cards');
-  assert.equal(layout.children.find((n) => n.dataset.value === 'list').getAttribute('aria-checked'), 'true');
-  assert.equal(selectChoice(cards), true);
-  assert.equal(cards.getAttribute('aria-checked'), 'true');
-  assert.equal(layout.children.find((n) => n.dataset.value === 'list').getAttribute('aria-checked'), 'false');
+  assert.equal(at(panel, 'ui.view'), undefined);
   const blocks = at(panel, 'ui.bar_style').children.find((n) => n.dataset.value === 'blocks');
   assert.equal(selectChoice(blocks), true);
-  assert.deepEqual(collectBrowser(panel), { view: 'cards', bar_style: 'blocks', countdown: true, notify: false });
+  assert.deepEqual(collectBrowser(panel), { bar_style: 'blocks', countdown: true, notify: false });
   assert.ok(isEmptyDiff(bodyOf(panel)), 'browser-only radio changes never enter the config PUT');
-  const stored = {};
-  globalThis.localStorage = { setItem: (key, value) => { stored[key] = value; } };
-  try {
-    saveBrowser(collectBrowser(panel));
-    assert.deepEqual(stored, { view: 'cards', bar_style: 'blocks', countdown: 'true', notify: 'false' });
-  } finally { delete globalThis.localStorage; }
 });
 
 test('choice options expose a visible selected, focused, and disabled state', () => {
@@ -307,57 +296,14 @@ test('choice options expose a visible selected, focused, and disabled state', ()
   assert.match(css, /\.choice-option:disabled\s*\{[^}]*opacity:/s,
     'inactive options must look disabled');
 
-  const group = at(build(), 'ui.view');
-  const list = group.children.find((n) => n.dataset.value === 'list');
-  const cards = group.children.find((n) => n.dataset.value === 'cards');
-  assert.equal(list.className, 'choice-option');
-  assert.equal(list.getAttribute('aria-checked'), 'true');
-  selectChoice(cards);
-  assert.equal(cards.getAttribute('aria-checked'), 'true', 'selection updates immediately, before Save');
-  assert.equal(list.getAttribute('aria-checked'), 'false');
+  assert.match(css, /\.reorder-toggle\s*\{/);
+  assert.match(css, /\.card-handle:focus-visible\s*\{[^}]*outline:\s*2px/s);
 });
 
-test('browser radio choices apply and persist immediately without a config request', () => {
-  const stored = {};
-  const oldStorage = globalThis.localStorage;
-  const oldFetch = globalThis.fetch;
-  let requests = 0;
-  const page = { views: { list: { hidden: false }, cards: { hidden: true } }, body: { dataset: { barStyle: '' } }, layoutCalls: 0 };
-  globalThis.localStorage = { getItem: (key) => stored[key] ?? null, setItem: (key, value) => { stored[key] = String(value); } };
-  globalThis.fetch = () => { requests++; throw new Error('browser-only choice must not fetch'); };
-  try {
-    const panel = build();
-    const layout = at(panel, 'ui.view');
-    const cards = layout.children.find((n) => n.dataset.value === 'cards');
-    assert.equal(chooseBrowserPreference(cards, { view: (value) => {
-      for (const [name, view] of Object.entries(page.views)) view.hidden = name !== value;
-    } }), true);
-    assert.equal(cards.getAttribute('aria-checked'), 'true');
-    assert.equal(page.views.cards.hidden, false, 'the cards page view appears on the same click');
-    assert.equal(page.views.list.hidden, true, 'the list page view hides on the same click');
-    assert.deepEqual(stored, { view: 'cards' }, 'only the clicked browser preference is stored');
-
-    const bars = at(panel, 'ui.bar_style');
-    const blocks = bars.children.find((n) => n.dataset.value === 'blocks');
-    assert.equal(chooseBrowserPreference(blocks, { barStyle: (value) => {
-      page.body.dataset.barStyle = value === 'blocks' ? 'cells' : '';
-      page.layoutCalls++;
-    } }), true);
-    assert.equal(blocks.getAttribute('aria-checked'), 'true');
-    assert.equal(page.body.dataset.barStyle, 'cells', 'the page bar style changes on the same click');
-    assert.equal(page.layoutCalls, 1, 'existing bar layout is recalculated immediately');
-    assert.deepEqual(stored, { view: 'cards', bar_style: 'blocks' });
-    assert.deepEqual(bodyOf(panel), {}, 'browser-only choices never enter config save');
-    assert.equal(requests, 0, 'no PUT or other request is made by either choice');
-    const reopened = build();
-    assert.equal(at(reopened, 'ui.view').children.find((n) => n.dataset.value === 'cards').getAttribute('aria-checked'), 'true',
-      'closing without Save (Cancel) does not roll back the already-persisted browser choice');
-    assert.equal(at(reopened, 'ui.bar_style').children.find((n) => n.dataset.value === 'blocks').getAttribute('aria-checked'), 'true');
-    assert.match(reopened.querySelector('.settings-note').textContent, /Cancel does not undo them/);
-  } finally {
-    if (oldStorage === undefined) delete globalThis.localStorage; else globalThis.localStorage = oldStorage;
-    if (oldFetch === undefined) delete globalThis.fetch; else globalThis.fetch = oldFetch;
-  }
+test('legacy layout keys are browser-only compatibility data, never settings controls', () => {
+  assert.ok(BROWSER_ONLY.includes('view'));
+  assert.ok(['list', 'cards'].every((legacy) => ['list', 'cards'].includes(legacy)));
+  assert.equal(at(build(), 'ui.view'), undefined);
 });
 
 console.log('\na 412 OFFERS to re-read (01.3 sec.3.8, acceptance line 3)');
