@@ -19,7 +19,7 @@ import { planNotifications } from './notify.js';
 import {
   renderSettings, bodyOf, isEmptyDiff, showErrors, unmatchedErrors, probeSummary,
   showConflict, clearConflict, conflictCurrent, syncFolders, collectBrowser, saveBrowser,
-  savedNote, checkFailed, permissionLine, selectChoice } from './settings.js';
+  savedNote, checkFailed, permissionLine, selectChoice, chooseBrowserPreference } from './settings.js';
 
 const VIEWS = ['list', 'cards', 'stats'];
 // The transport's own numbers (10 s degraded poll, 30 s reconnect, 90 s silence)
@@ -57,6 +57,11 @@ function showView(name) {
   // Opened for the first time: the history has not been asked for yet. Fetching it
   // at load instead would spend a large query on a view most sessions never open.
   if (name === 'stats' && !state.history) loadHistory(state.statsRange);
+}
+
+function applyBarStyle(style) {
+  document.body.dataset.barStyle = style === 'blocks' ? 'cells' : '';
+  layoutCells();
 }
 
 /**
@@ -546,7 +551,12 @@ function onPanelClick(e) {
 
   const option = target.closest && target.closest('.choice-option');
   if (option) {
-    selectChoice(option);
+    const group = option.closest('.choice');
+    if (group && group.dataset.store === 'browser') {
+      chooseBrowserPreference(option, { view: showView, barStyle: applyBarStyle });
+    } else {
+      selectChoice(option);
+    }
     return;
   }
 
@@ -630,10 +640,7 @@ async function saveSettings() {
   const browserPrefs = collectBrowser(panel);
   saveBrowser(browserPrefs);
   if (browserPrefs.view) showView(browserPrefs.view);
-  if (browserPrefs.bar_style) {
-    document.body.dataset.barStyle = browserPrefs.bar_style === 'blocks' ? 'cells' : '';
-    layoutCells();
-  }
+  if (browserPrefs.bar_style) applyBarStyle(browserPrefs.bar_style);
 
   const body = bodyOf(panel);
   if (isEmptyDiff(body)) { closeSettings(); return; }
@@ -769,7 +776,7 @@ function main() {
     setViewOptions(configUiOptions(r));
     let style = 'rounded';
     try { style = localStorage.getItem('bar_style') || style; } catch { /* ignore */ }
-    document.body.dataset.barStyle = style === 'blocks' ? 'cells' : '';
+    applyBarStyle(style);
     if (state.snapshot) applySnapshot(state.snapshot);
   }).catch(() => {});
   fetchSnapshot();

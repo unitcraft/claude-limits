@@ -15,7 +15,7 @@ installDocument({});
 const {
   renderSettings, collect, bodyOf, diffConfig, isEmptyDiff, folderRef,
   folderNote, showErrors, unmatchedErrors, probeSummary, BROWSER_ONLY,
-  showConflict, clearConflict, conflictCurrent, syncFolders, savedNote, checkFailed, collectBrowser, selectChoice, saveBrowser,
+  showConflict, clearConflict, conflictCurrent, syncFolders, savedNote, checkFailed, collectBrowser, selectChoice, chooseBrowserPreference, saveBrowser,
 } = await import('../src/web/settings.js');
 
 let passed = 0;
@@ -315,6 +315,49 @@ test('choice options expose a visible selected, focused, and disabled state', ()
   selectChoice(cards);
   assert.equal(cards.getAttribute('aria-checked'), 'true', 'selection updates immediately, before Save');
   assert.equal(list.getAttribute('aria-checked'), 'false');
+});
+
+test('browser radio choices apply and persist immediately without a config request', () => {
+  const stored = {};
+  const oldStorage = globalThis.localStorage;
+  const oldFetch = globalThis.fetch;
+  let requests = 0;
+  const page = { views: { list: { hidden: false }, cards: { hidden: true } }, body: { dataset: { barStyle: '' } }, layoutCalls: 0 };
+  globalThis.localStorage = { getItem: (key) => stored[key] ?? null, setItem: (key, value) => { stored[key] = String(value); } };
+  globalThis.fetch = () => { requests++; throw new Error('browser-only choice must not fetch'); };
+  try {
+    const panel = build();
+    const layout = at(panel, 'ui.view');
+    const cards = layout.children.find((n) => n.dataset.value === 'cards');
+    assert.equal(chooseBrowserPreference(cards, { view: (value) => {
+      for (const [name, view] of Object.entries(page.views)) view.hidden = name !== value;
+    } }), true);
+    assert.equal(cards.getAttribute('aria-checked'), 'true');
+    assert.equal(page.views.cards.hidden, false, 'the cards page view appears on the same click');
+    assert.equal(page.views.list.hidden, true, 'the list page view hides on the same click');
+    assert.deepEqual(stored, { view: 'cards' }, 'only the clicked browser preference is stored');
+
+    const bars = at(panel, 'ui.bar_style');
+    const blocks = bars.children.find((n) => n.dataset.value === 'blocks');
+    assert.equal(chooseBrowserPreference(blocks, { barStyle: (value) => {
+      page.body.dataset.barStyle = value === 'blocks' ? 'cells' : '';
+      page.layoutCalls++;
+    } }), true);
+    assert.equal(blocks.getAttribute('aria-checked'), 'true');
+    assert.equal(page.body.dataset.barStyle, 'cells', 'the page bar style changes on the same click');
+    assert.equal(page.layoutCalls, 1, 'existing bar layout is recalculated immediately');
+    assert.deepEqual(stored, { view: 'cards', bar_style: 'blocks' });
+    assert.deepEqual(bodyOf(panel), {}, 'browser-only choices never enter config save');
+    assert.equal(requests, 0, 'no PUT or other request is made by either choice');
+    const reopened = build();
+    assert.equal(at(reopened, 'ui.view').children.find((n) => n.dataset.value === 'cards').getAttribute('aria-checked'), 'true',
+      'closing without Save (Cancel) does not roll back the already-persisted browser choice');
+    assert.equal(at(reopened, 'ui.bar_style').children.find((n) => n.dataset.value === 'blocks').getAttribute('aria-checked'), 'true');
+    assert.match(reopened.querySelector('.settings-note').textContent, /Cancel does not undo them/);
+  } finally {
+    if (oldStorage === undefined) delete globalThis.localStorage; else globalThis.localStorage = oldStorage;
+    if (oldFetch === undefined) delete globalThis.fetch; else globalThis.fetch = oldFetch;
+  }
 });
 
 console.log('\na 412 OFFERS to re-read (01.3 sec.3.8, acceptance line 3)');
