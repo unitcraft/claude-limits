@@ -15,7 +15,7 @@ installDocument({});
 const {
   renderSettings, collect, bodyOf, diffConfig, isEmptyDiff, folderRef,
   folderNote, showErrors, unmatchedErrors, probeSummary, BROWSER_ONLY,
-  showConflict, clearConflict, conflictCurrent, syncFolders, savedNote, checkFailed, collectBrowser,
+  showConflict, clearConflict, conflictCurrent, syncFolders, savedNote, checkFailed, collectBrowser, selectChoice, saveBrowser,
 } = await import('../src/web/settings.js');
 
 let passed = 0;
@@ -276,6 +276,26 @@ test('the panel carries the etag it was built from', () => {
 test('the interval field repeats the minimum under itself', () => {
   const hint = at(build(), 'poll.interval_sec').parent.find((n) => n.className === 'field-hint');
   assert.match(hint.textContent, /minimum is 60 s/);
+});
+
+test('Layout and Bar style radio choices update ARIA and save browser preferences', () => {
+  const panel = build();
+  const layout = at(panel, 'ui.view');
+  const cards = layout.children.find((n) => n.dataset.value === 'cards');
+  assert.equal(layout.children.find((n) => n.dataset.value === 'list').getAttribute('aria-checked'), 'true');
+  assert.equal(selectChoice(cards), true);
+  assert.equal(cards.getAttribute('aria-checked'), 'true');
+  assert.equal(layout.children.find((n) => n.dataset.value === 'list').getAttribute('aria-checked'), 'false');
+  const blocks = at(panel, 'ui.bar_style').children.find((n) => n.dataset.value === 'blocks');
+  assert.equal(selectChoice(blocks), true);
+  assert.deepEqual(collectBrowser(panel), { view: 'cards', bar_style: 'blocks', countdown: true, notify: false });
+  assert.ok(isEmptyDiff(bodyOf(panel)), 'browser-only radio changes never enter the config PUT');
+  const stored = {};
+  globalThis.localStorage = { setItem: (key, value) => { stored[key] = value; } };
+  try {
+    saveBrowser(collectBrowser(panel));
+    assert.deepEqual(stored, { view: 'cards', bar_style: 'blocks', countdown: 'true', notify: 'false' });
+  } finally { delete globalThis.localStorage; }
 });
 
 console.log('\na 412 OFFERS to re-read (01.3 sec.3.8, acceptance line 3)');

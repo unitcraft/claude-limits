@@ -383,7 +383,7 @@ export fn Settled.new(conf ConfNow, config_body str) -> Settled => { conf, confi
 /// The body of a `snapshot` event: `GET /api/snapshot`'s, ordered by the settings the
 /// store holds (01.3 §3.4: "тело §3.3 целиком").
 fn snapshot_body(st StoreState) -> str =>
-    render_snapshot(arrange(st.view, st.conf.cfg.ui.accounts_order, st.conf.cfg.ui.hidden_accounts, false), Disclosure.Loopback)
+    render_snapshot(arrange(st.view, st.conf.cfg.ui.accounts_order, st.conf.cfg.ui.hidden_accounts, false, st.conf.cfg.ui.hide_stale), Disclosure.Loopback)
 
 /// What follows every round: write it, look at the settings file, tell the streams.
 fn after_round(mut st StoreState) RoundLog -> () {

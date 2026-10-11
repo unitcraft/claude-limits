@@ -249,6 +249,9 @@ main:has(.view-wide:not([hidden])) { max-width: var(--page-width-wide); }
 .row-bars { display: flex; flex-direction: column; gap: 3px; }
 
 .bar { position: relative; height: 10px; border-radius: 3px; background: var(--track); overflow: hidden; }
+.bar-fill { transition: none; }
+body[data-bar-style="cells"] .bar { border-radius: 0; background: repeating-linear-gradient(90deg, var(--track) 0 calc(10% - 2px), transparent calc(10% - 2px) 10%); }
+body[data-bar-style="cells"] .bar-fill { border-radius: 0; background-image: repeating-linear-gradient(90deg, transparent 0 calc(10% - 2px), var(--surface) calc(10% - 2px) 10%); }
 .bar-fill { height: 100%; border-radius: 3px; background: var(--normal); }
 .row[data-severity="warning"] .bar-fill { background: var(--warning); }
 .row[data-severity="critical"] .bar-fill { background: var(--critical); }

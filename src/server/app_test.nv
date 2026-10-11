@@ -70,7 +70,7 @@ fn view_of_nothing() -> SnapshotView => {
 // The literals live in named functions, not in the lambdas: a record literal inside a
 // closure is typed as the ENCLOSING literal's type (registry 221.1 #1392) -- written
 // inline, every one of these became a `Router` in C.
-fn snap_empty() -> SnapshotState => { view: view_of_nothing(), order: [], hidden: [], config_etag: "", disclosure: Disclosure.Loopback }
+fn snap_empty() -> SnapshotState => { view: view_of_nothing(), order: [], hidden: [], hide_stale: false, config_etag: "", disclosure: Disclosure.Loopback }
 fn no_round() -> bool => false
 fn refresh_empty() -> RefreshState => { now_ms: 0, floor_sec: 60, targets: [] }
 fn no_store(after int) -> Option[Live] => None

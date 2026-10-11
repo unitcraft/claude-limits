@@ -235,7 +235,7 @@ fn health_now(cfg Config, paths Paths, started_at str, db DbAtStart, v SnapshotV
 /// The snapshot handler's state around a body: the person's order and hidden list from
 /// the settings (01.3 §3.3 applies them per request, in `snapshot.arrange`).
 fn snapshot_around(v SnapshotView, cfg Config, tag str) -> SnapshotState => {
-    view: v, order: cfg.ui.accounts_order, hidden: cfg.ui.hidden_accounts, config_etag: tag,
+    view: v, order: cfg.ui.accounts_order, hidden: cfg.ui.hidden_accounts, hide_stale: cfg.ui.hide_stale, config_etag: tag,
     disclosure: Disclosure.Loopback,
 }
 
@@ -266,7 +266,7 @@ fn refresh_state(now_ms int, floor_sec int, targets []RefreshTarget) -> RefreshS
 /// `follow` then keeps the stream open on the store's channel; with no store (a test)
 /// the stream ends after its opening.
 fn events_now(s SnapshotState, follow Follow) -> EventsState =>
-    { reg: Registry.new(), snapshot_body: render_snapshot(arrange(s.view, s.order, s.hidden, false), s.disclosure), rest: [], follow }
+    { reg: Registry.new(), snapshot_body: render_snapshot(arrange(s.view, s.order, s.hidden, false, s.hide_stale), s.disclosure), rest: [], follow }
 
 /// The snapshot's order and hidden list come from the settings AS THEY STAND: a saved
 /// `ui` change is live at once (01.3 §3.8), and a page that kept the start's order

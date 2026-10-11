@@ -204,6 +204,16 @@ function choice(path, value, options, store = 'config') {
   return group;
 }
 
+/** Select exactly one option in a radio group; used by the delegated panel handler. */
+export function selectChoice(option) {
+  const group = option && option.closest ? option.closest('.choice') : option && option.parentElement;
+  if (!group || option.className !== 'choice-option') return false;
+  for (const sibling of group.querySelectorAll('.choice-option')) {
+    sibling.setAttribute('aria-checked', String(sibling === option));
+  }
+  return true;
+}
+
 /** The stored value of a browser-side preference, or its default. */
 function browserPref(key, fallback) {
   try {

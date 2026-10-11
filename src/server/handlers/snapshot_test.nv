@@ -106,14 +106,24 @@ fn fixture() -> SnapshotView => {
     ],
 }
 
-fn state(order []str, hidden []str) -> SnapshotState => state_at(order, hidden, Disclosure.Loopback)
+fn state(order []str, hidden []str) -> SnapshotState => state_at(order, hidden, false, Disclosure.Loopback)
 
-fn state_at(order []str, hidden []str, d Disclosure) -> SnapshotState => {
-    view: fixture(),
+fn state_at(order []str, hidden []str, hide_stale bool, d Disclosure) -> SnapshotState => {
+    view: if hide_stale { stale_fixture() } else { fixture() },
     order,
     hidden,
+    hide_stale,
     config_etag: "cfg-1",
     disclosure: d,
+}
+
+fn stale_fixture() -> SnapshotView {
+    mut v = fixture()
+    mut accounts = v.accounts.clone()
+    accounts[1].state = "error"
+    accounts[2].state = "stale"
+    v.accounts = accounts
+    v
 }
 
 fn app(order []str, hidden []str) -> Router => app_at(order, hidden, Disclosure.Loopback)
@@ -122,13 +132,19 @@ fn app_at(order []str, hidden []str, d Disclosure) -> Router {
     ro o = order
     ro hid = hidden
     ro lvl = d
-    ro src = fn() -> SnapshotState => state_at(o, hid, lvl)
+    ro src = fn() -> SnapshotState => state_at(o, hid, false, lvl)
     ro ah = snapshot_handler(src)
     build([route_q("/api/snapshot", [on(HttpMethod.Get, ah)], ["include_hidden"])])!!
 }
 
-fn serve_at(d Disclosure, raw []u8) Time Random -> []u8 =>
-    serve_once(app_at([], [], d), raw)
+fn serve_hide_stale(raw []u8) Time Random -> []u8 {
+    ro src = fn() -> SnapshotState => state_at([], [], true, Disclosure.Loopback)
+    ro ah = snapshot_handler(src)
+    ro router = build([route_q("/api/snapshot", [on(HttpMethod.Get, ah)], ["include_hidden"])])!!
+    serve_once(router, raw)
+}
+
+fn serve_at(d Disclosure, raw []u8) Time Random -> []u8 => serve_once(app_at([], [], d), raw)
 
 fn serve(order []str, hidden []str, raw []u8) Time Random -> []u8 => serve_once(app(order, hidden), raw)
 
@@ -209,10 +225,10 @@ test "a Kimi Code account keeps its place in the order by its name, not by its p
     k.display_name = "Kimi-Env-0e4f"
     ro v = SnapshotView{ fetched_at: "", next_poll_at: "", tz: "+03:00", restored: false, worst: None,
         accounts: [acc("a", "a@example.org"), acc("b", "b@example.org"), k], limits: [] }
-    ro got = arrange(v, ["a@example.org", "kimi:kimi-env-0e4f", "b@example.org"], [], false)
+    ro got = arrange(v, ["a@example.org", "kimi:kimi-env-0e4f", "b@example.org"], [], false, false)
     assert(got.accounts[1].id == "k")
     // And it can be hidden by the same key.
-    assert(arrange(v, [], ["kimi:kimi-env-0e4f"], false).accounts.len() == 2)
+    assert(arrange(v, [], ["kimi:kimi-env-0e4f"], false, false).accounts.len() == 2)
 }
 
 test "a Codex account is ordered and hidden by codex:<address>, lowered, apart from a Claude one of the same address" {
@@ -221,22 +237,22 @@ test "a Codex account is ordered and hidden by codex:<address>, lowered, apart f
     c.display_name = "Me@Example.com"
     ro v = SnapshotView{ fetched_at: "", next_poll_at: "", tz: "+03:00", restored: false, worst: None,
         accounts: [acc("a", "a@example.org"), acc("m", "me@example.com"), c], limits: [] }
-    ro got = arrange(v, ["codex:me@example.com", "a@example.org"], [], false)
+    ro got = arrange(v, ["codex:me@example.com", "a@example.org"], [], false, false)
     assert(got.accounts[0].id == "c")
-    assert(arrange(v, [], ["codex:me@example.com"], false).accounts.len() == 2)
+    assert(arrange(v, [], ["codex:me@example.com"], false, false).accounts.len() == 2)
 }
 
 test "an account nobody arranged does not jump into the middle" {
     // "By first appearance", not by e-mail: a new account must not push itself
     // between two a person put next to each other.
-    ro v = arrange(fixture(), ["qa@example.org"], [], false)
+    ro v = arrange(fixture(), ["qa@example.org"], [], false, false)
     assert(v.accounts[0].email == "qa@example.org")
     assert(v.accounts[1].email == "main@example.com")
     assert(v.accounts[2].email == "ops@example.org")
 }
 
 test "limits follow their account, and inside it session, weekly_all, then models" {
-    ro v = arrange(fixture(), [], [], false)
+    ro v = arrange(fixture(), [], [], false, false)
     assert(v.limits.len() == 6)
     assert(v.limits[0].kind == "session")
     assert(v.limits[1].kind == "weekly_all")
@@ -272,6 +288,20 @@ test "include_hidden=0 is the default, spelled out" {
     with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
         ro b = body_of(serve([], ["ops@example.org"], req("GET", "/api/snapshot?include_hidden=0")))
         assert(!b.contains("ops@example.org"))
+    }
+}
+
+test "hide_stale removes only stale accounts and their rows from the served snapshot" {
+    with Time = th.fixed_ms(1757000000000), Random = th.seeded(7) {
+        ro body = body_of(serve_hide_stale(req("GET", "/api/snapshot")))
+        assert(body.contains("main@example.com"))
+        assert(!body.contains("ops@example.org"))
+        assert(!body.contains("\"account_id\":\"a-2\""))
+        assert(!body.contains("qa@example.org"))
+        assert(!body.contains("\"account_id\":\"a-3\""))
+        // The default-off control returns that stale login.
+        ro visible = body_of(plain(req("GET", "/api/snapshot")))
+        assert(visible.contains("qa@example.org"))
     }
 }
 
