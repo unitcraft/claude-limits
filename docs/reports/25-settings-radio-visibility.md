@@ -23,11 +23,18 @@ GET http://127.0.0.1:7391/app.css → HTTP 200, 28846 bytes
 served has .choice-option[aria-checked="true"]: false
 served has .toggle[aria-checked="true"]: true
 current src/web/app.css has .choice-option[aria-checked="true"]: true
+current main (be614): app.js handles .choice-option click; app.css has no selected radio marker
 ```
 
-Следствие: `/app.css` на :7391 — другая/старая сборка, без нового правила выбора. Сервер не перезапускался и не менялся. Сравнение непосредственно со «current main» через git не делалось: в этой ветке рабочий source включает radio click handler (app.js), а текущий history report #15 описывает более раннюю версию, поэтому тот отчёт не является достоверным подтверждением поведения нынешнего served UI. DOM unit test подтверждает ARIA переключение; проверка реального Save/reload/localStorage через изолированный браузер на этой сессии не выполнена. Значения localStorage/view/barStyle на :7391 не наблюдались.
+Проверка в отдельном headless Edge профиле `--user-data-dir=...edge-task25`, `--disable-sync`, `--no-first-run`, CDP 19325. Профиль владельца не открывался. На настоящем UI :7391 (read-only server, никакого config PUT): исходно `view=list`/`bar_style` отсутствовал; клик Cards немедленно выставил `aria-checked=true`, но вычисленный background List и Cards оставался одинаковым `rgb(240, 240, 240)` (браузерная кнопка по умолчанию), border обоих чёрный. Снимок подтвердил визуально неразличимые radio. После Save изолированный профиль получил `localStorage.view=cards`, `bar_style=rounded`; после reload Settings снова показал Cards `aria-checked=true`, значения сохранились. Это подтверждает: click и Save/reload работают на served UI, а визуальный CSS marker в served assets отсутствует. Скриншот рабочей страницы не добавлен в репозиторий, так как за Settings видны личные аккаунты; просмотрен только локально.
 
-Визуальный isolated-browser preview и screenshots до/после не получены: в окружении нет Playwright/Puppeteer, и подключение к пользовательскому профилю запрещено. CSS-проверка и DOM regression test выполнены; нельзя представлять их как проверку скриншотами или deployment.
+Отдельный локальный preview на `127.0.0.1:19326` загрузил актуальный `src/web/app.css` в изолированный Edge профиль; settings-подобная разметка не содержала owner data. До клика List был выбран с computed background `rgb(42, 37, 66)` / border `rgb(59, 52, 88)`; после клика Cards немедленно получил эти selected colors, List стал прозрачным. Save preview записал `view=cards`, reload восстановил `aria-checked` только для Cards. Снимки:
+
+- До клика: [25-settings-source-before.png](assets/25-settings-source-before.png)
+- Сразу после click Cards: [25-settings-source-after-click.png](assets/25-settings-source-after-click.png)
+- После Save + reload: [25-settings-source-after-reload.png](assets/25-settings-source-after-reload.png)
+
+Preview доказывает стиль CSS и последовательность состояния в безопасной фикстуре; click handler на рабочей странице и его Save/reload подтверждены отдельным isolated CDP проходом выше. Сервер не перезапускался и не менялся; `/app.css` на :7391 остаётся старым.
 
 ## Краткая матрица остальных контролов
 
@@ -46,9 +53,9 @@ current src/web/app.css has .choice-option[aria-checked="true"]: true
 
 Обратная проба: временно заменил CSS selector выбранного варианта на `[aria-checked="false"]`; `node scripts/test-settings.mjs` стал красным: `FAIL choice options expose a visible selected, focused, and disabled state` («selected radio must use the theme active surface»). Вернул правильный selector `[aria-checked="true"]`; финальный settings suite — `49 passed`, общий web gate — `clean`.
 
-Отклонения от входов: без схемы/API изменений; чек-листы БД §17 и API §20 не применимы. Не делался визуальный browser preview/screenshot, не проверялись Save/reload и localStorage в изолированном браузере. Нет разрешения на deployment, поэтому served :7391 остаётся старым.
+Отклонения от входов: без схемы/API изменений; чек-листы БД §17 и API §20 не применимы. Save/reload на :7391 проверялись только в отдельном Edge localStorage profile; изменение browser-only preference не отправляло config PUT. Нет разрешения на deployment, поэтому served :7391 остаётся старым.
 
-Открытые вопросы: чтобы увидеть fix на рабочей странице, нужен отдельный deployment/restart с актуальными assets; это вне разрешённых границ данной задачи. Требуется isolated browser screenshot/Save-reload verification при доступном CDP/browser harness.
+Открытые вопросы: чтобы увидеть fix на рабочей странице владельца, нужен отдельный deployment/restart с актуальными assets и повторный тест в её браузере; это вне разрешённых границ данной задачи.
 
 Дефекты Nova: нет.
 Модель: GPT-6 Luna.
