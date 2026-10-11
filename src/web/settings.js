@@ -267,7 +267,7 @@ export function renderSettings(reply) {
 
   // 5.1 View — browser-only, and labelled as such so nobody looks for it in the file.
   const view = section(panel, 'View',
-    'Layout and bar style apply immediately and are saved in this browser; Save is not needed, and Cancel does not undo them.');
+    'Bar style applies immediately and is saved in this browser; Save is not needed, and Cancel does not undo it.');
   // 01.1 §5.1 lines 298-299: both live in localStorage, neither in the config file.
   view.append(field('Bar style',
     choice('ui.bar_style', browserPref('bar_style', 'rounded'),

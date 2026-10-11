@@ -306,6 +306,52 @@ test('legacy layout keys are browser-only compatibility data, never settings con
   assert.equal(at(build(), 'ui.view'), undefined);
 });
 
+test('bar style applies immediately and browser preferences persist/reopen without config requests', () => {
+  const stored = {};
+  const previousStorage = globalThis.localStorage;
+  const previousFetch = globalThis.fetch;
+  let requests = 0, layouts = 0;
+  globalThis.localStorage = {
+    getItem: (key) => stored[key] ?? null,
+    setItem: (key, value) => { stored[key] = String(value); },
+  };
+  globalThis.fetch = () => { requests++; throw new Error('browser preference must not fetch'); };
+  try {
+    const panel = build();
+    assert.equal(at(panel, 'ui.view'), undefined, 'there is no second List/Cards control');
+    const barStyle = at(panel, 'ui.bar_style');
+    const blocks = barStyle.children.find((n) => n.dataset.value === 'blocks');
+    const page = { barStyle: '', layoutCells() { layouts++; } };
+    assert.equal(chooseBrowserPreference(blocks, { barStyle: (value) => {
+      page.barStyle = value === 'blocks' ? 'cells' : '';
+      page.layoutCells();
+    } }), true);
+    assert.equal(blocks.getAttribute('aria-checked'), 'true');
+    assert.equal(page.barStyle, 'cells', 'bar style applies before Save');
+    assert.equal(layouts, 1, 'existing bars are laid out immediately');
+
+    at(panel, 'ui.countdown').setAttribute('aria-checked', 'false');
+    at(panel, 'ui.notify').setAttribute('aria-checked', 'true');
+    const preferences = collectBrowser(panel);
+    assert.deepEqual(preferences, { bar_style: 'blocks', countdown: false, notify: true });
+    assert.ok(isEmptyDiff(bodyOf(panel)), 'browser preferences never enter the config PUT');
+    saveBrowser(preferences);
+    assert.deepEqual(stored, { bar_style: 'blocks', countdown: 'false', notify: 'true' });
+
+    const reopened = build();
+    assert.equal(at(reopened, 'ui.bar_style').children.find((n) => n.dataset.value === 'blocks')
+      .getAttribute('aria-checked'), 'true');
+    assert.equal(at(reopened, 'ui.countdown').getAttribute('aria-checked'), 'false');
+    assert.equal(at(reopened, 'ui.notify').getAttribute('aria-checked'), 'true');
+    assert.equal(requests, 0, 'changing/saving/reopening browser preferences makes no network request');
+  } finally {
+    if (previousStorage === undefined) delete globalThis.localStorage;
+    else globalThis.localStorage = previousStorage;
+    if (previousFetch === undefined) delete globalThis.fetch;
+    else globalThis.fetch = previousFetch;
+  }
+});
+
 console.log('\na 412 OFFERS to re-read (01.3 sec.3.8, acceptance line 3)');
 
 const conflictReply = {
