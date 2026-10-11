@@ -79,26 +79,6 @@
         "output": 128000
       }
     },
-    "codex-light": {
-      "heavy": {
-        "model": "openai/gpt-6-luna",
-        "context": 525000,
-        "input": 461000,
-        "output": 128000
-      },
-      "medium": {
-        "model": "openai/gpt-6-luna",
-        "context": 525000,
-        "input": 461000,
-        "output": 128000
-      },
-      "light": {
-        "model": "openai/gpt-6-luna",
-        "context": 525000,
-        "input": 461000,
-        "output": 128000
-      }
-    },
     "kimi": {
       "heavy": {
         "model": "kimi-code-plan-global/k3-256k",
@@ -189,27 +169,10 @@
         "family": "kimi",
         "tier": "task"
       }
-    },
-    "codex-light": {
-      "develop": {
-        "family": "codex",
-        "tier": "light"
-      },
-      "accept": {
-        "family": "codex",
-        "tier": "light"
-      },
-      "plan": {
-        "family": "codex",
-        "tier": "light"
-      },
-      "plan_accept": {
-        "family": "codex",
-        "tier": "light"
-      }
     }
   },
-  "profile_set": "codex-light",
+  "profile_set": "codex",
+  "tier_max": "light",
   "merge_precheck": "required",
   "accepted_slot": "free",
   "cleanup_limit": 10
