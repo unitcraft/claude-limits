@@ -373,13 +373,15 @@ export function renderList(accounts, allLimits, order = null) {
  * function needs no `createElementNS`, and so the dots recolour with the card state
  * by inheriting `currentColor`.
  */
-export function renderCard(acc, limits, owner = null) {
+export function renderCard(acc, limits, owner = null, reorderEnabled = false) {
   const card = el('article', 'card');
-  const handle = el('button', 'card-handle');
-  handle.setAttribute('type', 'button');
-  handle.setAttribute('aria-label', `reorder ${acc.email || 'account'}`);
-  handle.title = 'drag to reorder, or Space then arrows';
-  card.append(handle);
+  if (reorderEnabled) {
+    const handle = el('button', 'card-handle');
+    handle.setAttribute('type', 'button');
+    handle.setAttribute('aria-label', `reorder ${acc.email || 'account'}`);
+    handle.title = 'drag to reorder, or Space then arrows';
+    card.append(handle);
+  }
 
   const body = renderAccount(acc, limits, owner);
   card.append(body);
@@ -396,7 +398,7 @@ export function renderCard(acc, limits, owner = null) {
  * appear right now, which between a drop and the server's answer is NOT the order
  * the snapshot arrived in.
  */
-export function renderCards(accounts, allLimits, order = null) {
+export function renderCards(accounts, allLimits, order = null, reorderEnabled = false) {
   const view = document.getElementById('view-cards');
   if (!view) return;
   const have = new Map(Array.from(view.children)
@@ -414,7 +416,7 @@ export function renderCards(accounts, allLimits, order = null) {
   applyOrder(accounts, order).forEach((acc, i) => {
     const key = accountKey(acc) || `?${i}`;
     seen.add(key);
-    const fresh = renderCard(acc, byAccount.get(acc.id) || [], owners.get(acc.same_quota_as));
+    const fresh = renderCard(acc, byAccount.get(acc.id) || [], owners.get(acc.same_quota_as), reorderEnabled);
     fresh.dataset.email = key;
     place(view, have.get(key), fresh, i);
   });

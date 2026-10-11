@@ -38,9 +38,9 @@ const draw = (order = null) => {
   renderList(snap.accounts, snap.limits, order);
   return list;
 };
-const drawCards = (order = null) => {
+const drawCards = (order = null, reorderEnabled = false) => {
   cards.replaceChildren();
-  renderCards(snap.accounts, snap.limits, order);
+  renderCards(snap.accounts, snap.limits, order, reorderEnabled);
   return cards;
 };
 
@@ -159,7 +159,7 @@ test('a locked window says it is locked, not only in red', () => {
 console.log('\ncards renderer (T2.22)');
 
 test('one card per account, each with a real button as its handle', () => {
-  const v = drawCards();
+  const v = drawCards(null, true);
   assert.equal(v.children.length, 4);
   for (const card of v.children) {
     const handle = card.children[0];
@@ -168,6 +168,11 @@ test('one card per account, each with a real button as its handle', () => {
     assert.equal(handle.attrs.type, 'button', 'without type= a button inside a form submits it');
     assert.match(handle.attrs['aria-label'], /reorder /);
   }
+});
+
+test('ordinary account cards have no reorder handle', () => {
+  const v = drawCards();
+  assert.ok(v.children.every((card) => !card.children.some((n) => n.className === 'card-handle')));
 });
 
 test('a card carries the same rows as the list block does', () => {

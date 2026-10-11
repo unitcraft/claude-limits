@@ -141,7 +141,8 @@ body {
 .views .icon-btn { background: transparent; border-color: transparent; }
 .icon-btn:hover { background: var(--surface-hover); color: var(--fg); }
 .icon-btn:focus-visible { outline: 2px solid var(--fg-soft); outline-offset: 2px; }
-.views .icon-btn[aria-selected="true"] { background: var(--surface-active); color: var(--fg); }
+.views .icon-btn[aria-pressed="true"] { background: var(--surface-active); color: var(--fg); }
+.reorder-toggle { white-space: nowrap; }
 .icon-btn[disabled] { opacity: .45; cursor: default; }
 .icon-btn[data-spinning="true"] svg { animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
