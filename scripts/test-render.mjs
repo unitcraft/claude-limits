@@ -439,6 +439,83 @@ test('layoutCells re-lays the GHOST too, not only the fill (01.1 par.2.2)', () =
   }
 });
 
+test('bar geometry is reversible across repeated Blocks/Rounded relayouts', () => {
+  const cases = [0, 1, 9, 75, 81, 100];
+  const rows = cases.map((percent) => renderRow({
+    ...snap.limits[0], percent,
+    forecast: { ...snap.limits[0].forecast,
+      percent_at_reset: percent < 100 ? percent + 19 : 100 },
+  }));
+  for (const row of rows) document.body.append(row);
+  const bars = rows.map((row) => ({
+    bar: row.find((n) => n.className === 'bar'),
+    fill: row.find((n) => n.className === 'bar-fill'),
+    ghost: row.find((n) => n.className === 'bar-ghost'),
+  }));
+  document.body.dataset.barStyle = 'cells';
+  for (let i = 0; i < 8; i++) layoutCells();
+  for (let i = 0; i < cases.length; i++) {
+    const { bar, fill, ghost } = bars[i];
+    const expectedCells = Math.round(cases[i] / 100 * 34);
+    assert.equal(fill.dataset.percent, String(cases[i]));
+    assert.equal(parseFloat(fill.style.width), expectedCells ? expectedCells * 10 - 2 : 0,
+      `Blocks fill uses source ${cases[i]}%, not a prior pixel width`);
+    if (ghost) {
+      const forecast = Number(ghost.dataset.at);
+      assert.ok(forecast > cases[i]);
+      if (cases[i] === 100) {
+        assert.equal(ghost.hidden, true, 'a forecast capped at the full current window has no Blocks ghost');
+        assert.equal(parseFloat(ghost.style.width), 0);
+        assert.ok(parseFloat(ghost.style.left) <= parseFloat(bar.style.width),
+          'a hidden zero-width ghost is clamped to the track end');
+      } else {
+        assert.equal(ghost.hidden, false);
+        assert.ok(parseFloat(ghost.style.left) >= 0);
+        assert.ok(parseFloat(ghost.style.left) + parseFloat(ghost.style.width) <= parseFloat(bar.style.width));
+      }
+    }
+  }
+  for (let i = 0; i < 8; i++) {
+    document.body.dataset.barStyle = '';
+    layoutCells();
+    for (let j = 0; j < cases.length; j++) {
+      const { bar, fill, ghost } = bars[j];
+      assert.equal(fill.style.width, `${cases[j]}%`, 'Rounded restores exact source percent');
+      assert.equal(bar.style.width, '');
+      if (ghost) {
+        assert.equal(ghost.style.left, `${cases[j]}%`);
+        assert.equal(ghost.hidden, false);
+      }
+    }
+    document.body.dataset.barStyle = 'cells';
+    layoutCells();
+  }
+  document.body.dataset.barStyle = '';
+  layoutCells();
+});
+
+test('a live render update replaces pixel geometry with the new canonical percent', () => {
+  const account = snap.accounts[0];
+  const initial = { ...snap.limits[0], account_id: account.id, percent: 9,
+    forecast: { ...snap.limits[0].forecast, percent_at_reset: 28 } };
+  renderList([account], [initial]);
+  document.body.dataset.barStyle = 'cells';
+  for (let i = 0; i < 5; i++) layoutCells();
+  const updated = { ...initial, percent: 81,
+    forecast: { ...initial.forecast, percent_at_reset: 100 } };
+  renderList([account], [updated]); // real live-update render path also calls layoutCells
+  const row = list.find((n) => n.className === 'row');
+  const bar = row.find((n) => n.className === 'bar');
+  const fill = row.find((n) => n.className === 'bar-fill');
+  assert.equal(fill.dataset.percent, '81');
+  assert.equal(parseFloat(fill.style.width), 278, 'the new value is snapped from 81%, not old pixels');
+  document.body.dataset.barStyle = '';
+  layoutCells();
+  assert.equal(fill.style.width, '81%');
+  assert.equal(bar.style.width, '');
+  draw();
+});
+
 test('the ghost is coloured by the PROJECTION, not by the row (01.1 sec.2.2, 2026-09-22)', () => {
   // 40 % now is a calm row; heading for 120 % it is a red ghost. The owner saw no
   // forecast colours at all on the first stand: the ghost took the row's colour.

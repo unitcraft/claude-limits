@@ -78,7 +78,11 @@ export function renderRow(limit, { dimmed = false } = {}) {
   bar.setAttribute('aria-valuemax', '100');
   bar.setAttribute('aria-valuenow', String(Math.round(wireNumber(limit.percent) ?? 0)));
   const fill = el('div', 'bar-fill');
-  fill.style.width = `${Math.max(0, Math.min(100, wireNumber(limit.percent) ?? 0))}%`;
+  const percent = Math.max(0, Math.min(100, wireNumber(limit.percent) ?? 0));
+  // The data value is semantic input; style.width is only the current drawing
+  // geometry and may be pixels while Blocks is active.
+  fill.dataset.percent = String(percent);
+  fill.style.width = `${percent}%`;
   bar.append(fill);
   // No ghost on a dimmed row: a forecast is a claim about where the pace lands, and
   // we do not know the pace of an account we cannot reach (01.1 sec.3.2).
@@ -89,7 +93,7 @@ export function renderRow(limit, { dimmed = false } = {}) {
   const limPct = wireNumber(limit.percent) ?? 0;
   if (fc && fcPct != null && fcPct > limPct) {
     const ghost = el('div', 'bar-ghost');
-    ghost.style.left = `${limit.percent}%`;
+    ghost.style.left = `${limPct}%`;
     ghost.style.width = `${Math.min(100, fcPct) - limPct}%`;
     // Remembered on the element so `layoutCells` can re-lay it in the cells style
     // without recomputing a forecast it does not have.
@@ -427,14 +431,15 @@ export function renderCards(accounts, allLimits, order = null) {
  * on resize (01.1 §2.2). Whole cells only — the geometry is in format.js and tested.
  */
 export function layoutCells() {
-  if (document.body.dataset.barStyle !== 'cells') return;
+  const cellsStyle = document.body.dataset.barStyle === 'cells';
   // `document.querySelectorAll`, not the `$$` helper: that one lives in app.js, and
   // when these functions moved here the call came with them and would have thrown a
   // ReferenceError the first time anyone chose the cells style. It threw in nothing
   // until then only because the default style is bars.
   for (const bar of Array.from(document.querySelectorAll('.bar'))) {
     const fill = bar.querySelector('.bar-fill');
-    const pct = parseFloat(fill.style.width) || 0;
+    const pct = Number(fill.dataset.percent);
+    const canonicalPct = Number.isFinite(pct) ? pct : 0;
 
     // THE GHOST GETS THE CELL GEOMETRY TOO, 01.1 §2.2. `cellGeometry` has computed
     // `ghostFrom` and `ghostWidth` since it was written, and this call passed no
@@ -446,8 +451,21 @@ export function layoutCells() {
     // carries the percentage it was drawn at, so nothing has to be recomputed or
     // passed down.
     const ghost = bar.querySelector('.bar-ghost');
-    const ghostPct = ghost ? parseFloat(ghost.dataset.at || '') : NaN;
-    const g = cellGeometry(bar.parentElement.clientWidth, pct,
+    const ghostPct = ghost ? Number(ghost.dataset.at || '') : NaN;
+    if (!cellsStyle) {
+      // Rounded is the inverse of the cells layout, not a fresh render: discard
+      // every pixel override and restore exact semantic percentages.
+      bar.style.width = '';
+      fill.style.width = `${canonicalPct}%`;
+      if (ghost) {
+        ghost.style.left = `${canonicalPct}%`;
+        ghost.style.width = `${Math.max(0, Math.min(100, ghostPct) - canonicalPct)}%`;
+        ghost.hidden = false;
+      }
+      bar.title = '';
+      continue;
+    }
+    const g = cellGeometry(bar.parentElement.clientWidth, canonicalPct,
                            Number.isFinite(ghostPct) ? ghostPct : null);
     bar.style.width = `${g.barWidth}px`;
     fill.style.width = `${g.fillWidth}px`;
@@ -459,9 +477,11 @@ export function layoutCells() {
       } else {
         // A forecast that does not clear the next cell boundary has nothing to draw
         // in this style: half a cell of hatching is noise, not information.
+        ghost.style.left = `${Math.min(g.ghostFrom, g.barWidth)}px`;
+        ghost.style.width = '0px';
         ghost.hidden = true;
       }
     }
-    bar.title = `${Math.round(pct)}% · ${g.filledCells} of ${g.cells} cells`;
+    bar.title = `${Math.round(canonicalPct)}% · ${g.filledCells} of ${g.cells} cells`;
   }
 }
