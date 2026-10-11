@@ -21,7 +21,7 @@ installDocument({ 'view-list': list, 'view-cards': cards });
 // possible: it takes a document and returns nodes, with no fetch, timers or
 // EventSource to drag in. Dynamic, because the stub must be installed first.
 const { renderList, renderCards, renderAccount, renderRow, layoutCells, extraUsageLine } = await import('../src/web/render.js');
-const { setViewOptions } = await import('../src/web/format.js');
+const { setViewOptions, configUiOptions } = await import('../src/web/format.js');
 
 // -------------------------------------------------------------------- tests --
 
@@ -32,6 +32,7 @@ const test = (name, fn) => {
 };
 
 const snap = JSON.parse(readFileSync(new URL('../fixtures/api/snapshot-mixed.json', import.meta.url)));
+const configReply = JSON.parse(readFileSync(new URL('../fixtures/api/config.json', import.meta.url)));
 const draw = (order = null) => {
   list.replaceChildren();
   renderList(snap.accounts, snap.limits, order);
@@ -337,10 +338,11 @@ test('the time strip obeys its setting, which nothing on the page used to read',
   const withReset = snap.limits.find((l) => l.resets_at);
   assert.ok(withReset, 'the fixture needs a limit with resets_at');
 
-  setViewOptions({ time_bar: true });
+  setViewOptions(configUiOptions(configReply));
   assert.equal(renderRow(withReset).all((n) => n.className === 'timebar').length, 1);
 
-  setViewOptions({ time_bar: false });
+  setViewOptions(configUiOptions({ ...configReply, config: { ...configReply.config,
+    ui: { ...configReply.config.ui, time_bar: false } } }));
   assert.equal(renderRow(withReset).all((n) => n.className === 'timebar').length, 0,
     'the toggle is off and the strip is still drawn -- the setting is being ignored');
 

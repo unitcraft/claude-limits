@@ -6,13 +6,14 @@
 // clipped cell, the elapsed share, and the duration wording. Both directions where
 // it matters: the value asked for AND the value that must not appear.
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
   windowMs, elapsedShare, cellGeometry, formatDuration,
   formatResetMoment, formatReset, formatResetParts, durationRef, rowLabel, sortLimits, severityOf,
   isRetryable, retryDelay, MAX_RETRIES, refuseFor, REFUSAL_DEFAULT_SEC, REFUSAL_MAX_SEC,
   moveTo, applyOrder, accountKey, dropIndexFor, landingIndex, orderRequest, configPut,
   footerRight, legendText, footerCounts, stripTooltip, percentTooltip, forecastTooltip,
-  captionTime, intervalOf } from '../src/web/format.js';
+  captionTime, intervalOf, configUiOptions } from '../src/web/format.js';
 
 let passed = 0;
 const test = (name, fn) => {
@@ -21,6 +22,15 @@ const test = (name, fn) => {
 };
 
 console.log('format.js');
+
+test('live renderer options come from GET /api/config, not a synthetic snapshot.config', () => {
+  const config = JSON.parse(readFileSync(new URL('../fixtures/api/config.json', import.meta.url)));
+  assert.equal(configUiOptions(config).time_bar, true);
+  config.config.ui.time_bar = false;
+  assert.equal(configUiOptions(config).time_bar, false);
+  assert.equal(configUiOptions({ fetched_at: 'now', limits: [] }), undefined,
+    'production snapshot DTO has no config property');
+});
 
 // -- windows and the elapsed share ------------------------------------------
 

@@ -28,6 +28,8 @@ export type SnapshotState value {
     order []str
     /// `ui.hidden_accounts` — e-mails.
     hidden []str
+    /// `ui.hide_stale`: expired-token accounts are omitted from the actual response.
+    hide_stale bool
     /// Part of the `ETag`: a settings change must invalidate a cached snapshot,
     /// because `severity` is computed from the thresholds in the settings.
     config_etag str
@@ -114,20 +116,20 @@ fn kind_rank(kind str) -> int {
 /// "By first appearance" and not "by e-mail" on purpose: a new account must not
 /// jump into the middle of a list a person arranged, and the only order that does
 /// not surprise is the one it arrived in.
-export fn arrange(v SnapshotView, order []str, hidden []str, include_hidden bool) -> SnapshotView {
+export fn arrange(v SnapshotView, order []str, hidden []str, include_hidden bool, hide_stale bool) -> SnapshotView {
     // By `order_key`: the e-mail, or `kimi:<name>` for a Kimi Code account, which has
     // no e-mail to be listed by.
     mut kept = []AccountView.new()
     for e in order {
         for a in v.accounts {
             ro k = a.order_key()
-            if k != "" && k == e.to_ascii_lower() && (include_hidden || !is_listed(hidden, k)) { kept.push(a) }
+            if k != "" && k == e.to_ascii_lower() && (include_hidden || !is_listed(hidden, k)) && (!hide_stale || (a.state != "stale" && a.state != "error")) { kept.push(a) }
         }
     }
     for a in v.accounts {
         ro k = a.order_key()
         if is_listed(order, k) { continue }
-        if include_hidden || !is_listed(hidden, k) { kept.push(a) }
+        if (include_hidden || !is_listed(hidden, k)) && (!hide_stale || (a.state != "stale" && a.state != "error")) { kept.push(a) }
     }
 
     // Limits follow their accounts, and inside an account: session, weekly_all,
@@ -189,7 +191,7 @@ fn run(src SnapshotSource, ctx Ctx) -> ServerResponse {
         None => {
             ro st = src()
             ro hidden_too = wants_hidden(ctx.req)
-            ro view = arrange(st.view, st.order, st.hidden, hidden_too)
+            ro view = arrange(st.view, st.order, st.hidden, hidden_too, st.hide_stale)
             // EVERY AXIS THAT CHANGES THE BODY IS IN THE TAG. An ETag that covers
             // some of them tells a client 304 and leaves it looking at the other
             // answer -- and nothing anywhere reports that, because a 304 is a normal

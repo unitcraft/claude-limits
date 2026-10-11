@@ -130,6 +130,11 @@ export function getViewOptions() {
   return viewOptions;
 }
 
+/** Read render flags from the real GET /api/config response shape. */
+export function configUiOptions(reply) {
+  return reply && reply.config && reply.config.ui ? reply.config.ui : undefined;
+}
+
 let captionZone = null;
 
 export function setCaptionZone(tz) {

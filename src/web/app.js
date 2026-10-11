@@ -9,7 +9,7 @@
 // Separate file rather than an inline <script>: the CSP refuses inline (01.1 §0).
 import {
   isRetryable, retryDelay, retryAfterSeconds, setCaptionZone, getCaptionZone, captionTime, setViewOptions, MAX_RETRIES, refuseFor, orderRequest, configPut,
-  footerRight, legendText, footerCounts, intervalOf } from './format.js';
+  footerRight, legendText, footerCounts, intervalOf, configUiOptions, getViewOptions } from './format.js';
 import { createLive, silentTooLong, SILENCE_LIMIT_MS } from './live.js';
 import { el, renderList, renderCards, layoutCells } from './render.js';
 import { createReorder } from './reorder.js';
@@ -19,7 +19,7 @@ import { planNotifications } from './notify.js';
 import {
   renderSettings, bodyOf, isEmptyDiff, showErrors, unmatchedErrors, probeSummary,
   showConflict, clearConflict, conflictCurrent, syncFolders, collectBrowser, saveBrowser,
-  savedNote, checkFailed, permissionLine } from './settings.js';
+  savedNote, checkFailed, permissionLine, selectChoice } from './settings.js';
 
 const VIEWS = ['list', 'cards', 'stats'];
 // The transport's own numbers (10 s degraded poll, 30 s reconnect, 90 s silence)
@@ -362,10 +362,6 @@ function applySnapshot(snap) {
   // stopping there is what the page did until 2026-09-09, and every reset time was
   // drawn in the viewer's zone instead of the backend's.
   setCaptionZone(state.tz);
-  // The one place a config view option reaches the renderer. `time_bar` was a toggle
-  // in the settings panel that nothing on the page read -- 01.1 §2.2 makes the strip
-  // conditional on it, and the page drew it always.
-  setViewOptions(snap.config && snap.config.ui ? snap.config.ui : undefined);
   $('[data-field="counts"]').textContent = footerCounts(accounts);
 
   // The legend describes what this snapshot actually draws (01.1 sec.1.2).
@@ -376,7 +372,7 @@ function applySnapshot(snap) {
   // the legend honest -- a legend built from the config would explain a mark that
   // this particular snapshot does not show.
   const legend = legendText({
-    timeBar: limits.some((l) => l.resets_at),
+    timeBar: getViewOptions().time_bar && limits.some((l) => l.resets_at),
     forecast: limits.some((l) => l.forecast),
   });
   $('[data-field="legend"]').textContent = legend;
@@ -544,9 +540,15 @@ function closeSettings() {
 }
 
 function onPanelClick(e) {
-  const target = e.target;
+  const target = e.target && e.target.closest ? e.target.closest('button') : e.target;
   if (!target || !target.dataset) return;
   const action = target.dataset.action;
+
+  const option = target.closest && target.closest('.choice-option');
+  if (option) {
+    selectChoice(option);
+    return;
+  }
 
   // A toggle and a day button carry their state in ARIA, which is also what the
   // collector reads: one place, so a control cannot look on and read off.
@@ -625,7 +627,13 @@ async function saveSettings() {
   // empty -- which is exactly how they were being lost: toggling only `countdown`
   // produced an empty body, the early return below closed the panel, and nothing
   // ever wrote localStorage. The switch moved and nothing happened.
-  saveBrowser(collectBrowser(panel));
+  const browserPrefs = collectBrowser(panel);
+  saveBrowser(browserPrefs);
+  if (browserPrefs.view) showView(browserPrefs.view);
+  if (browserPrefs.bar_style) {
+    document.body.dataset.barStyle = browserPrefs.bar_style === 'blocks' ? 'cells' : '';
+    layoutCells();
+  }
 
   const body = bodyOf(panel);
   if (isEmptyDiff(body)) { closeSettings(); return; }
@@ -643,6 +651,10 @@ async function saveSettings() {
     let reply = null;
     try { reply = await res.json(); } catch { /* a 200 with no body is still a save */ }
     closeSettings();
+    if (body.ui) {
+      setViewOptions(body.ui);
+      if (state.snapshot) applySnapshot(state.snapshot);
+    }
     const note = savedNote(reply);
     if (note) toast(note);
     fetchSnapshot();
@@ -750,6 +762,16 @@ function main() {
     if (e.key === 'Escape' && state.panel) closeSettings();
   });
   checkApiVersion();
+  // The snapshot contract intentionally does not contain the full config. Fetch the
+  // live UI flags over the real config endpoint instead of relying on a synthetic
+  // `snapshot.config` property that production never sends.
+  apiGet('/api/config').then((r) => r.json()).then((r) => {
+    setViewOptions(configUiOptions(r));
+    let style = 'rounded';
+    try { style = localStorage.getItem('bar_style') || style; } catch { /* ignore */ }
+    document.body.dataset.barStyle = style === 'blocks' ? 'cells' : '';
+    if (state.snapshot) applySnapshot(state.snapshot);
+  }).catch(() => {});
   fetchSnapshot();
   connect();
   state.tickTimer = setInterval(tick, 1000);
