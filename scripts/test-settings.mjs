@@ -298,6 +298,25 @@ test('Layout and Bar style radio choices update ARIA and save browser preference
   } finally { delete globalThis.localStorage; }
 });
 
+test('choice options expose a visible selected, focused, and disabled state', () => {
+  const css = readFileSync(new URL('../src/web/app.css', import.meta.url), 'utf8');
+  assert.match(css, /\.choice-option\[aria-checked="true"\]\s*\{[^}]*background:\s*var\(--surface-active\)/s,
+    'the selected radio must use the theme active surface');
+  assert.match(css, /\.choice-option:focus-visible\s*\{[^}]*outline:\s*2px/s,
+    'keyboard focus must be visible');
+  assert.match(css, /\.choice-option:disabled\s*\{[^}]*opacity:/s,
+    'inactive options must look disabled');
+
+  const group = at(build(), 'ui.view');
+  const list = group.children.find((n) => n.dataset.value === 'list');
+  const cards = group.children.find((n) => n.dataset.value === 'cards');
+  assert.equal(list.className, 'choice-option');
+  assert.equal(list.getAttribute('aria-checked'), 'true');
+  selectChoice(cards);
+  assert.equal(cards.getAttribute('aria-checked'), 'true', 'selection updates immediately, before Save');
+  assert.equal(list.getAttribute('aria-checked'), 'false');
+});
+
 console.log('\na 412 OFFERS to re-read (01.3 sec.3.8, acceptance line 3)');
 
 const conflictReply = {
