@@ -42,28 +42,43 @@ CSS-only preview доказывает только selected style. Ниже до
 
 ### Isolated preview текущего приложения + mock API
 
-Запущен свежий Edge profile без Sync (`--disable-sync`, `--no-first-run`) на локальном mock server `127.0.0.1:19329`, который отдавал без модификации текущие `src/web/index.html`, `app.js`, `settings.js`, `app.css`, остальные web modules и synthetic fixture snapshot/config. Трекер mock API фиксировал method/path; реальные данные владельца и :7391 не использовались. CDP сценарий открыл Settings и проверил:
+Запущен приватный временный Node HTTP server `127.0.0.1:19331` из Temp: статические файлы читались напрямую из `src/web/` текущего worktree, mock API отдавал только synthetic `fixtures/api/config.json` и `snapshot-mixed.json`, health и пустой SSE. Свежий Edge profile без Sync (`--disable-sync`, `--no-first-run`), CDP `19332`; :7391/профиль владельца не использовались. Server фиксировал method/path; CDP `Network.responseReceived` + `Network.getResponseBody` использовались для хеш-проверки asset responses. Статические response bytes SHA-256 совпали с bytes текущих файлов worktree; исходники в git HEAD `4d09fb0` семантически совпадают после нормализации CRLF (`git diff --exit-code 4d09fb0 HEAD -- src/web/...` — exit 0).
+
+| HTTP/CDP source asset | SHA-256(response bytes) = worktree file bytes |
+|---|---|
+| `index.html` | `b182bc02b1920d45827206f4c3b5fd545a2f971674a7286c6f14f69d87fc61c4` |
+| `app.js` | `a523f96cac1416b099cffabbb37bf9dcd67725efabbd472abeeafa323241dc34` |
+| `settings.js` | `f3984e778d0a15b6f3e71a064721a05123061428baeec3b9c98bdd9252c21d24` |
+| `render.js` | `8ce2a26bbb19738de9043d3024c154e995f4c1ce9041c2a2c2feb70878c2db3b` |
+| `format.js` | `5b6373342caa570b85f6771036507d56829901af05a77901c8a85802a3802e53` |
+| `app.css` | `1236b79175e06e146c28c77adf876cf91a7a8588f250561e4013b304200cb27c` |
+
+CDP сценарий открыл Settings и проверил:
 
 ```text
 before: localStorage view absent, bar_style absent; List/Rounded selected; list view visible
 click Cards: aria [false,true], localStorage view=cards, list.hidden=true, cards.hidden=false (before Save)
 click Blocks: aria [false,true], localStorage bar_style=blocks, body.dataset.barStyle=cells;
-             visible .bar border-radius=0px, width changes 452px → 448px (before Save)
-Cancel: panel closed; view=cards, bar_style=blocks and Cards view/cells remain applied
-reopen: Cards and Blocks aria-checked=true
+             visible .bar border-radius=0px, width=448px (before Save)
+click List then Rounded: aria [true,false] for each group, localStorage view=list/bar_style=rounded,
+             list view visible, body style reset, visible .bar radius=3px (before Save)
+Cancel: panel closed; List/Rounded and their page effects remain applied
+reopen: List and Rounded aria-checked=true
 Save with no config edits: panel closed; no non-GET /api/config request
-reload: localStorage view=cards, bar_style=blocks; Cards view visible, body style=cells,
-        visible .bar radius=0px; reopened Settings still selects Cards and Blocks
-mock API log: GET /api/config only for config; zero PUT/POST requests
+reload: localStorage view=list, bar_style=rounded; List view visible, body style reset,
+        visible .bar radius=3px; reopened Settings still selects List and Rounded
+CDP API requests: GET only (config/snapshot/health/events); zero non-GET requests
+mock API request log: zero PUT/POST
 ```
 
 Скриншоты текущего source приложения, с полностью synthetic example accounts:
 
-- Перед click: [25-current-source-before.png](assets/25-current-source-before.png)
-- Сразу после Cards click: [25-current-source-after-cards-click.png](assets/25-current-source-after-cards-click.png)
-- Сразу после Blocks click (segmented bars уже применены): [25-current-source-after-blocks-click.png](assets/25-current-source-after-blocks-click.png)
-- После Cancel и повторного открытия: [25-current-source-after-cancel-reopen.png](assets/25-current-source-after-cancel-reopen.png)
-- После reload: [25-current-source-after-reload.png](assets/25-current-source-after-reload.png)
+- Перед click: [25-node-source-before.png](assets/25-node-source-before.png)
+- Сразу после Cards click: [25-node-source-after-cards.png](assets/25-node-source-after-cards.png)
+- Сразу после Blocks click (segmented bars уже применены): [25-node-source-after-blocks.png](assets/25-node-source-after-blocks.png)
+- Сразу после List + Rounded click (обратное переключение до Save): [25-node-source-after-list-rounded.png](assets/25-node-source-after-list-rounded.png)
+- После Cancel и повторного открытия: [25-node-source-after-cancel-reopen.png](assets/25-node-source-after-cancel-reopen.png)
+- После reload: [25-node-source-after-reload.png](assets/25-node-source-after-reload.png)
 
 Рабочая страница :7391 остаётся старой сборкой без selected styling/instant-apply; изменённые assets туда не публиковались. Сервер не перезапускался и не менялся.
 
