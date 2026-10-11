@@ -21,7 +21,7 @@ import {
   showConflict, clearConflict, conflictCurrent, syncFolders, collectBrowser, saveBrowser,
   savedNote, checkFailed, permissionLine, selectChoice, chooseBrowserPreference } from './settings.js';
 
-const VIEWS = ['list', 'cards', 'stats'];
+const VIEWS = ['accounts', 'stats'];
 // The transport's own numbers (10 s degraded poll, 30 s reconnect, 90 s silence)
 // live in live.js next to the machine that obeys them.
 
@@ -40,6 +40,7 @@ const state = {
   statsGroup: 'account',
   statsLoading: false,
   panel: null,          // the open settings panel, or null
+  reorderMode: false,
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -48,10 +49,20 @@ const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 // ------------------------------------------------------------------- views --
 
 function showView(name) {
-  if (!VIEWS.includes(name)) name = 'list';
+  if (name === 'list' || name === 'cards') name = 'accounts';
+  if (!VIEWS.includes(name)) name = 'accounts';
+  if (name === 'stats' && state.reorderMode) {
+    if (state.reorder) state.reorder.cancel();
+    state.reorderMode = false;
+    const button = $('[data-action="reorder"]');
+    button.textContent = 'Reorder';
+    button.setAttribute('aria-pressed', 'false');
+    button.title = 'Enable account reordering';
+    if (state.snapshot) renderCards(state.snapshot.accounts || [], state.snapshot.limits, state.order, false);
+  }
   $$('.view').forEach((el) => { el.hidden = el.dataset.view !== name; });
-  $$('.views .icon-btn').forEach((b) => {
-    b.setAttribute('aria-selected', String(b.dataset.view === name));
+  $$('.views [data-view]').forEach((b) => {
+    b.setAttribute('aria-pressed', String(b.dataset.view === name));
   });
   try { localStorage.setItem('view', name); } catch { /* private mode: not fatal */ }
   // Opened for the first time: the history has not been asked for yet. Fetching it
@@ -163,7 +174,7 @@ function initStats() {
   // snapshot, and a listener bound to a row would be lost on the next poll. Bound to
   // BOTH the list and the cards, because the rule names both and a card is a row in a
   // different shape.
-  for (const id of ['view-list', 'view-cards']) {
+  for (const id of ['view-cards']) {
     const host = document.getElementById(id);
     if (!host) continue;
     host.addEventListener('click', (e) => {
@@ -179,11 +190,12 @@ function initStats() {
 }
 
 function initViews() {
-  let saved = 'list';
-  try { saved = localStorage.getItem('view') || 'list'; } catch { /* ignore */ }
+  let saved = 'accounts';
+  try { saved = localStorage.getItem('view') || 'accounts'; } catch { /* ignore */ }
+  if (saved === 'list' || saved === 'cards') saved = 'accounts';
   showView(saved);
 
-  $$('.views .icon-btn').forEach((btn) => {
+  $$('.views [data-view]').forEach((btn) => {
     btn.addEventListener('click', () => showView(btn.dataset.view));
   });
 
@@ -191,16 +203,16 @@ function initViews() {
   $('.views').addEventListener('keydown', (e) => {
     if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
     const current = VIEWS.indexOf(VIEWS.find((v) =>
-      $(`.views .icon-btn[data-view="${v}"]`).getAttribute('aria-selected') === 'true'));
+      $(`.views [data-view="${v}"]`).getAttribute('aria-pressed') === 'true'));
     const next = (current + (e.key === 'ArrowRight' ? 1 : VIEWS.length - 1)) % VIEWS.length;
     showView(VIEWS[next]);
-    $(`.views .icon-btn[data-view="${VIEWS[next]}"]`).focus();
+    $(`.views [data-view="${VIEWS[next]}"]`).focus();
     e.preventDefault();
   });
 
   $('.brand').addEventListener('click', (e) => {
     e.preventDefault();
-    showView('list');
+    showView('accounts');
     window.scrollTo({ top: 0 });
   });
 }
@@ -388,10 +400,7 @@ function applySnapshot(snap) {
   }
   $('[data-field="placeholder"]').textContent = accounts.length ? '' : 'no logins found';
 
-  renderList(accounts, snap.limits, state.order);
-  // The cards view is rendered even while hidden: switching views must not wait for
-  // the next poll, which is five minutes away by default.
-  renderCards(accounts, snap.limits, state.order);
+  renderCards(accounts, snap.limits, state.order, state.reorderMode);
   tick();
   notifyThresholds(snap);
   document.dispatchEvent(new CustomEvent('snapshot', { detail: snap }));
@@ -758,8 +767,20 @@ function main() {
     container: document.getElementById('view-cards'),
     commit: saveOrder,
     toast,
+    enabled: () => state.reorderMode,
   });
   state.reorder.attach();
+  $('[data-action="reorder"]').addEventListener('click', (e) => {
+    if (state.reorderMode) state.reorder.cancel();
+    state.reorderMode = !state.reorderMode;
+    const button = e.currentTarget;
+    button.textContent = state.reorderMode ? 'Done' : 'Reorder';
+    button.setAttribute('aria-pressed', String(state.reorderMode));
+    button.title = state.reorderMode ? 'Finish reordering accounts' : 'Enable account reordering';
+    const accounts = state.snapshot && state.snapshot.accounts || [];
+    renderCards(accounts, state.snapshot && state.snapshot.limits, state.order, state.reorderMode);
+    if (!state.reorderMode) button.focus();
+  });
   $('[data-action="refresh"]').addEventListener('click', (e) =>
     refresh(e.currentTarget));
   $('[data-action="settings"]').addEventListener('click', openSettings);
