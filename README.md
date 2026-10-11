@@ -216,18 +216,39 @@ edit it by hand while the tool is stopped. Where things live:
 
 | | Windows | Linux |
 |---|---|---|
-| settings | `%APPDATA%\claude-limits\claude-limits.toml` | `$XDG_CONFIG_HOME/claude-limits/` (`~/.config/...`) |
-| database key | beside the settings, `claude-limits.key` | the same |
-| database | `%LOCALAPPDATA%\claude-limits\claude-limits.duckdb` | `$XDG_DATA_HOME/claude-limits/` (`~/.local/share/...`) |
-| backups | `backup\` beside the database | the same |
-| log | `%LOCALAPPDATA%\claude-limits\logs\claude-limits.log` | `$XDG_STATE_HOME/claude-limits/claude-limits.log` (`~/.local/state/...`) |
+| settings file | `%APPDATA%\claude-limits\claude-limits.toml` | `$XDG_CONFIG_HOME/claude-limits/claude-limits.toml` (default `~/.config/claude-limits/claude-limits.toml`) |
+| database key (only when encryption is enabled) | beside the settings: `claude-limits.key` | beside the settings: `claude-limits.key` |
+| working database | `%LOCALAPPDATA%\claude-limits\claude-limits.duckdb` | `$XDG_DATA_HOME/claude-limits/claude-limits.duckdb` (default `~/.local/share/claude-limits/claude-limits.duckdb`) |
+| backups | `backup\` under the data directory | `backup/` under the data directory |
+| log | `%LOCALAPPDATA%\claude-limits\logs\claude-limits.log` | `$XDG_STATE_HOME/claude-limits/claude-limits.log` (default `~/.local/state/claude-limits/claude-limits.log`) |
 
-Overrides, strongest first: `--config <file>` (the key follows the settings file),
-`CLAUDE_LIMITS_CONFIG`, `CLAUDE_LIMITS_DATA` or `[storage] data_dir`,
-`CLAUDE_LIMITS_DB_KEY_FILE`. **Portable mode:** put a `claude-limits.toml` beside
-the binary and everything -- settings, key, database -- lives beside it (the log
-in `logs\`). `CLAUDE_LIMITS_DATA` moves the Windows log with the database
-(`<data>\logs\`); `--config` moves the settings and the key, not the log.
+These defaults use the Windows environment variables as supplied by Windows and
+the XDG variables when set; otherwise Linux falls back to the shown home-relative
+directories. For example, the current Windows deployment's defaults are under
+`%APPDATA%\claude-limits\` and `%LOCALAPPDATA%\claude-limits\` (Roaming and Local,
+respectively); no user-specific profile path is needed here.
+
+Path selection is per resource, not one global override list. For settings, an
+explicit `--config <file>` wins over `CLAUDE_LIMITS_CONFIG`; otherwise a
+`claude-limits.toml` beside the executable enables portable mode, ahead of the OS
+default. The key follows that selected settings directory unless
+`CLAUDE_LIMITS_DB_KEY_FILE` names it explicitly. For the database and backups,
+`CLAUDE_LIMITS_DATA` wins over portable mode; otherwise portable mode uses
+`data\` (Windows) or `data/` (Linux) beside the executable, ahead of the OS
+default. The log follows the data directory on Windows (`logs\`), but Linux uses
+XDG state (or `~/.local/state/`) unless portable mode is active, when it uses
+`logs/` beside the executable. `--config` does not relocate the database or log.
+Although `[storage] data_dir` is present in the settings format, startup resolves
+the database location before loading that file; use `CLAUDE_LIMITS_DATA` to
+override the live database directory.
+
+**Check paths without exposing secrets or touching the database:** while the
+server is running, query `http://127.0.0.1:7391/api/health` locally and inspect
+`storage.config_path` and `storage.db_path` (the full paths are disclosed only to
+loopback clients). Alternatively, read the TOML file at the known config location;
+do not copy or publish its contents, since it can contain credentials. `/api/config`
+also reports its config `path` on loopback, but not the database path. Neither
+check opens or changes the database.
 
 **The log** is written by `--serve` only: the lines the console shows, each with a
 UTC moment and a level (`INFO`, `WARN`, `ERROR`), appended to `claude-limits.log`.
@@ -283,11 +304,20 @@ Changing this setting requires a restart and **does not convert existing data**.
 For an older encrypted database, set `encrypted = true` and restore its original
 key. Setting `false` cannot recover that history. The settings remain plain TOML.
 
-A backup is written to `backup\` before every schema migration (the last five are
-kept, `[storage] backups_keep`). Backups and compacted copies preserve the active
+A backup is a dated snapshot copy in the data directory's `backup/` subdirectory;
+it is separate from the active `claude-limits.duckdb` and is not a second working
+database. The app takes one before each schema migration and weekly (not every
+day); rotation retains `[storage] backups_keep` files (five by default). Backups
+and compacted copies preserve the active
 mode: plain backups need no key; encrypted backups need the same original key,
 which is NOT copied into `backup\` -- back the key up separately. To
 restore, stop the tool and copy a backup over `claude-limits.duckdb`.
+
+For this Windows installation, read-only inspection of the recovered data
+location found a `backup/` directory containing one dated database backup. The
+separate legacy data location contains four backup files. This confirms backups
+were made previously; this documentation task did not create a new backup. The
+old encrypted database and its copies were not opened.
 
 ## Status
 
@@ -295,10 +325,11 @@ restore, stop the tool and copy a backup over `claude-limits.duckdb`.
 every `[poll] interval_sec` (five minutes by default), serves the page, and writes
 every round to its database -- the readings, the lock periods, and which
 login sat in which folder -- which `/api/history` and the statistics views read.
-Once a day it rolls up and drops what is older than `[history] keep_days` and takes
-the weekly backup. TLS trusts the operating system's certificate store first (so a
-TLS-inspecting antivirus with its own root works); the start says which source it
-loaded. The page follows the live stream (`/api/events`): every round and every
+Once a day it rolls up and drops what is older than `[history] keep_days`; weekly
+backup rotation is described above. TLS trusts the operating system's certificate
+store first (so a TLS-inspecting antivirus with its own root works); the start says
+which source it loaded. The page follows the live stream (`/api/events`): every
+round and every
 settings change reaches it as an event, and it shows `live`; if the stream drops it
 polls every 10 s and reconnects.
 
