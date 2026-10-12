@@ -26,7 +26,7 @@ const hasClass = (n, cls) =>
  * restores it with a message. That is the sequence 01.1 §4.1 asks for: release ->
  * new order straight into the DOM, then PUT, error -> roll back and a toast.
  */
-export function createReorder({ container, commit, toast }) {
+export function createReorder({ container, commit, toast, enabled = () => true }) {
   let grabbed = null;        // the card being moved, by pointer or by keyboard
   let before = null;         // e-mail order to restore if the server refuses
   let line = null;           // the drop indicator between cards
@@ -129,6 +129,7 @@ export function createReorder({ container, commit, toast }) {
   // person who has just tabbed to a control reaches for Enter first.
 
   function onKeyDown(e) {
+    if (!enabled()) return;
     const handle = hasClass(e.target, 'card-handle') ? e.target : null;
     if (!handle) return;
     const card = handle.parentElement || handle.parent;
@@ -166,6 +167,7 @@ export function createReorder({ container, commit, toast }) {
   }
 
   function onPointerDown(e) {
+    if (!enabled()) return;
     if (!hasClass(e.target, 'card-handle')) return;
     if (e.pointerType === 'mouse') return;           // mouse goes through HTML5 DnD
     const card = e.target.parentElement;
@@ -189,6 +191,7 @@ export function createReorder({ container, commit, toast }) {
   // ----------------------------------------------------------- HTML5 drag --
 
   function onMouseDown(e) {
+    if (!enabled()) return;
     // A card becomes draggable only while the pointer is on its handle: a card
     // draggable everywhere would swallow text selection inside it.
     if (hasClass(e.target, 'card-handle')) {
@@ -198,6 +201,7 @@ export function createReorder({ container, commit, toast }) {
   }
 
   function onDragStart(e) {
+    if (!enabled()) { e.preventDefault(); return; }
     const card = e.target;
     if (!hasClass(card, 'card')) return;
     start(card);
@@ -209,6 +213,7 @@ export function createReorder({ container, commit, toast }) {
   }
 
   function onDragOver(e) {
+    if (!enabled()) return;
     if (!grabbed) return;
     e.preventDefault();                              // "yes, you may drop here"
     if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
@@ -216,6 +221,7 @@ export function createReorder({ container, commit, toast }) {
   }
 
   function onDrop(e) {
+    if (!enabled()) return;
     if (!grabbed) return;
     e.preventDefault();
     const card = grabbed;

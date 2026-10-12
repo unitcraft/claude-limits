@@ -132,7 +132,10 @@ export class Node {
     return { top: i * 100, bottom: i * 100 + 90, left: 0, right: 342 };
   }
 
-  get clientWidth() { return 342; }
+  get clientWidth() {
+    for (let node = this; node; node = node.parent) if (node.hidden) return 0;
+    return 342;
+  }
 }
 
 /**

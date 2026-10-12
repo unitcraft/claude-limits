@@ -78,7 +78,11 @@ export function renderRow(limit, { dimmed = false } = {}) {
   bar.setAttribute('aria-valuemax', '100');
   bar.setAttribute('aria-valuenow', String(Math.round(wireNumber(limit.percent) ?? 0)));
   const fill = el('div', 'bar-fill');
-  fill.style.width = `${Math.max(0, Math.min(100, wireNumber(limit.percent) ?? 0))}%`;
+  const percent = Math.max(0, Math.min(100, wireNumber(limit.percent) ?? 0));
+  // The data value is semantic input; style.width is only the current drawing
+  // geometry and may be pixels while Blocks is active.
+  fill.dataset.percent = String(percent);
+  fill.style.width = `${percent}%`;
   bar.append(fill);
   // No ghost on a dimmed row: a forecast is a claim about where the pace lands, and
   // we do not know the pace of an account we cannot reach (01.1 sec.3.2).
@@ -89,7 +93,7 @@ export function renderRow(limit, { dimmed = false } = {}) {
   const limPct = wireNumber(limit.percent) ?? 0;
   if (fc && fcPct != null && fcPct > limPct) {
     const ghost = el('div', 'bar-ghost');
-    ghost.style.left = `${limit.percent}%`;
+    ghost.style.left = `${limPct}%`;
     ghost.style.width = `${Math.min(100, fcPct) - limPct}%`;
     // Remembered on the element so `layoutCells` can re-lay it in the cells style
     // without recomputing a forecast it does not have.
@@ -373,13 +377,15 @@ export function renderList(accounts, allLimits, order = null) {
  * function needs no `createElementNS`, and so the dots recolour with the card state
  * by inheriting `currentColor`.
  */
-export function renderCard(acc, limits, owner = null) {
+export function renderCard(acc, limits, owner = null, reorderEnabled = false) {
   const card = el('article', 'card');
-  const handle = el('button', 'card-handle');
-  handle.setAttribute('type', 'button');
-  handle.setAttribute('aria-label', `reorder ${acc.email || 'account'}`);
-  handle.title = 'drag to reorder, or Space then arrows';
-  card.append(handle);
+  if (reorderEnabled) {
+    const handle = el('button', 'card-handle');
+    handle.setAttribute('type', 'button');
+    handle.setAttribute('aria-label', `reorder ${acc.email || 'account'}`);
+    handle.title = 'drag to reorder, or Space then arrows';
+    card.append(handle);
+  }
 
   const body = renderAccount(acc, limits, owner);
   card.append(body);
@@ -396,7 +402,7 @@ export function renderCard(acc, limits, owner = null) {
  * appear right now, which between a drop and the server's answer is NOT the order
  * the snapshot arrived in.
  */
-export function renderCards(accounts, allLimits, order = null) {
+export function renderCards(accounts, allLimits, order = null, reorderEnabled = false) {
   const view = document.getElementById('view-cards');
   if (!view) return;
   const have = new Map(Array.from(view.children)
@@ -414,12 +420,15 @@ export function renderCards(accounts, allLimits, order = null) {
   applyOrder(accounts, order).forEach((acc, i) => {
     const key = accountKey(acc) || `?${i}`;
     seen.add(key);
-    const fresh = renderCard(acc, byAccount.get(acc.id) || [], owners.get(acc.same_quota_as));
+    const fresh = renderCard(acc, byAccount.get(acc.id) || [], owners.get(acc.same_quota_as), reorderEnabled);
     fresh.dataset.email = key;
     place(view, have.get(key), fresh, i);
   });
 
   for (const [key, node] of have) if (!seen.has(key)) node.remove();
+  // A snapshot replaces each card node. Apply cell geometry on every live update,
+  // rather than leaving the new fills at their initial percentage widths.
+  layoutCells();
 }
 
 /**
@@ -427,14 +436,15 @@ export function renderCards(accounts, allLimits, order = null) {
  * on resize (01.1 §2.2). Whole cells only — the geometry is in format.js and tested.
  */
 export function layoutCells() {
-  if (document.body.dataset.barStyle !== 'cells') return;
+  const cellsStyle = document.body.dataset.barStyle === 'cells';
   // `document.querySelectorAll`, not the `$$` helper: that one lives in app.js, and
   // when these functions moved here the call came with them and would have thrown a
   // ReferenceError the first time anyone chose the cells style. It threw in nothing
   // until then only because the default style is bars.
   for (const bar of Array.from(document.querySelectorAll('.bar'))) {
     const fill = bar.querySelector('.bar-fill');
-    const pct = parseFloat(fill.style.width) || 0;
+    const pct = Number(fill.dataset.percent);
+    const canonicalPct = Number.isFinite(pct) ? pct : 0;
 
     // THE GHOST GETS THE CELL GEOMETRY TOO, 01.1 §2.2. `cellGeometry` has computed
     // `ghostFrom` and `ghostWidth` since it was written, and this call passed no
@@ -446,10 +456,31 @@ export function layoutCells() {
     // carries the percentage it was drawn at, so nothing has to be recomputed or
     // passed down.
     const ghost = bar.querySelector('.bar-ghost');
-    const ghostPct = ghost ? parseFloat(ghost.dataset.at || '') : NaN;
-    const g = cellGeometry(bar.parentElement.clientWidth, pct,
+    const ghostPct = ghost ? Number(ghost.dataset.at || '') : NaN;
+    if (!cellsStyle) {
+      // Rounded is the inverse of the cells layout, not a fresh render: discard
+      // every pixel override and restore exact semantic percentages.
+      bar.style.width = '';
+      fill.style.width = `${canonicalPct}%`;
+      if (ghost) {
+        ghost.style.left = `${canonicalPct}%`;
+        ghost.style.width = `${Math.max(0, Math.min(100, ghostPct) - canonicalPct)}%`;
+        ghost.hidden = false;
+      }
+      bar.title = '';
+      const strip = bar.parentElement.querySelector('.timebar');
+      if (strip) strip.style.width = '';
+      continue;
+    }
+    const width = bar.parentElement.clientWidth;
+    // A hidden view reports zero layout width. Keep its canonical percentages until
+    // showView() reveals it and calls layoutCells() again.
+    if (width <= 0) continue;
+    const g = cellGeometry(width, canonicalPct,
                            Number.isFinite(ghostPct) ? ghostPct : null);
     bar.style.width = `${g.barWidth}px`;
+    const strip = bar.parentElement.querySelector('.timebar');
+    if (strip) strip.style.width = `${g.barWidth}px`;
     fill.style.width = `${g.fillWidth}px`;
     if (ghost) {
       if (g.ghostWidth > 0) {
@@ -459,9 +490,11 @@ export function layoutCells() {
       } else {
         // A forecast that does not clear the next cell boundary has nothing to draw
         // in this style: half a cell of hatching is noise, not information.
+        ghost.style.left = `${Math.min(g.ghostFrom, g.barWidth)}px`;
+        ghost.style.width = '0px';
         ghost.hidden = true;
       }
     }
-    bar.title = `${Math.round(pct)}% · ${g.filledCells} of ${g.cells} cells`;
+    bar.title = `${Math.round(canonicalPct)}% · ${g.filledCells} of ${g.cells} cells`;
   }
 }

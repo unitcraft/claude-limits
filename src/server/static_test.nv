@@ -64,7 +64,7 @@ test "the root is the page, out of the binary" {
         assert(status_of(w) == "HTTP/1.1 200 OK")
         ro b = body_of(w)
         assert(b.contains("<header"))
-        assert(b.contains("data-view=\"list\""))
+        assert(b.contains("data-view=\"accounts\""))
     }
 }
 

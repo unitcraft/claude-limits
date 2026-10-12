@@ -38,9 +38,9 @@ const draw = (order = null) => {
   renderList(snap.accounts, snap.limits, order);
   return list;
 };
-const drawCards = (order = null) => {
+const drawCards = (order = null, reorderEnabled = false) => {
   cards.replaceChildren();
-  renderCards(snap.accounts, snap.limits, order);
+  renderCards(snap.accounts, snap.limits, order, reorderEnabled);
   return cards;
 };
 
@@ -159,7 +159,7 @@ test('a locked window says it is locked, not only in red', () => {
 console.log('\ncards renderer (T2.22)');
 
 test('one card per account, each with a real button as its handle', () => {
-  const v = drawCards();
+  const v = drawCards(null, true);
   assert.equal(v.children.length, 4);
   for (const card of v.children) {
     const handle = card.children[0];
@@ -168,6 +168,11 @@ test('one card per account, each with a real button as its handle', () => {
     assert.equal(handle.attrs.type, 'button', 'without type= a button inside a form submits it');
     assert.match(handle.attrs['aria-label'], /reorder /);
   }
+});
+
+test('ordinary account cards have no reorder handle', () => {
+  const v = drawCards();
+  assert.ok(v.children.every((card) => !card.children.some((n) => n.className === 'card-handle')));
 });
 
 test('a card carries the same rows as the list block does', () => {
@@ -205,6 +210,101 @@ test('a second render updates in place: same nodes, no duplicates', () => {
   renderCards(snap.accounts, snap.limits, null);
   renderCards(snap.accounts, snap.limits, null);
   assert.equal(cards.children.length, 4, 'a redraw that appends would show eight');
+});
+
+test('Blocks track and usage mask both use the fixed 8px-cell / 2px-gap period', () => {
+  const css = readFileSync(new URL('../src/web/app.css', import.meta.url), 'utf8');
+  assert.match(css, /body\[data-bar-style="cells"\] \.bar\s*\{[^}]*var\(--track\) 0 8px, transparent 8px 10px/s,
+    'the track must preserve the full 10px grid even when its available width is fractional');
+  assert.match(css, /body\[data-bar-style="cells"\] \.bar-fill\s*\{[^}]*transparent 0 8px, var\(--surface\) 8px 10px/s,
+    'the usage mask must keep the 2px gaps transparent, not rescale them with fill width');
+});
+
+test('cards keep whole-cell fills on every snapshot update without resize or style changes', () => {
+  document.body.dataset.barStyle = 'cells';
+  try {
+    const account = { id: 'cells', email: 'cells@example.com', state: 'ok' };
+    const limit = (percent) => ({ account_id: 'cells', kind: 'weekly_all', label: 'all', percent });
+    const assertWholeCells = (percent) => {
+      renderCards([account], [limit(percent)]);
+      const card = cards.children[0];
+      const fill = card.find((n) => n.className === 'bar-fill');
+      const bar = card.find((n) => n.className === 'bar');
+      const cells = Math.floor((bar.parentElement.clientWidth + 2) / 10);
+      const expected = Math.round(Math.max(0, Math.min(100, percent) / 100 * cells));
+      const expectedWidth = expected === 0 ? 0 : expected * 10 - 2;
+      assert.equal(fill.style.width, `${expectedWidth}px`, `${percent}% fill geometry`);
+      assert.ok(expectedWidth === 0 || (expectedWidth + 2) % 10 === 0,
+        `${percent}% has a partial cell: ${fill.style.width}`);
+      assert.equal(bar.attrs['aria-valuenow'], String(Math.round(percent)),
+        'the canonical percent remains exposed to assistive technology');
+      assert.equal(card.find((n) => n.className === 'row-pct').textContent, `${Math.round(percent)}%`,
+        'the displayed percent is not quantized');
+    };
+    // Repeated snapshot-style rerenders exercise initial paint and live updates. No
+    // layoutCells, resize, or style toggle is called between these updates.
+    for (const pct of [0, 1, 3, 9, 15, 18, 75, 76, 81, 100, 18.5, 76.25]) assertWholeCells(pct);
+  } finally {
+    document.body.dataset.barStyle = '';
+  }
+});
+
+test('hidden cards retain percentage geometry and snap when shown, without a resize', () => {
+  document.body.dataset.barStyle = 'cells';
+  try {
+    const account = { id: 'hidden', email: 'hidden@example.com', state: 'ok' };
+    const limit = { account_id: 'hidden', kind: 'weekly_all', label: 'all', percent: 76 };
+    cards.hidden = true;
+    renderCards([account], [limit]);
+    const fill = cards.find((n) => n.className === 'bar-fill');
+    renderCards([account], [{ ...limit, percent: 81 }]);
+    const hiddenFill = cards.find((n) => n.className === 'bar-fill');
+    assert.equal(hiddenFill.style.width, '81%', 'hidden view keeps source percent, not 0px');
+    cards.hidden = false;
+    layoutCells(); // the same call showView makes after revealing the view
+    const shownFill = cards.find((n) => n.className === 'bar-fill');
+    assert.equal(shownFill.style.width, '278px', '81% of 34 cells rounds to 28 whole cells');
+    assert.notEqual(fill, shownFill, 'the snapshot update replaced the old card node');
+  } finally {
+    document.body.dataset.barStyle = '';
+  }
+});
+
+test('layout is idempotent across list/cards and restores percentages when leaving Blocks', () => {
+  document.body.dataset.barStyle = 'cells';
+  try {
+    const account = { id: 'geometry', email: 'geometry@example.com', state: 'ok' };
+    const limit = { account_id: 'geometry', kind: 'weekly_all', label: 'all', percent: 81,
+      forecast: { percent_at_reset: 91, severity: 'normal' } };
+    renderList([account], [limit]);
+    renderCards([account], [limit]); // a second layout pass over the already-snapped list
+    for (const host of [list, cards]) {
+      const fill = host.find((n) => n.className === 'bar-fill');
+      const bar = host.find((n) => n.className === 'bar');
+      const ghost = host.find((n) => n.className === 'bar-ghost');
+      assert.equal(fill.style.width, '278px', '81% stays 28 whole cells after repeated layout');
+      assert.equal(fill.dataset.percent, '81', 'the canonical percent survives pixel layout');
+      assert.equal(ghost.style.left, '280px');
+      assert.equal(ghost.style.width, '28px');
+      assert.equal(bar.style.width, '338px');
+    }
+    document.body.dataset.barStyle = '';
+    layoutCells();
+    for (const host of [list, cards]) {
+      const fill = host.find((n) => n.className === 'bar-fill');
+      const bar = host.find((n) => n.className === 'bar');
+      const ghost = host.find((n) => n.className === 'bar-ghost');
+      assert.equal(fill.style.width, '81%');
+      assert.equal(bar.style.width, '');
+      assert.equal(ghost.style.left, '81%');
+      assert.equal(ghost.style.width, '10%');
+    }
+    document.body.dataset.barStyle = 'cells';
+    layoutCells();
+    assert.equal(cards.find((n) => n.className === 'bar-fill').style.width, '278px');
+  } finally {
+    document.body.dataset.barStyle = '';
+  }
 });
 
 test('a hundred percent WITHOUT a reason colours the block, and locked still wins', () => {
@@ -437,6 +537,86 @@ test('layoutCells re-lays the GHOST too, not only the fill (01.1 par.2.2)', () =
   } finally {
     document.body.dataset.barStyle = '';
   }
+});
+
+test('bar geometry and time-strip edge are reversible across repeated Blocks/Rounded relayouts', () => {
+  const cases = [0, 1, 9, 15, 75, 81, 100];
+  const rows = cases.map((percent) => renderRow({
+    ...snap.limits[0], percent,
+    forecast: { ...snap.limits[0].forecast,
+      percent_at_reset: percent < 100 ? percent + 19 : 100 },
+  }));
+  for (const row of rows) document.body.append(row);
+  const bars = rows.map((row) => ({
+    bar: row.find((n) => n.className === 'bar'),
+    fill: row.find((n) => n.className === 'bar-fill'),
+    ghost: row.find((n) => n.className === 'bar-ghost'),
+    strip: row.find((n) => n.className === 'timebar'),
+  }));
+  document.body.dataset.barStyle = 'cells';
+  for (let i = 0; i < 8; i++) layoutCells();
+  for (let i = 0; i < cases.length; i++) {
+    const { bar, fill, ghost, strip } = bars[i];
+    const expectedCells = Math.round(cases[i] / 100 * 34);
+    assert.equal(fill.dataset.percent, String(cases[i]));
+    assert.equal(parseFloat(fill.style.width), expectedCells ? expectedCells * 10 - 2 : 0,
+      `Blocks fill uses source ${cases[i]}%, not a prior pixel width`);
+    assert.equal(strip.style.width, bar.style.width, 'Blocks track and timebar share the snapped right edge');
+    if (ghost) {
+      const forecast = Number(ghost.dataset.at);
+      assert.ok(forecast > cases[i]);
+      if (cases[i] === 100) {
+        assert.equal(ghost.hidden, true, 'a forecast capped at the full current window has no Blocks ghost');
+        assert.equal(parseFloat(ghost.style.width), 0);
+        assert.ok(parseFloat(ghost.style.left) <= parseFloat(bar.style.width),
+          'a hidden zero-width ghost is clamped to the track end');
+      } else {
+        assert.equal(ghost.hidden, false);
+        assert.ok(parseFloat(ghost.style.left) >= 0);
+        assert.ok(parseFloat(ghost.style.left) + parseFloat(ghost.style.width) <= parseFloat(bar.style.width));
+      }
+    }
+  }
+  for (let i = 0; i < 8; i++) {
+    document.body.dataset.barStyle = '';
+    layoutCells();
+    for (let j = 0; j < cases.length; j++) {
+      const { bar, fill, ghost, strip } = bars[j];
+      assert.equal(fill.style.width, `${cases[j]}%`, 'Rounded restores exact source percent');
+      assert.equal(bar.style.width, '');
+      assert.equal(strip.style.width, '', 'Rounded uses the shared full column edge');
+      if (ghost) {
+        assert.equal(ghost.style.left, `${cases[j]}%`);
+        assert.equal(ghost.hidden, false);
+      }
+    }
+    document.body.dataset.barStyle = 'cells';
+    layoutCells();
+  }
+  document.body.dataset.barStyle = '';
+  layoutCells();
+});
+
+test('a live render update replaces pixel geometry with the new canonical percent', () => {
+  const account = snap.accounts[0];
+  const initial = { ...snap.limits[0], account_id: account.id, percent: 9,
+    forecast: { ...snap.limits[0].forecast, percent_at_reset: 28 } };
+  renderList([account], [initial]);
+  document.body.dataset.barStyle = 'cells';
+  for (let i = 0; i < 5; i++) layoutCells();
+  const updated = { ...initial, percent: 81,
+    forecast: { ...initial.forecast, percent_at_reset: 100 } };
+  renderList([account], [updated]); // real live-update render path also calls layoutCells
+  const row = list.find((n) => n.className === 'row');
+  const bar = row.find((n) => n.className === 'bar');
+  const fill = row.find((n) => n.className === 'bar-fill');
+  assert.equal(fill.dataset.percent, '81');
+  assert.equal(parseFloat(fill.style.width), 278, 'the new value is snapped from 81%, not old pixels');
+  document.body.dataset.barStyle = '';
+  layoutCells();
+  assert.equal(fill.style.width, '81%');
+  assert.equal(bar.style.width, '');
+  draw();
 });
 
 test('the ghost is coloured by the PROJECTION, not by the row (01.1 sec.2.2, 2026-09-22)', () => {

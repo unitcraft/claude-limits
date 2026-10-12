@@ -23,7 +23,7 @@ const { createReorder } = await import('../src/web/reorder.js');
 const EMAILS = ['a@example.com', 'b@example.com', 'c@example.com', 'd@example.com'];
 
 /** A fresh view of four cards, plus a controller whose commit is recordable. */
-function fresh({ fail = false } = {}) {
+function fresh({ fail = false, enabled = () => true } = {}) {
   view.replaceChildren();
   const handles = [];
   for (const email of EMAILS) {
@@ -44,6 +44,7 @@ function fresh({ fail = false } = {}) {
       if (fail) throw new Error('412');
     },
     toast: (t) => seen.toasts.push(t),
+    enabled,
   });
   return { r, seen, handles };
 }
@@ -51,7 +52,7 @@ function fresh({ fail = false } = {}) {
 const order = () => view.children.filter((n) => n.className === 'card').map((n) => n.dataset.email);
 const key = (target, k) => ({ target, key: k, preventDefault() {} });
 const drag = (target, y) => ({
-  target, clientY: y, preventDefault() {},
+  target, clientY: y, defaultPrevented: false, preventDefault() { this.defaultPrevented = true; },
   dataTransfer: { setData() {}, effectAllowed: '', dropEffect: '' },
 });
 
@@ -62,6 +63,25 @@ const test = async (name, fn) => {
 };
 
 console.log('keyboard reordering (01.1 §4.1, §10)');
+
+await test('outside explicit reorder mode keyboard and drag cannot change or save order', async () => {
+  let active = false;
+  const { r, seen, handles } = fresh({ enabled: () => active });
+  r.onKeyDown(key(handles[0], ' '));
+  r.onKeyDown(key(handles[0], 'ArrowDown'));
+  assert.deepEqual(order(), EMAILS);
+  const start = drag(view.children[0], 25);
+  r.onDragStart(start);
+  assert.equal(start.defaultPrevented, true);
+  assert.deepEqual(order(), EMAILS);
+  active = true;
+  r.onKeyDown(key(handles[0], ' '));
+  r.onKeyDown(key(handles[0], 'ArrowDown'));
+  r.onKeyDown(key(handles[0], ' '));
+  await new Promise((res) => setTimeout(res, 0));
+  assert.deepEqual(order(), ['b@example.com', 'a@example.com', 'c@example.com', 'd@example.com']);
+  assert.equal(seen.commits.length, 1, 'the enabled mode persists its changed order');
+});
 
 await test('Space takes the card, and the card says so', async () => {
   const { r, handles } = fresh();

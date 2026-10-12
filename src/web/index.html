@@ -36,28 +36,14 @@
     <span data-field="fetched-ago">never</span>
   </span>
 
-  <div class="views" role="tablist" aria-label="view">
-    <button class="icon-btn" role="tab" data-view="list" aria-selected="true" title="list">
-      <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
-        <path d="M2 4h12M2 8h12M2 12h12" stroke="currentColor" stroke-width="1.5"
-              stroke-linecap="round" fill="none"/>
-      </svg>
-    </button>
-    <button class="icon-btn" role="tab" data-view="cards" aria-selected="false" title="cards">
-      <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
-        <rect x="2" y="2.5" width="12" height="4.5" rx="1.2" stroke="currentColor"
-              stroke-width="1.4" fill="none"/>
-        <rect x="2" y="9" width="12" height="4.5" rx="1.2" stroke="currentColor"
-              stroke-width="1.4" fill="none"/>
-      </svg>
-    </button>
-    <button class="icon-btn" role="tab" data-view="stats" aria-selected="false" title="statistics">
-      <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
-        <path d="M2.5 13V8M6.5 13V4M10.5 13V9.5M14.5 13V6" stroke="currentColor"
-              stroke-width="1.6" stroke-linecap="round" fill="none"/>
-      </svg>
-    </button>
+  <div class="views" role="group" aria-label="page">
+    <button class="icon-btn page-tab" data-view="accounts" aria-pressed="true">Accounts</button>
+    <button class="icon-btn page-tab" data-view="stats" aria-pressed="false">Statistics</button>
   </div>
+
+  <button class="btn reorder-toggle" data-action="reorder" aria-pressed="false" title="Enable account reordering">
+    Reorder
+  </button>
 
   <button class="icon-btn" data-action="refresh" title="poll now">
     <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
@@ -78,10 +64,8 @@
 </header>
 
 <main>
-  <!-- One container per view; the skeleton leaves them empty on purpose (T2.19).
-       Rows and account blocks arrive with T2.20, cards with T2.21, charts later. -->
-  <section id="view-list" class="view" data-view="list"></section>
-  <section id="view-cards" class="view" data-view="cards" hidden></section>
+  <!-- One account renderer for ordinary use and explicit reorder mode. -->
+  <section id="view-cards" class="view" data-view="accounts" data-reorder="false"></section>
   <section id="view-stats" class="view view-wide" data-view="stats" hidden></section>
 
   <!-- Shown until the first snapshot arrives, and whenever one cannot be had. Never

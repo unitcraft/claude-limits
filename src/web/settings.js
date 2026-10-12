@@ -214,6 +214,19 @@ export function selectChoice(option) {
   return true;
 }
 
+/** Apply a browser-only radio choice now; it never belongs in the config PUT. */
+export function chooseBrowserPreference(option, effects = {}) {
+  const group = option && option.closest ? option.closest('.choice') : option && option.parentElement;
+  if (!group || group.dataset.store !== 'browser' || !selectChoice(option)) return false;
+  const key = group.dataset.path && group.dataset.path.split('.').pop();
+  const value = option.dataset.value;
+  if (!['view', 'bar_style'].includes(key) || !value) return false;
+  try { localStorage.setItem(key, value); } catch { /* private mode: still apply in this page */ }
+  if (key === 'view' && effects.view) effects.view(value);
+  if (key === 'bar_style' && effects.barStyle) effects.barStyle(value);
+  return true;
+}
+
 /** The stored value of a browser-side preference, or its default. */
 function browserPref(key, fallback) {
   try {
@@ -253,11 +266,9 @@ export function renderSettings(reply) {
   panel.append(head);
 
   // 5.1 View — browser-only, and labelled as such so nobody looks for it in the file.
-  const view = section(panel, 'View', 'kept in this browser, not in the config file');
+  const view = section(panel, 'View',
+    'Bar style applies immediately and is saved in this browser; Save is not needed, and Cancel does not undo it.');
   // 01.1 §5.1 lines 298-299: both live in localStorage, neither in the config file.
-  view.append(field('Layout',
-    choice('ui.view', browserPref('view', 'list'),
-           [['list', 'List'], ['cards', 'Cards']], 'browser')));
   view.append(field('Bar style',
     choice('ui.bar_style', browserPref('bar_style', 'rounded'),
            [['rounded', 'Rounded'], ['blocks', 'Blocks']], 'browser')));

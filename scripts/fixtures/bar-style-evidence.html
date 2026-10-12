@@ -1,0 +1,177 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Isolated bar-style geometry evidence</title>
+<link rel="stylesheet" href="/src/web/app.css">
+<style>
+  body { padding: 24px; }
+  #fixture { width: 450px; }
+  #result { display: none; white-space: pre-wrap; font: 12px monospace; }
+</style>
+<main id="fixture"></main>
+<pre id="result">loading</pre>
+<script type="module">
+  import { renderRow, layoutCells } from '/src/web/render.js';
+  import { setViewOptions } from '/src/web/format.js';
+  window.addEventListener('resize', layoutCells);
+
+  const percents = [0, 1, 9, 15, 75, 81, 100];
+  const severities = ['normal', 'normal', 'normal', 'normal', 'normal', 'warning', 'critical'];
+  const host = document.querySelector('#fixture');
+  const now = Date.now();
+  setViewOptions({ time_bar: true });
+  const rows = percents.map((percent, i) => {
+    const forecast = percent < 100 ? Math.min(120, percent + 19) : 120;
+    const reset = new Date(now + 3 * 86400_000).toISOString();
+    const row = renderRow({
+      kind: 'weekly', label: `synthetic ${percent}%`, percent, severity: severities[i], resets_at: reset,
+      forecast: {
+        percent_at_reset: forecast,
+        runs_out_at: new Date(now + 2 * 86400_000).toISOString(),
+        label: `forecast ${forecast}%`, severity: 'warning',
+      },
+    });
+    host.append(row);
+    return row;
+  });
+  const behindForecastProbe = renderRow({
+    kind: 'weekly', label: 'synthetic behind forecast', percent: 75,
+    forecast: { percent_at_reset: 60, label: 'forecast 60%' },
+  });
+  const forecastNotAheadShowsNoSegment = !behindForecastProbe.querySelector('.bar-ghost');
+
+  function measure() {
+    return rows.map((row, i) => {
+      const bar = row.querySelector('.bar');
+      const fill = row.querySelector('.bar-fill');
+      const ghost = row.querySelector('.bar-ghost');
+      const track = bar.getBoundingClientRect();
+      const filled = fill.getBoundingClientRect();
+      const ghostHidden = Boolean(ghost?.hidden);
+      const ghostRect = ghost && !ghostHidden ? ghost.getBoundingClientRect() : null;
+      const strip = row.querySelector('.timebar');
+      const timeFill = row.querySelector('.timebar-fill');
+      const hatch = row.querySelector('.timebar-hatch');
+      return {
+        percent: Number(fill.dataset.percent),
+         track: track.width,
+         trackRight: track.right,
+         fill: filled.width,
+         fillColor: getComputedStyle(fill).backgroundColor,
+         trackPattern: getComputedStyle(bar).backgroundImage,
+         fillPattern: getComputedStyle(fill).backgroundImage,
+         trackBackgroundPosition: getComputedStyle(bar).backgroundPositionX,
+         fillBackgroundPosition: getComputedStyle(fill).backgroundPositionX,
+        fillRatio: track.width ? filled.width / track.width : 0,
+        ghostHidden,
+        ghostStyleLeft: ghost ? parseFloat(ghost.style.left) : null,
+        ghostStyleWidth: ghost ? parseFloat(ghost.style.width) : null,
+        ghostLeft: ghostRect ? ghostRect.left - track.left : null,
+        ghostEnd: ghostRect ? ghostRect.right - track.left : null,
+        ghostRatio: ghostRect && track.width ? (ghostRect.right - track.left) / track.width : null,
+         timeFillWidth: timeFill?.getBoundingClientRect().width ?? null,
+         timeTrack: strip?.getBoundingClientRect().width ?? null,
+         timeTrackLeft: strip?.getBoundingClientRect().left ?? null,
+         timeTrackRight: strip?.getBoundingClientRect().right ?? null,
+        hatchLeft: hatch ? hatch.getBoundingClientRect().left - strip.getBoundingClientRect().left : null,
+        hatchEnd: hatch ? hatch.getBoundingClientRect().right - strip.getBoundingClientRect().left : null,
+      };
+    });
+  }
+
+  window.runGeometryEvidence = () => {
+    const before = measure();
+    let finalBlocks;
+    for (let i = 0; i < 10; i++) {
+      document.body.dataset.barStyle = 'cells';
+      layoutCells();
+      document.querySelector('#fixture').style.width = i % 2 ? '450px' : '560px';
+      window.dispatchEvent(new Event('resize'));
+      finalBlocks = measure();
+      document.body.dataset.barStyle = '';
+      layoutCells();
+    }
+    const after = measure();
+    const assertions = [];
+    for (let i = 0; i < percents.length; i++) {
+      const pct = percents[i];
+      const cells = Math.floor((finalBlocks[i].track + 2) / 10);
+      const filledCells = Math.round(pct / 100 * cells);
+      const expectedBlockWidth = filledCells ? filledCells * 10 - 2 : 0;
+      const blockWidth = finalBlocks[i].fill;
+      const forecast = Math.min(100, pct < 100 ? pct + 19 : 120);
+      const forecastCells = Math.round(forecast / 100 * cells);
+      const expectedGhostVisible = forecastCells > filledCells &&
+        (forecastCells - filledCells) * 10 - 2 > 0;
+      const expectedGhostLeft = filledCells * 10;
+      const expectedGhostEnd = expectedGhostVisible
+        ? expectedGhostLeft + (forecastCells - filledCells) * 10 - 2
+        : null;
+      const roundedGhostLeftRatio = after[i].ghostLeft == null ? null : after[i].ghostLeft / after[i].track;
+      const roundedGhostEndRatio = after[i].ghostEnd == null ? null : after[i].ghostEnd / after[i].track;
+      const expectedRoundedGhostLeftRatio = pct / 100;
+      const expectedRoundedGhostEndRatio = forecast / 100;
+      const blocksGhostCorrect = expectedGhostVisible
+        ? !finalBlocks[i].ghostHidden &&
+          Math.abs(finalBlocks[i].ghostLeft - expectedGhostLeft) < 0.02 &&
+          Math.abs(finalBlocks[i].ghostEnd - expectedGhostEnd) < 0.02 &&
+          finalBlocks[i].ghostLeft >= 0 && finalBlocks[i].ghostEnd <= finalBlocks[i].track
+        : finalBlocks[i].ghostHidden && finalBlocks[i].ghostLeft == null &&
+          finalBlocks[i].ghostEnd == null && finalBlocks[i].ghostStyleWidth === 0 &&
+          finalBlocks[i].ghostStyleLeft <= finalBlocks[i].track;
+      const roundedGhostCorrect = Math.abs(roundedGhostLeftRatio - expectedRoundedGhostLeftRatio) < 0.003 &&
+        Math.abs(roundedGhostEndRatio - expectedRoundedGhostEndRatio) < 0.003;
+      const blockTrackWidth = finalBlocks[i].track;
+      const canonicalPattern = finalBlocks[i].trackPattern.includes('8px') &&
+        finalBlocks[i].trackPattern.includes('10px') &&
+        finalBlocks[i].fillPattern.includes('8px') && finalBlocks[i].fillPattern.includes('10px') &&
+        /^0(?:%|px)$/.test(finalBlocks[i].trackBackgroundPosition) &&
+        /^0(?:%|px)$/.test(finalBlocks[i].fillBackgroundPosition);
+      const expectedColor = severities[i] === 'warning' ? 'rgb(224, 176, 74)'
+        : severities[i] === 'critical' ? 'rgb(224, 85, 79)' : 'rgb(58, 169, 140)';
+      const blockEdgesAligned = Math.abs(finalBlocks[i].timeTrack - blockTrackWidth) < 0.02 &&
+        Math.abs(finalBlocks[i].timeTrackLeft - finalBlocks[i].trackRight + blockTrackWidth) < 0.02 &&
+        Math.abs(finalBlocks[i].timeTrackRight - finalBlocks[i].trackRight) < 0.02;
+      assertions.push({
+        percent: pct,
+        blocksCells: cells,
+        blocksFillWidth: blockWidth,
+        blocksExpectedFillWidth: expectedBlockWidth,
+        blocksGeometryCorrect: Math.abs(blockWidth - expectedBlockWidth) < 0.02,
+        canonicalPattern,
+        colorCorrect: finalBlocks[i].fillColor === expectedColor && after[i].fillColor === expectedColor,
+        blocksRightEdge: blockEdgesAligned,
+        blocksGhostVisible: expectedGhostVisible,
+        blocksGhostLeft: finalBlocks[i].ghostLeft,
+        blocksExpectedGhostLeft: expectedGhostLeft,
+        blocksGhostEnd: finalBlocks[i].ghostEnd,
+        blocksExpectedGhostEnd: expectedGhostEnd,
+        blocksGhostCorrect,
+        roundedFillRatio: after[i].fillRatio,
+        roundedRatioError: Math.abs(after[i].fillRatio - pct / 100),
+        roundedGhostLeftRatio,
+        expectedRoundedGhostLeftRatio,
+        roundedGhostEndRatio,
+        expectedRoundedGhostEndRatio,
+        roundedGhostCorrect,
+        timeStripPreserved: Math.abs(before[i].timeFillWidth / before[i].timeTrack -
+          after[i].timeFillWidth / after[i].timeTrack) < 0.003 &&
+          Math.abs(before[i].hatchLeft / before[i].timeTrack - after[i].hatchLeft / after[i].timeTrack) < 0.003 &&
+          Math.abs(before[i].hatchEnd / before[i].timeTrack - after[i].hatchEnd / after[i].timeTrack) < 0.003,
+      });
+    }
+    const pass = forecastNotAheadShowsNoSegment && assertions.every((x) =>
+      x.blocksGeometryCorrect && x.canonicalPattern && x.colorCorrect && x.blocksRightEdge && x.blocksGhostCorrect && x.roundedRatioError < 0.003 &&
+      x.roundedGhostCorrect && x.timeStripPreserved);
+    const result = { pass, rounds: 10, resizes: 10, forecastNotAheadShowsNoSegment, before, after, assertions };
+    document.querySelector('#result').textContent = JSON.stringify(result, null, 2);
+    document.body.dataset.result = pass ? 'PASS' : 'FAIL';
+    return result;
+  };
+  window.setEvidenceStyle = (style) => {
+    document.body.dataset.barStyle = style === 'blocks' ? 'cells' : '';
+    layoutCells();
+    return measure();
+  };
+  document.body.dataset.ready = 'true';
+</script>

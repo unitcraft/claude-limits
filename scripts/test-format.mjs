@@ -114,6 +114,19 @@ test('cells: a column too narrow for one cell yields an empty geometry, not junk
   assert.equal(g.fillWidth, 0);
 });
 
+test('cells: one canonical 10px step has 8px cells and no clipped trailing gap', () => {
+  for (const width of [83, 147, 287, 341, 342, 343, 701]) {
+    const g = cellGeometry(width, 100);
+    assert.equal(g.barWidth + 2, g.cells * 10, `track width=${width}`);
+    assert.equal(g.fillWidth, g.barWidth, `100% fill width=${width}`);
+    for (const pct of [0, 1, 9, 15, 75, 81, 100]) {
+      const geo = cellGeometry(width, pct);
+      assert.equal(geo.fillWidth === 0 ? 0 : (geo.fillWidth + 2) % 10, 0,
+        `pct=${pct}, width=${width} must end at a cell edge`);
+    }
+  }
+});
+
 test('ghost: drawn only ahead of the present, and never behind it', () => {
   const ahead = cellGeometry(342, 40, 70);
   assert.ok(ahead.ghostWidth > 0);
