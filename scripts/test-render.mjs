@@ -444,8 +444,8 @@ test('layoutCells re-lays the GHOST too, not only the fill (01.1 par.2.2)', () =
   }
 });
 
-test('bar geometry is reversible across repeated Blocks/Rounded relayouts', () => {
-  const cases = [0, 1, 9, 75, 81, 100];
+test('bar geometry and time-strip edge are reversible across repeated Blocks/Rounded relayouts', () => {
+  const cases = [0, 1, 9, 15, 75, 81, 100];
   const rows = cases.map((percent) => renderRow({
     ...snap.limits[0], percent,
     forecast: { ...snap.limits[0].forecast,
@@ -456,15 +456,17 @@ test('bar geometry is reversible across repeated Blocks/Rounded relayouts', () =
     bar: row.find((n) => n.className === 'bar'),
     fill: row.find((n) => n.className === 'bar-fill'),
     ghost: row.find((n) => n.className === 'bar-ghost'),
+    strip: row.find((n) => n.className === 'timebar'),
   }));
   document.body.dataset.barStyle = 'cells';
   for (let i = 0; i < 8; i++) layoutCells();
   for (let i = 0; i < cases.length; i++) {
-    const { bar, fill, ghost } = bars[i];
+    const { bar, fill, ghost, strip } = bars[i];
     const expectedCells = Math.round(cases[i] / 100 * 34);
     assert.equal(fill.dataset.percent, String(cases[i]));
     assert.equal(parseFloat(fill.style.width), expectedCells ? expectedCells * 10 - 2 : 0,
       `Blocks fill uses source ${cases[i]}%, not a prior pixel width`);
+    assert.equal(strip.style.width, bar.style.width, 'Blocks track and timebar share the snapped right edge');
     if (ghost) {
       const forecast = Number(ghost.dataset.at);
       assert.ok(forecast > cases[i]);
@@ -484,9 +486,10 @@ test('bar geometry is reversible across repeated Blocks/Rounded relayouts', () =
     document.body.dataset.barStyle = '';
     layoutCells();
     for (let j = 0; j < cases.length; j++) {
-      const { bar, fill, ghost } = bars[j];
+      const { bar, fill, ghost, strip } = bars[j];
       assert.equal(fill.style.width, `${cases[j]}%`, 'Rounded restores exact source percent');
       assert.equal(bar.style.width, '');
+      assert.equal(strip.style.width, '', 'Rounded uses the shared full column edge');
       if (ghost) {
         assert.equal(ghost.style.left, `${cases[j]}%`);
         assert.equal(ghost.hidden, false);

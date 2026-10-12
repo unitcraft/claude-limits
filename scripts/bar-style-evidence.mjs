@@ -101,17 +101,17 @@ try {
     await writeFile(join(evidenceDir, name), bytes);
     return createHash('sha256').update(bytes).digest('hex');
   };
-  const initialRoundedShot = await screenshot('28-bars-rounded-before-roundtrips.png');
+  const initialRoundedShot = await screenshot('30-bars-rounded-before-roundtrips.png');
   const initial = await evaluate('window.runGeometryEvidence ? window.runGeometryEvidence() : null');
   if (!initial?.pass) throw new Error(`browser geometry assertions failed: ${JSON.stringify(initial)}`);
   // Reconstruct a Blocks view at the resized viewport and capture visible geometry.
   const blocks = await evaluate("document.querySelector('#fixture').style.width='450px'; window.setEvidenceStyle('blocks')");
-  const blocksShot = await screenshot('28-bars-blocks.png');
+  const blocksShot = await screenshot('30-bars-blocks.png');
   const after = await evaluate("window.runGeometryEvidence()");
   if (!after?.pass) throw new Error(`round-trip assertions failed: ${JSON.stringify(after)}`);
-  const roundedShot = await screenshot('28-bars-rounded-after-roundtrips.png');
-  await writeFile(join(evidenceDir, '28-bars-edge-evidence.json'), JSON.stringify({
-    browser: 'Microsoft Edge headless via CDP', revision: '01e94985e3e46321abf0c53c3ead87f6b2ff0566',
+  const roundedShot = await screenshot('30-bars-rounded-after-roundtrips.png');
+  await writeFile(join(evidenceDir, '30-bars-edge-evidence.json'), JSON.stringify({
+    browser: 'Microsoft Edge headless via CDP', revision: 'task #30; exact source file SHA-256 values are recorded above',
     http: `http://127.0.0.1:${port}/scripts/fixtures/bar-style-evidence.html`,
     hashes, initialRounded: initial, blocks, afterRoundTrips: after,
     screenshots: { initialRounded: initialRoundedShot, blocks: blocksShot, roundedAfterRoundTrips: roundedShot },

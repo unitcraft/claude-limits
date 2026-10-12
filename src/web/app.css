@@ -251,11 +251,11 @@ main:has(.view-wide:not([hidden])) { max-width: var(--page-width-wide); }
 
 .bar { position: relative; height: 10px; border-radius: 3px; background: var(--track); overflow: hidden; }
 .bar-fill { transition: none; }
-body[data-bar-style="cells"] .bar { border-radius: 0; background: repeating-linear-gradient(90deg, var(--track) 0 calc(10% - 2px), transparent calc(10% - 2px) 10%); }
-body[data-bar-style="cells"] .bar-fill { border-radius: 0; background-image: repeating-linear-gradient(90deg, transparent 0 calc(10% - 2px), var(--surface) calc(10% - 2px) 10%); }
-.bar-fill { height: 100%; border-radius: 3px; background: var(--normal); }
-.row[data-severity="warning"] .bar-fill { background: var(--warning); }
-.row[data-severity="critical"] .bar-fill { background: var(--critical); }
+body[data-bar-style="cells"] .bar { border-radius: 0; background: repeating-linear-gradient(90deg, var(--track) 0 8px, transparent 8px 10px); }
+body[data-bar-style="cells"] .bar-fill { border-radius: 0; background-image: repeating-linear-gradient(90deg, transparent 0 8px, var(--surface) 8px 10px); }
+.bar-fill { height: 100%; border-radius: 3px; background-color: var(--normal); }
+.row[data-severity="warning"] .bar-fill { background-color: var(--warning); }
+.row[data-severity="critical"] .bar-fill { background-color: var(--critical); }
 
 /* The forecast ghost: same colour, hatched, so it never reads as already spent. */
 .bar-ghost {

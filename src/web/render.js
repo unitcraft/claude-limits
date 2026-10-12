@@ -465,11 +465,15 @@ export function layoutCells() {
         ghost.hidden = false;
       }
       bar.title = '';
+      const strip = bar.parentElement.querySelector('.timebar');
+      if (strip) strip.style.width = '';
       continue;
     }
     const g = cellGeometry(bar.parentElement.clientWidth, canonicalPct,
                            Number.isFinite(ghostPct) ? ghostPct : null);
     bar.style.width = `${g.barWidth}px`;
+    const strip = bar.parentElement.querySelector('.timebar');
+    if (strip) strip.style.width = `${g.barWidth}px`;
     fill.style.width = `${g.fillWidth}px`;
     if (ghost) {
       if (g.ghostWidth > 0) {
