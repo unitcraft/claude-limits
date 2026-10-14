@@ -129,6 +129,10 @@ jobs:
         working-directory: pkg
         run: python scripts/smoke_server.py target/claude-limits.exe
 
+      - name: Synthetic storage upgrade and missing-key guards
+        working-directory: pkg
+        run: python scripts/smoke_storage_modes.py target/claude-limits.exe
+
       # --version, src/version.nv, nova.toml and (on a tag) the tag must be one number;
       # the script refuses to write a zip otherwise. It also checks the zip's contents
       # and the sum it wrote.
