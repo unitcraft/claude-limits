@@ -1,0 +1,163 @@
+name: linux-v011-probe
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/linux-v011-probe.yml
+      - docs/reports/33.md
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  APP_SHA: ff244a181681e8e9b3880913035b42a2b266c5f7
+  NOVA_REF: 5cdd2bc504ba599cea589590d37fb7339ec56370
+  DUCKDB_REF: 674b12aac4d2bbdb817a9116ed3267d4d60c78fb
+  NOVA_MAIN_REPO: ${{ github.workspace }}/nova
+  NOVA_GC_LIB_DIR: /usr/lib/x86_64-linux-gnu
+  NOVA_GC_INCLUDE_DIR: /usr/include
+
+jobs:
+  linux-x86_64:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+    steps:
+      - name: Checkout immutable v0.1.1 application source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: unitcraft/claude-limits
+          ref: ${{ env.APP_SHA }}
+          path: pkg
+
+      - name: Checkout pinned Nova compiler and runtime
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: nv-lang/nova
+          ref: ${{ env.NOVA_REF }}
+          path: nova
+          submodules: recursive
+
+      - name: Checkout pinned nova-duckdb v0.2.2 source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: nv-lang/nova-duckdb
+          ref: ${{ env.DUCKDB_REF }}
+          path: nova-duckdb
+          submodules: recursive
+
+      - name: Install pinned Rust and Linux build prerequisites
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
+        with:
+          toolchain: 1.85.0
+
+      - name: Install native build dependencies on the ephemeral runner
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential clang cmake ninja-build libgc-dev libuv1-dev python3 nodejs
+
+      - name: Record runner and toolchain provenance
+        run: |
+          set -euo pipefail
+          uname -a
+          ldd --version | head -1
+          rustc --version --verbose
+          cargo --version
+          clang --version | head -1
+          clang++ --version | head -1
+          gcc --version | head -1
+          cmake --version | head -1
+          ninja --version
+          dpkg-query -W -f='${Package}=${Version}\n' build-essential clang cmake ninja-build libgc-dev libuv1-dev
+          sha256sum "$(command -v clang)" "$(command -v clang++)" "$(command -v gcc)" "$(command -v g++)"
+          git -C pkg rev-parse HEAD
+          git -C nova rev-parse HEAD
+          git -C nova-duckdb rev-parse HEAD
+          git -C nova-duckdb/native/duckdb rev-parse HEAD
+
+      - name: Build pinned Nova compiler
+        working-directory: nova/nova-cli
+        run: cargo build --release --locked
+
+      - name: Build pinned DuckDB native archives
+        working-directory: nova-duckdb
+        run: |
+          ./scripts/build-duckdb.sh
+          python3 scripts/check-mbedtls-prefix.py
+          python3 scripts/check-libs-manifest.py
+          sha256sum native/lib/*.a
+
+      - name: Prepare an isolated build-only C++ driver overlay
+        run: |
+          set -euo pipefail
+          test "$(git -C pkg rev-parse HEAD)" = "$APP_SHA"
+          test ! -e "$RUNNER_TEMP/claude-limits-overlay"
+          mkdir "$RUNNER_TEMP/claude-limits-overlay"
+          cp -a pkg/. "$RUNNER_TEMP/claude-limits-overlay/"
+          printf '\n[ffi]\ncxx = true\n' >> "$RUNNER_TEMP/claude-limits-overlay/nova.toml"
+          printf '[replace]\nduckdb = { path = "%s/nova-duckdb" }\n' "$GITHUB_WORKSPACE" > "$RUNNER_TEMP/claude-limits-overlay/nova.override.toml"
+          sha256sum pkg/nova.toml "$RUNNER_TEMP/claude-limits-overlay/nova.toml"
+          diff -u pkg/nova.toml "$RUNNER_TEMP/claude-limits-overlay/nova.toml" | tee "$RUNNER_TEMP/cxx-overlay.diff"
+          test "$(grep -c '^+' "$RUNNER_TEMP/cxx-overlay.diff")" -eq 3
+
+      - name: Nova suite on exact application source with overlay
+        working-directory: ${{ runner.temp }}/claude-limits-overlay
+        env:
+          NOVA_RT_DIR: ${{ github.workspace }}/nova/compiler-codegen/nova_rt
+          NOVA_CG_INCLUDE: ${{ github.workspace }}/nova/compiler-codegen
+          NOVA_STD_PATH: ${{ github.workspace }}/nova/std/src
+          NOVA_DIAG_SEGV: "1"
+        run: |
+          set +e
+          "$GITHUB_WORKSPACE/nova/nova-cli/target/release/nova" test src --timeout 900 > "$RUNNER_TEMP/nova-test.out" 2>&1
+          rc=$?
+          tail -60 "$RUNNER_TEMP/nova-test.out"
+          exit "$rc"
+
+      - name: Release-mode application log regression
+        working-directory: ${{ runner.temp }}/claude-limits-overlay
+        env:
+          NOVA_RT_DIR: ${{ github.workspace }}/nova/compiler-codegen/nova_rt
+          NOVA_CG_INCLUDE: ${{ github.workspace }}/nova/compiler-codegen
+          NOVA_STD_PATH: ${{ github.workspace }}/nova/std/src
+        run: |
+          "$GITHUB_WORKSPACE/nova/nova-cli/target/release/nova" test src/storage/applog_test.nv --mode release
+
+      - name: Offline forecast and server smoke regressions
+        working-directory: ${{ runner.temp }}/claude-limits-overlay
+        run: |
+          python3 -m unittest discover -s scripts -p test_forecast.py -v
+          python3 -m unittest discover -s scripts -p test_smoke_server.py -v
+          python3 -m unittest discover -s scripts -p test_verify_history_import.py -v
+          python3 -m unittest discover -s scripts -p test_recover_history.py -v
+
+      - name: Web checks and repository guards
+        working-directory: ${{ runner.temp }}/claude-limits-overlay
+        run: |
+          node scripts/check-web.mjs
+          set -euo pipefail
+          count=0
+          for guard in scripts/check-*.py; do
+            test -f "$guard"
+            count=$((count + 1))
+            python3 "$guard"
+          done
+          test "$count" -gt 0
+          echo "guards run: $count"
+
+      - name: Release build from immutable application source
+        working-directory: ${{ runner.temp }}/claude-limits-overlay
+        env:
+          NOVA_RT_DIR: ${{ github.workspace }}/nova/compiler-codegen/nova_rt
+          NOVA_CG_INCLUDE: ${{ github.workspace }}/nova/compiler-codegen
+          NOVA_STD_PATH: ${{ github.workspace }}/nova/std/src
+        run: |
+          "$GITHUB_WORKSPACE/nova/nova-cli/target/release/nova" build --mode release src/claude_limits.nv -o "$RUNNER_TEMP/claude-limits"
+          file "$RUNNER_TEMP/claude-limits"
+          readelf -h "$RUNNER_TEMP/claude-limits"
+          readelf -d "$RUNNER_TEMP/claude-limits"
+          ldd "$RUNNER_TEMP/claude-limits"
+          sha256sum "$RUNNER_TEMP/claude-limits"
+          "$RUNNER_TEMP/claude-limits" --version
+          python3 scripts/smoke_server.py "$RUNNER_TEMP/claude-limits"
+          python3 scripts/smoke_storage_modes.py "$RUNNER_TEMP/claude-limits"
