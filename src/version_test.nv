@@ -12,11 +12,11 @@ module claude_limits.version_test
 import claude_limits.version.{version_line, version}
 
 test "version line is the product name and the one version" {
-    assert(version_line() == "claude-limits 0.1.0")
+    assert(version_line() == "claude-limits 0.1.1")
 }
 
 test "the version alone is the number /api/health reports, not the placeholder" {
-    assert(version() == "0.1.0")
+    assert(version() == "0.1.1")
     assert(version() != "0.0.0")
     assert(version_line() == "claude-limits ${version()}")
 }

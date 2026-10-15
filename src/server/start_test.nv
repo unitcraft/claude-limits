@@ -172,7 +172,7 @@ test "before the first round the poll moments are empty and the clock before the
 
 test "the version health reports is the one version, not the placeholder" {
     ro h = health_at(Config.defaults(), some_paths(), "2026-09-30T09:00:00Z", DbAtStart.none(), idle(1790758800000))
-    assert(same("version", "0.1.0", h.app_version))
+    assert(same("version", "0.1.1", h.app_version))
 }
 
 test "the router a start builds reports the live counts and the days of the history" {
@@ -185,7 +185,7 @@ test "the router a start builds reports the live counts and the days of the hist
     assert(w.contains("\"history_days\":9"))
     assert(w.contains("\"last_at\":\"2026-09-30T09:10:00Z\""))
     assert(w.contains("\"next_at\":\"2026-09-30T09:15:00Z\""))
-    assert(w.contains("\"app_version\":\"0.1.0\""))
+    assert(w.contains("\"app_version\":\"0.1.1\""))
     assert(!w.contains("\"uptime_sec\":0,"))
 }
 

@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import tomllib
 
 from smoke_server import database_health_ok, free_port, get, put_json
 
@@ -24,9 +25,13 @@ def run_mode(exe, root, encrypted):
     root.mkdir()
     cfg = root / 'settings.toml'
     data = root / 'data'
+    db = data / 'claude-limits.duckdb'
     key = root / 'keys' / 'db.key'
     key.parent.mkdir()
+    home = root / 'home'
+    home.mkdir()
     port = free_port()
+    assert port != 7391
     base = f'http://127.0.0.1:{port}'
     # No accounts, no real CLI, no credentials or network poll; import is synthetic.
     fake = root / 'bin'
@@ -35,10 +40,11 @@ def run_mode(exe, root, encrypted):
     (fake / 'codex.cmd').write_text('@exit /b 99\n')
     env = dict(os.environ, CLAUDE_LIMITS_DATA=str(data),
                CLAUDE_LIMITS_CONFIG=str(cfg), CLAUDE_LIMITS_DB_KEY_FILE=str(key),
-               APPDATA=str(root / 'roaming'), LOCALAPPDATA=str(root / 'local'),
-               XDG_CONFIG_HOME=str(root / 'xdg-config'), XDG_DATA_HOME=str(root / 'xdg-data'),
-               XDG_STATE_HOME=str(root / 'xdg-state'),
-               PATH=str(fake) + os.pathsep + os.environ.get('PATH', ''))
+                APPDATA=str(root / 'roaming'), LOCALAPPDATA=str(root / 'local'),
+                XDG_CONFIG_HOME=str(root / 'xdg-config'), XDG_DATA_HOME=str(root / 'xdg-data'),
+                XDG_STATE_HOME=str(root / 'xdg-state'),
+                USERPROFILE=str(home), HOME=str(home),
+                PATH=str(fake) + os.pathsep + os.environ.get('PATH', ''))
 
     def settings(mode):
         # Missing storage is the default-policy probe, not an explicit false.
@@ -50,6 +56,12 @@ def run_mode(exe, root, encrypted):
                               capture_output=True, text=True, timeout=30)
 
     def start():
+        config = tomllib.loads(cfg.read_text())
+        assert config['server']['port'] == port and port != 7391
+        assert config['refresh']['enabled'] is False
+        assert config.get('folders', []) == []
+        assert Path(env['CLAUDE_LIMITS_DATA']).resolve() == data.resolve()
+        assert Path(env['CLAUDE_LIMITS_CONFIG']).resolve() == cfg.resolve()
         server = subprocess.Popen([exe, '--serve', '--config', str(cfg)], env=env,
                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         try:
@@ -57,7 +69,12 @@ def run_mode(exe, root, encrypted):
             while time.monotonic() < deadline:
                 status, _, body = get(base + '/api/health', timeout=2)
                 if status == 200:
-                    assert database_health_ok(json.loads(body), encrypted=encrypted), body
+                    health = json.loads(body)
+                    assert database_health_ok(health, encrypted=encrypted), body
+                    assert health['listen']['port'] == port and health['listen']['bind'] == '127.0.0.1', body
+                    assert health['accounts']['total'] == 0 and health['login_dirs'] == 0, body
+                    assert Path(health['storage']['db_path']).resolve() == db.resolve(), body
+                    assert Path(health['storage']['config_path']).resolve() == cfg.resolve(), body
                     return server
                 assert server.poll() is None, 'server exited before health'
                 time.sleep(.2)
@@ -71,10 +88,48 @@ def run_mode(exe, root, encrypted):
             server.terminate()
         server.wait(timeout=15)
 
+    history = root / 'history.json'
+    expected_readings = [
+        ('2026-10-08T12:00:00Z', 12),
+        ('2026-10-08T12:05:00Z', 13),
+    ]
+    history.write_text(json.dumps({'claude:mode@example.org|weekly_all':
+                                  [[at, percent] for at, percent in expected_readings]}))
+
+    def read_history():
+        status, _, body = get(base + '/api/history?range=7d&by=account&step=300')
+        assert status == 200, body
+        payload = json.loads(body)
+        return sorted((point['at'], point['percent'])
+                      for series in payload['series'] for point in series['points'])
+
+    def assert_history_matches_fixture(readings):
+        fixture = json.loads(history.read_text())
+        expected = sorted((at, percent) for rows in fixture.values() for at, percent in rows)
+        assert readings == expected, 'history rows differ from synthetic fixture'
+
     settings(encrypted)
+    # Bootstrap only: this first isolated start creates the private DB and (when
+    # requested) its generated key. It is not the existing-DB/restart assertion.
+    bootstrap = start()
+    try:
+        assert db.is_file()
+        assert key.exists() is encrypted
+        assert read_history() == []
+    finally:
+        stop(bootstrap)
+
+    # Seed the already initialized private DB only after the bootstrap server stopped.
+    seeded = command('import-history', str(history))
+    assert seeded.returncode == 0, seeded.stdout + seeded.stderr
+    assert '2 of 2 readings written' in seeded.stdout, seeded.stdout
+
+    # This is the tested candidate restart over an existing DB with known history.
     server = start()
     try:
         assert key.exists() is encrypted
+        before_upgrade = read_history()
+        assert_history_matches_fixture(before_upgrade)
         status, _, body = get(base + '/api/config')
         state = json.loads(body)
         assert status == 200 and state['config']['storage']['encrypted'] is encrypted
@@ -90,12 +145,13 @@ def run_mode(exe, root, encrypted):
         assert status == 200, body
         status, _, body = get(base + '/api/health')
         assert status == 200 and database_health_ok(json.loads(body), encrypted=encrypted), body
-        assert get(base + '/api/history?range=7d')[0] == 200
+        after_config_change = read_history()
+        assert after_config_change == before_upgrade
+        assert_history_matches_fixture(after_config_change)
         assert key.exists() is encrypted
     finally:
         stop(server)
 
-    db = data / 'claude-limits.duckdb'
     before = digest(db)
     original_key = key.read_bytes() if encrypted else None
     # Restart with saved opposite mode refuses; no conversion and no replacement.
@@ -118,16 +174,7 @@ def run_mode(exe, root, encrypted):
         key.unlink()
 
     settings(encrypted)
-    history = root / 'history.json'
-    history.write_text(json.dumps({'claude:mode@example.org|weekly_all':
-                                  [['2026-10-08T12:00:00Z', 12], ['2026-10-08T12:05:00Z', 13]]}))
-    imported = command('import-history', str(history))
-    assert imported.returncode == 0, imported.stdout + imported.stderr
-    assert '2 of 2 readings written' in imported.stdout, imported.stdout
     assert list((data / 'backup').glob('*.duckdb'))
-    forgotten = command('forget', 'mode@example.org')
-    assert forgotten.returncode == 0 and 'account is forgotten' in forgotten.stdout, forgotten.stdout
-    assert not Path(str(db) + '.fresh').exists()
 
     if encrypted:
         key.unlink()
@@ -146,9 +193,63 @@ def run_mode(exe, root, encrypted):
         key.write_bytes(original_key)
     else:
         assert not key.exists()
-    server = start()
-    stop(server)
-    print(f'PASS: {"encrypted" if encrypted else "default plain"} CLI/API lifecycle, pinned runtime, refusal integrity')
+
+    # Negative probe real data loss only inside this run's private synthetic stand.
+    # Snapshot every storage input, execute the normal forget command, and prove that
+    # the same API-vs-fixture assertion goes red when the rows are actually absent.
+    # Restore exact bytes before the positive restart check, even if an assertion fails.
+    wal = Path(str(db) + '.wal')
+    backup_dir = data / 'backup'
+    config_before = cfg.read_bytes()
+    protected_paths = (db, wal, key)
+    saved = {path: path.read_bytes() if path.is_file() else None for path in protected_paths}
+    saved_backups = {path.name: path.read_bytes() for path in backup_dir.glob('*.duckdb')}
+    lost_server = None
+    try:
+        deleted = command('forget', 'mode@example.org')
+        assert deleted.returncode == 0 and 'account is forgotten' in deleted.stdout, deleted.stdout
+        lost_server = start()
+        lost = read_history()
+        assert lost == [], f'synthetic forget left history rows: {lost}'
+        try:
+            assert_history_matches_fixture(lost)
+        except AssertionError as error:
+            assert str(error) == 'history rows differ from synthetic fixture', str(error)
+            print('PASS: deleting private synthetic history made preservation assertion fail')
+        else:
+            raise AssertionError('data-loss negative probe unexpectedly matched fixture')
+    finally:
+        try:
+            if lost_server is not None:
+                stop(lost_server)
+        finally:
+            for path, content in saved.items():
+                if content is None:
+                    path.unlink(missing_ok=True)
+                else:
+                    path.write_bytes(content)
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            for path in backup_dir.glob('*.duckdb'):
+                if path.name not in saved_backups:
+                    path.unlink()
+            for name, content in saved_backups.items():
+                (backup_dir / name).write_bytes(content)
+            assert cfg.read_bytes() == config_before
+
+    for path, content in saved.items():
+        assert (path.read_bytes() if path.is_file() else None) == content, path.name
+    assert {path.name: path.read_bytes() for path in backup_dir.glob('*.duckdb')} == saved_backups
+
+    restored_server = start()
+    try:
+        restored = read_history()
+        assert_history_matches_fixture(restored)
+        assert restored == expected_readings, restored
+        print('PASS: restored private DB/WAL/key/backup snapshot retained exact history after candidate restart')
+    finally:
+        stop(restored_server)
+    assert not Path(str(db) + '.fresh').exists()
+    print(f'PASS: {"encrypted" if encrypted else "default plain"} CLI/API lifecycle, existing synthetic history preserved, refusal integrity')
 
 
 def main():
