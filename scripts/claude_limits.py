@@ -1010,22 +1010,50 @@ def forecast_of(history, series, kind_class, pct, reset_epoch, now, sched, windo
     if isinstance(window_seconds, (int, float)) and window_seconds > 0:
         window = window_seconds
     limit_start = reset_epoch - window
-    rate_start = max(now - (3600 if calendar else sched["rate_window_days"] * 86400), limit_start)
-    reset_based = limit_start > rate_start
-    if reset_based:
-        # the current limit window began inside the rate window: percent
-        # counts from the window start (0 right after the reset)
-        rate_start = limit_start
-    rate_start = int(rate_start)      # sample timestamps are whole seconds
-    inside = [s for s in samples if s[0] >= rate_start and s[0] >= limit_start]
-    if not inside:
+    raw_rate_start = now - (3600 if calendar else sched["rate_window_days"] * 86400)
+    reset_based = limit_start > raw_rate_start   # decided BEFORE the clamp
+    rate_start = int(max(raw_rate_start, limit_start))
+    pre = [s for s in samples if raw_rate_start <= s[0] < limit_start]
+    post = [s for s in samples if s[0] >= limit_start]
+    if not post:
         return None
-    base_pct = 0.0 if reset_based else inside[0][1]
-    span = now - inside[0][0]
+    if reset_based and pre:
+        # The current window began inside the rate window, so the pre-reset
+        # tail of the PREVIOUS window is still evidence of this user's pace:
+        # the same person with the same habits, the percent baseline just
+        # restarts at the reset. A saturated tail (the window pinned at
+        # ~100 %, the user throttled rather than slow) carries no pace
+        # information: trim it, keeping the climb up to saturation; and if
+        # nothing but the saturation is observable, the pace is unknown,
+        # not zero -- drop the segment entirely.
+        sat = next((i for i, s in enumerate(pre) if s[1] >= 99), None)
+        if sat is not None:
+            pre = pre[:sat + 1]
+        if len(pre) < 2:
+            pre = None
+    if reset_based and pre:
+        # Count both segments, skipping the baseline jump: usage observed
+        # before the reset (pre[-1] - pre[0]) plus usage since it (pct -
+        # post[0], the first post sample right after 0). The denominator
+        # covers the OBSERVED spans only -- hours between the last pre
+        # sample and the reset are unknown and must not dilute the rate
+        # (with a daemon's 5-min cadence the spans are contiguous).
+        base_pct = post[0][1]
+        first_ts = pre[0][0]
+        used = (float(pre[-1][1]) - float(pre[0][1])) + (float(pct) - float(base_pct))
+        span = now - first_ts
+    else:
+        base_pct = 0.0 if reset_based else post[0][1]
+        first_ts = post[0][0]
+        used = float(pct) - float(base_pct)
+        span = now - first_ts
     if span < max(HISTORY_MIN_SPAN, math.ceil(window / 20)):
         return None
-    used = float(pct) - float(base_pct)
-    work = work_between(sched, inside[0][0], now, calendar)
+    if reset_based and pre:
+        work = (work_between(sched, pre[0][0], pre[-1][0], calendar)
+                + work_between(sched, limit_start, now, calendar))
+    else:
+        work = work_between(sched, first_ts, now, calendar)
     if work <= 0:
         # The whole sample window sits outside the working schedule (a fresh
         # history recorded in the evening): usage per WORKING minute is
