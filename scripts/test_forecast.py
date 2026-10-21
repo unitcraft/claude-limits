@@ -65,6 +65,26 @@ class ForecastHistoryTest(unittest.TestCase):
         history = {"series": [[self.NOW - 1800, 1], [self.NOW, 1]]}
         self.assertEqual(ref.forecast_of(history, "series", "session", 1, self.NOW + 3600, self.NOW, sched)[0], 1)
 
+    def test_monthly_reset_seen_in_history_beats_arithmetic_window(self):
+        # 2026-10-21: Kimi's month reset 36 h ago and resets_at is 30.4 d ahead,
+        # so resets_at - 30 d lands in the FUTURE and no post-reset sample exists.
+        sched = ref.forecast_config_of({})
+        reset = self.NOW + 30 * 86400
+        history = {"series": [
+            [self.NOW - 3 * 86400, 85], [self.NOW - 86400, 98],  # old month's tail
+            [self.NOW - 86400 + 300, 0],                          # the observed reset
+            [self.NOW, 5.66],
+        ]}
+        fr = ref.forecast_of(history, "series", "monthly", 5.66, reset, self.NOW, sched)
+        self.assertIsNotNone(fr)
+        self.assertGreater(fr[0], 100)
+
+    def test_monthly_without_observed_reset_still_waits(self):
+        sched = ref.forecast_config_of({})
+        reset = self.NOW + 30 * 86400
+        history = {"series": [[self.NOW - 3600, 5.0], [self.NOW, 5.66]]}  # no drop visible
+        self.assertIsNone(ref.forecast_of(history, "series", "monthly", 5.66, reset, self.NOW, sched))
+
 
 if __name__ == "__main__":
     unittest.main()

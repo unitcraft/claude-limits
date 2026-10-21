@@ -986,10 +986,37 @@ def record_sample(history, series, kind, pct, now):
     history.setdefault(f"{series}|{kind}", []).append([mark, round(float(pct), 4)])
 
 
+RESET_DROP_POINTS = 5.0  # a cumulative percent falls this much only at a reset
+
+
+def window_start_of(samples, reset_epoch, window, now):
+    """When the current window began: the last sharp DROP in the series (a reset
+    is the only event that takes a cumulative percent down), else the arithmetic
+    reset_epoch - window. The arithmetic guess can land in the FUTURE -- Kimi's
+    month runs 31 days against the 30-day guess, and the server reset the month
+    hours before its own announced resets_at (seen 2026-10-20) -- which leaves no
+    post-reset samples and kills the forecast for a day. The observed drop cannot
+    overshoot: it is only sought within the window span, plus 2 days of slack for
+    an early reset."""
+    start = reset_epoch - window
+    earliest = start - 2 * 86400
+    prev = None
+    for ts, value in samples:
+        if not isinstance(value, (int, float)):
+            prev = None
+            continue
+        if prev is not None and earliest <= ts <= now and prev[1] - value >= RESET_DROP_POINTS:
+            start = ts
+        prev = (ts, value)
+    return min(start, now)
+
+
 def forecast_of(history, series, kind_class, pct, reset_epoch, now, sched, window_seconds=None):
     """The spec 01.1 §2.7 formula: rate over the recent window (last 60 min
     for session, last 3 days for weekly, from the reset when it sits inside),
-    extrapolated over the REMAINING working time to the reset.
+    extrapolated over the REMAINING working time to the reset. The window's
+    start is the reset OBSERVED in the history (window_start_of), not calendar
+    arithmetic from resets_at.
 
     Returns (percent_at_reset, runs_out_epoch | None, rate_per_hour, sample_min)
     or None when the forecast is unavailable: no reset time, reset already
@@ -1009,7 +1036,7 @@ def forecast_of(history, series, kind_class, pct, reset_epoch, now, sched, windo
     window = {"session": 5 * 3600, "weekly": 7 * 86400}.get(kind_class, 30 * 86400)
     if isinstance(window_seconds, (int, float)) and window_seconds > 0:
         window = window_seconds
-    limit_start = reset_epoch - window
+    limit_start = window_start_of(samples, reset_epoch, window, now)
     raw_rate_start = now - (3600 if calendar else sched["rate_window_days"] * 86400)
     reset_based = limit_start > raw_rate_start   # decided BEFORE the clamp
     rate_start = int(max(raw_rate_start, limit_start))
