@@ -9,20 +9,26 @@
 // THE RULE IS THE REFERENCE'S, `scripts/claude_limits.py` `forecast_of`, carried over
 // as it stands (plan 01 §0: the reference's rules move one to one):
 //
-//   * the rate is taken over the last 60 minutes for `session` and over
-//     `rate_window_days` for the weeks -- never before the current window began;
-//   * its base is the FIRST sample inside that span;
+//   * the window's start is the reset OBSERVED in the samples -- the last drop of
+//     5+ points; a cumulative percent only falls at a reset (01.1 §2.7, amendment
+//     2026-10-21) -- else `resets_at - window`, a guess that can land in the FUTURE
+//     (a 31-day month against the 30-day guess; a server resetting hours before its
+//     own resets_at), leaving no post-reset samples and no forecast for a day;
+//   * the rate spans from that start; when the window began inside the rate span
+//     (`rate_window_days`, 60 minutes for `session`), the PREVIOUS window's tail
+//     inside the rate span still counts -- the same person's pace, the baseline
+//     just restarts -- with a saturated tail (99 %+) trimmed away, and the tail
+//     dropped when under two points remain;
 //   * a calendar sample span below max(30 minutes, ceil(window seconds / 20))
 //     is no forecast at all -- a sufficiency heuristic, not a precision guarantee;
 //   * `session` counts calendar minutes; the weeks count working minutes when
 //     `[forecast] working_hours` is on, calendar ones otherwise;
 //   * `runs_out_at` walks forward from now until the projected spend reaches 100 %.
 //
-// One thing of the reference is NOT carried, and on purpose: its `reset_based` branch
-// (percent from 0 when the window began inside the rate span) can never fire there --
-// `rate_start` is already the max of the two, so `limit_start > rate_start` is always
-// false. Writing the dead branch here would be inventing behaviour the reference does
-// not have.
+// Until 2026-10-21 this join clamped to `max(now - rate span, resets_at - window)`
+// and skipped the reset-based branch, citing the reference's then-dead code. The
+// branch went live in the reference (the pre-window tail, by the owner's word) and
+// this join caught up.
 
 module model.forecast_join
 
@@ -224,6 +230,34 @@ fn state_of(v SnapshotView, account_id str) -> str {
     "unknown"
 }
 
+/// A cumulative percent falls this much only at a reset (01.1 §2.7, 2026-10-21).
+const RESET_DROP = 5
+const DAY_MS = 86_400_000
+
+/// When the current window began: the last DROP of RESET_DROP or more in the samples
+/// (a reset is the only event that takes a cumulative percent down), else the
+/// arithmetic `resets_at - window`. The drop is sought within the window span plus
+/// two days of slack for an early reset, and never in the future.
+fn observed_window_start(samples []HistSample, reset_ms int, window_ms int, now_ms int) -> int {
+    mut start = reset_ms - window_ms
+    ro earliest = start - 2 * DAY_MS
+    mut prev = -1
+    for s in samples {
+        if s.at_ms > now_ms { continue }
+        if prev >= 0 && s.at_ms >= earliest && prev - s.percent >= RESET_DROP { start = s.at_ms }
+        prev = s.percent
+    }
+    start.min(now_ms)
+}
+
+/// The effective minutes between two moments: calendar or scheduled, by `calendar`.
+fn eff_minutes(calendar bool, sched Schedule, from_ms int, to_ms int, offset_sec int) -> int =>
+    if calendar {
+        (to_ms - from_ms) / MINUTE_MS
+    } else {
+        effective_minutes(sched, grid(from_ms, offset_sec), grid(to_ms, offset_sec))
+    }
+
 /// The forecast of one row, or `None`: unavailable (01.3 §3.3 allows `null`).
 export fn forecast_of(v SnapshotView, l LimitView, rows HistRows, f ForecastRules,
                       now_ms int, offset_sec int, zone TimeZone) -> Option[ForecastView] {
@@ -233,23 +267,54 @@ export fn forecast_of(v SnapshotView, l LimitView, rows HistRows, f ForecastRule
     ro reset_ms = now_ms + l.seconds_left * 1000
     ro calendar = l.kind == "session" || !f.working_hours
     ro rate_span_ms = if l.kind == "session" { 60 * MINUTE_MS } else { f.rate_window_days.max(1) * 1440 * MINUTE_MS }
-    ro limit_start = reset_ms - l.window_sec * 1000
-    ro rate_start = (now_ms - rate_span_ms).max(limit_start)
+    ro samples = samples_of(v, l, rows)
+    ro limit_start = observed_window_start(samples, reset_ms, l.window_sec * 1000, now_ms)
+    ro raw_rate_start = now_ms - rate_span_ms
+    // Decided BEFORE any clamp: the window began inside the rate span, so the
+    // previous window's tail within the span is still this user's pace.
+    ro reset_based = limit_start > raw_rate_start
 
-    mut first = HistSample{ at_ms: -1, percent: 0, resets_at_ms: 0, locked: false }
-    for s in samples_of(v, l, rows) {
-        if first.at_ms < 0 && s.at_ms >= rate_start && s.at_ms <= now_ms { first = s }
+    mut pre []HistSample = []
+    mut post []HistSample = []
+    for s in samples {
+        if s.at_ms > now_ms { continue }
+        if s.at_ms >= limit_start { post.push(s) } else if s.at_ms >= raw_rate_start { pre.push(s) }
     }
-    if first.at_ms < 0 { return None }
+    if post.len() == 0 { return None }
+    if reset_based {
+        // A saturated tail (the window pinned at ~100 %, the user throttled rather
+        // than slow) carries no pace information: keep the climb up to saturation.
+        mut sat = pre.len()
+        mut i = 0
+        while i < pre.len() {
+            if pre[i].percent >= 99 { sat = i + 1; i = pre.len() } else { i += 1 }
+        }
+        mut kept []HistSample = []
+        for k in 0..sat { kept.push(pre[k]) }
+        pre = kept
+    }
+    ro combined = reset_based && pre.len() >= 2
+    // The else arm's base: 0 when the window began inside the rate span (the
+    // baseline restarts at the reset), else the first sample of the window.
+    ro first = if combined { pre[0] } else { post[0] }
+    ro used = if combined {
+        (pre[pre.len() - 1].percent - pre[0].percent) + (l.percent - post[0].percent)
+    } else if reset_based {
+        l.percent
+    } else {
+        l.percent - post[0].percent
+    }
     ro span_ms = now_ms - first.at_ms
     ro min_span_ms = MIN_SPAN_MS.max(((l.window_sec + 19) / 20) * 1000)
     if span_ms < min_span_ms { return None }
 
     ro sched = schedule_of(f)
-    ro work_min = if calendar { span_ms / MINUTE_MS } else { effective_minutes(sched, grid(first.at_ms, offset_sec), grid(now_ms, offset_sec)) }
-    ro remaining_min = if calendar { (reset_ms - now_ms) / MINUTE_MS } else { effective_minutes(sched, grid(now_ms, offset_sec), grid(reset_ms, offset_sec)) }
+    ro pre_min = if combined { eff_minutes(calendar, sched, pre[0].at_ms, pre[pre.len() - 1].at_ms, offset_sec) } else { 0 }
+    ro post_min = eff_minutes(calendar, sched, if combined { limit_start } else { first.at_ms }, now_ms, offset_sec)
+    ro work_min = pre_min + post_min
+    ro remaining_min = eff_minutes(calendar, sched, now_ms, reset_ms, offset_sec)
     ro basis = if calendar { Basis.Clock } else { Basis.WorkingHours }
-    ro r = forecast(l.percent, l.percent - first.percent, work_min, remaining_min, span_ms / MINUTE_MS, basis)
+    ro r = forecast(l.percent, used, work_min, remaining_min, span_ms / MINUTE_MS, basis)
     if !r.available { return None }
 
     ro out_ms = if r.runs_out_in_min < 0 {
