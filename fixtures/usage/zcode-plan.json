@@ -1,0 +1,22 @@
+{
+  "_comment": "ZCode (z.ai) plan reply, GET zcode.z.ai/api/v1/zcode-plan/billing/current (plan 01.8). The active plan with the highest priority gives the card its plan name and end date; entitlements are not shown yet. Only read by the reference tool in --offline mode when a ZCode login is present.",
+  "code": 0,
+  "msg": "",
+  "data": {
+    "server_time": 1793400000,
+    "plans": [
+      {
+        "user_plan_id": "0192f3a4-0000-7000-8000-0000000000c3",
+        "plan_id": "0192f3a4-0000-7000-8000-0000000000c4",
+        "name": "ZCODE FIXTURE PLAN",
+        "description": "",
+        "priority": 101,
+        "status": "active",
+        "starts_at": 1793372400,
+        "ends_at": 1793581200,
+        "entitlements": []
+      }
+    ]
+  },
+  "logid": "fixture-zcode-plan"
+}

@@ -1,0 +1,137 @@
+// Tests for zcode_cipher.nv -- the vectors ARE the case, since the AES-256-GCM here
+// is implemented by hand (plan 01.8): the published FIPS-197 block vector, the NIST
+// SP 800-38D GCM vectors (no AAD -- the store uses none), and one blob the PYTHON
+// reference encrypted. Encrypting in one implementation and decrypting in the other,
+// on the same committed bytes, is what makes the pair trustworthy.
+//
+//   ./nova.sh test src/usage/ --filter zcode_cipher_test
+
+module usage.zcode_cipher_test
+
+import claude_limits.usage.zcode_cipher.{aes256_block, gcm_decrypt, gcm_encrypt, decrypt_value, zcode_key, fallback_secret, GcmOut}
+
+fn ints(xs []u8) -> []int {
+    mut out []int = []
+    for b in xs { out.push(b as int) }
+    out
+}
+
+fn hex_val(c u8) -> int {
+    ro n = c as int
+    if n >= 48 && n <= 57 { return n - 48 }
+    if n >= 97 && n <= 102 { return n - 87 }
+    if n >= 65 && n <= 70 { return n - 55 }
+    -1
+}
+
+fn hex16s(s str) -> []int {
+    ro bytes = s.bytes()
+    mut out []int = []
+    mut i = 0
+    while i + 1 < bytes.len() {
+        out.push(hex_val(bytes[i]) * 16 + hex_val(bytes[i + 1]))
+        i += 2
+    }
+    out
+}
+
+// The FIPS-197 C.3 vector: key 000102..1f, plaintext 00112233..eeff.
+test "the published AES-256 block vector" {
+    mut key []int = []
+    mut pt []int = []
+    for k in 0..32 { key.push(k) }
+    for b in hex16s("00112233445566778899aabbccddeeff") { pt.push(b) }
+    ro ct = aes256_block(key, pt)
+    mut want []int = []
+    for b in hex16s("8ea2b7ca516745bfeafc49904b496089") { want.push(b) }
+    for k in 0..16 { assert(ct[k] == want[k]) }
+}
+
+test "the NIST GCM vectors without AAD (TC13, TC14, TC15)" {
+    ro k0 = ints16("0000000000000000000000000000000000000000000000000000000000000000")
+    ro iv0 = ints16("000000000000000000000000")
+    // TC13: empty plaintext.
+    match gcm_encrypt(k0, iv0, []) {
+        Err(_) => assert(false)
+        Ok(out) => {
+            assert(out.ct.len() == 0)
+            assert(hex_of(out.tag) == "530f8afbc74536b9a963b4f1c4cb738b")
+        }
+    }
+    // TC14: one zero block.
+    match gcm_encrypt(k0, iv0, ints16("00000000000000000000000000000000")) {
+        Err(_) => assert(false)
+        Ok(out) => {
+            assert(hex_of(out.ct) == "cea7403d4d606b6e074ec5d3baf39d18")
+            assert(hex_of(out.tag) == "d0d1c8a799996bf0265b98b5d48ab919")
+        }
+    }
+    // TC15: the long one.
+    ro k2 = ints16("feffe9928665731c6d6a8f9467308308feffe9928665731c6d6a8f9467308308")
+    ro iv2 = ints16("cafebabefacedbaddecaf888")
+    ro pt2 = ints16("d9313225f88406e5a55909c5aff5269a86a7a9531534f7da2e4c303d8a318a721c3c0c95956809532fcf0e2449a6b525b16aedf5aa0de657ba637b391aafd255")
+    match gcm_encrypt(k2, iv2, pt2) {
+        Err(_) => assert(false)
+        Ok(out) => {
+            assert(hex_of(out.ct) == "522dc1f099567d07f47f37a32a84427d643a8cdcbfe5c0c97598a2bd2555d1aa8cb08e48590dbb3da7b08b1056828838c5f61e6393ba7a0abcc9f662898015ad")
+            assert(hex_of(out.tag) == "b094dac5d93471bdec1a502270e3cc6c")
+        }
+    }
+}
+
+test "a round trip, and both tamper directions refused" {
+    ro key = zcode_key("round-trip")
+    ro iv = ints16("00112233445566778899aabb")
+    ro pt = ints16("aabbccddeeff00112233445566778899aabbccddeeff")
+    match gcm_encrypt(key, iv, pt) {
+        Err(_) => assert(false)
+        Ok(out) => {
+            match gcm_decrypt(key, iv, out.ct, out.tag) {
+                Err(_) => assert(false)
+                Ok(plain) => for k in 0..pt.len() { assert(plain[k] == pt[k]) }
+            }
+            // The tag flipped: the wrong-secret case.
+            mut bad_tag []int = []
+            for b in out.tag { bad_tag.push(b) }
+            bad_tag[0] = bad_tag[0] ^ 1
+            assert(gcm_decrypt(key, iv, out.ct, bad_tag).is_err())
+            // The ciphertext flipped.
+            mut bad_ct []int = []
+            for b in out.ct { bad_ct.push(b) }
+            bad_ct[1] = bad_ct[1] ^ 1
+            assert(gcm_decrypt(key, iv, bad_ct, out.tag).is_err())
+        }
+    }
+}
+
+// Encrypted by the PYTHON reference (`scripts/claude_limits.py`, `_gcm_encrypt`) over
+// the secret of a synthetic Windows box. This side must decrypt it -- the two
+// implementations agreeing on committed bytes (plan 01.8).
+const NODE_BLOB_SECRET = "zcode-credential-fallback:win32:C:\\Users\\me:me"
+const NODE_BLOB_VALUE = "enc:v1:ABEiM0RVZneImaq7.JbJY0TTnSmaKHOE4psJmPQ.EPFwkziZz7Pd7aoZ3_tboMpbyvOOy0lWvZ7JksehX8f8AuMT"
+
+test "the python-encrypted blob decrypts, a plain value passes through" {
+    match decrypt_value(NODE_BLOB_VALUE, NODE_BLOB_SECRET) {
+        Err(_) => assert(false)
+        Ok(plain) => assert(plain == "zcode-fixture-token-0123456789abcdef")
+    }
+    match decrypt_value("plain-token", "any secret") {
+        Err(_) => assert(false)
+        Ok(plain) => assert(plain == "plain-token")
+    }
+}
+
+test "the fallback secret is spelled the way the app spells it" {
+    assert(fallback_secret("win32", "C:\\Users\\me", "me") == NODE_BLOB_SECRET)
+}
+
+fn ints16(hex str) -> []int => hex16s(hex)
+
+fn hex_of(xs []int) -> str {
+    ro digits = "0123456789abcdef"
+    mut out = ""
+    for b in xs {
+        out = "${out}${digits[b / 16..b / 16 + 1]}${digits[b % 16..b % 16 + 1]}"
+    }
+    out
+}
