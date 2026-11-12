@@ -1,0 +1,87 @@
+// Tests for qoder_cipher.nv -- task 035: Qoder's credential blob, opened without
+// the binary.
+//
+//   ./nova.sh test src/usage/ --filter qoder_cipher_test
+//
+// The cipher is the WASM module inside qodercli (`credential_storage_encrypt` /
+// `credential_storage_decrypt`), keyed by the first 16 characters of the machine
+// id, the IV being that same key (research.md, Э0). Pinned three ways: the
+// primitive's published vectors (FIPS-197; NIST SP 800-38A F.2.1), the
+// WASM-encrypted committed blob `fixtures/usage/qoder-blob.json`, and a round
+// trip through THIS project's cipher with the wrong machine refused.
+
+module usage.qoder_cipher_test
+
+import claude_limits.usage.qoder_cipher.{aes128_block, aes128_inv_block, qoder_decrypt, qoder_encrypt, qoder_key}
+
+fn bstr(ns []int) -> str {
+    mut out []u8 = []
+    for b in ns { out.push(b as u8) }
+    out.to_str_lossy()
+}
+
+fn bytes_lit(ns []int) -> []int {
+    mut out []int = []
+    for b in ns { out.push(b) }
+    out
+}
+
+fn hex_of(bs []int) -> str {
+    ro digits = "0123456789abcdef"
+    mut out = ""
+    for b in bs {
+        ro hi = digits[b / 16..b / 16 + 1]
+        ro lo = digits[b % 16..b % 16 + 1]
+        out = "${out}${hi}${lo}"
+    }
+    out
+}
+
+test "the key is the 16 characters the WASM is handed" {
+    ro k = qoder_key("0192f3a4-0000-7000-8000-0000000000c1")
+    assert(k.byte_len() == 16)
+}
+
+test "the primitive: FIPS-197 AES-128, both directions" {
+    ro key = bytes_lit([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15])
+    ro pt = bytes_lit([0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff])
+    assert(hex_of(aes128_block(key, pt)) == "69c4e0d86a7b0430d8cdb78070b4c55a")
+    assert(hex_of(aes128_inv_block(key, aes128_block(key, pt))) == hex_of(pt))
+}
+
+test "a round trip, and the wrong machine refused" {
+    ro pt = "{\"uid\":\"u-1\",\"login_method\":\"browser\",\"access_token\":\"qoder-fixture-access\"}"
+    ro key = qoder_key("0192f3a4-0000-7000-8000-0000000000c1")
+    // the wrong id differs INSIDE the first 16 characters -- the key zone
+    ro other = qoder_key("0192f3a5-0000-7000-8000-0000000000c2")
+    match qoder_encrypt(pt, key) {
+        Err(_) => assert(false)
+        Ok(blob) => {
+            match qoder_decrypt(blob, key) {
+                Err(_) => assert(false)
+                Ok(plain) => assert(plain == pt)
+            }
+            assert(qoder_decrypt(blob, other).is_err())
+        }
+    }
+}
+
+test "the committed blob, encrypted by the WASM itself, opens" {
+    // fixtures/usage/qoder-blob.json -- built by qodercli's own module, byte for
+    // byte; decrypting it here pins this implementation to the oracle. The store
+    // holds the fixture login, whose uid is `u-1`.
+    ro blob = "urv+uveP5fsaPoeA4rT0qvFh30kdjccA8R/uZROAlx76QvLnkVdR9Vi3JBpFG0S9yDiWya35C6ZLW5kCgw+GvUdMXmHlXJE2S4D+PRn1YIQksGus2MU9xugZy9QDXRZkOFnwKrGrHlbZsGVAzrWTdDpVJMsFtNWCLnBJkbtjA6A6sOHpoEL/PqhsWo1Wqj0HviszuDVbfkk+xHhjrEpFJ58PC9eSdXGxcRKqZHgyj/oIKVp81sAMihYNztnMVCLL"
+    match qoder_decrypt(blob, "0192f3a4-0000-7000-8000-0000000000c1") {
+        Err(_) => assert(false)
+        Ok(plain) => {
+            assert(plain.contains("\"uid\":\"u-1\""))
+            assert(plain.contains("\"security_oauth_token\""))
+        }
+    }
+}
+
+test "damaged input refused, not crashed" {
+    ro key = qoder_key("0192f3a4-0000-7000-8000-0000000000c1")
+    assert(qoder_decrypt("not-a-blob", key).is_err())
+    assert(qoder_decrypt("", key).is_err())
+}

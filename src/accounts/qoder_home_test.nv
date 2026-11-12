@@ -1,0 +1,111 @@
+// Tests for qoder_home.nv -- task 035: a Qoder home read (and decrypted) by its
+// own files.
+//
+//   ./nova.sh test src/accounts/qoder_home_test.nv
+//
+// The encrypted store values are built with THIS project's own cipher (round
+// trips); the cross-implementation case -- the WASM-encrypted blob -- lives in
+// `qoder_cipher_test.nv`, so this file only proves the home logic around it. The
+// machine id is fixed: a wrong one must show as a broken login, not a missing one.
+// The marker is `.qoder-app-status.json` -- an OPEN file, the identity's source;
+// `logged_in: false` is a login with a reason, not a missing account.
+
+module accounts.qoder_home_test
+
+import qoder_home.{QoderLogin, qoder_logins_at, read_qoder_access}
+import claude_limits.usage.qoder_cipher.{qoder_encrypt}
+import claude_limits.accounts.discover.{Dirs}
+import claude_limits.accounts.login.{Creds}
+
+const MID = "0192f3a4-0000-7000-8000-0000000000c1"
+
+fn creds_json() -> str => "{\"uid\":\"u-1\",\"login_method\":\"browser\",\"access_token\":\"qoder-fixture-access\",\"security_oauth_token\":\"qoder-fixture-bearer\",\"expire_time\":1793000000000,\"login_timestamp\":1792900000000}"
+
+/// `.auth/user`: the WASM's framing is opaque here -- a round trip through the
+/// same cipher. Another machine's blob (`under` = another id) must not open.
+fn auth_blob(under str) -> str {
+    ro m = under
+    match qoder_encrypt(creds_json(), m) {
+        Err(_) => panic("test encrypt failed")
+        Ok(b) => b
+    }
+}
+
+fn status_text(logged bool) -> str => "{\"logged_in\":${logged},\"name\":\"Fixture User\",\"email\":\"Me@Example.COM\",\"version\":\"1.1.86\"}"
+
+fn file_text(path str) -> str {
+    if path == "/qd/home/.qoder-app-status.json" { return status_text(true) }
+    if path == "/qd/home/.auth/machine_id" { return MID }
+    if path == "/qd/home/.auth/user" { return auth_blob(MID) }
+    if path == "/qd/out/.qoder-app-status.json" { return status_text(false) }
+    if path == "/qd/out/.auth/machine_id" { return MID }
+    if path == "/qd/bad/.qoder-app-status.json" { return status_text(true) }
+    if path == "/qd/bad/.auth/machine_id" { return MID }
+    if path == "/qd/bad/.auth/user" { return "not-a-blob" }
+    if path == "/qd/wrong/.qoder-app-status.json" { return status_text(true) }
+    // the wrong id differs INSIDE the first 16 characters -- the key zone
+    if path == "/qd/wrong/.auth/machine_id" { return "0192f3a5-0000-7000-8000-0000000000c2" }
+    if path == "/qd/wrong/.auth/user" { return auth_blob(MID) }   // built on THIS machine
+    ""
+}
+
+fn on_disk[T](body fn() Dirs Creds -> T) -> T =>
+    with Dirs = effect Dirs {
+        list(path) -> []str { [] }
+        exists(path) -> bool { file_text(path) != "" }
+        is_dir(path) -> bool { path == "/qd/home" || path == "/qd/out" || path == "/qd/bad" || path == "/qd/wrong" || path == "/qd/none" }
+    } {
+        with Creds = effect Creds {
+            read(path) -> str { file_text(path) }
+        } {
+            body()
+        }
+    }
+
+fn found(dir str) -> []QoderLogin {
+    ro d = dir
+    on_disk(fn() Dirs Creds -> []QoderLogin => qoder_logins_at(d))
+}
+
+test "a logged-in home: named by the lowered e-mail of the status file, token inside" {
+    ro got = found("/qd/home")
+    assert(got.len() == 1)
+    assert(got[0].name == "me@example.com")
+    assert(got[0].has_token)
+    assert(got[0].broken == "")
+    assert(got[0].path == "/qd/home/.qoder-app-status.json")
+}
+
+test "a folder with no status file is not a home" {
+    assert(found("/qd/none").len() == 0)
+}
+
+test "logged_in false is a login with the reason, not a missing account" {
+    ro got = found("/qd/out")
+    assert(got.len() == 1)
+    assert(!got[0].has_token)
+    assert(got[0].broken.contains("logged out"))
+}
+
+test "a store that will not decrypt is a broken LOGIN, not a missing account" {
+    ro got = found("/qd/bad")
+    assert(got.len() == 1)
+    assert(!got[0].has_token)
+    assert(got[0].broken.contains("did not decrypt"))
+}
+
+test "another machine's blob does not open here either" {
+    ro got = found("/qd/wrong")
+    assert(got.len() == 1)
+    assert(!got[0].has_token)
+    assert(got[0].broken.contains("did not decrypt"))
+}
+
+test "the bearer for the API is the one token the store keeps" {
+    ro got = on_disk(fn() Dirs Creds -> str =>
+        match read_qoder_access("/qd/home/.auth/user", MID) {
+            Some(t) => t
+            None => "none"
+        })
+    assert(got == "qoder-fixture-bearer")
+}

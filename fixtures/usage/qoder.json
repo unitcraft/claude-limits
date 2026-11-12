@@ -1,0 +1,12 @@
+{
+  "_comment": "Qoder usage reply, GET openapi.qoder.sh/api/v2/quota/usage (task 035). The live wire, measured 2026-11-12 (plan's Э9): a FLAT camelCase object, no envelope; totalUsagePercentage is a FRACTION 0..1 (the inner percentage fields of userQuota/addOnQuota are fractions too), expiresAt is epoch MILLISECONDS. One quota row: the SUM against the plan's month. userQuota, addOnQuota and dedicatedResourcePackages are deliberately absent -- no package breakdown (the owner's word, 2026-11-12). A refusal is a reply carrying code != 0 (not this shape). Only read by the reference tool in --offline mode when a Qoder login is present.",
+  "userId": "0192f3a4-0000-7000-8000-0000000000c1",
+  "userType": "personal_professional_trial",
+  "usageType": "credits",
+  "totalUsagePercentage": 0.42,
+  "isQuotaExceeded": false,
+  "expiresAt": 1793462400000,
+  "upgradeUrl": "https://qoder.com/pricing?client=qoder",
+  "outerProviders": [],
+  "isPlanQuotaProrated": false
+}

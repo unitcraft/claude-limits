@@ -1,0 +1,115 @@
+// Tests for qoder.nv -- task 035: the Qoder replies against the REFERENCE.
+//
+//   ./nova.sh test src/usage/qoder_test.nv
+//
+// The same numbers were run through the reference's own `qoder_rows_of` and
+// `qoder_active_plan` (`scripts/claude_limits.py`, task 035), which printed:
+//
+//   fixture    quota 42.0      reset 1793462400   (fixtures/usage/qoder.json;
+//                                                 the wire's fraction 0.42)
+//   half-even  quota 12.0      reset 1793462400   (a fraction of 0.125)
+//   round-up   quota 14.0      reset 1793462400   (a fraction of 0.135)
+//   no-reset   quota 42.0      reset None
+//   plan       QODER FIXTURE PLAN ends 1795446404   (end_date in ms)
+//
+// The wire was measured against the live host on 2026-11-12 (Э9): the usage
+// reply is a flat camelCase object whose `totalUsagePercentage` is a FRACTION
+// 0..1 and whose `expiresAt` is epoch ms; the plan reply is a flat snake_case
+// object, dates in ms too. The reference keeps the percent a float and rounds
+// at print; the port rounds at parse, half to even (`round_percent`), where
+// every other window's percent lives. One row per reply: the SUM of the quota
+// (`totalUsagePercentage`), no package breakdown (`userQuota`, `addOnQuota`,
+// `dedicatedResourcePackages` are not read -- the owner's word, 2026-11-12).
+// The window kind is the month one the storage already carries (`monthly`,
+// model '') -- no new kind.
+
+module usage.qoder_test
+
+import qoder.{parse_qoder, parse_qoder_plan}
+import claude_limits.usage.parse.{PollOutcome}
+import claude_limits.usage.fetch.{request_qoder}
+import claude_limits.window.{Window}
+
+const FIXTURE = "{\"userId\": \"0192f3a4-0000-7000-8000-0000000000c1\", \"userType\": \"personal_professional_trial\", \"usageType\": \"credits\", \"totalUsagePercentage\": 0.42, \"isQuotaExceeded\": false, \"expiresAt\": 1793462400000}"
+
+fn half_even() -> str =>
+    "{\"totalUsagePercentage\": 0.125, \"expiresAt\": 1793462400000}"
+
+fn round_up() -> str =>
+    "{\"totalUsagePercentage\": 0.135, \"expiresAt\": 1793462400000}"
+
+fn no_reset() -> str =>
+    "{\"totalUsagePercentage\": 0.42}"
+
+fn exceeded() -> str =>
+    "{\"totalUsagePercentage\": 1.0, \"isQuotaExceeded\": true, \"expiresAt\": 1793462400000}"
+
+fn row(w Window) -> str => "${w.kind}|${w.model}|${w.percent}|${w.resets_at_ms}"
+
+fn first_row(body str) -> str {
+    ro u = parse_qoder(body)
+    if u.windows.len() == 0 { return "none" }
+    row(u.windows[0])
+}
+
+fn same(label str, want str, got str) -> bool {
+    if want == got { return true }
+    panic("${label}: want [${want}], got [${got}]")
+}
+
+test "the fixture: one quota row, the fraction 0.42 as 42 percent, the reset already in ms" {
+    assert(same("fixture", "monthly||42|1793462400000", first_row(FIXTURE)))
+}
+
+test "a fraction of 0.125 rounds half to even (12), 0.135 rounds up (14)" {
+    assert(same("half-even", "monthly||12|1793462400000", first_row(half_even())))
+    assert(same("round-up", "monthly||14|1793462400000", first_row(round_up())))
+}
+
+test "no reset named: the row stands, the reset is 0 (unknown)" {
+    assert(same("no-reset", "monthly||42|0", first_row(no_reset())))
+}
+
+test "quota exceeded is still a row, at 100" {
+    assert(same("exceeded", "monthly||100|1793462400000", first_row(exceeded())))
+}
+
+test "code != 0 is NoWindows; not JSON is BadJson; a missing percentage is no row" {
+    assert(parse_qoder("{\"code\": 3001, \"msg\": \"parameter error\"}").outcome == PollOutcome.NoWindows)
+    assert(parse_qoder("not json").outcome == PollOutcome.BadJson)
+    assert(parse_qoder("{\"expiresAt\": 1793462400000}").outcome == PollOutcome.NoWindows)
+    assert(parse_qoder(FIXTURE).outcome == PollOutcome.Parsed)
+}
+
+const PLANS = "{\"user_type\": \"personal_professional_trial\", \"plan_tier_name\": \"HIGH\", \"is_personal_version\": true, \"is_paid_plan\": false, \"start_date\": 1794236804608, \"end_date\": 1795446404608}"
+
+test "the plan, flat: its name and its end already in ms" {
+    match parse_qoder_plan(PLANS) {
+        Some(p) => assert(p.name == "HIGH" && p.ends_at_ms == 1795446404608)
+        None => assert(false)
+    }
+}
+
+test "the plan, enveloped and in seconds: the same reader takes both" {
+    match parse_qoder_plan("{\"code\": 0, \"data\": {\"plan_tier_name\": \"WRAP\", \"end_date\": 2000}}") {
+        Some(p) => assert(p.name == "WRAP" && p.ends_at_ms == 2000000)
+        None => assert(false)
+    }
+}
+
+test "no plan name, bad JSON: all None" {
+    assert(parse_qoder_plan("{\"end_date\": 1795446404608}").is_none())
+    assert(parse_qoder_plan("not json").is_none())
+    assert(parse_qoder_plan("{\"code\": 3001}").is_none())
+}
+
+test "the quota request takes ONE bearer -- the one the store keeps" {
+    ro q = request_qoder("openapi.qoder.sh", "/api/v2/quota/usage", "TOK")
+    assert(q.starts_with("GET /api/v2/quota/usage HTTP/1.1\r\n"))
+    assert(q.contains("Host: openapi.qoder.sh\r\n"))
+    assert(q.contains("Authorization: Bearer TOK\r\n"))
+    assert(!q.contains("X-Bigmodel-Authorization"))
+    ro plan = request_qoder("openapi.qoder.sh", "/api/v2/user/plan", "TOK")
+    assert(plan.starts_with("GET /api/v2/user/plan HTTP/1.1\r\n"))
+    assert(plan.contains("Authorization: Bearer TOK\r\n"))
+}
