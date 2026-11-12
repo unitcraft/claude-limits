@@ -15,6 +15,7 @@ test "every row kind the reference writes has its window, and nothing else does"
     assert(port_kind("5h limit").map(|k| "${k.kind}/${k.model}") == Some("session/"))
     assert(port_kind("month limit").map(|k| "${k.kind}/${k.model}") == Some("monthly/"))
     assert(port_kind("month limit (code)").map(|k| "${k.kind}/${k.model}") == Some("monthly/code"))
+    assert(port_kind("plan usage").map(|k| "${k.kind}/${k.model}") == Some("plan/"))
     assert(port_kind("weekly_scoped:").is_none())
     assert(port_kind("yearly").is_none())
 }
@@ -24,6 +25,21 @@ test "a Claude series becomes its lowered e-mail, a Kimi one keeps its name" {
     assert(port_key("kimi:kimi-code-env-0e4f") == Some("kimi:kimi-code-env-0e4f"))
     assert(port_key("kimi:").is_none())
     assert(port_key("gpt:x").is_none())
+}
+
+test "a Codex series keeps its whole key, a ZCode one is lowered like it" {
+    assert(port_key("codex:Person@Example.COM") == Some("codex:person@example.com"))
+    assert(port_key("zcode:Person@Example.COM") == Some("zcode:person@example.com"))
+    assert(port_key("zcode:").is_none())
+}
+
+test "a Qoder series is lowered like ZCode's, and its quota row is the month window" {
+    // 0005 (task 035): `qoder:<e-mail>|quota` -- the key whole and lowered, the
+    // kind the storage already carries (`monthly`, model '').
+    assert(port_key("qoder:Person@Example.COM") == Some("qoder:person@example.com"))
+    assert(port_key("qoder:").is_none())
+    ro w = port_kind("quota") ?? panic("no window for quota")
+    assert(w.kind == "monthly" && w.model == "")
 }
 
 test "the file reads both moment formats, rounds half to even, and counts what it skips" {

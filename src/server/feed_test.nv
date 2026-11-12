@@ -26,6 +26,8 @@ import claude_limits.server.dto.{SnapshotView}
 import std.concurrency.nvchan.{Chan}
 import std.testing.handlers.{fixed_ms}
 import claude_limits.config.{Refresh, Config}
+import claude_limits.usage.zcode_cipher.{gcm_encrypt, zcode_key}
+import std.encoding.base64.{Base64}
 
 // 2026-09-30 09:00:00 UTC; the live token expires a day later, the dead one a day ago.
 const NOW_MS = 1790758800000
@@ -111,7 +113,7 @@ fn endpoint[T](mut a Asked, raw str, body fn() Http PollLog Creds -> T) -> T =>
 // build (registry 221.1 #1399).
 fn found_now() -> []Found {
     ro now = NOW_MS
-    on_disk(fn() Dirs Creds -> []Found => found_in(["/acc"], now))
+    on_disk(fn() Dirs Creds -> []Found => found_in(["/acc"], now, ""))
 }
 
 fn same(label str, want str, got str) -> bool {
@@ -201,7 +203,7 @@ fn cx_reply() -> str =>
 fn cx_found(folder str) -> []Found {
     ro now = NOW_MS
     ro f = folder
-    cx_disk(fn() Dirs Creds -> []Found => found_in([f], now))
+    cx_disk(fn() Dirs Creds -> []Found => found_in([f], now, ""))
 }
 
 test "a Codex home is an account keyed codex:<e-mail>, named by the address, which is not an e-mail field" {
@@ -237,6 +239,178 @@ test "a dead Codex token is NOT asked and is NOT renewed; the text says what to 
     assert(a.n == 0)
     assert(same("state", "stale", k[0].state.to_str()))
     assert(same("message", "token expired · start Codex under this login", k[0].message))
+    mut renewals = 0
+    ro refresh = refresh_cfg(true)
+    ro renewed = with Renew = effect Renew {
+        kimi(path str, name str, cooldown_sec int) -> bool {
+            renewals += 1
+            false
+        }
+        claude(path str, name str, model str, timeout_sec int, cooldown_sec int) -> bool {
+            renewals += 1
+            false
+        }
+    } {
+        renew_expired(f, refresh)
+    }
+    assert(!renewed)
+    assert(renewals == 0)
+}
+
+// ── ZCode homes (plan 01.8) ──────────────────────────────────────────────────
+
+const ZC_SECRET = "feed-test-secret"
+const ZC_IV = "aabbccddeeff001122334455"
+
+fn zc_hex_val(c u8) -> int {
+    ro n = c as int
+    if n >= 48 && n <= 57 { return n - 48 }
+    if n >= 97 && n <= 102 { return n - 87 }
+    -1
+}
+
+fn zc_b64(xs []int) -> str {
+    mut bytes []u8 = []
+    for b in xs { bytes.push(b as u8) }
+    Base64.encode_url(bytes)
+}
+
+fn zc_enc(plain str) -> str {
+    ro hex = ZC_IV
+    ro hbytes = hex.bytes()
+    mut iv []int = []
+    mut i = 0
+    while i + 1 < hbytes.len() {
+        iv.push(zc_hex_val(hbytes[i]) * 16 + zc_hex_val(hbytes[i + 1]))
+        i += 2
+    }
+    mut bytes []int = []
+    for b in plain.bytes() { bytes.push(b as int) }
+    match gcm_encrypt(zcode_key(ZC_SECRET), iv, bytes) {
+        Err(_) => panic("test encrypt failed")
+        Ok(out) => "enc:v1:${zc_b64(iv)}.${zc_b64(out.tag)}.${zc_b64(out.ct)}"
+    }
+}
+
+fn zc_store() -> str =>
+    "{\"zcodejwttoken\":\"${zc_enc("jwt-value")}\",\"oauth:zai:access_token\":\"${zc_enc("access-value")}\",\"oauth:zai:user_info\":\"${zc_enc("{\"user_id\":\"u\",\"email\":\"Me@Example.COM\"}")}\"}"
+
+const ZC_LOG_LINE = "[2026-10-31 11:31:56] [usage-stats] billing/balance 请求完成 {\"balanceCount\":1,\"payload\":{\"code\":0,\"data\":{\"server_time\":1793435515,\"plans\":[{\"user_plan_id\":\"upl_1\",\"plan_id\":\"zcode-v3-start-plan\",\"name\":\"ZCODE TEST PLAN\",\"priority\":101,\"status\":\"active\",\"starts_at\":1793400212,\"ends_at\":1793581200}],\"balances\":[{\"bucket_id\":\"b1\",\"user_plan_id\":\"upl_1\",\"plan_id\":\"zcode-v3-start-plan\",\"entitlement_id\":\"ent_1\",\"show_name\":\"GLM\",\"meter\":\"model_usage\",\"unit_type\":\"token\",\"priority\":101,\"total_units\":500000000,\"used_units\":250000000,\"available_units\":250000000,\"period_start\":1793400212,\"period_end\":1793581200,\"expires_at\":1793581200}]}}}"
+
+fn zc_text(path str) -> str {
+    if path == "/zc/home/v2/credentials.json" { return zc_store() }
+    if path == "/zc/home/v2/logs/2026-10-31.log" { return ZC_LOG_LINE }
+    if path == "/zc/broken/v2/credentials.json" { return "{\"zcodejwttoken\":\"enc:v1:AAAA.AAAA.AAAA\"}" }
+    ""
+}
+
+fn zc_logs(path str) -> []str =>
+    if path == "/zc/home/v2/logs" { ["2026-10-31.log"] } else { [] }
+
+fn zc_disk[T](body fn() Dirs Creds -> T) -> T =>
+    with Dirs = effect Dirs {
+        list(path) -> []str { zc_logs(path) }
+        exists(path) -> bool { path == "/zc/home/v2/credentials.json" || path == "/zc/broken/v2/credentials.json" || path == "/zc/home/v2/logs/2026-10-31.log" }
+        is_dir(path) -> bool { path.starts_with("/zc") }
+    } {
+        with Creds = effect Creds {
+            read(path) -> str { zc_text(path) }
+        } {
+            body()
+        }
+    }
+
+fn zc_found(folder str) -> []Found {
+    ro now = NOW_MS
+    ro f = folder
+    ro s = ZC_SECRET
+    zc_disk(fn() Dirs Creds -> []Found => found_in([f], now, s))
+}
+
+test "a ZCode home is an account keyed zcode:<e-mail>, named by the address, which is not an e-mail field" {
+    ro f = zc_found("/zc/home")
+    assert(f.len() == 1)
+    assert(same("key", "zcode:me@example.com", f[0].email))
+    assert(same("name", "me@example.com", f[0].display_name))
+    assert(f[0].zcode && !f[0].codex && !f[0].kimi)
+    assert(same("state", "ok", if f[0].state == TokenState.Ok { "ok" } else { "other" }))
+}
+
+test "a ZCode store that will not open is a login with the reason, not a missing account" {
+    ro f = zc_found("/zc/broken")
+    assert(f.len() == 1)
+    assert(!f[0].zcode == false)
+    assert(f[0].broken.contains("ZCODE_CREDENTIAL_SECRET"))
+    assert(f[0].state == TokenState.NoToken)
+}
+
+// The quota endpoint is the ONE request a live round sends now; the plan comes
+// from the app's log without any request (plan 01.8, amendment).
+fn zc_endpoint[T](mut a Asked, quota str, body fn() Http PollLog Creds -> T) -> T =>
+    with Http = effect Http {
+        send(host, port, secure, request) -> Result[str, HttpError] {
+            a.n += 1
+            Ok(quota)
+        }
+    } {
+        with PollLog = effect PollLog {
+            record(email str, state str, message str, at_ms int) -> () {}
+            reading(r Reading) -> () {}
+        } {
+            with Creds = effect Creds {
+                read(path) -> str { zc_text(path) }
+            } {
+                body()
+            }
+        }
+    }
+
+test "a live ZCode login is asked ONCE: the paid plan's windows from the quota endpoint, the promo row from the log" {
+    mut a = Asked.new()
+    ro f = zc_found("/zc/home")
+    ro now = NOW_MS
+    ro quota = "HTTP/1.1 200 OK${EOL}Content-Type: application/json${EOL}${EOL}{\"code\":200,\"msg\":\"ok\",\"data\":{\"level\":\"max\",\"limits\":[{\"type\":\"CREDIT_LIMIT\",\"unit\":3,\"number\":5,\"usage\":28000,\"currentValue\":7195,\"remaining\":20804,\"percentage\":25,\"nextResetTime\":1793452938552},{\"type\":\"CREDIT_LIMIT\",\"unit\":6,\"number\":1,\"usage\":140000,\"currentValue\":50281,\"remaining\":89718,\"percentage\":35,\"nextResetTime\":1794003091998}]}}"
+    ro k = zc_endpoint(a, quota, fn() Http PollLog Creds -> []Known => poll_round(f, [], now, now + 300000, TimeZone.Utc))
+    // ONE request: the quota endpoint. The plan line needs none (the log has it).
+    assert(a.n == 1)
+    assert(same("state", "ok", k[0].state.to_str()))
+    assert(k[0].windows.len() == 3)
+    assert(same("kind 0", "session", k[0].windows[0].kind))
+    assert(same("pct 0", "25", k[0].windows[0].percent.to_str()))
+    assert(same("kind 1", "weekly_all", k[0].windows[1].kind))
+    assert(same("pct 1", "35", k[0].windows[1].percent.to_str()))
+    // The promo row rides from the app's log: 250M of 500M is 50, the reset and
+    // the span from the same payload (plan 01.8).
+    assert(same("kind 2", "plan", k[0].windows[2].kind))
+    assert(same("pct 2", "50", k[0].windows[2].percent.to_str()))
+    assert(same("span", (1793581200 - 1793400212).to_str(), k[0].windows[2].span_sec.to_str()))
+    assert(same("provider", "zcode", k[0].provider))
+    assert(same("email", "", k[0].email))
+    assert(same("name", "me@example.com", k[0].display_name))
+    ro plan = k[0].plan ?? panic("no plan on the zcode card")
+    assert(plan.name == "ZCODE TEST PLAN")
+    assert(plan.ends_at_ms == 1793581200000)
+    assert(k[0].org == "")
+}
+
+test "a ZCode quota that fails is unknown and costs one request" {
+    mut a = Asked.new()
+    ro f = zc_found("/zc/home")
+    ro now = NOW_MS
+    ro rate = "HTTP/1.1 429 Too Many Requests${EOL}Retry-After: 90${EOL}Content-Type: application/json${EOL}${EOL}{}"
+    ro k = zc_endpoint(a, rate, fn() Http PollLog Creds -> []Known => poll_round(f, [], now, now + 300000, TimeZone.Utc))
+    assert(a.n == 1)
+    assert(same("state", "unknown", k[0].state.to_str()))
+}
+
+test "a dead ZCode store is NOT asked and is NOT renewed" {
+    mut a = Asked.new()
+    ro f = zc_found("/zc/broken")
+    ro now = NOW_MS
+    ro k = zc_endpoint(a, "", fn() Http PollLog Creds -> []Known => poll_round(f, [], now, now + 300000, TimeZone.Utc))
+    assert(a.n == 0)
+    assert(same("state", "stale", k[0].state.to_str()))
+    assert(k[0].message.contains("ZCODE_CREDENTIAL_SECRET"))
     mut renewals = 0
     ro refresh = refresh_cfg(true)
     ro renewed = with Renew = effect Renew {
@@ -299,7 +473,7 @@ test "the stale text names the moment in the zone it is given" {
 test "no folders at all: an empty round and an empty body, not a crash" {
     mut a = Asked.new()
     ro now = NOW_MS
-    ro found = on_disk(fn() Dirs Creds -> []Found => found_in([], now))
+    ro found = on_disk(fn() Dirs Creds -> []Found => found_in([], now, ""))
     assert(found.len() == 0)
     ro known = endpoint(a, reply_ok(), fn() Http PollLog Creds -> []Known => poll_round(found, [], now, now + 300000, TimeZone.Utc))
     assert(known.len() == 0)
@@ -336,7 +510,7 @@ fn loop_with_refresh(start Refresh) -> Said {
     ro store = Store.new(pair.tx)
     assert(store.tick())
     pair.tx.close()
-    ro rounds = Rounds.new(["/acc"], 300, SeverityBounds.new(70, 90), TimeZone.Utc, "+00:00", start)
+    ro rounds = Rounds.new(["/acc"], 300, SeverityBounds.new(70, 90), TimeZone.Utc, "+00:00", start, "")
     ro now = NOW_MS
     with Time = fixed_ms(now as u64), Renew = effect Renew {
         kimi(path str, name str, cooldown_sec int) -> bool { false }
@@ -412,7 +586,7 @@ fn loop_with_folders(lists [][]str) -> []int {
     assert(store.tick())
     assert(store.tick())
     pair.tx.close()
-    ro rounds = Rounds.new(["/acc/old"], 300, SeverityBounds.new(70, 90), TimeZone.Utc, "+00:00", refresh_cfg(false))
+    ro rounds = Rounds.new(["/acc/old"], 300, SeverityBounds.new(70, 90), TimeZone.Utc, "+00:00", refresh_cfg(false), "")
     ro now = NOW_MS
     ro plan = lists
     with Time = fixed_ms(now as u64), Renew = effect Renew {
@@ -468,7 +642,7 @@ fn followed_through_a_round() -> []Event {
     assert(pair.tx.send(Envelope.new(StoreAsk.Follow(-1, Follower.unregistered(stream.tx, stream.rx), reply.tx))))
     assert(store.tick())
     pair.tx.close()
-    ro rounds = Rounds.new(["/acc"], 300, SeverityBounds.new(70, 90), TimeZone.Utc, "+00:00", refresh_cfg(false))
+    ro rounds = Rounds.new(["/acc"], 300, SeverityBounds.new(70, 90), TimeZone.Utc, "+00:00", refresh_cfg(false), "")
     with Time = fixed_ms(NOW_MS as u64), Renew = effect Renew {
         kimi(path str, name str, cooldown_sec int) -> bool { false }
         claude(path str, name str, model str, timeout_sec int, cooldown_sec int) -> bool { false }

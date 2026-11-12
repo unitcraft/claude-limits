@@ -78,7 +78,7 @@ export type Disclosure enum Loopback | Lan | Anonymous
 /// was saved in the order as "?2" -- its position -- and lost its place on reload.
 export fn AccountView @order_key() -> str {
     if @email != "" { return @email.to_ascii_lower() }
-    if (@provider == "kimi" || @provider == "codex") && @display_name != "" { return "${@provider}:${@display_name}".to_ascii_lower() }
+    if (@provider == "kimi" || @provider == "codex" || @provider == "zcode" || @provider == "qoder") && @display_name != "" { return "${@provider}:${@display_name}".to_ascii_lower() }
     ""
 }
 
@@ -102,6 +102,15 @@ export type ExtraUsageView value {
     balance str
     currency str
     monthly_cap str
+}
+
+/// ZCode's plan (plan 01.8): its name and when it ends, shown as its own line under
+/// the rows -- the page's shape of the reference's "plan: NAME, ends Nov 2 (2d 1h)".
+/// DECLARED BEFORE `AccountView`, which holds it in an `Option` (#1625).
+export type PlanView value {
+    name str
+    /// Unix milliseconds; 0 when the reply gave no end.
+    ends_at_ms int
 }
 
 export type AccountView value {
@@ -130,6 +139,8 @@ export type AccountView value {
     /// Kimi Code's Extra Usage wallet when switched on; None: the field is ABSENT on the
     /// wire, as the amendment says, not null.
     extra_usage Option[ExtraUsageView]
+    /// ZCode's plan when `billing/current` answered; None: absent on the wire (plan 01.8).
+    plan Option[PlanView]
 }
 
 /// The forecast of one limit row, or absent (`forecast: null` for stale, unknown
@@ -258,6 +269,12 @@ type WireExtraUsage value {
 }
 
 #impl(Serialize)
+type WirePlan value {
+    ro name str
+    ro ends_at_ms int
+}
+
+#impl(Serialize)
 type WireAccount value {
     ro id str
     ro provider str
@@ -274,6 +291,8 @@ type WireAccount value {
     ro same_quota_as Option[str]
     #serde(skip_serializing_if = "is_none")
     ro extra_usage Option[WireExtraUsage]
+    #serde(skip_serializing_if = "is_none")
+    ro plan Option[WirePlan]
 }
 
 #impl(Serialize)
@@ -335,12 +354,19 @@ fn wire_account(d Disclosure, a AccountView) -> WireAccount {
         message: opt(a.message), polled_at: opt(a.polled_at), next_poll_at: opt(a.next_poll_at),
         locked: a.locked, at_100: a.at_100, same_quota_as: opt(a.same_quota_as),
         extra_usage: wire_extra(a.extra_usage),
+        plan: wire_plan(a.plan),
     }
 }
 
 fn wire_extra(e Option[ExtraUsageView]) -> Option[WireExtraUsage] =>
     match e {
         Some(x) => Some(WireExtraUsage{ balance: x.balance, currency: x.currency, monthly_cap: opt(x.monthly_cap) })
+        None => None
+    }
+
+fn wire_plan(p Option[PlanView]) -> Option[WirePlan] =>
+    match p {
+        Some(x) => Some(WirePlan{ name: x.name, ends_at_ms: x.ends_at_ms })
         None => None
     }
 

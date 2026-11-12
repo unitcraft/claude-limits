@@ -69,6 +69,7 @@ import claude_limits.server.feed.{Rounds, one_round, RoundLog, Settled, Renew, s
 import claude_limits.usage.kimi_refresh.{renew_kimi}
 import claude_limits.accounts.claude_refresh.{refresh_run, wsl_parts, claude_on_path, launch_verdict, launch_note, unchanged_note, renewed_note, Verdict}
 import claude_limits.accounts.discover.{expand_home, under}
+import claude_limits.accounts.zcode_home.{zcode_store_secret}
 import std.os.{Command}
 import claude_limits.model.store_fiber.{Envelope, Store, ConfNow, Follower}
 import claude_limits.model.store.{Event}
@@ -974,7 +975,10 @@ fn serve_mode(exe str, config_override str) Io Net Time Detach -> int {
                         }
                     }
                     ro bounds = SeverityBounds.new(cfg.thresholds.warning, cfg.thresholds.critical)
-                    ro rounds = Rounds.new(cfg.folders, cfg.poll.interval_sec, bounds, TimeZone.Fixed(Offset.local()), Offset.local().to_iso(), cfg.refresh)
+                    // The ZCode store's secret, resolved once (plan 01.8): the environment
+                    // is not an effect of a round, so the start hands it over.
+                    ro zsec = with Os = real_os() { zcode_store_secret() }
+                    ro rounds = Rounds.new(cfg.folders, cfg.poll.interval_sec, bounds, TimeZone.Fixed(Offset.local()), Offset.local().to_iso(), cfg.refresh, zsec)
                     if loaded.missing {
                         say("no settings file yet, running on the defaults (${paths.config_file})")
                     } else {

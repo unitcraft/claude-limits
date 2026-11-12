@@ -142,7 +142,7 @@ fn loop_with_forecast_setting(file_enabled bool) -> AuditRounds {
     assert(store.tick())
     pair.tx.close()
     ro rounds = Rounds.new(["/synthetic"], 60, SeverityBounds.new(70, 90),
-        TimeZone.Utc, "+00:00", refresh_off())
+        TimeZone.Utc, "+00:00", refresh_off(), "")
     with Time = fixed_ms(NOW_MS as u64), Renew = effect Renew {
         kimi(path str, name str, cooldown_sec int) -> bool { false }
         claude(path str, name str, model str, timeout_sec int, cooldown_sec int) -> bool { false }
@@ -173,7 +173,7 @@ fn loop_with_forecast_setting(file_enabled bool) -> AuditRounds {
 fn assert_backend_severity(warning int, critical int, percent int, want str) -> () {
     mut a = Asked.new(percent)
     ro rounds = Rounds.new(["/synthetic"], 60, SeverityBounds.new(warning, critical),
-        TimeZone.Utc, "+00:00", refresh_off())
+        TimeZone.Utc, "+00:00", refresh_off(), "")
     ro view = with Time = fixed_ms(NOW_MS as u64), Renew = effect Renew {
         kimi(path str, name str, cooldown_sec int) -> bool { false }
         claude(path str, name str, model str, timeout_sec int, cooldown_sec int) -> bool { false }
@@ -186,7 +186,7 @@ fn assert_backend_severity(warning int, critical int, percent int, want str) -> 
 }
 
 test "synthetic login is discovered locally" {
-    ro found = with_login(fn() Dirs Creds -> []Found => found_in(["/synthetic"], NOW_MS))
+    ro found = with_login(fn() Dirs Creds -> []Found => found_in(["/synthetic"], NOW_MS, ""))
     assert(found.len() == 1)
 }
 

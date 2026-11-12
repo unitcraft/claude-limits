@@ -95,6 +95,8 @@ export fn row_label(kind str, model str) -> str {
     if kind == "weekly_all" { return "all 7d" }
     // Kimi Code's month and its code share (01.3 §3.3, 2026-09-21).
     if kind == "monthly" { return if model == "" { "month" } else { "month (${model})" } }
+    // ZCode's single burn row; the same words the reference prints (plan 01.8).
+    if kind == "plan" { return "plan usage" }
     if model == "" { return "scoped 7d" }
     "${model} 7d"
 }

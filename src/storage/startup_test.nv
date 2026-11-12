@@ -111,37 +111,38 @@ fn is_on_disk(path str) Io -> bool => with Fs = real_fs() { try_exists(path.to_p
 test "a first start creates the key, the file and the schema, and backs up nothing" {
     ro p = place("first")
     ro all = migrations_in(bundled())
-    assert(same("first", "first=true schema=0 applied=3 backup=false", start(p, all, 7)))
+    assert(same("first", "first=true schema=0 applied=5 backup=false", start(p, all, 7)))
     assert(is_on_disk(p.key_file))
     assert(is_on_disk(p.db_file))
 }
 
-test "the second start finds schema 3, applies nothing and backs up nothing" {
+test "the second start finds schema 5, applies nothing and backs up nothing" {
     ro p = place("second")
     ro all = migrations_in(bundled())
     ro _ = start(p, all, 7)
-    assert(same("second", "first=false schema=3 applied=0 backup=false", start(p, all, 8)))
+    assert(same("second", "first=false schema=5 applied=0 backup=false", start(p, all, 8)))
 }
 
 test "a database a 0001 build wrote is taken to the current schema, backed up first" {
     // The owner's file as it is today: schema 1. The next start must migrate it, and
-    // only after the backup (01.2 §5) -- 0002 and 0003 rebuild eight tables each.
+    // only after the backup (01.2 §5) -- 0002, 0003, 0004 and 0005 rebuild eight tables
+    // each.
     ro p = place("from-one")
     mut only_one []Migration = []
     for m in migrations_in(bundled()) { if m.version == 1 { only_one.push(m) } }
     assert(same("one", "first=true schema=0 applied=1 backup=false", start(p, only_one, 7)))
-    assert(same("two", "first=false schema=1 applied=2 backup=true", start(p, migrations_in(bundled()), 8)))
+    assert(same("two", "first=false schema=1 applied=4 backup=true", start(p, migrations_in(bundled()), 8)))
 }
 
 test "a new migration on an existing file is preceded by a backup" {
     ro p = place("upgrade")
     mut all = migrations_in(bundled())
     ro _ = start(p, all, 7)
-    all.push(Migration.new(4, "CREATE TABLE startup_probe (x INTEGER)"))
-    assert(same("upgrade", "first=false schema=3 applied=1 backup=true", start(p, all, 8)))
-    // Schema 4 is beyond what THIS build knows (KNOWN_SCHEMA = 3), so the next start
+    all.push(Migration.new(6, "CREATE TABLE startup_probe (x INTEGER)"))
+    assert(same("upgrade", "first=false schema=5 applied=1 backup=true", start(p, all, 8)))
+    // Schema 6 is beyond what THIS build knows (KNOWN_SCHEMA = 5), so the next start
     // refuses -- the rule of 01.2 §5, shown on the file the upgrade just wrote.
-    assert(start(p, all, 9).starts_with("FAIL the database was written by a newer version (schema 4"))
+    assert(start(p, all, 9).starts_with("FAIL the database was written by a newer version (schema 6"))
 }
 
 test "KNOWN_SCHEMA is the highest migration the binary carries" {
@@ -158,12 +159,12 @@ test "a migration that fails is rolled back and says which" {
     ro p = place("broken")
     mut all = migrations_in(bundled())
     ro _ = start(p, all, 7)
-    all.push(Migration.new(4, "CREATE TABLE schema_meta (x INTEGER)"))
+    all.push(Migration.new(6, "CREATE TABLE schema_meta (x INTEGER)"))
     ro got = start(p, all, 8)
-    assert(got.starts_with("FAIL a migration failed and was rolled back: 4:"))
-    // Rolled back: the schema is still 3, and the next start tries again.
+    assert(got.starts_with("FAIL a migration failed and was rolled back: 6:"))
+    // Rolled back: the schema is still 5, and the next start tries again.
     ro fixed = migrations_in(bundled())
-    assert(same("still 3", "first=false schema=3 applied=0 backup=false", start(p, fixed, 9)))
+    assert(same("still 5", "first=false schema=5 applied=0 backup=false", start(p, fixed, 9)))
 }
 
 // -- the round's readings, written as ticks -----------------------------------------
@@ -171,7 +172,7 @@ test "a migration that fails is rolled back and says which" {
 // Named functions, not literals inside lambdas (registry 221.1 #1392).
 fn usage_two() -> Usage => {
     windows: [Window.new("session", "", 24, T0 + 16200000, ""), Window.new("weekly_all", "", 21, T0 + 302400000, "")],
-    outcome: PollOutcome.Parsed, from_fallback: false, extra: None,
+    outcome: PollOutcome.Parsed, from_fallback: false, extra: None, plan: None,
 }
 
 fn a_reading(at int) -> Reading =>

@@ -17,7 +17,7 @@
 
 module storage.repo_test
 
-import repo.{Tick, WindowRow, Ids, quote, sql_opt, moment, plan_sql, write_tick, upsert_account_sql, Seen, OpenRow, OccupancyStep, occupancy_step, occupancy_sql, two_open_sql, db_token_state, LockStep, lock_step, lock_open_sql, lock_close_sql, lock_sql}
+import repo.{Tick, WindowRow, Ids, quote, sql_opt, moment, plan_sql, write_tick, upsert_account_sql, account_key_sql, Seen, OpenRow, OccupancyStep, occupancy_step, occupancy_sql, two_open_sql, db_token_state, LockStep, lock_step, lock_open_sql, lock_close_sql, lock_sql}
 import duckdb.db_effect.{Db, DbRef, ConnRef, ResultRef}
 import duckdb.errors.{DuckError}
 
@@ -515,6 +515,33 @@ test "a Codex key is written whole into cred_key, lowered, never as an e-mail" {
     ro sql = upsert_account_sql(t, "id-account")
     assert(sql.contains("'codex', NULL, 'codex:person@example.com'"))
     assert(sql.contains("ON CONFLICT (cred_key)"))
+    for s in plan_sql(t, ids()) {
+        assert(!s.contains("email ="))
+    }
+}
+
+test "a ZCode key is written whole into cred_key, lowered, never as an e-mail" {
+    // 0004: same shape as Codex -- `zcode:<e-mail>` whole in cred_key (plan 01.8).
+    ro t = tick_with_email("zcode:Person@Example.COM")
+    ro sql = upsert_account_sql(t, "id-account")
+    assert(sql.contains("'zcode', NULL, 'zcode:person@example.com'"))
+    assert(sql.contains("ON CONFLICT (cred_key)"))
+    assert(!sql.contains("'codex'"))
+    for s in plan_sql(t, ids()) {
+        assert(!s.contains("email ="))
+    }
+    // And the reader's key arithmetic names a zcode row by its whole key.
+    assert(account_key_sql("a").contains("('codex','zcode','qoder')"))
+}
+
+test "a Qoder key is written whole into cred_key, lowered, never as an e-mail" {
+    // 0005: same shape as Codex and ZCode -- `qoder:<e-mail>` whole in cred_key
+    // (task 035).
+    ro t = tick_with_email("qoder:Person@Example.COM")
+    ro sql = upsert_account_sql(t, "id-account")
+    assert(sql.contains("'qoder', NULL, 'qoder:person@example.com'"))
+    assert(sql.contains("ON CONFLICT (cred_key)"))
+    assert(!sql.contains("'zcode'"))
     for s in plan_sql(t, ids()) {
         assert(!s.contains("email ="))
     }

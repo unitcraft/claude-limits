@@ -39,7 +39,7 @@ fn rules(working_hours bool) -> ForecastRules =>
 
 fn account() -> AccountView => {
     id: "a-1", email: "Main@Example.com", org: "Org", dirs: [], state: "ok", message: "",
-    polled_at: "", next_poll_at: "", locked: false, display_name: "", provider: "claude", at_100: false, same_quota_as: "", extra_usage: None,
+    polled_at: "", next_poll_at: "", locked: false, display_name: "", provider: "claude", at_100: false, same_quota_as: "", extra_usage: None, plan: None,
 }
 
 fn limit(kind str, percent int, seconds_left int, window_sec int) -> LimitView => {
@@ -313,8 +313,25 @@ test "a Kimi account's pace is found by kimi:<name>, a Codex one by codex:<lower
     assert(k.len() == 1 && k[0].account_id == "db-k" && k[0].rate_per_hour_milli == 483)
     ro c = paces_of(paced("codex", "", "Me@Example.com"), r)
     assert(c.len() == 1 && c[0].account_id == "db-c")
+
     ro m = paces_of(paced("claude", "Main@Example.com", ""), r)
     assert(m.len() == 1 && m[0].account_id == "db-m")
+}
+
+test "a ZCode row finds its history by zcode:<lowered address>, and its plan window joins" {
+    mut a = account()
+    a.email = ""
+    a.provider = "zcode"
+    a.display_name = "Me@Example.com"
+    ro l = limit("plan", 12, 5 * 3600, 6 * 3600)
+    ro v = SnapshotView{ fetched_at: "2026-10-01T09:00:00Z", next_poll_at: "", tz: "+03:00", restored: false,
+        worst: None, accounts: [a], limits: [l] }
+    ro r = HistRows{
+        accounts: [HistAccount{ id: "db-z", email: "zcode:me@example.com", color_slot: 0, polls: [] },
+                   HistAccount{ id: "db-m", email: "me@example.com", color_slot: 1, polls: [] }],
+        windows: [HistWindow{ account_id: "db-z", kind: "plan", model: "", samples: week_samples(), locks: [], rollups: [] }],
+    }
+    assert(forecast_of(v, l, r, rules(false), NOW_MS, OFFSET_SEC, TimeZone.Utc).is_some())
 }
 
 test "no pace for an account the history does not know, nor for one with no name to key it by" {

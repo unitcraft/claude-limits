@@ -36,9 +36,13 @@ module server.feed
 import std.checksums.fnv.{Fnv64}
 import std.time.civil.{TimeZone}
 import claude_limits.accounts.discover.{Dirs, LoginDir, scan}
-import claude_limits.accounts.login.{Login, TokenState, Creds, read_login, read_token}
+import claude_limits.accounts.login.{Login, TokenState, Creds, Secret, read_login, read_token}
 import claude_limits.accounts.kimi_home.{KimiLogin, kimi_logins_at, read_kimi_token}
 import claude_limits.accounts.codex_home.{CodexLogin, codex_logins_at, read_codex_token}
+import claude_limits.accounts.zcode_home.{ZcodeLogin, zcode_logins_at, read_zcode_jwt, read_zcode_access}
+import claude_limits.accounts.qoder_home.{QoderLogin, qoder_logins_at, read_qoder_access, qoder_store_path}
+import claude_limits.usage.qoder.{QODER_USAGE_PATH}
+import claude_limits.usage.parse.{ZcodePlan}
 import claude_limits.accounts.discover.{leaf}
 import claude_limits.config.{Refresh}
 import claude_limits.accounts.group.{group}
@@ -52,6 +56,7 @@ import std.time.duration.{Duration}
 import claude_limits.model.store.{Snapshot}
 import std.concurrency.nvchan.{ChanRx}
 import claude_limits.window.{Window}
+import claude_limits.usage.kimi.{round_percent}
 import claude_limits.model.snapshot.{AccountState, SeverityBounds, stale_message, rate_limited_badge, network_badge}
 import claude_limits.usage.outcome.{Outcome}
 import claude_limits.usage.poller.{PollTarget, PollLog, poll_once}
@@ -114,6 +119,29 @@ export type Found value {
     ro codex bool
     /// The ChatGPT account a Codex login is asked about; "" for the others.
     ro account_id str
+    /// A ZCode login: `email` is then the key `zcode:<address>`, not an address (plan 01.8).
+    ro zcode bool
+    /// A Qoder login: `email` is then the key `qoder:<address>`, not an address (task 035).
+    ro qoder bool
+    /// The machine id a Qoder store is keyed by; "" for the others. The poll's
+    /// cipher key comes from it (task 035).
+    ro machine_id str
+    /// Why the Qoder or ZCode store would not open; "" when it did or for the
+    /// others. Shown instead of numbers: a wrong key must be visible.
+    ro broken str
+    /// The ZCode store's secret, resolved once at discovery (the environment is not an
+    /// effect of the poll); "" for the others.
+    ro store_secret str
+    /// The plan's burn, read from the app's own log at discovery (`zcode_home`):
+    /// the real meter, when the running app has logged one. The polled MCP meter
+    /// stays 0 on a start plan, and the balance endpoint needs a jwt only the app
+    /// holds fresh -- the log is the honest local source (plan 01.8).
+    ro burn bool
+    ro burn_pct int
+    ro burn_reset_ms int
+    ro burn_plan_name str
+    ro burn_plan_ends_ms int
+    ro burn_span_sec int
 }
 
 /// A Kimi or Codex token a minute from expiry is already stale, as a Claude one is.
@@ -128,18 +156,50 @@ fn expiry_state(has_token bool, expires_at_ms int, now_ms int) -> TokenState {
 fn kimi_found(k KimiLogin, now_ms int) -> Found => {
     email: "kimi:${k.name}", org: "", dirs: [DirView { id: stable_id("dir", k.home), path: k.home, name: leaf(k.home) }],
     state: expiry_state(k.has_token, k.expires_at_ms, now_ms), expires_at_ms: k.expires_at_ms, cred_path: k.path, expired_dirs: [],
-    display_name: k.name, kimi: true, codex: false, account_id: "",
+    display_name: k.name, kimi: true, codex: false, account_id: "", zcode: false, qoder: false, machine_id: "", broken: "", store_secret: "", burn: false, burn_pct: 0, burn_reset_ms: 0, burn_plan_name: "", burn_plan_ends_ms: 0, burn_span_sec: 0,
 }
 
 fn codex_found(c CodexLogin, now_ms int) -> Found => {
     email: "codex:${c.name}", org: "", dirs: [DirView { id: stable_id("dir", c.home), path: c.home, name: leaf(c.home) }],
     state: expiry_state(c.has_token, c.expires_at_ms, now_ms), expires_at_ms: c.expires_at_ms, cred_path: c.path, expired_dirs: [],
-    display_name: c.name, kimi: false, codex: true, account_id: c.account_id,
+    display_name: c.name, kimi: false, codex: true, account_id: c.account_id, zcode: false, qoder: false, machine_id: "", broken: "", store_secret: "", burn: false, burn_pct: 0, burn_reset_ms: 0, burn_plan_name: "", burn_plan_ends_ms: 0, burn_span_sec: 0,
+}
+
+fn zcode_found(z ZcodeLogin, zsec str) -> Found => {
+    email: "zcode:${z.name}", org: "", dirs: [DirView { id: stable_id("dir", z.home), path: z.home, name: leaf(z.home) }],
+    // No expiry is knowable: the store's jwt carries no `exp` (plan 01.8). A home
+    // that will not open is a login with a message, not a missing account.
+    state: if z.has_token { TokenState.Ok } else { TokenState.NoToken }, expires_at_ms: 0, cred_path: z.path, expired_dirs: [],
+    display_name: z.name, kimi: false, codex: false, account_id: "", zcode: true, qoder: false, machine_id: "", broken: z.broken, store_secret: zsec, burn: z.burn, burn_pct: z.burn_pct, burn_reset_ms: z.burn_reset_ms, burn_plan_name: z.burn_plan_name, burn_plan_ends_ms: z.burn_plan_ends_ms, burn_span_sec: z.burn_span_sec,
+}
+
+/// A Qoder home (task 035): `cred_path` is the encrypted `.auth/user` (the
+/// marker is only the identity), and the machine id rides along -- the poll's
+/// cipher key is the home's own, there is no secret to resolve.
+fn qoder_found(q QoderLogin) -> Found => {
+    email: "qoder:${q.name}", org: "", dirs: [DirView { id: stable_id("dir", q.home), path: q.home, name: leaf(q.home) }],
+    // No expiry is knowable: the store carries none, like ZCode's. A home that
+    // will not open is a login with a message, not a missing account.
+    state: if q.has_token { TokenState.Ok } else { TokenState.NoToken }, expires_at_ms: 0, cred_path: qoder_store_path(q.home), expired_dirs: [],
+    display_name: q.name, kimi: false, codex: false, account_id: "", zcode: false, qoder: true, machine_id: q.machine_id, broken: q.broken, store_secret: "", burn: false, burn_pct: 0, burn_reset_ms: 0, burn_plan_name: "", burn_plan_ends_ms: 0, burn_span_sec: 0,
 }
 
 /// Codex's usage endpoint (the reference's `CODEX_USAGE_URL`).
 export fn codex_host() -> str => "chatgpt.com"
 export fn codex_path() -> str => "/backend-api/wham/usage"
+
+/// ZCode's endpoints (plan 01.8, amendment 2026-10-31). The PAID plan's windows
+/// (5 hours, weekly) live on api.z.ai and take ONE bearer -- the OAuth access
+/// token the credentials file holds. The promo plan's burn and name come from the
+/// app's log, without a request.
+export fn zcode_host() -> str => "api.z.ai"
+export fn zcode_path() -> str => "/api/monitor/usage/quota/limit"
+
+/// Qoder's endpoint (task 035): openapi.qoder.sh, the reference's default
+/// `QODER_BASE_URL`. The reference also honours the env override; the feed's
+/// round is Os-free by its red test, so the host here is the constant one (the
+/// divergence is recorded in the task's plan).
+export fn qoder_host() -> str => "openapi.qoder.sh"
 
 /// The line under an account that is asked with one directory's token while others
 /// have expired -- the reference's "(4px, MGTS: token expired on disk)". Nothing to
@@ -155,7 +215,9 @@ fn cred_of(dirs []LoginDir, path str) -> str {
 }
 
 /// Every account in the configured folders, grouped by e-mail (plan 01 §0).
-export fn found_in(folders []str, now_ms int) Dirs Creds -> []Found {
+/// `zsec` is the ZCode store's secret, resolved by the caller (`zcode_store_secret`,
+/// plan 01.8); "" disables the ZCode homes.
+export fn found_in(folders []str, now_ms int, zsec str) Dirs Creds -> []Found {
     mut seen []LoginDir = []
     mut logins []Login = []
     for f in folders {
@@ -178,7 +240,7 @@ export fn found_in(folders []str, now_ms int) Dirs Creds -> []Found {
             i += 1
         }
         out.push(Found { email: acc.email, org: acc.org, dirs, state: acc.state, expires_at_ms: acc.expires_at_ms, cred_path: cred,
-                         expired_dirs: acc.expired_dirs, display_name: acc.display_name, kimi: false, codex: false, account_id: "" })
+                         expired_dirs: acc.expired_dirs, display_name: acc.display_name, kimi: false, codex: false, account_id: "", zcode: false, qoder: false, machine_id: "", broken: "", store_secret: "", burn: false, burn_pct: 0, burn_reset_ms: 0, burn_plan_name: "", burn_plan_ends_ms: 0, burn_span_sec: 0 })
     }
     // Kimi Code homes in the same folders (plan 01.6, П3): one account per credentials
     // file. A file reached through two folders is one account, not two.
@@ -195,6 +257,26 @@ export fn found_in(folders []str, now_ms int) Dirs Creds -> []Found {
             mut dup = false
             for o in out { if o.email == "codex:${c.name}" { dup = true } }
             if !dup { out.push(codex_found(c, now_ms)) }
+        }
+    }
+    // ZCode homes likewise (plan 01.8): one account per `v2/credentials.json`, keyed by
+    // its e-mail. The secret arrives resolved; without it the homes are not read.
+    if zsec != "" {
+        for f in folders {
+            for z in zcode_logins_at(f, zsec) {
+                mut dup = false
+                for o in out { if o.email == "zcode:${z.name}" { dup = true } }
+                if !dup { out.push(zcode_found(z, zsec)) }
+            }
+        }
+    }
+    // Qoder homes likewise (task 035): one account per home with the status marker,
+    // keyed by its e-mail. No secret to resolve -- the key material is the home's own.
+    for f in folders {
+        for q in qoder_logins_at(f) {
+            mut dup = false
+            for o in out { if o.email == "qoder:${q.name}" { dup = true } }
+            if !dup { out.push(qoder_found(q)) }
         }
     }
     out
@@ -216,6 +298,7 @@ fn hhmm(ms int, zone TimeZone) -> str {
     ro t = ms.to_unix_millis().to_zoned(zone).datetime().time()
     "${two(t.hour())}:${two(t.minute())}"
 }
+
 
 /// The badge of an `unknown` account (01.1 §3.2), built from the reply's status: a 429
 /// and a dead network are one state and two sentences. `data` is the moment of the
@@ -250,6 +333,12 @@ fn prev_polled(p Option[Known]) -> int =>
         None => 0
     }
 
+fn prev_plan(p Option[Known]) -> Option[ZcodePlan] =>
+    match p {
+        Some(k) => k.plan
+        None => None
+    }
+
 /// What one round needs besides the moment.
 export type Rounds value {
     ro folders []str
@@ -258,10 +347,13 @@ export type Rounds value {
     ro zone TimeZone
     ro tz str
     ro refresh Refresh
+    /// The ZCode store's secret, resolved once at the start (plan 01.8); "" when the
+    /// environment would not give one.
+    ro zcode_secret str
 }
 
-export fn Rounds.new(folders []str, interval_sec int, bounds SeverityBounds, zone TimeZone, tz str, refresh Refresh) -> Rounds =>
-    { folders, interval_sec, bounds, zone, tz, refresh }
+export fn Rounds.new(folders []str, interval_sec int, bounds SeverityBounds, zone TimeZone, tz str, refresh Refresh, zcode_secret str) -> Rounds =>
+    { folders, interval_sec, bounds, zone, tz, refresh, zcode_secret }
 
 /// One round: find the accounts, ask about them, and put the snapshot body -- computed
 /// AT THIS MOMENT -- into the store's state. The folders are found again every round:
@@ -304,8 +396,10 @@ export fn renew_expired(found []Found, r Refresh) Renew -> bool {
     mut any = false
     for f in found {
         // Codex's refresh token is single-use: a renewal that missed `auth.json` would sign
-        // the Codex CLI out, so a dead Codex login is only reported (plan 01.7).
-        if f.codex { continue }
+        // the Codex CLI out, so a dead Codex login is only reported (plan 01.7). ZCode's
+        // store holds no refresh token at all -- reported, never renewed (plan 01.8).
+        // Qoder's store likewise (task 035): reported, never renewed.
+        if f.codex || f.zcode || f.qoder { continue }
         if f.kimi {
             if f.state == TokenState.Stale && f.cred_path != "" {
                 if Renew.kimi(f.cred_path, f.display_name, r.cooldown_sec) { any = true }
@@ -328,9 +422,9 @@ export fn renew_expired(found []Found, r Refresh) Renew -> bool {
 fn round(mut st StoreState, before []Known, r Rounds) Http PollLog Creds Dirs Time Renew -> []Known {
     ro now = Time.now().unix_millis()
     ro next = now + r.interval_sec * 1000
-    ro first = found_in(folders_now(st, r), now)
+    ro first = found_in(folders_now(st, r), now, r.zcode_secret)
     // Read again only when a token was renewed: the state of that login has changed.
-    ro found = if renew_expired(first, refresh_now(st, r)) { found_in(folders_now(st, r), now) } else { first }
+    ro found = if renew_expired(first, refresh_now(st, r)) { found_in(folders_now(st, r), now, r.zcode_secret) } else { first }
     ro known = poll_round(found, before, now, next, r.zone)
     st.view = view_of(known, r.bounds, now, next, r.tz, r.zone)
     known
@@ -464,6 +558,14 @@ export fn poll_round(found []Found, before []Known, now_ms int, next_ms int, zon
         if f.state != TokenState.Ok || f.cred_path == "" {
             ro msg = if f.codex {
                 "token expired · start Codex under this login"
+            } else if f.zcode {
+                // The store holds no refresh token: reported, never renewed (plan 01.8).
+                // A store that would not open says so in its own words.
+                if f.broken != "" { f.broken } else { "no token · start ZCode under this login" }
+            } else if f.qoder {
+                // The same shape as ZCode's (task 035): a store that would not
+                // decrypt -- another machine's key -- says so in its own words.
+                if f.broken != "" { f.broken } else { "no token · start Qoder under this login" }
             } else if f.kimi {
                 // No self-refresh yet (plan 01.6, П4): the advice is the reference's
                 // with auto-refresh off.
@@ -473,26 +575,74 @@ export fn poll_round(found []Found, before []Known, now_ms int, next_ms int, zon
             } else {
                 "no token · start Claude Code under this login"
             }
-            out.push(shown(f, Known.new(id, address_of(f), f.org, f.dirs, AccountState.Stale, msg, prev_polled(p), 0, [])))
+            // A ZCode login keeps the plan of its last good reading, as it keeps its
+            // rows: the last good shape of the card (plan 01.8). A Qoder one keeps
+            // it the same way (task 035).
+            ro plan = if f.zcode || f.qoder { prev_plan(p) } else { None }
+            out.push(shown(f, Known.new(id, address_of(f), f.org, f.dirs, AccountState.Stale, msg, prev_polled(p), 0, []).with_plan(plan)))
             continue
         }
-        ro got = if f.codex { read_codex_token(f.cred_path) } else if f.kimi { read_kimi_token(f.cred_path) } else { read_token(f.cred_path) }
+        ro got = if f.codex { read_codex_token(f.cred_path) } else if f.zcode { read_zcode_jwt(f.cred_path, f.store_secret) } else if f.qoder {
+            // The store decrypts with the home's own machine id (task 035); the
+            // bearer is wrapped like the others' so the arm below is shared.
+            match read_qoder_access(f.cred_path, f.machine_id) {
+                Some(t) => Some(Secret.new(t))
+                None => None
+            }
+        } else if f.kimi { read_kimi_token(f.cred_path) } else { read_token(f.cred_path) }
         match got {
             None => {
-                ro none_msg = if f.codex { "no token · start Codex under this login" } else { "no token · start Claude Code under this login" }
-                out.push(shown(f, Known.new(id, address_of(f), f.org, f.dirs, AccountState.Stale, none_msg, prev_polled(p), 0, [])))
+                ro none_msg = if f.codex { "no token · start Codex under this login" } else if f.zcode { "no token · start ZCode under this login" } else if f.qoder { "no token · start Qoder under this login" } else { "no token · start Claude Code under this login" }
+                ro plan = if f.zcode || f.qoder { prev_plan(p) } else { None }
+                out.push(shown(f, Known.new(id, address_of(f), f.org, f.dirs, AccountState.Stale, none_msg, prev_polled(p), 0, []).with_plan(plan)))
             }
             Some(consume secret) => {
                 ro token = secret.into_secret()
-                ro target = if f.codex { PollTarget.for_codex(f.email, codex_host(), codex_path(), token, f.account_id) } else if f.kimi { PollTarget.for_kimi(f.email, kimi_host(), kimi_path(), token) } else { PollTarget.new(f.email, usage_host(), 443, true, usage_path(), token) }
+                // ZCode's second bearer is read the same way, from the same store (plan 01.8).
+                ro access = if f.zcode {
+                    match read_zcode_access(f.cred_path, f.store_secret) {
+                        Some(consume s) => s.into_secret()
+                        None => ""
+                    }
+                } else { "" }
+                ro target = if f.codex { PollTarget.for_codex(f.email, codex_host(), codex_path(), token, f.account_id) } else if f.zcode { PollTarget.for_zcode(f.email, zcode_host(), zcode_path(), token, access) } else if f.qoder { PollTarget.for_qoder(f.email, qoder_host(), QODER_USAGE_PATH, token) } else if f.kimi { PollTarget.for_kimi(f.email, kimi_host(), kimi_path(), token) } else { PollTarget.new(f.email, usage_host(), 443, true, usage_path(), token) }
                 ro r = poll_once(target, now_ms)
                 ro fresh = r.outcome.state == AccountState.Ok && r.usage.outcome == PollOutcome.Parsed
+                // The polled windows are the PAID plan's (session, weekly_all). The
+                // PROMO plan's row and name ride from the app's log when it has one:
+                // its meter needs a fresh jwt only the app holds (plan 01.8, amendment).
+                // The Qoder plan rides from the poll itself: its best-effort second
+                // request already filled `r.usage.plan` (task 035).
+                mut windows = r.usage.windows
+                mut plan Option[ZcodePlan] = None
+                if f.qoder {
+                    plan = r.usage.plan
+                } else if f.zcode {
+                    if f.burn {
+                        mut w = Window.new("plan", "", f.burn_pct, f.burn_reset_ms, "")
+                        if f.burn_span_sec > 0 { w = w.with_span(f.burn_span_sec) }
+                        windows = windows + [w]
+                        plan = Some(ZcodePlan { name: f.burn_plan_name, ends_at_ms: f.burn_plan_ends_ms })
+                    }
+                }
                 if fresh {
-                    out.push(shown(f, Known.new(id, address_of(f), f.org, f.dirs, AccountState.Ok, expired_note(f.expired_dirs), now_ms, next_ms, r.usage.windows).with_extra(r.usage.extra)))
+                    out.push(shown(f, Known.new(id, address_of(f), f.org, f.dirs, AccountState.Ok, expired_note(f.expired_dirs), now_ms, next_ms, windows).with_extra(r.usage.extra).with_plan(plan)))
                 } else {
                     ro kept = prev_polled(p)
+                    ro kept_plan = if plan.is_some() { plan } else { prev_plan(p) }
                     ro msg = if r.outcome.state == AccountState.Unknown { unknown_message(r.outcome, now_ms, kept, zone) } else { r.outcome.message }
-                    out.push(shown(f, Known.new(id, address_of(f), f.org, f.dirs, r.outcome.state, msg, kept, next_ms, prev_windows(p))))
+                    // A logged burn is knowledge from THIS machine, not from the failed
+                    // request: it stands even when the poll did not (plan 01.8).
+                    mut kept_windows = prev_windows(p)
+                    if f.zcode && f.burn {
+                        mut w = Window.new("plan", "", f.burn_pct, f.burn_reset_ms, "")
+                        if f.burn_span_sec > 0 { w = w.with_span(f.burn_span_sec) }
+                        kept_windows = kept_windows + [w]
+                    }
+                    // A Qoder plan that arrived with a failed quota keeps nothing of
+                    // itself -- the failed round already falls back to the previous
+                    // plan (`kept_plan`), and the fresh one is not shown dimmed (task 035).
+                    out.push(shown(f, Known.new(id, address_of(f), f.org, f.dirs, r.outcome.state, msg, kept, next_ms, kept_windows).with_plan(kept_plan)))
                 }
             }
         }
@@ -500,12 +650,15 @@ export fn poll_round(found []Found, before []Known, now_ms int, next_ms int, zon
     out
 }
 
-/// The e-mail a person reads: none for Kimi and Codex, whose `email` field is only a key.
-fn address_of(f Found) -> str => if f.kimi || f.codex { "" } else { f.email }
+/// The e-mail a person reads: none for Kimi, Codex, ZCode and Qoder, whose `email`
+/// field is only a key.
+fn address_of(f Found) -> str => if f.kimi || f.codex || f.zcode || f.qoder { "" } else { f.email }
 
 /// The account as it is shown: its name, and its service.
 fn shown(f Found, k Known) -> Known {
     ro named = k.with_name(f.display_name)
     if f.codex { return named.with_provider("codex") }
+    if f.zcode { return named.with_provider("zcode") }
+    if f.qoder { return named.with_provider("qoder") }
     if f.kimi { named.with_provider("kimi") } else { named }
 }

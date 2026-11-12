@@ -51,20 +51,35 @@ export type ExtraUsage value {
     ro monthly_cap str
 }
 
+/// The plan of a ZCode login (plan 01.8): its name and when it ends, from
+/// `billing/current`. Shown beside the burn; not a window.
+// DECLARED BEFORE `Usage`, which holds it in an `Option` -- the same order rule the
+// comment above `ExtraUsage` records (#1625).
+export type ZcodePlan value {
+    ro name str
+    ro ends_at_ms int      // 0 when the reply gives no end
+}
+
 export type Usage value {
     windows []Window
     outcome PollOutcome
     from_fallback bool      // true when `limits[]` was absent or empty
     /// Kimi Code's Extra Usage wallet, when it is switched on (01.3 §3.3); Claude: None.
     extra Option[ExtraUsage]
+    /// ZCode's plan, when `billing/current` answered (plan 01.8); every other service: None.
+    plan Option[ZcodePlan]
 }
 
 fn Usage.new(windows []Window, outcome PollOutcome, from_fallback bool) -> Usage =>
-    { windows, outcome, from_fallback, extra: None }
+    { windows, outcome, from_fallback, extra: None, plan: None }
 
 /// The same reading, with the wallet.
 export fn Usage @with_extra(extra Option[ExtraUsage]) -> Usage =>
-    { @windows, @outcome, @from_fallback, extra }
+    { @windows, @outcome, @from_fallback, extra, plan: None }
+
+/// The same reading, with the plan.
+export fn Usage @with_plan(plan Option[ZcodePlan]) -> Usage =>
+    { @windows, @outcome, @from_fallback, @extra, plan }
 
 /// Nothing was read. `NoWindows` and not `BadJson`: there was no body to fail on, and
 /// calling a transport failure a parse failure would send a reader looking at the JSON.
