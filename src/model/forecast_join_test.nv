@@ -133,16 +133,16 @@ test "week by working hours, as the reference: 97 % and it lasts" {
     }
 }
 
-test "under 30 minutes of history there is no forecast" {
+test "under five minutes of history there is no forecast" {
     ro l = limit("session", 28, 2 * 3600, 5 * 3600)
-    ro short = [sample(NOW_MS - 20 * MIN, 20), sample(NOW_MS, 28)]
+    ro short = [sample(NOW_MS - 3 * MIN, 20), sample(NOW_MS, 28)]
     assert(one(l, rows("session", short), false).is_none())
 }
 
-test "weekly 1 percent with 30 to 60 minutes of history keeps facts without a red projection" {
-    for minutes in [30, 60] {
-        ro l = limit("weekly_all", 1, 7 * 86400 - minutes * 60, 7 * 86400)
-        ro r = rows("weekly_all", [sample(NOW_MS - minutes * MIN, 0), sample(NOW_MS, 1)])
+test "weekly 1 percent below the five-minute floor keeps facts without a projection" {
+    for seconds in [60, 120] {
+        ro l = limit("weekly_all", 1, 7 * 86400 - seconds, 7 * 86400)
+        ro r = rows("weekly_all", [sample(NOW_MS - seconds * 1000, 0), sample(NOW_MS, 1)])
         ro v = with_forecasts(view(l), r, rules(false), NOW_MS, OFFSET_SEC, TimeZone.Utc)
         assert(v.limits[0].forecast.is_none())
         assert(v.limits[0].percent == 1)
@@ -160,17 +160,19 @@ fn boundary(kind str, window_sec int, minimum_sec int, working bool) {
     assert(one(l, enough, working).is_some())
 }
 
-test "session weekly monthly exact calendar span boundaries in both forecast bases" {
+test "the five-minute floor for every window class, in both forecast bases" {
+    // Owner's word 2026-10-31 ("уменьши до 5 минут"): the old per-kind minimum
+    // (window/20) is gone -- one floor for session, week and month alike.
     for working in [false, true] {
-        boundary("session", 5 * 3600, 1800, working)
-        boundary("weekly_all", 7 * 86400, 30240, working)
-        boundary("monthly", 30 * 86400, 129600, working)
+        boundary("session", 5 * 3600, 300, working)
+        boundary("weekly_all", 7 * 86400, 300, working)
+        boundary("monthly", 30 * 86400, 300, working)
     }
 }
 
-test "actual window duration sets the minimum rounded up to whole seconds" {
-    boundary("monthly", 31 * 86400, 133920, false)
-    boundary("weekly_all", 604801, 30241, false)
+test "a window's own length no longer raises the floor" {
+    boundary("monthly", 31 * 86400, 300, false)
+    boundary("weekly_all", 604801, 300, false)
 }
 
 test "monthly with the reset observed as a drop forecasts, arithmetic alone would wait a day" {
@@ -195,17 +197,25 @@ test "monthly with the reset observed as a drop forecasts, arithmetic alone woul
         }
     }
     // The control: no drop visible, the arithmetic start in the future -- the forecast
-    // honestly waits for observed span.
+    // honestly waits for observed span. One hour of samples IS enough span now
+    // (the floor is five minutes), so the wait here is about the DROP, not the span.
     ro nodrop = rows("monthly", [sample(NOW_MS - HOUR, 5), sample(NOW_MS, 6)])
     assert(one(l, nodrop, false).is_none())
 }
 
-test "old window age and samples before the current window cannot replace observed span" {
+test "samples before the current window cannot replace the observed span" {
+    // The spans here are above the five-minute floor, so what is being proved is
+    // the SAMPLE SELECTION, not the floor: a limit whose window began a day ago
+    // takes no samples from before that beginning (the pre-reset tail rule of
+    // 01.1 §2.7, 2026-10-21), and samples older than the limit's own span do not
+    // stretch the observed span.
     ro late = limit("weekly_all", 1, 6 * 86400, 7 * 86400)
-    ro short = rows("weekly_all", [sample(NOW_MS - 30 * MIN, 0), sample(NOW_MS, 1)])
+    ro short = rows("weekly_all", [sample(NOW_MS - 3 * MIN, 0), sample(NOW_MS, 1)])
     assert(one(late, short, false).is_none())
     ro fresh = limit("weekly_all", 1, 7 * 86400 - 1800, 7 * 86400)
-    ro old = rows("weekly_all", [sample(NOW_MS - 24 * HOUR, 0), sample(NOW_MS - 30 * MIN, 0), sample(NOW_MS, 1)])
+    // The in-window samples span two minutes -- below the floor -- so what the
+    // assert proves is that the day-old sample cannot stretch that span.
+    ro old = rows("weekly_all", [sample(NOW_MS - 24 * HOUR, 0), sample(NOW_MS - 2 * MIN, 0), sample(NOW_MS, 1)])
     assert(one(fresh, old, false).is_none())
 }
 

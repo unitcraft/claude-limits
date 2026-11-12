@@ -55,10 +55,13 @@ test "a flat window forecasts the CURRENT percent, never a fall" {
     assert(f.runs_out_in_min == -1)
 }
 
-test "less than thirty minutes of history means NO forecast" {
-    ro f = forecast(74, 10, 29, REMAINING_MIN, 29, WorkingHours)
+test "less than five minutes of history means NO forecast" {
+    // Owner's word 2026-10-31: the floor dropped from thirty minutes to five.
+    ro f = forecast(74, 10, 4, REMAINING_MIN, 4, WorkingHours)
     assert(!f.available)
     assert(f.basis.to_str() == "unavailable")
+    ro ok = forecast(74, 10, 5, REMAINING_MIN, 5, WorkingHours)
+    assert(ok.available)
 }
 
 test "a forecast that stays under 100 does not warn and does not run out" {
