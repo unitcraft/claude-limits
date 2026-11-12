@@ -25,7 +25,12 @@ bar_style = "blocks"
 #   { dir = '\\wsl.localhost\<distro>\home\<user>\.claude', kind = "claude" }
 # Every entry MUST be a table with an explicit kind: "claude" looks for
 # .credentials.json, "kimi" for credentials/*.json, "codex" for auth.json (the
-# default Codex home is ~/.codex or $CODEX_HOME), "auto" accepts any of them.
+# default Codex home is ~/.codex or $CODEX_HOME), "zcode" for the ZCode
+# desktop app's v2/credentials.json (default ~/.zcode or $ZCODE_HOME; its
+# tokens are decrypted in memory -- see plan docs/plans/01.8-zcode.md),
+# "qoder" for the Qoder CLI's .auth/user store (default ~/.qoder or
+# $QODER_HOME; its tokens are decrypted in memory -- task 035),
+# "auto" accepts any of them.
 # children = true takes every child directory of dir -- the multi-account
 # layout, one CLAUDE_CONFIG_DIR (or Kimi Code home) per child:
 #   { dir = "D:/accounts", kind = "claude", children = true }
@@ -33,6 +38,8 @@ accounts = [
     { dir = "~/.claude", kind = "claude" },
     { dir = "~/.kimi-code", kind = "kimi" },
     { dir = "~/.codex", kind = "codex" },
+    { dir = "~/.zcode", kind = "zcode" },
+    { dir = "~/.qoder", kind = "qoder" },
     { dir = "D:/accounts", kind = "claude", children = true },
 ]
 
