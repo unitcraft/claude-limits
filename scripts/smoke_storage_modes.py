@@ -89,9 +89,13 @@ def run_mode(exe, root, encrypted):
         server.wait(timeout=15)
 
     history = root / 'history.json'
+    # Points INSIDE the 7-day read window, computed at run time: a pinned date
+    # (2026-10-08) left this smoke red on any day after the 15th -- range=7d
+    # returned nothing and the assert fired on the empty list.
+    now = time.time()
     expected_readings = [
-        ('2026-10-08T12:00:00Z', 12),
-        ('2026-10-08T12:05:00Z', 13),
+        (time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(now - 600)), 12),
+        (time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(now - 300)), 13),
     ]
     history.write_text(json.dumps({'claude:mode@example.org|weekly_all':
                                   [[at, percent] for at, percent in expected_readings]}))

@@ -20,7 +20,7 @@ installDocument({ 'view-list': list, 'view-cards': cards });
 // shipped code drifted away from it. render.js exists precisely so this import is
 // possible: it takes a document and returns nodes, with no fetch, timers or
 // EventSource to drag in. Dynamic, because the stub must be installed first.
-const { renderList, renderCards, renderAccount, renderRow, layoutCells, extraUsageLine } = await import('../src/web/render.js');
+const { renderList, renderCards, renderAccount, renderRow, layoutCells, extraUsageLine, planLine } = await import('../src/web/render.js');
 const { setViewOptions, configUiOptions } = await import('../src/web/format.js');
 
 // -------------------------------------------------------------------- tests --
@@ -340,12 +340,32 @@ test('a shared pool shows a footnote naming the first account, not the same bars
   assert.ok(own.all((n) => n.className === 'row').length > 0);
 });
 
-test('Kimi Extra Usage is the reference line under the rows, and no line when the wallet is off', () => {
+test('the reference lines for wallets, pure: extra usage and the ZCode plan', () => {
   // The reference's own lines for the same wallets (kimi_extra_usage_line, 2026-10-02).
   assert.equal(extraUsageLine({ balance: '1.23', currency: 'USD', monthly_cap: '5.00' }),
     'extra usage balance: 1.23 USD (monthly cap 5.00 USD)');
   assert.equal(extraUsageLine({ balance: '0.01', currency: 'CNY', monthly_cap: null }),
     'extra usage balance: 0.01 CNY');
+  // The date part, not the clock: dateTimeIn renders in the machine's zone.
+  const line = planLine({ name: 'ZCODE FIXTURE PLAN', ends_at_ms: Date.UTC(2026, 10, 2, 3, 0) });
+  assert.ok(line.startsWith('plan: ZCODE FIXTURE PLAN, ends 2026-11-02 '), line);
+  assert.equal(planLine({ name: 'ZCODE FIXTURE PLAN', ends_at_ms: 0 }),
+    'plan: ZCODE FIXTURE PLAN');
+  assert.equal(planLine(null), '');
+  assert.equal(planLine({ name: '', ends_at_ms: 5 }), '');
+});
+
+test('ZCode plan is its own line under the rows; no line when it did not answer', () => {
+  const rows = [{ account_id: 'z', kind: 'plan', label: 'plan', percent: 0, severity: 'normal' }];
+  const withPlan = renderAccount({ id: 'z', provider: 'zcode', display_name: 'me@example.com', state: 'ok',
+    extra_usage: null, plan: { name: 'ZCODE FIXTURE PLAN', ends_at_ms: Date.UTC(2026, 10, 2, 3, 0) } }, rows);
+  assert.ok(withPlan.all((n) => n.className === 'account-extra').map((n) => n.textContent)
+    .some((x) => x.startsWith('plan: ZCODE FIXTURE PLAN, ends 2026-11-02 ')));
+  const without = renderAccount({ id: 'z', provider: 'zcode', display_name: 'me@example.com', state: 'ok' }, rows);
+  assert.equal(without.all((n) => n.className === 'account-extra').length, 0);
+});
+
+test('Kimi Extra Usage is the reference line under the rows, and no line when the wallet is off', () => {
   const rows = [{ account_id: 'k', kind: 'monthly', label: 'month', percent: 67, severity: 'normal' }];
   const on = renderAccount({ id: 'k', provider: 'kimi', display_name: 'kimi-env', state: 'ok',
     extra_usage: { balance: '1.23', currency: 'USD', monthly_cap: null } }, rows);
