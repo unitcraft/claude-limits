@@ -1,0 +1,259 @@
+// migrations/0005_qoder_accounts.sql against a REAL file holding 0001..0004 data.
+//
+//   ./nova.sh test src/storage/ --filter migration_0005_live_test
+//
+// 0005 rebuilds the same eight tables as 0002..0004, to widen the provider CHECK
+// once more: the list gains 'qoder' (task 035). No new window kind: a Qoder quota
+// is a month window (kind 'monthly', model ''), the shape Kimi and Codex already
+// carry, and the API gives no per-model burn for it. A rebuild that loses a row,
+// drops a provider or keeps an old list would pass any test that only looks at the
+// schema, so this one seeds an account of every provider, applies the migration
+// files the start applies, and asks the data: the same rows, each provider
+// unchanged, what Qoder can now write (an account keyed by its whole key, a month
+// window), and what is still refused.
+//
+// A migration file that is not there is NOT applied -- the start applies what the
+// directory holds, and `file` returns "" for a missing one.
+
+module storage.migration_0005_live_test
+
+import std.fs.{real_fs, read_text, create_dir_all, remove_dir_all}
+import std.os.{real_os, temp_dir}
+import duckdb.db_effect.{Db, ConnRef}
+import duckdb.db_real.{with_real_db}
+import duckdb.errors.{DbOptions}
+import duckdb.types.{Value}
+import db.{Migration, apply_migration}
+
+const ME = "0192f3a4-0000-7000-8000-000000000001"
+const ACC = "0192f3a4-0000-7000-8000-0000000000a1"
+const KIMI = "0192f3a4-0000-7000-8000-0000000000a2"
+const CODEX = "0192f3a4-0000-7000-8000-0000000000a9"
+const ZCODE = "0192f3a4-0000-7000-8000-0000000000aa"
+
+fn place(name str) Io -> str {
+    ro base = with Os = real_os() { temp_dir().display().replace("\\", "/") }
+    ro dir = "${base}/claude-limits-m0005-${name}"
+    with Fs = real_fs() {
+        ro _ = remove_dir_all(dir.to_path())
+        ro _ = create_dir_all(dir.to_path())
+    }
+    dir
+}
+
+fn file(name str) Io -> str =>
+    with Fs = real_fs() {
+        read_text("migrations/${name}".to_path()) ?? ""
+    }
+
+/// 0001's rows, one in each table (a Claude account) -- the seed of 0002's test.
+fn seed_0001() -> []str {
+    ro by = "'${ME}', '${ME}'"
+    [
+        "INSERT INTO account VALUES ('${ACC}', now(), now(), NULL, ${by}, 'a@b.c', 'Org', 'max', 'tier', 3, now(), now())",
+        "INSERT INTO occupancy VALUES ('0192f3a4-0000-7000-8000-0000000000d1', now(), now(), ${by}, '0192f3a4-0000-7000-8000-0000000000e1', '${ACC}', 'ok', now(), NULL)",
+        "INSERT INTO poll VALUES ('0192f3a4-0000-7000-8000-0000000000f1', now(), now(), ${by}, '${ACC}', now(), 'ok', 200, NULL, 12, NULL)",
+        "INSERT INTO limit_window VALUES ('0192f3a4-0000-7000-8000-0000000000b5', now(), now(), NULL, ${by}, '${ACC}', 'weekly_scoped', 'Opus', now(), now())",
+        "INSERT INTO window_cycle VALUES ('0192f3a4-0000-7000-8000-0000000000c1', now(), now(), ${by}, '0192f3a4-0000-7000-8000-0000000000b5', now() - INTERVAL 7 DAY, now())",
+        "INSERT INTO sample VALUES ('0192f3a4-0000-7000-8000-000000000101', now(), now(), ${by}, '0192f3a4-0000-7000-8000-0000000000b5', now(), '0192f3a4-0000-7000-8000-0000000000c1', 41, false, NULL, 'normal', true)",
+        "INSERT INTO lock_period VALUES ('0192f3a4-0000-7000-8000-000000000102', now(), now(), ${by}, '0192f3a4-0000-7000-8000-0000000000b5', '0192f3a4-0000-7000-8000-0000000000c1', now(), NULL, 'server')",
+        "INSERT INTO daily_rollup VALUES ('0192f3a4-0000-7000-8000-000000000103', now(), now(), ${by}, '0192f3a4-0000-7000-8000-0000000000b5', DATE '2026-10-01', 4, 41, 40.5, 0, 1)",
+    ]
+}
+
+/// A Kimi account with its code-month window, written after 0002.
+fn seed_kimi() -> []str {
+    ro by = "'${ME}', '${ME}'"
+    [
+        "INSERT INTO account (id, created_at, updated_at, created_by, updated_by, provider, email, cred_key, color_slot, first_seen_at, last_seen_at) VALUES ('${KIMI}', now(), now(), ${by}, 'kimi', NULL, 'kimi-code-env-0e4f', 1, now(), now())",
+        "INSERT INTO limit_window (id, created_at, updated_at, created_by, updated_by, account_id, kind, model, first_seen_at, last_seen_at) VALUES ('0192f3a4-0000-7000-8000-0000000000b2', now(), now(), ${by}, '${KIMI}', 'monthly', 'code', now(), now())",
+    ]
+}
+
+/// A Codex account with its month window, written after 0003.
+fn seed_codex() -> []str {
+    ro by = "'${ME}', '${ME}'"
+    [
+        "INSERT INTO account (id, created_at, updated_at, created_by, updated_by, provider, email, cred_key, color_slot, first_seen_at, last_seen_at) VALUES ('${CODEX}', now(), now(), ${by}, 'codex', NULL, 'codex:codex@y.z', 0, now(), now())",
+        "INSERT INTO limit_window (id, created_at, updated_at, created_by, updated_by, account_id, kind, model, first_seen_at, last_seen_at) VALUES ('0192f3a4-0000-7000-8000-0000000000b3', now(), now(), ${by}, '${CODEX}', 'monthly', '', now(), now())",
+    ]
+}
+
+fn account_insert(id str, provider str, email str, cred_key str) -> str =>
+    "INSERT INTO account (id, created_at, updated_at, created_by, updated_by, provider, email, cred_key, color_slot, first_seen_at, last_seen_at) VALUES ('${id}', now(), now(), '${ME}', '${ME}', '${provider}', ${email}, ${cred_key}, 0, now(), now())"
+
+fn window_insert(id str, account str, kind str, model str) -> str =>
+    "INSERT INTO limit_window (id, created_at, updated_at, created_by, updated_by, account_id, kind, model, first_seen_at, last_seen_at) VALUES ('${id}', now(), now(), '${ME}', '${ME}', '${account}', '${kind}', '${model}', now(), now())"
+
+/// A ZCode account with its plan window, written after 0004.
+fn seed_zcode() -> []str => [
+    account_insert(ZCODE, "zcode", "NULL", "'zcode:x@y.z'"),
+    window_insert("0192f3a4-0000-7000-8000-0000000000b4", ZCODE, "plan", ""),
+]
+
+fn text_of(v Value) -> str =>
+    match v {
+        Value.Text(s) => s
+        Value.Null => "NULL"
+        _ => "?"
+    }
+
+/// The first column of the first row, as text; "ERR <why>" when the query fails.
+fn one(conn ConnRef, sql str) Db -> str =>
+    match Db.query(conn, sql) {
+        Err(e) => "ERR ${e.message()}"
+        Ok(rows) => {
+            ro got = match Db.next(rows) {
+                Ok(Some(cells)) => if cells.len() == 0 { "NONE" } else { text_of(cells[0]) }
+                _ => "NONE"
+            }
+            Db.close_result(rows)
+            got
+        }
+    }
+
+/// "ran" when the statement ran, else "refused".
+fn tried(conn ConnRef, sql str) Db -> str =>
+    match Db.exec(conn, sql) {
+        Ok(_) => "ran"
+        Err(_) => "refused"
+    }
+
+/// 0001, its seed, 0002, the Kimi seed, 0003, the Codex seed, 0004, the ZCode seed,
+/// 0005 -- then every probe line, one per entry of `asks`.
+fn after_0005(name str, asks []str) Io -> []str {
+    ro path = "${place(name)}/db.duckdb"
+    ro m1 = file("0001_init.sql")
+    ro m2 = file("0002_kimi_accounts.sql")
+    ro m3 = file("0003_codex_accounts.sql")
+    ro m4 = file("0004_zcode_accounts.sql")
+    ro m5 = file("0005_qoder_accounts.sql")
+    ro first = seed_0001()
+    ro second = seed_kimi()
+    ro third = seed_codex()
+    ro fourth = seed_zcode()
+    with_real_db(fn() Db -> []str => {
+        mut out []str = []
+        match Db.open(path, DbOptions.defaults()) {
+            Err(e) => { out.push("OPEN ${e.message()}") }
+            Ok(db) => match Db.connect(db) {
+                Err(e) => { out.push("CONNECT ${e.message()}") }
+                Ok(conn) => {
+                    match apply_migration(conn, Migration.new(1, m1)) {
+                        Ok(_) => ()
+                        Err(e) => { out.push("M1 ${e.message()}") }
+                    }
+                    for s in first {
+                        match Db.exec(conn, s) {
+                            Ok(_) => ()
+                            Err(e) => { out.push("SEED ${e.message()}") }
+                        }
+                    }
+                    match apply_migration(conn, Migration.new(2, m2)) {
+                        Ok(_) => ()
+                        Err(e) => { out.push("M2 ${e.message()}") }
+                    }
+                    for s in second {
+                        match Db.exec(conn, s) {
+                            Ok(_) => ()
+                            Err(e) => { out.push("SEED2 ${e.message()}") }
+                        }
+                    }
+                    match apply_migration(conn, Migration.new(3, m3)) {
+                        Ok(_) => ()
+                        Err(e) => { out.push("M3 ${e.message()}") }
+                    }
+                    for s in third {
+                        match Db.exec(conn, s) {
+                            Ok(_) => ()
+                            Err(e) => { out.push("SEED3 ${e.message()}") }
+                        }
+                    }
+                    match apply_migration(conn, Migration.new(4, m4)) {
+                        Ok(_) => ()
+                        Err(e) => { out.push("M4 ${e.message()}") }
+                    }
+                    for s in fourth {
+                        match Db.exec(conn, s) {
+                            Ok(_) => ()
+                            Err(e) => { out.push("SEED4 ${e.message()}") }
+                        }
+                    }
+                    if m5 != "" {
+                        match apply_migration(conn, Migration.new(5, m5)) {
+                            Ok(_) => ()
+                            Err(e) => { out.push("M5 ${e.message()}") }
+                        }
+                    }
+                    for a in asks {
+                        if a.starts_with("SELECT") { out.push(one(conn, a)) } else { out.push(tried(conn, a)) }
+                    }
+                    Db.close_conn(conn)
+                    Db.close_db(db)
+                }
+            }
+        }
+        out
+    })
+}
+
+fn joined(xs []str) -> str {
+    mut out = ""
+    for x in xs { out = if out == "" { x } else { "${out} | ${x}" } }
+    out
+}
+
+fn same(label str, want []str, got []str) -> bool {
+    ro w = joined(want)
+    ro g = joined(got)
+    if w == g { return true }
+    panic("${label}:\n  want ${w}\n  got  ${g}")
+}
+
+test "every row of every rebuilt table survives, and every account keeps its provider" {
+    ro got = after_0005("keep", [
+        "SELECT (SELECT value FROM schema_meta WHERE key = 'schema_version')",
+        "SELECT provider || ' ' || coalesce(email, '-') || ' ' || coalesce(cred_key, '-') || ' ' || color_slot::VARCHAR FROM account WHERE id = '${ACC}'",
+        "SELECT provider || ' ' || coalesce(email, '-') || ' ' || coalesce(cred_key, '-') || ' ' || color_slot::VARCHAR FROM account WHERE id = '${KIMI}'",
+        "SELECT provider || ' ' || coalesce(email, '-') || ' ' || coalesce(cred_key, '-') || ' ' || color_slot::VARCHAR FROM account WHERE id = '${CODEX}'",
+        "SELECT provider || ' ' || coalesce(email, '-') || ' ' || coalesce(cred_key, '-') || ' ' || color_slot::VARCHAR FROM account WHERE id = '${ZCODE}'",
+        "SELECT (SELECT count(*) FROM occupancy WHERE account_id = '${ACC}')::VARCHAR || (SELECT count(*) FROM poll WHERE account_id = '${ACC}')::VARCHAR || (SELECT count(*) FROM limit_window WHERE model = 'Opus')::VARCHAR || (SELECT count(*) FROM limit_window WHERE model = 'code')::VARCHAR || (SELECT count(*) FROM limit_window WHERE model = '' AND kind = 'monthly')::VARCHAR || (SELECT count(*) FROM window_cycle)::VARCHAR || (SELECT count(*) FROM sample WHERE percent = 41)::VARCHAR || (SELECT count(*) FROM lock_period)::VARCHAR || (SELECT count(*) FROM daily_rollup WHERE avg_percent = 40.5)::VARCHAR",
+        // The views were dropped with their tables; they must read again.
+        "SELECT count(*)::VARCHAR FROM v_latest_sample",
+        "SELECT email FROM v_sample_local",
+        // No copy left behind.
+        "SELECT count(*)::VARCHAR FROM duckdb_tables() WHERE table_name LIKE 'm5_%'",
+    ])
+    assert(same("keep", ["5", "claude a@b.c - 3", "kimi - kimi-code-env-0e4f 1", "codex - codex:codex@y.z 0", "zcode - zcode:x@y.z 0", "111111111", "1", "a@b.c", "0"], got))
+}
+
+test "a Qoder account, keyed by its whole key, with its month window" {
+    ro qoder = "0192f3a4-0000-7000-8000-0000000000b1"
+    ro got = after_0005("qoder", [
+        account_insert(qoder, "qoder", "NULL", "'qoder:q@x.example'"),
+        window_insert("0192f3a4-0000-7000-8000-0000000000bd", qoder, "monthly", ""),
+        "SELECT count(*)::VARCHAR FROM limit_window WHERE account_id = '${qoder}'",
+        "SELECT cred_key FROM account WHERE provider = 'qoder'",
+        // The live model's own key arithmetic: a qoder key matches by cred_key whole.
+        "SELECT count(*)::VARCHAR FROM account a WHERE CASE WHEN a.provider IN ('codex','zcode','qoder') THEN a.cred_key ELSE coalesce(a.email, 'kimi:' || a.cred_key) END = 'qoder:q@x.example'",
+    ])
+    assert(same("qoder", ["ran", "ran", "1", "qoder:q@x.example", "1"], got))
+}
+
+test "the control: what 0005 must still refuse" {
+    ro dup = "INSERT INTO account (id, created_at, updated_at, created_by, updated_by, provider, email, cred_key, color_slot, first_seen_at, last_seen_at) VALUES ('0192f3a4-0000-7000-8000-0000000000a6', now(), now(), '${ME}', '${ME}', 'qoder', NULL, 'qoder:dup', 0, now(), now()), ('0192f3a4-0000-7000-8000-0000000000a7', now(), now(), '${ME}', '${ME}', 'qoder', NULL, 'qoder:dup', 0, now(), now())"
+    ro got = after_0005("refuse", [
+        // A provider nobody listed (the list stays claude, kimi, codex, zcode, qoder).
+        account_insert("0192f3a4-0000-7000-8000-0000000000a3", "gpt", "NULL", "'k'"),
+        // An empty or padded key, a second account on one key.
+        account_insert("0192f3a4-0000-7000-8000-0000000000a4", "qoder", "NULL", "''"),
+        account_insert("0192f3a4-0000-7000-8000-0000000000a5", "qoder", "NULL", "' qoder:x'"),
+        dup,
+        // A window kind nobody listed, and a plan window carrying a model: the
+        // API gives no per-model burn for a ZCode plan (0004's own control -- the
+        // provider-kind pairing itself is the code's rule, not a CHECK).
+        window_insert("0192f3a4-0000-7000-8000-0000000000b8", ZCODE, "five_hour", ""),
+        window_insert("0192f3a4-0000-7000-8000-0000000000b9", ZCODE, "plan", "Opus"),
+    ])
+    assert(same("refuse", ["refused", "refused", "refused", "refused", "refused", "refused"], got))
+}

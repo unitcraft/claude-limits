@@ -35,10 +35,12 @@
 
 module usage.poller
 
-import claude_limits.usage.fetch.{fetch_with, fetch_codex}
+import claude_limits.usage.fetch.{fetch_with, fetch_codex, fetch_zcode, fetch_qoder, fetch_qoder_plan}
 import claude_limits.usage.outcome.{Outcome}
 import claude_limits.usage.schedule.{Interval, PollSchedule, due, polled, refresh_allowed}
-import claude_limits.usage.parse.{Usage}
+import claude_limits.usage.parse.{Usage, PollOutcome}
+import claude_limits.usage.qoder.{QODER_PLAN_PATH}
+import claude_limits.model.snapshot.{AccountState}
 import claude_limits.accounts.login.{TokenState}
 import http.{Http}
 
@@ -63,20 +65,39 @@ export type PollTarget value {
     ro codex bool
     /// The ChatGPT account of a Codex login; "" for the others.
     ro account_id str
+    /// ZCode (z.ai) rather than Claude: ONE bearer, the OAuth access token, against
+    /// the paid plan's quota endpoint (plan 01.8, amendment 2026-10-31).
+    ro zcode bool
+    /// Qoder rather than Claude: ONE bearer against the openapi quota endpoint, and
+    /// a best-effort plan request after a parsed quota (task 035).
+    ro qoder bool
+    /// ZCode's bearer (the OAuth access token); "" for the others.
+    ro access str
 }
 
 export fn PollTarget.new(email str, host str, port int, secure bool, path str,
                      token str) -> PollTarget =>
-    { email, host, port, secure, path, token, kimi: false, codex: false, account_id: "" }
+    { email, host, port, secure, path, token, kimi: false, codex: false, account_id: "", zcode: false, qoder: false, access: "" }
 
 /// A Kimi Code account. `key` stands where the e-mail would: Kimi has none, and the
 /// journal needs a name (`kimi:<credentials stem>`).
 export fn PollTarget.for_kimi(key str, host str, path str, token str) -> PollTarget =>
-    { email: key, host, port: 443, secure: true, path, token, kimi: true, codex: false, account_id: "" }
+    { email: key, host, port: 443, secure: true, path, token, kimi: true, codex: false, account_id: "", zcode: false, qoder: false, access: "" }
 
 /// A Codex account. `key` is `codex:<e-mail>`, standing where the e-mail would.
 export fn PollTarget.for_codex(key str, host str, path str, token str, account_id str) -> PollTarget =>
-    { email: key, host, port: 443, secure: true, path, token, kimi: false, codex: true, account_id }
+    { email: key, host, port: 443, secure: true, path, token, kimi: false, codex: true, account_id, zcode: false, qoder: false, access: "" }
+
+/// A ZCode account. `key` is `zcode:<e-mail>`; `access` is the OAuth token the
+/// quota endpoint takes as its only bearer (plan 01.8).
+export fn PollTarget.for_zcode(key str, host str, path str, token str, access str) -> PollTarget =>
+    { email: key, host, port: 443, secure: true, path, token, kimi: false, codex: false, account_id: "", zcode: true, qoder: false, access }
+
+/// A Qoder account. `key` is `qoder:<e-mail>`, standing where the e-mail would;
+/// the token is the bearer the store keeps (task 035). The plan path is not
+/// carried here: the plan is THIS file's second request, to the one endpoint.
+export fn PollTarget.for_qoder(key str, host str, path str, token str) -> PollTarget =>
+    { email: key, host, port: 443, secure: true, path, token, kimi: false, codex: false, account_id: "", zcode: false, qoder: true, access: "" }
 
 /// What one poll produced, for a caller that wants the numbers rather than the state.
 export type Reading value {
@@ -134,12 +155,24 @@ export fn may_ask(state TokenState) -> bool =>
 /// decision from the act is what makes both testable -- `due` without a network, and
 /// this without a clock.
 export fn poll_once(a PollTarget, now_ms int) Http PollLog -> Reading {
-    ro got = if a.codex { fetch_codex(a.host, a.port, a.secure, a.path, a.token, a.account_id) } else { fetch_with(a.host, a.port, a.secure, a.path, a.token, a.kimi) }
+    ro got = if a.codex { fetch_codex(a.host, a.port, a.secure, a.path, a.token, a.account_id) } else if a.zcode { fetch_zcode(a.host, a.port, a.secure, a.path, a.access) } else if a.qoder { fetch_qoder(a.host, a.port, a.secure, a.path, a.token) } else { fetch_with(a.host, a.port, a.secure, a.path, a.token, a.kimi) }
     // WRITTEN BEFORE ANYTHING ELSE CAN GO WRONG. Every outcome is recorded, including
     // the ones nobody wants to look at: a 429 that is not in `poll` is a 429 nobody
     // can explain the next morning.
     PollLog.record(a.email, got.outcome.state.to_str(), got.outcome.message, now_ms)
-    ro r = reading_of(a.email, got.outcome, got.usage, now_ms)
+    // The plan is NOT a second request since the log became its source (plan 01.8,
+    // amendment): the app's own journal names the plan and its burn without any
+    // request, and a spare one on a throttled account only feeds the storm.
+    //
+    // THE QODER EXCEPTION (task 035, the owner's "sum + plan"): Qoder's app log is
+    // not read, so the plan line costs its own best-effort request -- but ONLY after
+    // a quota that parsed. A failed quota keeps its one request; a spare one on a
+    // throttled account only feeds the storm.
+    ro r = if a.qoder && got.usage.outcome == PollOutcome.Parsed {
+        reading_of(a.email, got.outcome, got.usage.with_plan(fetch_qoder_plan(a.host, a.port, a.secure, QODER_PLAN_PATH, a.token)), now_ms)
+    } else {
+        reading_of(a.email, got.outcome, got.usage, now_ms)
+    }
     PollLog.reading(r)
     r
 }

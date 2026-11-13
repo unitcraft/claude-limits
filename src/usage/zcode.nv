@@ -1,0 +1,136 @@
+// zcode.nv — the usage and plan replies of ZCode (z.ai), read into the shared shapes
+// (plan 01.8).
+//
+// Source: the reference, `scripts/claude_limits.py` `zcode_rows_of` / `zcode_active_plan`,
+// and the ZCode app's own zod schema for `GET /api/v1/mcp/usage` -- measured live
+// 2026-10-31. The burn reply is `{code, msg, data: {server_time, next_refresh_at, level,
+// total_usage: {used, limit, remaining}}}`; the plan reply is `{code, msg, data: {plans:
+// [...]}}` and the active plan with the highest priority carries `name` and `ends_at`.
+//
+// ONE ROW, `plan` (a new window kind, migration 0004): the API does not name the
+// window's LENGTH, so it is deliberately not `monthly` -- and the forecast stays off
+// until a length is observed from the history. `code != 0` leaves no row: the account
+// falls to `NoWindows`, which the feed shows as its outcome message, the same narrowing
+// Codex applies to a reply without windows.
+//
+// `level` and `remaining` are not read: `remaining` is `limit - used`, and a derived
+// number is one more way for two implementations to disagree in the last digit.
+
+module usage.zcode
+
+import std.encoding.json.{Json, JsonValue}
+import claude_limits.window.{Window}
+import claude_limits.usage.parse.{Usage, PollOutcome, ZcodePlan}
+import claude_limits.usage.kimi.{round_percent}
+
+fn member(obj JsonValue, key str) -> Option[JsonValue] =>
+    match obj.object() {
+        Some(fields) => fields.get(key)
+        None => None
+    }
+
+fn num_in(obj JsonValue, key str) -> int =>
+    match member(obj, key) {
+        Some(v) => match v.num() {
+            Some(n) => n as int
+            None => 0
+        }
+        None => 0
+    }
+
+fn str_in(obj JsonValue, key str) -> str =>
+    match member(obj, key) {
+        Some(v) => v.str() ?? ""
+        None => ""
+    }
+
+/// `data` of the reply envelope, or an empty node.
+fn data_of(root JsonValue) -> JsonValue =>
+    match member(root, "data") {
+        Some(d) => d
+        None => root    // `root.object()` is None for a non-object; callers re-check
+    }
+
+/// The one quota row: percent = used/limit, reset = `next_refresh_at` (epoch seconds).
+/// Hundredths go through `round_percent`, as Kimi's `used/limit` does.
+fn burn_window(root JsonValue) -> Option[Window] {
+    ro data = data_of(root)
+    ro total = member(data, "total_usage")?
+    ro limit = num_in(total, "limit")
+    if limit <= 0 { return None }
+    ro used = num_in(total, "used")
+    if used < 0 { return None }
+    ro reset_s = num_in(data, "next_refresh_at")
+    Some(Window.new("plan", "", round_percent(used * 10000 / limit), reset_s * 1000, ""))
+}
+
+/// The burn reply, read. `BadJson` when it is not a JSON object; `NoWindows` when
+/// `code != 0` or nothing in it is a burn.
+export fn parse_zcode(body str) -> Usage {
+    ro root = Json.parse(body) ?? return Usage.new([], PollOutcome.BadJson, false)
+    if root.object().is_none() { return Usage.new([], PollOutcome.BadJson, false) }
+    ro code = num_in(root, "code")
+    if code != 0 { return Usage.new([], PollOutcome.NoWindows, false) }
+    match burn_window(root) {
+        Some(w) => Usage.new([w], PollOutcome.Parsed, false)
+        None => Usage.new([], PollOutcome.NoWindows, false)
+    }
+}
+
+/// The active plan with the highest priority, `None` when none is active (the same
+/// reading as the reference's `zcode_active_plan`).
+export fn parse_zcode_plan(body str) -> Option[ZcodePlan] {
+    ro root = Json.parse(body).ok()?
+    if root.object().is_none() { return None }
+    if num_in(root, "code") != 0 { return None }
+    ro data = data_of(root)
+    ro plans = member(data, "plans")?
+    ro items = plans.array()?
+    mut best Option[ZcodePlan] = None
+    mut top = 0
+    for item in items {
+        if item.object().is_none() { continue }
+        if str_in(item, "status") != "active" { continue }
+        ro priority = num_in(item, "priority")
+        if best.is_some() && priority <= top { continue }
+        ro name = str_in(item, "name").trim_ascii()
+        if name == "" { continue }
+        top = priority
+        best = Some(ZcodePlan { name, ends_at_ms: num_in(item, "ends_at") * 1000 })
+    }
+    best
+}
+
+/// The PAID plan's windows (the app's "Usage remaining": 5 hours, weekly), from
+/// `api.z.ai/api/monitor/usage/quota/limit` -- ONE bearer, the OAuth access token
+/// the credentials file holds, so this works from outside (plan 01.8, amendment
+/// 2026-10-31). `unit` 3 is the five-hour window, 6 the week; `percentage` is
+/// USED percent; `nextResetTime` is epoch milliseconds. Unknown units are left
+/// out. The envelope here says `code: 200`, not 0.
+export fn parse_zcode_quota(body str) -> Usage {
+    ro root = Json.parse(body) ?? return Usage.new([], PollOutcome.BadJson, false)
+    if root.object().is_none() { return Usage.new([], PollOutcome.BadJson, false) }
+    ro code = num_in(root, "code")
+    if code != 200 && code != 0 { return Usage.new([], PollOutcome.NoWindows, false) }
+    ro data = data_of(root)
+    ro limits = match member(data, "limits") {
+        Some(l) => l
+        None => return Usage.new([], PollOutcome.NoWindows, false)
+    }
+    ro items = match limits.array() {
+        Some(l) => l
+        None => return Usage.new([], PollOutcome.NoWindows, false)
+    }
+    mut out []Window = []
+    for item in items {
+        ro unit = num_in(item, "unit")
+        ro kind = if unit == 3 { "session" } else if unit == 6 { "weekly_all" } else { "" }
+        if kind == "" { continue }
+        ro pct = num_in(item, "percentage")
+        if pct < 0 { continue }
+        ro reset_ms = num_in(item, "nextResetTime")
+        out.push(Window.new(kind, "", pct, reset_ms, ""))
+    }
+    if out.len() == 0 { return Usage.new([], PollOutcome.NoWindows, false) }
+    Usage.new(out, PollOutcome.Parsed, false)
+}

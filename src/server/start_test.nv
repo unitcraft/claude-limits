@@ -120,7 +120,7 @@ fn idle(now_ms int) -> HealthLive => { now_ms, view: nothing_yet(), hidden: [], 
 
 fn state_account(email str, state str, dirs []DirView) -> AccountView => {
     id: "a-${email}", email, org: "Org", dirs, state, message: "", polled_at: "",
-    next_poll_at: "", locked: false, display_name: "", provider: "claude", at_100: false, same_quota_as: "", extra_usage: None,
+    next_poll_at: "", locked: false, display_name: "", provider: "claude", at_100: false, same_quota_as: "", extra_usage: None, plan: None,
 }
 
 /// Three accounts of different states, one of them hidden, four login directories.
@@ -266,7 +266,7 @@ fn dir(path str, name str) -> DirView => { id: "d-${name}", path, name }
 
 fn account(email str, dirs []DirView) -> AccountView => {
     id: "a-${email}", email, org: "Org", dirs, state: "ok", message: "", polled_at: "",
-    next_poll_at: "", locked: false, display_name: "", provider: "claude", at_100: false, same_quota_as: "", extra_usage: None,
+    next_poll_at: "", locked: false, display_name: "", provider: "claude", at_100: false, same_quota_as: "", extra_usage: None, plan: None,
 }
 
 fn seen_view(accounts []AccountView) -> SnapshotView => {

@@ -25,6 +25,9 @@ module usage.fetch
 
 import claude_limits.usage.kimi.{parse_kimi}
 import claude_limits.usage.codex.{parse_codex}
+import claude_limits.usage.zcode.{parse_zcode, parse_zcode_plan, parse_zcode_quota}
+import claude_limits.usage.qoder.{parse_qoder, parse_qoder_plan}
+import claude_limits.usage.parse.{ZcodePlan}
 import http.{Http, HttpError}
 import claude_limits.usage.outcome.{Outcome, of_status, bad_body, transport_failed}
 import claude_limits.usage.parse.{Usage, PollOutcome}
@@ -44,6 +47,8 @@ const CRLF = "\r\n"
 const SERVICE_CLAUDE = 0
 const SERVICE_KIMI = 1
 const SERVICE_CODEX = 2
+const SERVICE_ZCODE = 3
+const SERVICE_QODER = 4
 
 /// What one request came back with: how it went, and what the body said.
 ///
@@ -110,6 +115,35 @@ export fn request_codex(host str, path str, token str, account_id str) -> str {
     r = "${r}Authorization: Bearer ${token}${CRLF}"
     r = "${r}chatgpt-account-id: ${account_id}${CRLF}"
     r = "${r}User-Agent: codex_cli_rs/claude-limits${CRLF}"
+    r = "${r}Accept: application/json${CRLF}"
+    r = "${r}Connection: close${CRLF}${CRLF}"
+    r
+}
+
+/// The ZCode request (the reference's `fetch_zcode_usage`): TWO bearers are required --
+/// the app's MCP jwt in `Authorization` and the OAuth access token in
+/// `X-Bigmodel-Authorization`. The jwt alone answers 400 "parameter error" (measured
+/// 2026-10-31); `request_kimi`'s single-bearer shape is what the plan endpoint uses.
+export fn request_zcode(host str, path str, token str, access str) -> str {
+    mut r = "GET ${path} HTTP/1.1${CRLF}"
+    r = "${r}Host: ${host}${CRLF}"
+    r = "${r}Authorization: Bearer ${token}${CRLF}"
+    r = "${r}X-Bigmodel-Authorization: Bearer ${access}${CRLF}"
+    r = "${r}User-Agent: claude-limits${CRLF}"
+    r = "${r}Accept: application/json${CRLF}"
+    r = "${r}Connection: close${CRLF}${CRLF}"
+    r
+}
+
+/// The Qoder request (the reference's `fetch_qoder_usage`): ONE bearer -- the
+/// token the store keeps -- and otherwise `request_kimi`'s plain shape. No
+/// `X-Bigmodel-Authorization` and no Anthropic beta header: a foreign endpoint
+/// has no use for either.
+export fn request_qoder(host str, path str, token str) -> str {
+    mut r = "GET ${path} HTTP/1.1${CRLF}"
+    r = "${r}Host: ${host}${CRLF}"
+    r = "${r}Authorization: Bearer ${token}${CRLF}"
+    r = "${r}User-Agent: claude-limits${CRLF}"
     r = "${r}Accept: application/json${CRLF}"
     r = "${r}Connection: close${CRLF}${CRLF}"
     r
@@ -239,6 +273,46 @@ export fn fetch_with(host str, port int, secure bool, path str, token str, kimi 
 export fn fetch_codex(host str, port int, secure bool, path str, token str, account_id str) Http -> Reply =>
     exchange(host, port, secure, request_codex(host, path, token, account_id), SERVICE_CODEX)
 
+/// One poll of ZCode's PAID plan quota (the 5-hour and weekly windows): ONE
+/// bearer, the OAuth access token, on api.z.ai (plan 01.8, amendment). The
+/// two-bearer `request_zcode` shape belongs to the MCP meter, whose burn stays
+/// 0 on a start plan and which is no longer polled.
+export fn fetch_zcode(host str, port int, secure bool, path str, access str) Http -> Reply =>
+    exchange(host, port, secure, request_kimi(host, path, access), SERVICE_ZCODE)
+
+/// One poll of ZCode's plan endpoint (the reference's `fetch_zcode_plan`): the jwt
+/// alone authorizes this one, so it is `request_kimi`'s shape. BEST-EFFORT BY DESIGN:
+/// the plan line is a nicety beside the burn, and any failure of it -- transport,
+/// status, parse -- is `None`, not an account state.
+export fn fetch_zcode_plan(host str, port int, secure bool, path str, token str) Http -> Option[ZcodePlan] {
+    match Http.send(host, port, secure, request_kimi(host, path, token)) {
+        Err(_) => None
+        Ok(raw) => {
+            if status_of(raw) != 200 { return None }
+            parse_zcode_plan(body_of(raw))
+        }
+    }
+}
+
+/// One poll of Qoder's quota (`/api/v2/quota/usage`): ONE bearer, on
+/// openapi.qoder.sh (task 035).
+export fn fetch_qoder(host str, port int, secure bool, path str, token str) Http -> Reply =>
+    exchange(host, port, secure, request_qoder(host, path, token), SERVICE_QODER)
+
+/// One poll of Qoder's plan endpoint (`/api/v2/user/plan`), the second request of
+/// a Qoder round. BEST-EFFORT BY DESIGN, like `fetch_zcode_plan`: the plan line is
+/// a nicety beside the quota, and any failure of it -- transport, status, parse --
+/// is `None`, not an account state.
+export fn fetch_qoder_plan(host str, port int, secure bool, path str, token str) Http -> Option[ZcodePlan] {
+    match Http.send(host, port, secure, request_qoder(host, path, token)) {
+        Err(_) => None
+        Ok(raw) => {
+            if status_of(raw) != 200 { return None }
+            parse_qoder_plan(body_of(raw))
+        }
+    }
+}
+
 fn exchange(host str, port int, secure bool, request str, service int) Http -> Reply {
     match Http.send(host, port, secure, request) {
         // The request never arrived. `unknown`, and the last good reading stays.
@@ -251,7 +325,7 @@ fn exchange(host str, port int, secure bool, request str, service int) Http -> R
             ro out = of_status(status, retry_after_of(raw))
             if !out.body_usable { return Reply.new(out, Usage.empty()) }
 
-            ro usage = if service == SERVICE_KIMI { parse_kimi(body_of(raw)) } else if service == SERVICE_CODEX { parse_codex(body_of(raw)) } else { usage_reply.parse(body_of(raw)) }
+            ro usage = if service == SERVICE_KIMI { parse_kimi(body_of(raw)) } else if service == SERVICE_CODEX { parse_codex(body_of(raw)) } else if service == SERVICE_ZCODE { parse_zcode_quota(body_of(raw)) } else if service == SERVICE_QODER { parse_qoder(body_of(raw)) } else { usage_reply.parse(body_of(raw)) }
             // A 200 whose body will not parse is `error`, per 01.1 §3.2 -- see the
             // note in `outcome_test` about the fixture that says `unknown` instead.
             if usage.outcome == PollOutcome.BadJson {

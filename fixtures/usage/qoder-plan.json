@@ -1,0 +1,10 @@
+{
+  "_comment": "Qoder plan reply, GET openapi.qoder.sh/api/v2/user/plan (task 035). The live wire, measured 2026-11-12 (plan's Э9): a FLAT snake_case object, no envelope; start_date/end_date are epoch MILLISECONDS. The plan line of the card: plan_tier_name and end_date. feature_allowed is deliberately absent -- not read. Synthetic; no personal data.",
+  "user_type": "personal_professional_trial",
+  "plan_tier_name": "QODER FIXTURE PLAN",
+  "is_personal_version": true,
+  "is_paid_plan": false,
+  "is_highest_tier": false,
+  "start_date": 1793260800000,
+  "end_date": 1793462400000
+}

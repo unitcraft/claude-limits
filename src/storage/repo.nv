@@ -129,10 +129,11 @@ export fn kimi_key(key str) -> Option[str] {
     Some(key[KIMI_PREFIX.byte_len()..])
 }
 
-/// The account's key in SQL, as the live model writes it: the e-mail, or `kimi:` and
-/// the stem -- what a reader compares with `Reading.email` and `AccountView.email`.
+/// The account's key in SQL, as the live model writes it: the e-mail, `kimi:` and
+/// the stem, or a Codex/ZCode key whole -- what a reader compares with
+/// `Reading.email` and `AccountView.email`.
 export fn account_key_sql(a str) -> str =>
-    "coalesce(${a}.email, CASE WHEN ${a}.provider = 'codex' THEN ${a}.cred_key ELSE '${KIMI_PREFIX}' || ${a}.cred_key END)"
+    "coalesce(${a}.email, CASE WHEN ${a}.provider IN ('codex','zcode','qoder') THEN ${a}.cred_key ELSE '${KIMI_PREFIX}' || ${a}.cred_key END)"
 
 const CODEX_PREFIX = "codex:"
 
@@ -141,9 +142,23 @@ const CODEX_PREFIX = "codex:"
 /// logins.
 export fn is_codex_key(key str) -> bool => key.starts_with(CODEX_PREFIX)
 
+const ZCODE_PREFIX = "zcode:"
+
+/// Is this key a ZCode (z.ai) login's? Same shape as Codex: the WHOLE key, lowered,
+/// lives in `cred_key` (migration 0004).
+export fn is_zcode_key(key str) -> bool => key.starts_with(ZCODE_PREFIX)
+
+const QODER_PREFIX = "qoder:"
+
+/// Is this key a Qoder login's? Same shape as Codex and ZCode: the WHOLE key,
+/// lowered, lives in `cred_key` (migration 0005, task 035).
+export fn is_qoder_key(key str) -> bool => key.starts_with(QODER_PREFIX)
+
 /// The condition naming the account of `key`, by the column that keys it.
 fn account_match(key str) -> str {
     if is_codex_key(key) { return "cred_key = ${quote(key.to_ascii_lower())}" }
+    if is_zcode_key(key) { return "cred_key = ${quote(key.to_ascii_lower())}" }
+    if is_qoder_key(key) { return "cred_key = ${quote(key.to_ascii_lower())}" }
     match kimi_key(key) {
         Some(stem) => "cred_key = ${quote(stem)}"
         None => "email = ${quote(key.to_ascii_lower())}"
@@ -160,6 +175,10 @@ export fn upsert_account_sql(t Tick, id str) -> str {
     ro at = moment(t.at_ms)
     ro (provider, email, stem, target) = if is_codex_key(t.email) {
         ("codex", "NULL", quote(t.email.to_ascii_lower()), "cred_key")
+    } else if is_zcode_key(t.email) {
+        ("zcode", "NULL", quote(t.email.to_ascii_lower()), "cred_key")
+    } else if is_qoder_key(t.email) {
+        ("qoder", "NULL", quote(t.email.to_ascii_lower()), "cred_key")
     } else {
         match kimi_key(t.email) {
             Some(s) => ("kimi", "NULL", quote(s), "cred_key")

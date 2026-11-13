@@ -71,7 +71,8 @@ export fn tick_of(r Reading, org str, instance str) -> Tick {
     if r.outcome.state == AccountState.Ok && parsed {
         for w in r.usage.windows {
             if w.resets_at_ms <= 0 { continue }
-            ro starts = w.resets_at_ms - window_sec_of(w.kind) * 1000
+            ro span = if w.span_sec > 0 { w.span_sec } else { window_sec_of(w.kind) }
+            ro starts = w.resets_at_ms - span * 1000
             rows.push(WindowRow.new(w.kind, w.model, w.percent, w.locked_reason != "",
                                     w.locked_reason, "", starts, w.resets_at_ms))
         }

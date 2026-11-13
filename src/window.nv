@@ -26,12 +26,19 @@ module claude_limits.window
 
 /// One limit window as it arrives from the endpoint and as the page draws it.
 export type Window value {
-    kind str            // session | weekly_all | weekly_scoped
+    kind str            // session | weekly_all | weekly_scoped | monthly | plan
     model str           // "" unless weekly_scoped
     percent int
     resets_at_ms int    // 0 when unknown
     locked_reason str   // "" when not locked
+    /// The window's LENGTH in seconds, when the endpoint names one (a ZCode plan's
+    /// period, plan 01.8); 0 = derive from the kind (`live.window_sec_of`).
+    span_sec int
 }
 
 export fn Window.new(kind str, model str, percent int, resets_at_ms int, locked_reason str) -> Window =>
-    { kind, model, percent, resets_at_ms, locked_reason }
+    { kind, model, percent, resets_at_ms, locked_reason, span_sec: 0 }
+
+/// The same, with the length the endpoint itself named.
+export fn Window @with_span(span_sec int) -> Window =>
+    { @kind, @model, @percent, @resets_at_ms, @locked_reason, span_sec }

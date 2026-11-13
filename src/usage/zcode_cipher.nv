@@ -1,0 +1,353 @@
+// zcode_cipher.nv — AES-256-GCM decrypt for the ZCode credential store (plan 01.8).
+//
+// Source: the ZCode app's own code (`createZCodeCredentialCipher`,
+// `resolveCredentialSecret`), measured live 2026-10-31; the reference's twin lives in
+// `scripts/claude_limits.py` (`_gcm_*`, `zcode_decrypt`). The store's values are
+// `enc:v1:IV.TAG.CT` in base64url -- AES-256-GCM, a 96-bit IV, no AAD, and the key is
+// sha256(secret). The secret is env `ZCODE_CREDENTIAL_SECRET` when set and non-empty,
+// else the app's deterministic fallback string.
+//
+// WHY BY HAND: the stdlib has sha256 but no AES, the project admits no dependencies,
+// and the owner chose (2026-10-31) a plain implementation here over a new C-FFI. GCM
+// runs CTR over the FORWARD cipher in both directions, so there is no inverse cipher
+// at all: one S-box table, the key schedule, the block function, GHASH, CTR. Both
+// implementations are pinned to the same vectors (FIPS-197 C.3, NIST SP 800-38D
+// TC13/14/15) and to one blob the tests carry, encrypted by NODE -- the independent
+// implementation ZCode itself uses.
+//
+// PURE. Bytes come in as `[]int` (0..255): the callers decode base64url, and `[]u8`
+// arithmetic is not what this file is about.
+
+module usage.zcode_cipher
+
+import std.crypto.sha256.{Sha256}
+import std.encoding.base64.{Base64}
+
+/// Why a value did not decrypt. The store's tag failing to check is the wrong-secret
+/// case, and the caller shows it rather than a missing account (plan 01.8). A value the
+/// app sealed under a newer scheme (`enc:v2:…`, its key in the system keyring) says so
+/// BY NAME instead of passing through as if it were plaintext (task 036, plan 01.8).
+export type ZcodeCipherFail enum
+    | TagMismatch
+    | Shape
+    | UnsupportedScheme(str)
+
+export fn ZcodeCipherFail @to_str() -> str =>
+    match @ {
+        TagMismatch => "tag mismatch"
+        Shape => "malformed input"
+        UnsupportedScheme(s) => "store uses enc:${s}, not supported yet"
+    }
+
+// FIPS-197 §3.2.1, a literal on purpose: deriving it at import time is 65k field
+// multiplications the compiler would rather not do, and one wrong digit in it is
+// exactly what the published vectors catch.
+const SBOX [256]int = [
+      99, 124, 119, 123, 242, 107, 111, 197,  48,   1, 103,  43, 254, 215, 171, 118,
+     202, 130, 201, 125, 250,  89,  71, 240, 173, 212, 162, 175, 156, 164, 114, 192,
+     183, 253, 147,  38,  54,  63, 247, 204,  52, 165, 229, 241, 113, 216,  49,  21,
+       4, 199,  35, 195,  24, 150,   5, 154,   7,  18, 128, 226, 235,  39, 178, 117,
+       9, 131,  44,  26,  27, 110,  90, 160,  82,  59, 214, 179,  41, 227,  47, 132,
+      83, 209,   0, 237,  32, 252, 177,  91, 106, 203, 190,  57,  74,  76,  88, 207,
+     208, 239, 170, 251,  67,  77,  51, 133,  69, 249,   2, 127,  80,  60, 159, 168,
+      81, 163,  64, 143, 146, 157,  56, 245, 188, 182, 218,  33,  16, 255, 243, 210,
+     205,  12,  19, 236,  95, 151,  68,  23, 196, 167, 126,  61, 100,  93,  25, 115,
+      96, 129,  79, 220,  34,  42, 144, 136,  70, 238, 184,  20, 222,  94,  11, 219,
+     224,  50,  58,  10,  73,   6,  36,  92, 194, 211, 172,  98, 145, 149, 228, 121,
+     231, 200,  55, 109, 141, 213,  78, 169, 108,  86, 244, 234, 101, 122, 174,   8,
+     186, 120,  37,  46,  28, 166, 180, 198, 232, 221, 116,  31,  75, 189, 139, 138,
+     112,  62, 181, 102,  72,   3, 246,  14,  97,  53,  87, 185, 134, 193,  29, 158,
+     225, 248, 152,  17, 105, 217, 142, 148, 155,  30, 135, 233, 206,  85,  40, 223,
+     140, 161, 137,  13, 191, 230,  66, 104,  65, 153,  45,  15, 176,  84, 187,  22,
+]
+
+/// x * 3 in GF(2^8): `xtime` twice, xored -- the only multiplier MixColumns needs
+/// beyond 2, and 3 = 2 ^ 1.
+fn xtime(a int) -> int =>
+    if a >= 128 { ((a * 2) - 256) ^ 0x1B } else { a * 2 }
+
+fn mul3(a int) -> int => xtime(a) ^ a
+
+/// The AES-256 key schedule: 32 bytes -> 60 words, flat (word = 4 bytes).
+fn expand_key(key []int) -> []int {
+    mut w []int = []
+    for b in key { w.push(b) }
+    mut rcon = 1
+    mut i = 32
+    while i < 240 {
+        mut t []int = []
+        for j in 0..4 { t.push(w[i - 4 + j]) }
+        if i % 32 == 0 {
+            // RotWord, SubWord, Rcon -- on the flat word.
+            mut s []int = []
+            for j in 1..4 { s.push(SBOX[t[j]]) }
+            s.push(SBOX[t[0]])
+            s[0] = s[0] ^ rcon
+            rcon = xtime(rcon)
+            t = s
+        } else if i % 32 == 16 {
+            for j in 0..4 { t[j] = SBOX[t[j]] }
+        }
+        for j in 0..4 { w.push(w[i - 32 + j] ^ t[j]) }
+        i += 4
+    }
+    w
+}
+
+fn add_round_key(mut s []int, w []int, rnd int) -> () {
+    ro base = rnd * 16
+    for k in 0..16 { s[k] = s[k] ^ w[base + k] }
+}
+
+/// ShiftRows over the column-major flat state: byte r of column c at s[4c + r].
+fn shift_rows(s []int) -> []int {
+    mut out []int = []
+    for c in 0..4 {
+        for r in 0..4 {
+            out.push(s[4 * ((c + r) % 4) + r])
+        }
+    }
+    out
+}
+
+fn mix_columns(mut s []int) -> () {
+    for c in 0..4 {
+        ro a0 = s[4 * c]
+        ro a1 = s[4 * c + 1]
+        ro a2 = s[4 * c + 2]
+        ro a3 = s[4 * c + 3]
+        s[4 * c] = xtime(a0) ^ mul3(a1) ^ a2 ^ a3
+        s[4 * c + 1] = a0 ^ xtime(a1) ^ mul3(a2) ^ a3
+        s[4 * c + 2] = a0 ^ a1 ^ xtime(a2) ^ mul3(a3)
+        s[4 * c + 3] = mul3(a0) ^ a1 ^ a2 ^ xtime(a3)
+    }
+}
+
+/// The forward cipher; the only block operation GCM ever needs.
+export fn aes256_block(key []int, block []int) -> []int {
+    ro w = expand_key(key)
+    mut s []int = []
+    for b in block { s.push(b) }
+    add_round_key(s, w, 0)
+    mut rnd = 1
+    while rnd < 14 {
+        for k in 0..16 { s[k] = SBOX[s[k]] }
+        s = shift_rows(s)
+        mix_columns(s)
+        add_round_key(s, w, rnd)
+        rnd += 1
+    }
+    for k in 0..16 { s[k] = SBOX[s[k]] }
+    s = shift_rows(s)
+    add_round_key(s, w, 14)
+    s
+}
+
+/// GHASH's multiplication in GF(2^128) (SP 800-38D alg. 1): X MSB-first over Y,
+/// the reduction polynomial R = 0xe1 in the first byte.
+export fn gf_mul128(x []int, y_in []int) -> []int {
+    mut z []int = []
+    mut v []int = []
+    for k in 0..16 { z.push(0) ; v.push(y_in[k]) }
+    for i in 0..128 {
+        if (x[i / 8] >> (7 - i % 8)) & 1 == 1 {
+            for k in 0..16 { z[k] = z[k] ^ v[k] }
+        }
+        ro lsb = v[15] & 1
+        // V >>= 1, one bit across the 16 bytes.
+        mut k = 15
+        while k > 0 {
+            v[k] = ((v[k] >> 1) | ((v[k - 1] & 1) * 128)) & 0xFF
+            k -= 1
+        }
+        v[0] = v[0] >> 1
+        if lsb == 1 { v[0] = v[0] ^ 0xE1 }
+    }
+    z
+}
+
+fn xor16(a []int, b []int) -> []int {
+    mut out []int = []
+    for k in 0..16 { out.push(a[k] ^ b[k]) }
+    out
+}
+
+/// GHASH over aad (empty for this store) and the ciphertext, block by block.
+fn ghash(h []int, aad []int, ct []int) -> []int {
+    mut y []int = []
+    for k in 0..16 { y.push(0) }
+    mut blocks []int = []
+    for b in aad { blocks.push(b) }
+    while blocks.len() % 16 != 0 { blocks.push(0) }
+    for b in ct { blocks.push(b) }
+    while blocks.len() % 16 != 0 { blocks.push(0) }
+    mut i = 0
+    while i < blocks.len() {
+        ro blk = blocks[i..i + 16]
+        mut xored []int = []
+        for k in 0..16 { xored.push(y[k] ^ blk[k]) }
+        y = gf_mul128(xored, h)
+        i += 16
+    }
+    // The length block: bit lengths of aad and ct, 64 bits each.
+    ro aad_bits = aad.len() * 8
+    ro ct_bits = ct.len() * 8
+    mut tail []int = []
+    for k in 0..8 { tail.push((aad_bits >> (56 - k * 8)) & 0xFF) }
+    for k in 0..8 { tail.push((ct_bits >> (56 - k * 8)) & 0xFF) }
+    mut xored []int = []
+    for k in 0..16 { xored.push(y[k] ^ tail[k]) }
+    gf_mul128(xored, h)
+}
+
+fn gctr(w []int, j0 []int, data []int) -> []int {
+    mut out []int = []
+    mut cb []int = []
+    for k in 0..16 { cb.push(j0[k]) }
+    mut i = 0
+    while i < data.len() {
+        // inc32: the LAST four bytes count.
+        mut b = 3
+        while b >= 0 {
+            cb[12 + b] = (cb[12 + b] + 1) & 0xFF
+            if cb[12 + b] != 0 { break }
+            b -= 1
+        }
+        ro ks = aes256_block_with(w, cb)
+        ro end = (i + 16).min(data.len())
+        for k in i..end { out.push(data[k] ^ ks[k - i]) }
+        i += 16
+    }
+    out
+}
+
+// Named, not a literal next to the call (registry 221.1 #1392).
+fn aes256_block_with(w []int, block []int) -> []int {
+    mut s []int = []
+    for b in block { s.push(b) }
+    add_round_key(s, w, 0)
+    mut rnd = 1
+    while rnd < 14 {
+        for k in 0..16 { s[k] = SBOX[s[k]] }
+        s = shift_rows(s)
+        mix_columns(s)
+        add_round_key(s, w, rnd)
+        rnd += 1
+    }
+    for k in 0..16 { s[k] = SBOX[s[k]] }
+    s = shift_rows(s)
+    add_round_key(s, w, 14)
+    s
+}
+
+fn j0_of(iv []int) -> []int {
+    mut j0 []int = []
+    for b in iv { j0.push(b) }
+    j0.push(0) ; j0.push(0) ; j0.push(0) ; j0.push(1)
+    j0
+}
+
+/// The key of the store: sha256 of the secret string's UTF-8 bytes. The digest is a
+/// fixed-size array and is copied by index (a for-in over it does not resolve --
+/// Plan 35's cross-file gap).
+export fn zcode_key(secret str) -> []int {
+    ro digest = Sha256.hash(secret.bytes())
+    mut out []int = []
+    for k in 0..32 { out.push(digest[k] as int) }
+    out
+}
+
+/// GCM decrypt with a 96-bit IV and no AAD -- the store's exact shape. The tag is
+/// checked FIRST: a mismatch is the wrong-secret case, not garbage out. CTR is a
+/// stream, so a partial final ciphertext block is normal, not malformed.
+export fn gcm_decrypt(key []int, iv []int, ct []int, tag []int) -> Result[[]int, ZcodeCipherFail] {
+    if key.len() != 32 || iv.len() != 12 || tag.len() != 16 { return Err(ZcodeCipherFail.Shape) }
+    ro w = expand_key(key)
+    ro h = aes256_block_with(w, zero16())
+    ro j0 = j0_of(iv)
+    ro s = ghash(h, [], ct)
+    ro ek = aes256_block_with(w, j0)
+    ro want = xor16(ek, s)
+    for k in 0..16 {
+        if want[k] != tag[k] { return Err(TagMismatch) }
+    }
+    Ok(gctr(w, j0, ct))
+}
+
+/// What GCM encrypt hands back: the ciphertext and the tag over it.
+export type GcmOut value {
+    ro ct []int
+    ro tag []int
+}
+
+/// GCM encrypt, for the tests' round trips; production only decrypts.
+export fn gcm_encrypt(key []int, iv []int, pt []int) -> Result[GcmOut, ZcodeCipherFail] {
+    if key.len() != 32 || iv.len() != 12 { return Err(ZcodeCipherFail.Shape) }
+    ro w = expand_key(key)
+    ro h = aes256_block_with(w, zero16())
+    ro j0 = j0_of(iv)
+    ro ct = gctr(w, j0, pt)
+    ro s = ghash(h, [], ct)
+    ro ek = aes256_block_with(w, j0)
+    Ok(GcmOut { ct, tag: xor16(ek, s) })
+}
+
+fn zero16() -> []int {
+    mut z []int = []
+    for k in 0..16 { z.push(0) }
+    z
+}
+
+/// The secret the app derives when `ZCODE_CREDENTIAL_SECRET` is unset: the platform
+/// the way node's `os.platform()` spells it (`win32`/`linux`/`darwin`), the home
+/// directory and the user. The caller resolves the three; this only spells the line,
+/// so the two implementations cannot drift apart in the middle.
+export fn fallback_secret(platform str, home str, user str) -> str =>
+    "zcode-credential-fallback:${platform}:${home}:${user}"
+
+/// One `enc:v1:IV.TAG.CT` value of the store, decoded and decrypted; a plain string
+/// passes through. A value under another `enc:` scheme is an Err naming the scheme --
+/// the app's `enc:v2:os:…` keys live in the system keyring and cannot be reached here
+/// (measured 2026-11-12, plan 01.8 "enc:v2"). ""-free: a failing value is an Err, and
+/// the caller decides what a login without a readable token is.
+export fn decrypt_value(value str, secret str) -> Result[str, ZcodeCipherFail] {
+    if !value.starts_with("enc:") { return Ok(value) }
+    if !value.starts_with("enc:v1:") { return Err(ZcodeCipherFail.UnsupportedScheme(scheme_of(value))) }
+    ro body = value["enc:v1:".byte_len()..]
+    ro parts = body.split(".").collect()
+    if parts.len() != 3 { return Err(ZcodeCipherFail.Shape) }
+    ro iv = match decode_part(parts[0]) { Ok(b) => b, Err(e) => return Err(e) }
+    ro tag = match decode_part(parts[1]) { Ok(b) => b, Err(e) => return Err(e) }
+    ro ct = match decode_part(parts[2]) { Ok(b) => b, Err(e) => return Err(e) }
+    match gcm_decrypt(zcode_key(secret), iv, ct, tag) {
+        Err(e) => Err(e)
+        Ok(plain) => Ok(bytes_str(plain))
+    }
+}
+
+/// The scheme tag of an `enc:<scheme>:…` value ("v2", "v3"); "unknown" when the value
+/// spells no tag -- the refusal still needs a name to say.
+fn scheme_of(value str) -> str {
+    ro parts = value.split(":").collect()
+    if parts.len() < 2 || parts[1] == "" { return "unknown" }
+    parts[1]
+}
+
+/// Plaintext bytes as text, the lossy way a token store never needs forgiving for:
+/// its values are ASCII JWTs and JSON.
+fn bytes_str(xs []int) -> str {
+    mut out []u8 = []
+    for b in xs { out.push(b as u8) }
+    out.to_str_lossy()
+}
+
+/// base64url, padded or not, as bytes the cipher reads.
+fn decode_part(s str) -> Result[[]int, ZcodeCipherFail] =>
+    match Base64.decode_url(s) {
+        Err(_) => Err(ZcodeCipherFail.Shape)
+        Ok(bytes) => {
+            mut out []int = []
+            for b in bytes { out.push(b as int) }
+            Ok(out)
+        }
+    }

@@ -1,0 +1,123 @@
+// qoder.nv — the usage and plan replies of Qoder, read into the shared shapes
+// (task 035).
+//
+// Source: the LIVE WIRE, measured against openapi.qoder.sh on 2026-11-12 (Э9 of
+// the plan; the fixtures `fixtures/usage/qoder.json` / `qoder-plan.json` were
+// rewritten to match). The two replies do NOT share one convention, and neither
+// is the `{code, msg, data}` envelope this file first assumed:
+//
+//   * `GET /api/v2/quota/usage` -- a FLAT camelCase object, no envelope:
+//     `totalUsagePercentage` is a FRACTION 0..1 (0.41 with `userQuota.used`
+//     300 of `total` 300 -- the inner `percentage` fields are fractions too),
+//     `expiresAt` is epoch MILLISECONDS;
+//   * `GET /api/v2/user/plan` -- a FLAT snake_case object, no envelope:
+//     `plan_tier_name`, `end_date` (epoch MILLISECONDS, like `start_date`).
+//
+// A refusal (a reply that carries `code` and a non-zero one) still narrows to
+// `NoWindows` -- the envelope check costs one `num_in` and keeps the contract
+// the fixtures pin.
+//
+// ONE ROW, the SUM of the quota -- no package breakdown (`userQuota`,
+// `addOnQuota`, `dedicatedResourcePackages` are not read), the owner's word
+// (2026-11-12). The window kind is the month one the storage already carries
+// (`monthly`, model ''), so history keeps one series per account; the reset is
+// `expiresAt`. `isQuotaExceeded` is not read: a used-up quota already reads
+// 100.
+//
+// The percent is rounded AT PARSE, half to even (`round_percent`), where every
+// other window's percent lives; the reference keeps it a float and rounds at
+// print, and the differential pinned the two spellings together (a fraction of
+// 0.125 -> 12, 0.135 -> 14). The fraction read is why the hundredths multiply
+// by ten thousand here; the `as int` floor is exact for 0.125 (a dyadic
+// fraction) and lands just above the integer for 0.135 -- the differential's
+// numbers keep off the knife edge.
+
+module usage.qoder
+
+import std.encoding.json.{Json, JsonValue}
+import claude_limits.window.{Window}
+import claude_limits.usage.parse.{Usage, PollOutcome, ZcodePlan}
+import claude_limits.usage.kimi.{round_percent}
+
+/// The two paths of the Qoder openapi, beside the reference's
+/// `QODER_USAGE_PATH` / `QODER_PLAN_PATH`. The host is the caller's (feed.nv),
+/// so the `QODER_BASE_URL` override lives there too.
+export const QODER_USAGE_PATH = "/api/v2/quota/usage"
+
+export const QODER_PLAN_PATH = "/api/v2/user/plan"
+
+fn member(obj JsonValue, key str) -> Option[JsonValue] =>
+    match obj.object() {
+        Some(fields) => fields.get(key)
+        None => None
+    }
+
+fn num_in(obj JsonValue, key str) -> int =>
+    match member(obj, key) {
+        Some(v) => match v.num() {
+            Some(n) => n as int
+            None => 0
+        }
+        None => 0
+    }
+
+fn str_in(obj JsonValue, key str) -> str =>
+    match member(obj, key) {
+        Some(v) => v.str() ?? ""
+        None => ""
+    }
+
+/// `data` of a reply that carries an envelope, else the reply itself (the plan
+/// wire is flat; this keeps one reader over both spellings).
+fn data_of(root JsonValue) -> JsonValue =>
+    match member(root, "data") {
+        Some(d) => d
+        None => root    // `root.object()` is None for a non-object; callers re-check
+    }
+
+/// A moment the wire names in ms, 0 when it is not one. Epoch SECONDS sit below
+/// 1e11 until the year 5138; every ms value since 1978 sits above it.
+fn moment_ms(n int) -> int => if n > 100_000_000_000 { n } else { n * 1000 }
+
+/// `totalUsagePercentage` -- a fraction 0..1 -- in hundredths of a percent, for
+/// `round_percent`; None when the reply does not name one (or names it in a way
+/// that does not read as a number).
+fn hundredths_of(root JsonValue) -> Option[int] {
+    ro v = member(root, "totalUsagePercentage")?
+    ro f = v.num()?
+    Some((f * 10000.0) as int)
+}
+
+/// The one quota row: percent = `totalUsagePercentage`, reset = `expiresAt`.
+/// Hundredths go through `round_percent`, half to even.
+fn quota_window(root JsonValue) -> Option[Window] {
+    ro hund = hundredths_of(root)?
+    Some(Window.new("monthly", "", round_percent(hund), moment_ms(num_in(root, "expiresAt")), ""))
+}
+
+/// The quota reply, read. `BadJson` when it is not a JSON object; `NoWindows`
+/// when `code != 0` or nothing in it is a quota.
+export fn parse_qoder(body str) -> Usage {
+    ro root = Json.parse(body) ?? return Usage.new([], PollOutcome.BadJson, false)
+    if root.object().is_none() { return Usage.new([], PollOutcome.BadJson, false) }
+    if num_in(root, "code") != 0 { return Usage.new([], PollOutcome.NoWindows, false) }
+    match quota_window(root) {
+        Some(w) => Usage.new([w], PollOutcome.Parsed, false)
+        None => Usage.new([], PollOutcome.NoWindows, false)
+    }
+}
+
+/// The plan reply, read into the shared `ZcodePlan` shape (the same shape the
+/// feed shows for ZCode's plan; there is no Qoder-specific carrier to keep in
+/// step). `None` when the name is missing or the body does not read; the end is
+/// `end_date`, 0 when it is not a moment. A flat wire (the live one) and an
+/// enveloped one (`data` around the fields) both read.
+export fn parse_qoder_plan(body str) -> Option[ZcodePlan] {
+    ro root = Json.parse(body).ok()?
+    if root.object().is_none() { return None }
+    if num_in(root, "code") != 0 { return None }
+    ro data = data_of(root)
+    ro name = str_in(data, "plan_tier_name").trim_ascii()
+    if name == "" { return None }
+    Some(ZcodePlan { name, ends_at_ms: moment_ms(num_in(data, "end_date")) })
+}

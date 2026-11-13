@@ -76,8 +76,10 @@ fn Projection.none(basis Basis) -> Projection =>
     { available: false, percent_at_reset: 0, runs_out_in_min: -1,
       rate_per_hour_x100: 0, basis, warning: false }
 
-/// History shorter than this is not enough to predict anything (§2.7).
-const MIN_HISTORY_MIN = 30
+/// History shorter than this is not enough to predict anything. FIVE MINUTES by
+/// the owner's word 2026-10-31 ("уменьши до 5 минут"); the old thirty came from
+/// §2.7's max(30 minutes, window/20), now gone (01.1 §2.7 amendment).
+const MIN_HISTORY_MIN = 5
 
 /// The forecast, given how much was spent over how many EFFECTIVE minutes.
 ///

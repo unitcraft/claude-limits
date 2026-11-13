@@ -683,7 +683,7 @@ export function moveTo(list, from, to) {
  */
 export function accountKey(acc) {
   if (acc && acc.email) return String(acc.email).toLowerCase();
-  if (acc && (acc.provider === 'kimi' || acc.provider === 'codex') && acc.display_name) {
+  if (acc && (acc.provider === 'kimi' || acc.provider === 'codex' || acc.provider === 'zcode' || acc.provider === 'qoder') && acc.display_name) {
     return `${acc.provider}:${acc.display_name}`.toLowerCase();
   }
   return '';

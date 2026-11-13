@@ -109,7 +109,10 @@ test "row labels, including the visible fallback" {
     assert(row_label("session", "") == "session 5h")
     assert(row_label("weekly_all", "") == "all 7d")
     assert(row_label("weekly_scoped", "Opus") == "Opus 7d")
-    // A scoped row with no model name must not look like another row.
+    assert(row_label("plan", "") == "plan usage")
+    // A scoped row with no model name must not look like another row -- and an
+    // unknown kind must not borrow a name it does not own (measured live 2026-10-31:
+    // the plan row arrived as "scoped 7d" before the label knew it).
     assert(row_label("weekly_scoped", "") == "scoped 7d")
 }
 

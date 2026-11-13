@@ -8,8 +8,9 @@ For every Claude Code login on the machine it shows the same numbers that
 (all models and per model), when each resets, and whether the account is
 currently locked. All accounts side by side, without switching logins.
 
-Kimi Code and Codex (OpenAI / ChatGPT) logins are shown on the same page, next
-to the Claude ones, each card marked with its service.
+Kimi Code, Codex (OpenAI / ChatGPT), ZCode (z.ai) and Qoder (qoder.com) logins
+are shown on the same page, next to the Claude ones, each card marked with its
+service.
 
 ## What the page shows
 
@@ -28,11 +29,12 @@ Each card is one account; each row is one limit window.
 | **red card, 100%** | locked: the limit is reached, the account waits for the reset |
 | **faded rows and a `HTTP 429` badge** | the server asked to wait; the last good reading stays on screen, dated |
 | **a card with only a message** | no reading: the login's token has expired (`start Claude Code under this login`) or the answer was rejected |
-| **`Kimi Code` / `Codex` next to the name** | the service of that login; Claude cards show the organisation instead |
+| **`Kimi Code` / `Codex` / `ZCode` / `Qoder` next to the name** | the service of that login; Claude cards show the organisation instead |
 
 The `session 5h` row is the five-hour window, `all 7d` the weekly window over all
 models, `Opus 7d` a weekly window for one model, `month` the monthly window of Kimi Code
-and of a free Codex plan.
+and of a free Codex plan, `plan usage` the burn window of a ZCode plan, `quota`
+the monthly sum of a Qoder plan.
 
 ## Why
 
@@ -138,7 +140,8 @@ By hand: `python scripts/refresh_token.py <dir>` or `--all`
 
 - A token leaves the machine only towards the service it belongs to:
   `api.anthropic.com` for Claude, the Kimi Code API for Kimi, `chatgpt.com` for
-  Codex. It is never logged, never displayed, never written anywhere.
+  Codex, `zcode.z.ai` for ZCode, `openapi.qoder.sh` for Qoder. It is never
+  logged, never displayed, never written anywhere.
 - The tool never writes into Claude Code's directories ITSELF. Auto-refresh is
   not an exception to that: it starts Claude Code, which writes its own files.
   The tool reads one thing from `.credentials.json` besides the token it sends --
@@ -338,6 +341,25 @@ folder holding `auth.json` is a Codex login, asked at
 `chatgpt.com/backend-api/wham/usage`. The access token is never renewed (see
 below), and a free plan shows one `month` window.
 
+ZCode works in the reference script (plan
+[01.8](docs/plans/01.8-zcode.md)); the Nova binary follows. A folder holding
+`v2/credentials.json` is a ZCode home: the desktop app's token store, whose
+values are AES-256-GCM encrypted (`enc:v1:...`, the key derived from the
+machine). The script decrypts them in memory -- it never writes the file, and
+no refresh token exists in the store, so a rejected login is reported with
+advice to start ZCode once. One `plan usage` row (burn and reset) and a plan
+line (name and end date) are shown.
+
+Qoder works the same way (task 035): a folder holding `.qoder-app-status.json`
+is a Qoder home (the CLI's default `~/.qoder`, or `$QODER_HOME`). The identity
+comes from that marker file; the tokens live in `.auth/user`, one line of
+base64 over AES-128-CBC, keyed by the first 16 characters of
+`.auth/machine_id` -- the scheme taken off Qoder CLI's own WASM module. The
+script decrypts the store in memory and never writes it; no refresh token
+exists in the store, so a rejected login is reported with advice to start
+Qoder once. One `quota` row -- the total against the plan's month, no package
+breakdown -- and a plan line (name and end date) are shown.
+
 A path with non-ASCII characters (a Cyrillic user name, say) works since the Nova
 runtime reads the command line and the environment as UTF-8 (nova `2488a47be`; the
 probe that pinned the old behaviour is `probes/windows-args-env-ansi/`).
@@ -354,13 +376,18 @@ interval_sec = 300
 accounts = [{ dir = "~/.claude", kind = "claude" },                 # individual dirs
             { dir = "D:/accounts", kind = "claude", children = true }, # every child dir
             { dir = "~/.kimi-code", kind = "kimi" },               # a Kimi Code home
-            { dir = "~/.codex", kind = "codex" }]                  # a Codex home
+            { dir = "~/.codex", kind = "codex" },                  # a Codex home
+            { dir = "~/.zcode", kind = "zcode" },                  # a ZCode home
+            { dir = "~/.qoder", kind = "qoder" }]                  # a Qoder home
 ```
 
 `kind` is mandatory: `claude` looks for `.credentials.json`, `kimi` for
-`credentials/*.json`, `codex` for `auth.json`, `auto` accepts any of them.
+`credentials/*.json`, `codex` for `auth.json`, `zcode` for
+`v2/credentials.json`, `qoder` for `.qoder-app-status.json`, `auto` accepts
+any of them.
 Without a config file the tool falls back to `~/.claude`, `CLAUDE_CONFIG_DIR`,
-`~/.kimi-code` (`KIMI_CODE_HOME`) and `~/.codex` (`CODEX_HOME`).
+`~/.kimi-code` (`KIMI_CODE_HOME`), `~/.codex` (`CODEX_HOME`), `~/.zcode`
+(`ZCODE_HOME`) and `~/.qoder` (`QODER_HOME`).
 
 Codex is read-only: the access token in `auth.json` lives about ten days and is
 **never renewed by this tool**, because OpenAI's refresh token is single-use and a

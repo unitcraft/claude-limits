@@ -176,6 +176,7 @@ jobs:
         working-directory: pkg
         run: |
           python -m unittest discover -s scripts -p test_forecast.py -v
+          python -m unittest discover -s scripts -p test_zcode_creds.py -v
           python -m unittest discover -s scripts -p test_smoke_server.py -v
 
       - name: Build the release binary

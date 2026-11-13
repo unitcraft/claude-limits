@@ -1,0 +1,124 @@
+// Tests for zcode.nv -- plan 01.8: the ZCode replies against the REFERENCE.
+//
+//   ./nova.sh test src/usage/zcode_test.nv
+//
+// The same numbers were run through the reference's own `zcode_rows_of` and
+// `zcode_active_plan` (`scripts/claude_limits.py`, 2026-10-31), which printed:
+//
+//   fixture    plan usage 12.0    reset 1793462400   (fixtures/usage/zcode.json)
+//   half-even  plan usage 12.5    reset 1793462400   (125 of 1000)
+//   round-up   plan usage 13.5    reset 1793462400   (135 of 1000)
+//   zero       plan usage 0.0     reset 1793462400
+//   no-reset   plan usage 12.0    reset None
+//   plan       HIGH ends 2000                        (highest priority of the active)
+//
+// The reference keeps the percent a float and rounds at print; the port rounds at
+// parse, half to even (`round_percent`), where every other window's percent lives.
+
+module usage.zcode_test
+
+import zcode.{parse_zcode, parse_zcode_plan, parse_zcode_quota}
+import claude_limits.usage.parse.{PollOutcome}
+import claude_limits.usage.fetch.{request_zcode, request_kimi}
+import claude_limits.window.{Window}
+
+const FIXTURE = "{\"code\": 0, \"msg\": \"\", \"data\": {\"server_time\": 1793400000, \"next_refresh_at\": 1793462400, \"level\": \"max\", \"total_usage\": {\"used\": 120, \"limit\": 1000, \"remaining\": 880}}}"
+
+fn half_even() -> str =>
+    "{\"code\": 0, \"data\": {\"next_refresh_at\": 1793462400, \"total_usage\": {\"used\": 125, \"limit\": 1000}}}"
+
+fn round_up() -> str =>
+    "{\"code\": 0, \"data\": {\"next_refresh_at\": 1793462400, \"total_usage\": {\"used\": 135, \"limit\": 1000}}}"
+
+fn zero() -> str =>
+    "{\"code\": 0, \"data\": {\"next_refresh_at\": 1793462400, \"total_usage\": {\"used\": 0, \"limit\": 1000}}}"
+
+fn no_reset() -> str =>
+    "{\"code\": 0, \"data\": {\"total_usage\": {\"used\": 120, \"limit\": 1000}}}"
+
+fn row(w Window) -> str => "${w.kind}|${w.model}|${w.percent}|${w.resets_at_ms}"
+
+fn first_row(body str) -> str {
+    ro u = parse_zcode(body)
+    if u.windows.len() == 0 { return "none" }
+    row(u.windows[0])
+}
+
+fn same(label str, want str, got str) -> bool {
+    if want == got { return true }
+    panic("${label}: want [${want}], got [${got}]")
+}
+
+test "the fixture: one plan row, 12 percent, the reset in ms" {
+    assert(same("fixture", "plan||12|1793462400000", first_row(FIXTURE)))
+}
+
+test "125 of 1000 rounds half to even (12), 135 rounds up (14)" {
+    assert(same("half-even", "plan||12|1793462400000", first_row(half_even())))
+    assert(same("round-up", "plan||14|1793462400000", first_row(round_up())))
+}
+
+test "zero used is a row of zero, not no row" {
+    assert(same("zero", "plan||0|1793462400000", first_row(zero())))
+}
+
+test "no reset named: the row stands, the reset is 0 (unknown)" {
+    assert(same("no-reset", "plan||12|0", first_row(no_reset())))
+}
+
+test "code != 0 is NoWindows; not JSON is BadJson; a zero limit is no row" {
+    assert(parse_zcode("{\"code\": 3001, \"msg\": \"parameter error\"}").outcome == PollOutcome.NoWindows)
+    assert(parse_zcode("not json").outcome == PollOutcome.BadJson)
+    assert(parse_zcode("{\"code\": 0, \"data\": {\"total_usage\": {\"used\": 1, \"limit\": 0}}}").outcome == PollOutcome.NoWindows)
+    assert(parse_zcode(FIXTURE).outcome == PollOutcome.Parsed)
+}
+
+const PLANS = "{\"code\": 0, \"data\": {\"plans\": [{\"name\": \"LOW\", \"status\": \"active\", \"priority\": 50, \"ends_at\": 1000}, {\"name\": \"HIGH\", \"status\": \"active\", \"priority\": 101, \"ends_at\": 2000}, {\"name\": \"OFF\", \"status\": \"expired\", \"priority\": 200, \"ends_at\": 3000}]}}"
+
+test "the active plan with the highest priority, its end in ms" {
+    match parse_zcode_plan(PLANS) {
+        Some(p) => assert(p.name == "HIGH" && p.ends_at_ms == 2000000)
+        None => assert(false)
+    }
+}
+
+test "no active plan, no plans, bad JSON, an unnamed plan: all None" {
+    assert(parse_zcode_plan("{\"code\": 0, \"data\": {\"plans\": [{\"name\": \"X\", \"status\": \"expired\", \"priority\": 101}]}}").is_none())
+    assert(parse_zcode_plan("{\"code\": 0, \"data\": {}}").is_none())
+    assert(parse_zcode_plan("not json").is_none())
+    assert(parse_zcode_plan("{\"code\": 0, \"data\": {\"plans\": [{\"status\": \"active\", \"priority\": 1}]}}").is_none())
+}
+
+const QUOTA = "{\"code\":200,\"msg\":\"Operation successful\",\"data\":{\"level\":\"max\",\"limits\":[{\"type\":\"CREDIT_LIMIT\",\"unit\":3,\"number\":5,\"usage\":28000,\"currentValue\":7195,\"remaining\":20804,\"percentage\":25,\"nextResetTime\":1793452938552},{\"type\":\"CREDIT_LIMIT\",\"unit\":6,\"number\":1,\"usage\":140000,\"currentValue\":50281,\"remaining\":89718,\"percentage\":35,\"nextResetTime\":1794003091998}]}}"
+
+test "the paid plan windows: unit 3 is the session, 6 the week, percentage is USED" {
+    ro u = parse_zcode_quota(QUOTA)
+    assert(u.outcome == PollOutcome.Parsed)
+    assert(u.windows.len() == 2)
+    assert(u.windows[0].kind == "session" && u.windows[0].percent == 25)
+    assert(u.windows[0].resets_at_ms == 1793452938552)
+    assert(u.windows[1].kind == "weekly_all" && u.windows[1].percent == 35)
+    // An unknown unit is left out; a business error is NoWindows; not JSON is BadJson.
+    ro odd = parse_zcode_quota("{\"code\":200,\"data\":{\"limits\":[{\"unit\":9,\"percentage\":5,\"nextResetTime\":1}]}}")
+    assert(odd.outcome == PollOutcome.NoWindows)
+    assert(parse_zcode_quota("{\"code\":3001}").outcome == PollOutcome.NoWindows)
+    assert(parse_zcode_quota("not json").outcome == PollOutcome.BadJson)
+}
+
+test "the quota request takes ONE bearer -- the access token (api.z.ai)" {
+    ro q = request_kimi("api.z.ai", "/api/monitor/usage/quota/limit", "ACCESS")
+    assert(q.contains("Authorization: Bearer ACCESS\r\n"))
+    assert(!q.contains("X-Bigmodel-Authorization"))
+}
+
+test "the burn request carries both bearers; the plan request the jwt alone" {
+    ro burn = request_zcode("zcode.z.ai", "/api/v1/mcp/usage", "JWT", "ACCESS")
+    assert(burn.starts_with("GET /api/v1/mcp/usage HTTP/1.1\r\n"))
+    assert(burn.contains("Host: zcode.z.ai\r\n"))
+    assert(burn.contains("Authorization: Bearer JWT\r\n"))
+    assert(burn.contains("X-Bigmodel-Authorization: Bearer ACCESS\r\n"))
+    assert(!burn.contains("anthropic-beta"))
+    ro plan = request_kimi("zcode.z.ai", "/api/v1/zcode-plan/billing/current", "JWT")
+    assert(plan.contains("Authorization: Bearer JWT\r\n"))
+    assert(!plan.contains("X-Bigmodel-Authorization"))
+}

@@ -55,3 +55,17 @@ nova.override.toml
 .credentials.json
 **/.credentials.json
 
+# The agent hub's own state and task folders: session-local, they name accounts
+# and carry drafts, never shared.
+.canopus/
+doc/tasks/
+
+# The ZCode desktop app's home, when a probe points ZCODE_HOME here: credential
+# material, same rule as .credentials.json.
+.zcode/
+
+# Machine-local config leftovers: the running instance's id marker and the backup
+# kept from before the config was reformatted. Neither is for the repository.
+claude-limits.instance
+claude-limits.toml.bak-python-format
+

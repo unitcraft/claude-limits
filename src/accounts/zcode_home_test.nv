@@ -1,0 +1,172 @@
+// Tests for zcode_home.nv -- plan 01.8: a ZCode home read (and decrypted) by content.
+//
+//   ./nova.sh test src/accounts/zcode_home_test.nv
+//
+// The encrypted store values are built with THIS project's own cipher (round trips);
+// the cross-implementation case -- the python-encrypted blob -- lives in
+// `zcode_cipher_test.nv`, so this file only proves the home logic around it. The
+// secret is fixed: a wrong one must show as a broken login, not a missing one.
+
+module accounts.zcode_home_test
+
+import std.encoding.base64.{Base64}
+import zcode_home.{ZcodeLogin, zcode_logins_at, read_zcode_jwt, read_zcode_access}
+import claude_limits.usage.zcode_cipher.{gcm_encrypt, zcode_key}
+import claude_limits.accounts.discover.{Dirs}
+import claude_limits.accounts.login.{Creds}
+
+const SECRET = "test-secret"
+
+/// One store value, `enc:v1:IV.TAG.CT`. A fixed IV is fine here: the vectors live in
+/// `zcode_cipher_test.nv`, and these values exist only to be decrypted again in this file.
+fn enc(plain str) -> str => enc_under(plain, SECRET)
+
+/// The same, under another secret -- the store of ANOTHER machine, which this
+/// machine's secret must refuse to open.
+fn enc_wrong(plain str) -> str => enc_under(plain, "another machine")
+
+fn enc_under(plain str, secret str) -> str {
+    ro iv = hex12("00112233445566778899aabb")
+    mut bytes []int = []
+    for b in plain.bytes() { bytes.push(b as int) }
+    match gcm_encrypt(zcode_key(secret), iv, bytes) {
+        Err(_) => panic("test encrypt failed")
+        Ok(out) => "enc:v1:${b64(iv)}.${b64(out.tag)}.${b64(out.ct)}"
+    }
+}
+
+fn hex_val(c u8) -> int {
+    ro n = c as int
+    if n >= 48 && n <= 57 { return n - 48 }
+    if n >= 97 && n <= 102 { return n - 87 }
+    if n >= 65 && n <= 70 { return n - 55 }
+    -1
+}
+
+fn hex12(hex str) -> []int {
+    ro bytes = hex.bytes()
+    mut out []int = []
+    mut i = 0
+    while i + 1 < bytes.len() {
+        out.push(hex_val(bytes[i]) * 16 + hex_val(bytes[i + 1]))
+        i += 2
+    }
+    out
+}
+
+fn b64(xs []int) -> str {
+    mut bytes []u8 = []
+    for b in xs { bytes.push(b as u8) }
+    Base64.encode_url(bytes)
+}
+
+fn user_info() -> str => "{\"user_id\":\"u-1\",\"email\":\"Me@Example.COM\",\"name\":\"Fixture\"}"
+
+fn store_text(jwt_plain str) -> str =>
+    "{\"zcodejwttoken\":\"${enc(jwt_plain)}\",\"oauth:zai:access_token\":\"${enc("access-jwt")}\",\"oauth:zai:user_info\":\"${enc(user_info())}\",\"project-key-location:v1:x\":\"plain-not-read\"}"
+
+const LOG_LINE = "[2026-10-31 11:31:56] [usage-stats] billing/balance 请求完成 {\"balanceCount\":1,\"payload\":{\"code\":0,\"data\":{\"server_time\":1793435515,\"plans\":[{\"user_plan_id\":\"upl_1\",\"plan_id\":\"zcode-v3-start-plan\",\"name\":\"ZCODE TEST PLAN\",\"priority\":101,\"status\":\"active\",\"ends_at\":1793581200}],\"balances\":[{\"user_plan_id\":\"upl_1\",\"plan_id\":\"zcode-v3-start-plan\",\"total_units\":500000000,\"used_units\":250000000,\"period_start\":1793400212,\"period_end\":1793581200,\"expires_at\":1793581200}]}}}"
+
+fn file_text(path str) -> str {
+    if path == "/h/zcode/v2/credentials.json" { return store_text("jwt-part-a.jwt-part-b.jwt-part-c") }
+    if path == "/h/zcode/v2/logs/2026-10-31.log" { return LOG_LINE }
+    if path == "/h/wrong/v2/credentials.json" {
+        // The right shape, the wrong key: the tag must fail.
+        return "{\"zcodejwttoken\":\"${enc_wrong("jwt")}\",\"oauth:zai:access_token\":\"${enc_wrong("a")}\",\"oauth:zai:user_info\":\"${enc_wrong(user_info())}\"}"
+    }
+    if path == "/h/partial/v2/credentials.json" {
+        return "{\"zcodejwttoken\":\"${enc("jwt")}\",\"oauth:zai:access_token\":\"\"}"
+    }
+    if path == "/h/v2/v2/credentials.json" {
+        // The app's enc:v2 store (task 036): every value sealed under the OS
+        // keyring's key. The blob's shape is synthetic -- nothing here decrypts.
+        return "{\"zcodejwttoken\":\"enc:v2:os:0123456789abcdef01234567.AAAA.BBBB.CCC\",\"oauth:zai:access_token\":\"enc:v2:os:0123456789abcdef01234567.DDDD.EEEE.FFF\",\"oauth:zai:user_info\":\"enc:v2:os:0123456789abcdef01234567.GGGG.HHHH.III\"}"
+    }
+    if path == "/h/v2/v2/logs/2026-10-31.log" { return LOG_LINE }
+    ""
+}
+
+fn zc_log_names(path str) -> []str =>
+    if path == "/h/zcode/v2/logs" || path == "/h/v2/v2/logs" { ["2026-10-31.log"] } else { [] }
+
+fn on_store(path str) -> bool => path == "/h/zcode/v2/credentials.json" || path == "/h/wrong/v2/credentials.json" || path == "/h/partial/v2/credentials.json" || path == "/h/zcode/v2/logs/2026-10-31.log" || path == "/h/v2/v2/credentials.json" || path == "/h/v2/v2/logs/2026-10-31.log"
+
+fn on_disk[T](body fn() Dirs Creds -> T) -> T =>
+    with Dirs = effect Dirs {
+        list(path) -> []str { zc_log_names(path) }
+        exists(path) -> bool { on_store(path) }
+        is_dir(path) -> bool { path == "/h/zcode" || path == "/h/wrong" || path == "/h/partial" || path == "/h/none" }
+    } {
+        with Creds = effect Creds {
+            read(path) -> str { file_text(path) }
+        } {
+            body()
+        }
+    }
+
+fn found(dir str) -> []ZcodeLogin {
+    ro d = dir
+    ro s = SECRET
+    on_disk(fn() Dirs Creds -> []ZcodeLogin => zcode_logins_at(d, s))
+}
+
+test "a complete store: named by the lowered e-mail of the decrypted user_info" {
+    ro got = found("/h/zcode")
+    assert(got.len() == 1)
+    assert(got[0].name == "me@example.com")
+    assert(got[0].has_token)
+    assert(got[0].broken == "")
+    assert(got[0].path == "/h/zcode/v2/credentials.json")
+    // The burn rides from the app's log: 250M of 500M is 50, reset and plan end
+    // from the same payload (plan 01.8).
+    assert(got[0].burn)
+    assert(got[0].burn_pct == 50)
+    assert(got[0].burn_reset_ms == 1793581200000)
+    assert(got[0].burn_plan_name == "ZCODE TEST PLAN")
+    assert(got[0].burn_plan_ends_ms == 1793581200000)
+    // The window's own length, period_end - period_start: the forecast's input.
+    assert(got[0].burn_span_sec == 1793581200 - 1793400212)
+}
+
+test "a folder with no v2/credentials.json is not a home" {
+    assert(found("/h/none").len() == 0)
+}
+
+test "a store that will not decrypt is a broken LOGIN, not a missing account" {
+    ro got = found("/h/wrong")
+    assert(got.len() == 1)
+    assert(!got[0].has_token)
+    assert(got[0].broken.contains("ZCODE_CREDENTIAL_SECRET"))
+}
+
+test "a store without the three values is broken too" {
+    ro got = found("/h/partial")
+    assert(got.len() == 1)
+    assert(!got[0].has_token)
+    assert(got[0].broken.contains("hold no"))
+}
+
+test "an enc:v2 store says so BY NAME, and the burn still rides from the log" {
+    ro got = found("/h/v2")
+    assert(got.len() == 1)
+    assert(got[0].name == "zcode")
+    assert(!got[0].has_token)
+    // The exact reason, not the generic "no complete login" (task 036).
+    assert(got[0].broken == "store uses enc:v2, not supported yet")
+    // The bypass is alive: percent, reset and plan name are the app's own log,
+    // which does not need the store to open (task 036).
+    assert(got[0].burn)
+    assert(got[0].burn_pct == 50)
+    assert(got[0].burn_reset_ms == 1793581200000)
+    assert(got[0].burn_plan_name == "ZCODE TEST PLAN")
+    assert(got[0].burn_plan_ends_ms == 1793581200000)
+    assert(got[0].burn_span_sec == 1793581200 - 1793400212)
+}
+
+test "both tokens are read for the one caller that sends them" {
+    ro s = SECRET
+    ro both = on_disk(fn() Dirs Creds -> bool =>
+        read_zcode_jwt("/h/zcode/v2/credentials.json", s).is_some() &&
+        read_zcode_access("/h/zcode/v2/credentials.json", s).is_some())
+    assert(both)
+}

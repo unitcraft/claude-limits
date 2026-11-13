@@ -6,7 +6,7 @@
 // code nobody ships. Everything here takes a document and returns nodes; no fetch,
 // no timers, no EventSource.
 import {
-  elapsedShare, cellGeometry, formatReset, formatResetParts, rowLabel, sortLimits, severityOf, applyOrder, accountKey, wireNumber, getViewOptions, stripTooltip, percentTooltip, forecastTooltip, runsOutTone, forecastReach } from './format.js';
+  elapsedShare, cellGeometry, formatReset, formatResetParts, rowLabel, sortLimits, severityOf, applyOrder, accountKey, wireNumber, getViewOptions, stripTooltip, percentTooltip, forecastTooltip, runsOutTone, forecastReach, dateTimeIn } from './format.js';
 
 // ------------------------------------------------------------- rendering ----
 
@@ -228,7 +228,7 @@ export function renderAccount(acc, limits, owner = null) {
   // A Kimi Code account has no e-mail; its name is its identity (01.3 sec.3.3,
   // amendment 2026-09-21), and then it is not repeated in the line beside it.
   // Codex (ChatGPT) is the same: its address is the name, `email` stays empty.
-  const service = { kimi: 'Kimi Code', codex: 'Codex' }[acc.provider];
+  const service = { kimi: 'Kimi Code', codex: 'Codex', zcode: 'ZCode', qoder: 'Qoder' }[acc.provider];
   const email = el('span', 'account-email', acc.email || (service && acc.display_name) || 'unknown account');
   if (acc.id) email.dataset.account = acc.id;
   head.append(email);
@@ -290,6 +290,8 @@ export function renderAccount(acc, limits, owner = null) {
   for (const limit of sortLimits(limits)) block.append(renderRow(limit));
   const extra = extraUsageLine(acc.extra_usage);
   if (extra) block.append(el('p', 'account-extra', extra));
+  const plan = planLine(acc.plan);
+  if (plan) block.append(el('p', 'account-extra', plan));
   return block;
 }
 
@@ -302,6 +304,17 @@ export function extraUsageLine(extra) {
   if (!extra) return '';
   const cap = extra.monthly_cap ? ` (monthly cap ${extra.monthly_cap} ${extra.currency})` : '';
   return `extra usage balance: ${extra.balance} ${extra.currency}${cap}`;
+}
+
+/**
+ * ZCode's plan (plan 01.8), in the reference's shape -- "plan: ZCODE WEEKEND BUILD,
+ * ends 2026-11-02 03:00". The field is absent when `billing/current` has not answered,
+ * and then there is no line.
+ */
+export function planLine(plan) {
+  if (!plan || !plan.name) return '';
+  const ends = plan.ends_at_ms ? `, ends ${dateTimeIn(plan.ends_at_ms)}` : '';
+  return `plan: ${plan.name}${ends}`;
 }
 
 /**

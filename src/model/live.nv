@@ -32,8 +32,8 @@ import std.time.civil.{TimeZone}
 import claude_limits.window.{Window}
 import claude_limits.model.snapshot.{AccountState, SeverityBounds, severity_of, at_100, locked}
 import claude_limits.model.format.{row_label, reset_caption}
-import claude_limits.server.dto.{SnapshotView, AccountView, LimitView, WorstView, DirView, ExtraUsageView}
-import claude_limits.usage.parse.{moment_iso, ExtraUsage}
+import claude_limits.server.dto.{SnapshotView, AccountView, LimitView, WorstView, DirView, ExtraUsageView, PlanView}
+import claude_limits.usage.parse.{moment_iso, ExtraUsage, ZcodePlan}
 
 const SESSION_SEC = 5 * 3600
 const WEEK_SEC = 7 * 86400
@@ -60,33 +60,47 @@ export type Known value {
     ro provider str
     /// Kimi Code's Extra Usage wallet, of the last successful reading; None otherwise.
     ro extra Option[ExtraUsage]
+    /// ZCode's plan, of the last successful reading; None otherwise (plan 01.8).
+    ro plan Option[ZcodePlan]
 }
 
 export fn Known.new(id str, email str, org str, dirs []DirView, state AccountState, message str,
                     polled_at_ms int, next_poll_ms int, windows []Window) -> Known =>
-    { id, email, org, dirs, state, message, polled_at_ms, next_poll_ms, windows, display_name: "", provider: "claude", extra: None }
+    { id, email, org, dirs, state, message, polled_at_ms, next_poll_ms, windows, display_name: "", provider: "claude", extra: None, plan: None }
 
 /// The same, with the person's name.
 export fn Known @with_name(name str) -> Known => {
     @id, @email, @org, @dirs, @state, @message, @polled_at_ms, @next_poll_ms, @windows,
-    display_name: name, @provider, @extra,
+    display_name: name, @provider, @extra, @plan,
 }
 
 /// The same, as an account of `provider` (`claude | kimi`).
 export fn Known @with_provider(provider str) -> Known => {
     @id, @email, @org, @dirs, @state, @message, @polled_at_ms, @next_poll_ms, @windows,
-    @display_name, provider, @extra,
+    @display_name, provider, @extra, @plan,
 }
 
 /// The same, with the Extra Usage wallet the reading carried (plan 01.6, P8).
 export fn Known @with_extra(extra Option[ExtraUsage]) -> Known => {
     @id, @email, @org, @dirs, @state, @message, @polled_at_ms, @next_poll_ms, @windows,
-    @display_name, @provider, extra,
+    @display_name, @provider, extra, @plan,
+}
+
+/// The same, with ZCode's plan the reading carried (plan 01.8).
+export fn Known @with_plan(plan Option[ZcodePlan]) -> Known => {
+    @id, @email, @org, @dirs, @state, @message, @polled_at_ms, @next_poll_ms, @windows,
+    @display_name, @provider, @extra, plan,
 }
 
 fn extra_view(e Option[ExtraUsage]) -> Option[ExtraUsageView] =>
     match e {
         Some(x) => Some(ExtraUsageView{ balance: x.balance, currency: x.currency, monthly_cap: x.monthly_cap })
+        None => None
+    }
+
+fn plan_view(p Option[ZcodePlan]) -> Option[PlanView] =>
+    match p {
+        Some(x) => Some(PlanView{ name: x.name, ends_at_ms: x.ends_at_ms })
         None => None
     }
 
@@ -143,7 +157,9 @@ export fn window_sec_of(kind str) -> int {
 }
 
 fn limit_of(account_id str, w Window, th SeverityBounds, now_ms int, zone TimeZone) -> LimitView {
-    ro span = window_sec_of(w.kind)
+    // A window whose length the endpoint itself named (a ZCode plan's period, plan
+    // 01.8) wins over the kind's default.
+    ro span = if w.span_sec > 0 { w.span_sec } else { window_sec_of(w.kind) }
     ro known_reset = w.resets_at_ms > 0
     ro left = if known_reset { ((w.resets_at_ms - now_ms) / 1000).max(0) } else { 0 }
     ro elapsed = if known_reset { ((span - left) * 100 / span).max(0).min(100) } else { 0 }
@@ -164,7 +180,7 @@ fn account_of(k Known) -> AccountView {
         message: k.message, polled_at: iso_or_empty(k.polled_at_ms),
         next_poll_at: iso_or_empty(k.next_poll_ms),
         locked: rows && locked(k.windows), at_100: rows && at_100(k.windows),
-        same_quota_as: "", extra_usage: extra_view(k.extra),
+        same_quota_as: "", extra_usage: extra_view(k.extra), plan: plan_view(k.plan),
     }
 }
 
