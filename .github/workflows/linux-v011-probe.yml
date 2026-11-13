@@ -147,6 +147,8 @@ jobs:
       - name: Web checks and repository guards
         working-directory: ${{ runner.temp }}/claude-limits-overlay
         run: |
+          export EDGE_PATH="$(command -v google-chrome)"
+          test -x "$EDGE_PATH"
           node scripts/check-web.mjs
           set -euo pipefail
           count=0
