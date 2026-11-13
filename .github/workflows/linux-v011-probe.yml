@@ -35,6 +35,7 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           path: harness
+          ref: 69daa4ee0f7a518de46dba43fa83a5843f183264
 
       - name: Checkout pinned Nova compiler and runtime
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
