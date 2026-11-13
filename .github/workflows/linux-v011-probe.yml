@@ -52,6 +52,11 @@ jobs:
         with:
           toolchain: 1.85.0
 
+      - name: Set up Python for repository checks
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
       - name: Install native build dependencies on the ephemeral runner
         run: |
           sudo apt-get update
