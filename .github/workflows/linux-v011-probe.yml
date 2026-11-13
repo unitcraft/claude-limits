@@ -120,6 +120,7 @@ jobs:
           NOVA_STD_PATH: ${{ github.workspace }}/nova/std/src
           NOVA_DIAG_SEGV: "1"
         run: |
+          cp "$GITHUB_WORKSPACE/harness/src/storage/startup_test.nv" src/storage/startup_test.nv
           set +e
           "$GITHUB_WORKSPACE/nova/nova-cli/target/release/nova" test src --timeout 900 > "$RUNNER_TEMP/nova-test.out" 2>&1
           rc=$?
