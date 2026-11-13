@@ -31,6 +31,11 @@ jobs:
           ref: ${{ env.APP_SHA }}
           path: pkg
 
+      - name: Checkout updated smoke harness
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: harness
+
       - name: Checkout pinned Nova compiler and runtime
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -105,7 +110,7 @@ jobs:
           sha256sum pkg/nova.toml "$RUNNER_TEMP/claude-limits-overlay/nova.toml"
           diff -u pkg/nova.toml "$RUNNER_TEMP/claude-limits-overlay/nova.toml" > "$RUNNER_TEMP/cxx-overlay.diff" || test "$?" -eq 1
           cat "$RUNNER_TEMP/cxx-overlay.diff"
-          test "$(grep -c '^+' "$RUNNER_TEMP/cxx-overlay.diff")" -eq 3
+          test "$(grep -c '^+[^+]*$' "$RUNNER_TEMP/cxx-overlay.diff")" -eq 3
 
       - name: Nova suite on exact application source with overlay
         working-directory: ${{ runner.temp }}/claude-limits-overlay
@@ -167,4 +172,4 @@ jobs:
           sha256sum "$RUNNER_TEMP/claude-limits"
           "$RUNNER_TEMP/claude-limits" --version
           python3 scripts/smoke_server.py "$RUNNER_TEMP/claude-limits"
-          python3 scripts/smoke_storage_modes.py "$RUNNER_TEMP/claude-limits"
+          python3 "$GITHUB_WORKSPACE/harness/scripts/smoke_storage_modes.py" "$RUNNER_TEMP/claude-limits"
