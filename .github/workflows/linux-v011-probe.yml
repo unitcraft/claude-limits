@@ -13,7 +13,7 @@ permissions:
 env:
   APP_SHA: ff244a181681e8e9b3880913035b42a2b266c5f7
   NOVA_REF: 5cdd2bc504ba599cea589590d37fb7339ec56370
-  DUCKDB_REF: 1331f6c6dbecb766ee0db644f7feafcaef757aa8
+  DUCKDB_REF: dfa5fc7827c16e7bbcd9ad8fc8942d3961e334a2
   NOVA_MAIN_REPO: ${{ github.workspace }}/nova
   NOVA_GC_LIB_DIR: /usr/lib/x86_64-linux-gnu
   NOVA_GC_INCLUDE_DIR: /usr/include
