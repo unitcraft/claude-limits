@@ -4,6 +4,7 @@ python scripts/smoke_storage_modes.py target/cl13.exe
 The Nova startup suite separately opens DBs/backups through the engine and checks
 every per-call failure path. This probe verifies real CLI/API and restart behavior.
 """
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import os
@@ -89,9 +90,10 @@ def run_mode(exe, root, encrypted):
         server.wait(timeout=15)
 
     history = root / 'history.json'
+    fixture_time = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0) - timedelta(days=1)
     expected_readings = [
-        ('2026-10-08T12:00:00Z', 12),
-        ('2026-10-08T12:05:00Z', 13),
+        (fixture_time.strftime('%Y-%m-%dT%H:%M:%SZ'), 12),
+        ((fixture_time + timedelta(minutes=5)).strftime('%Y-%m-%dT%H:%M:%SZ'), 13),
     ]
     history.write_text(json.dumps({'claude:mode@example.org|weekly_all':
                                   [[at, percent] for at, percent in expected_readings]}))

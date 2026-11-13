@@ -27,6 +27,12 @@ import claude_limits.usage.parse.{Usage, PollOutcome}
 import claude_limits.model.snapshot.{AccountState}
 import claude_limits.window.{Window}
 
+#cfg(target_os = "windows")
+fn test_windows() -> bool => true
+
+#cfg(!target_os = "windows")
+fn test_windows() -> bool => false
+
 fn same(label str, want str, got str) -> bool {
     if want == got { return true }
     panic("${label}: want [${want}], got [${got}]")
@@ -92,7 +98,7 @@ fn start_at(p Paths, all []Migration, seed int, at_ms int, tz str) Io -> Result[
     ro now = at_ms
     ro care = Upkeep.new(30, 400, 20, tz)
     with Fs = real_fs(), Random = seeded(seed as u64) {
-        with_real_db(fn() Db Fs Random -> Result[Ready, StartFail] => open_for_serve(p, all, now, 5, true, care))
+        with_real_db(fn() Db Fs Random -> Result[Ready, StartFail] => open_for_serve(p, all, now, 5, test_windows(), care))
     }
 }
 
@@ -179,7 +185,7 @@ fn a_reading(at int) -> Reading =>
 
 fn record(p Paths, rs []Reading, seed int) Io -> str {
     ro r = with Fs = real_fs(), Random = seeded(seed as u64) {
-        with_real_db(fn() Db Fs Random -> Result[int, StartFail] => record_readings(p, rs, ["work@example.org"], ["Example Inc"], true))
+        with_real_db(fn() Db Fs Random -> Result[int, StartFail] => record_readings(p, rs, ["work@example.org"], ["Example Inc"], test_windows()))
     }
     match r {
         Ok(n) => "written=${n}"
@@ -258,7 +264,7 @@ fn forget_line(p Paths, email str, at_ms int, seed int) Io -> str {
     ro now = at_ms
     ro who = email
     ro r = with Fs = real_fs(), Random = seeded(seed as u64) {
-        with_real_db(fn() Db Fs Random -> Result[ForgetDone, StartFail] => forget_account(p, who, now, 5, true))
+        with_real_db(fn() Db Fs Random -> Result[ForgetDone, StartFail] => forget_account(p, who, now, 5, test_windows()))
     }
     match r {
         Ok(ForgetDone.NoDatabase) => "no-database"
@@ -327,7 +333,7 @@ fn daily_line(p Paths, at_ms int, seed int) Io -> str {
     ro now = at_ms
     ro care = Upkeep.new(30, 400, 20, "Etc/GMT-3")
     ro r = with Fs = real_fs(), Random = seeded(seed as u64) {
-        with_real_db(fn() Db Fs Random -> Result[Upkept, StartFail] => upkeep_daily(p, care, now, 5, true))
+        with_real_db(fn() Db Fs Random -> Result[Upkept, StartFail] => upkeep_daily(p, care, now, 5, test_windows()))
     }
     match r {
         Ok(d) => "zone=[${d.zone}] retention=[${d.retention_fail}] weekly=${d.weekly != ""} weekly_fail=[${d.weekly_fail}]"
@@ -351,7 +357,7 @@ fn keep_version(p Paths, toml str, at_ms int, seed int) Io -> str {
     ro text = toml
     ro at = at_ms
     ro r = with Fs = real_fs(), Random = seeded(seed as u64) {
-        with_real_db(fn() Db Fs Random -> Result[(), str] => record_config_version(p, text, "ui", at, true))
+        with_real_db(fn() Db Fs Random -> Result[(), str] => record_config_version(p, text, "ui", at, test_windows()))
     }
     match r {
         Ok(_) => "kept"
@@ -397,21 +403,21 @@ test "keeping a version with no database refuses, and says why" {
 fn file_bytes(path str) Io -> str => with Fs = real_fs() { Base64.encode_url(read(path.to_path())!!) }
 
 fn history_ok(p Paths) Io -> bool => with Fs = real_fs(), Random = seeded(7) {
-    with_real_db(fn() Db Fs Random -> Result[HistFolderRows, str] => read_history_rows(p, T0 - 1, T0 + 60000, [], [], false, true)).is_ok()
+    with_real_db(fn() Db Fs Random -> Result[HistFolderRows, str] => read_history_rows(p, T0 - 1, T0 + 60000, [], [], false, test_windows())).is_ok()
 }
 
 fn days_ok(p Paths) Io -> bool => with Fs = real_fs(), Random = seeded(7) {
-    with_real_db(fn() Db Fs Random -> Result[int, str] => read_history_days_in(p, true)).is_ok()
+    with_real_db(fn() Db Fs Random -> Result[int, str] => read_history_days_in(p, test_windows())).is_ok()
 }
 
 fn no_discovery() -> Discovered => { folders: [], dirs: [] }
 
 fn discovery_ok(p Paths) Io -> bool => with Fs = real_fs(), Random = seeded(7) {
-    with_real_db(fn() Db Fs Random -> Result[int, StartFail] => record_found(p, no_discovery(), T0, true)).is_ok()
+    with_real_db(fn() Db Fs Random -> Result[int, StartFail] => record_found(p, no_discovery(), T0, test_windows())).is_ok()
 }
 
 fn import_ok(p Paths) Io -> bool => with Fs = real_fs(), Random = seeded(7) {
-    with_real_db(fn() Db Fs Random -> Result[Imported, str] => import_history(p, "{}", T0 + 120000, 5, true)).is_ok()
+    with_real_db(fn() Db Fs Random -> Result[Imported, str] => import_history(p, "{}", T0 + 120000, 5, test_windows())).is_ok()
 }
 
 fn can_open(path str, key str) Io -> bool {
