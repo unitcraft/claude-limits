@@ -121,6 +121,22 @@ test "the python-encrypted blob decrypts, a plain value passes through" {
     }
 }
 
+// The app's newer scheme (measured 2026-11-12, `createSystemCredentialCipher` in
+// ZCode 3.18.1): `enc:v2:<os|env>:<sha256(key)hex[:24]>:IV.TAG.CT` -- the same GCM
+// body, but the key of an `os` value lives in the system keyring, out of reach
+// without FFI (plan 01.8, "enc:v2"). Such a value must be REFUSED BY NAME, not
+// passed through as if it were plaintext (task 036).
+test "an enc: value this tool cannot open is refused with the scheme's name" {
+    match decrypt_value("enc:v2:os:0123456789abcdef01234567.AAAA.BBBB.CCC", "any secret") {
+        Err(e) => assert(e.to_str() == "store uses enc:v2, not supported yet")
+        Ok(_) => assert(false)
+    }
+    match decrypt_value("enc:v3:whatever", "any secret") {
+        Err(e) => assert(e.to_str() == "store uses enc:v3, not supported yet")
+        Ok(_) => assert(false)
+    }
+}
+
 test "the fallback secret is spelled the way the app spells it" {
     assert(fallback_secret("win32", "C:\\Users\\me", "me") == NODE_BLOB_SECRET)
 }

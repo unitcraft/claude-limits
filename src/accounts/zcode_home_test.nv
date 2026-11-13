@@ -77,13 +77,19 @@ fn file_text(path str) -> str {
     if path == "/h/partial/v2/credentials.json" {
         return "{\"zcodejwttoken\":\"${enc("jwt")}\",\"oauth:zai:access_token\":\"\"}"
     }
+    if path == "/h/v2/v2/credentials.json" {
+        // The app's enc:v2 store (task 036): every value sealed under the OS
+        // keyring's key. The blob's shape is synthetic -- nothing here decrypts.
+        return "{\"zcodejwttoken\":\"enc:v2:os:0123456789abcdef01234567.AAAA.BBBB.CCC\",\"oauth:zai:access_token\":\"enc:v2:os:0123456789abcdef01234567.DDDD.EEEE.FFF\",\"oauth:zai:user_info\":\"enc:v2:os:0123456789abcdef01234567.GGGG.HHHH.III\"}"
+    }
+    if path == "/h/v2/v2/logs/2026-10-31.log" { return LOG_LINE }
     ""
 }
 
 fn zc_log_names(path str) -> []str =>
-    if path == "/h/zcode/v2/logs" { ["2026-10-31.log"] } else { [] }
+    if path == "/h/zcode/v2/logs" || path == "/h/v2/v2/logs" { ["2026-10-31.log"] } else { [] }
 
-fn on_store(path str) -> bool => path == "/h/zcode/v2/credentials.json" || path == "/h/wrong/v2/credentials.json" || path == "/h/partial/v2/credentials.json" || path == "/h/zcode/v2/logs/2026-10-31.log"
+fn on_store(path str) -> bool => path == "/h/zcode/v2/credentials.json" || path == "/h/wrong/v2/credentials.json" || path == "/h/partial/v2/credentials.json" || path == "/h/zcode/v2/logs/2026-10-31.log" || path == "/h/v2/v2/credentials.json" || path == "/h/v2/v2/logs/2026-10-31.log"
 
 fn on_disk[T](body fn() Dirs Creds -> T) -> T =>
     with Dirs = effect Dirs {
@@ -138,6 +144,23 @@ test "a store without the three values is broken too" {
     assert(got.len() == 1)
     assert(!got[0].has_token)
     assert(got[0].broken.contains("hold no"))
+}
+
+test "an enc:v2 store says so BY NAME, and the burn still rides from the log" {
+    ro got = found("/h/v2")
+    assert(got.len() == 1)
+    assert(got[0].name == "zcode")
+    assert(!got[0].has_token)
+    // The exact reason, not the generic "no complete login" (task 036).
+    assert(got[0].broken == "store uses enc:v2, not supported yet")
+    // The bypass is alive: percent, reset and plan name are the app's own log,
+    // which does not need the store to open (task 036).
+    assert(got[0].burn)
+    assert(got[0].burn_pct == 50)
+    assert(got[0].burn_reset_ms == 1793581200000)
+    assert(got[0].burn_plan_name == "ZCODE TEST PLAN")
+    assert(got[0].burn_plan_ends_ms == 1793581200000)
+    assert(got[0].burn_span_sec == 1793581200 - 1793400212)
 }
 
 test "both tokens are read for the one caller that sends them" {

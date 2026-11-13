@@ -894,9 +894,14 @@ def zcode_secret():
 
 def zcode_decrypt(value, secret):
     """One credentials.json value -> plaintext. Plain strings pass through;
-    enc:v1 values are decrypted and must authenticate."""
-    if not isinstance(value, str) or not value.startswith("enc:v1:"):
+    enc:v1 values are decrypted and must authenticate. A value under another
+    enc: scheme (the app's enc:v2, its key in the system keyring -- measured
+    2026-11-12, plan 01.8) raises BY NAME instead of passing through."""
+    if not isinstance(value, str) or not value.startswith("enc:"):
         return value
+    if not value.startswith("enc:v1:"):
+        scheme = value.split(":", 2)[1] if value.count(":") >= 2 else "unknown"
+        raise ValueError(f"store uses enc:{scheme}, not supported yet")
     iv_b64, tag_b64, ct_b64 = value[7:].split(".")
     def raw(b):
         return base64.urlsafe_b64decode(b + "=" * (-len(b) % 4))
@@ -910,34 +915,38 @@ def zcode_login_of(f, home_label=None):
     skipped: a wrong ZCODE_CREDENTIAL_SECRET must be visible, not a missing
     account (plan 01.8, reverse probe)."""
     label = f"ZCode ({short_name(f.parent)})" if home_label else "ZCode"
+    home = f.parent.parent
     try:
         creds = json.loads(f.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError) as e:
         return {"name": "zcode", "label": label, "error": f"cannot read credentials: {e}",
-                "jwt": None, "access": None}
+                "jwt": None, "access": None, "home": home}
     if not isinstance(creds, dict):
         return {"name": "zcode", "label": label, "error": "credentials: not a JSON object",
-                "jwt": None, "access": None}
+                "jwt": None, "access": None, "home": home}
     secret = zcode_secret()
     try:
         jwt = zcode_decrypt(creds.get("zcodejwttoken"), secret)
         access = zcode_decrypt(creds.get("oauth:zai:access_token"), secret)
         info = json.loads(zcode_decrypt(creds.get("oauth:zai:user_info"), secret))
     except (ValueError, TypeError) as e:
-        return {"name": "zcode", "label": label,
-                "error": f"credentials will not decrypt ({e}): wrong ZCODE_CREDENTIAL_SECRET?",
-                "jwt": None, "access": None}
+        # The unsupported-scheme refusal is its own message: the wrong-secret advice
+        # would be a lie for it (task 036).
+        error = (str(e) if "not supported yet" in str(e)
+                 else f"credentials will not decrypt ({e}): wrong ZCODE_CREDENTIAL_SECRET?")
+        return {"name": "zcode", "label": label, "error": error,
+                "jwt": None, "access": None, "home": home}
     email = info.get("email") if isinstance(info, dict) else None
     if not jwt or not access or not email:
         return {"name": "zcode", "label": label,
                 "error": "credentials hold no complete login (no token or no user email)",
-                "jwt": None, "access": None}
+                "jwt": None, "access": None, "home": home}
     name = email.lower()
     full = f"ZCode ({name})"
     if home_label:
         full += f"  [{home_label}]"
     return {"name": name, "label": full, "error": None, "jwt": jwt, "access": access,
-            "home": f.parent.parent}
+            "home": home}
 
 
 def zcode_logins_of(dirs):
@@ -2316,6 +2325,20 @@ def snapshot(dirs, paint, bar_style, offline_dir=None, refresher=None, kimi_refr
         if login["error"]:
             print("\n" + paint.dead(login["label"]))
             print("  " + login["error"])
+            # The burn from the app's own log is THIS machine's knowledge, not the
+            # store's: it stands when the store will not open at all (task 036,
+            # enc:v2) -- the bypass is not gated on a successful login.
+            snap = zcode_balance_from_log(login["home"], now) if login.get("home") else None
+            if snap:
+                for kind, pct, sev, reset, _reset_epoch in zcode_log_rows(snap):
+                    if history is not None:
+                        record_sample(history, series, kind, pct, now)
+                    print_limit_row(kind, pct, sev, reset, None, paint, bar_style,
+                                    (sched["warning"], sched["critical"]) if sched else (80, 95),
+                                    thresholds=thresholds)
+                line = zcode_plan_line(zcode_log_plan(snap), now)
+                if line:
+                    print(f"  {line}")
             continue
         if offline_dir:
             fixture = Path(offline_dir) / "zcode.json"

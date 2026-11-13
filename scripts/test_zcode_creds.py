@@ -92,6 +92,21 @@ class NodeBlobTest(unittest.TestCase):
         self.assertEqual(ref.zcode_decrypt(NODE_BLOB_VALUE, NODE_BLOB_SECRET),
                          NODE_BLOB_PLAINTEXT)
 
+    def test_enc_v2_is_refused_by_name(self):
+        """The app's newer scheme (measured 2026-11-12, ZCode 3.18.1): enc:v2:
+        <os|env>:<sha256(key)hex[:24]>:IV.TAG.CT -- the os key lives in the system
+        keyring, out of reach without FFI (plan 01.8, "enc:v2"). Refused BY NAME,
+        never passed through as plaintext (task 036)."""
+        with self.assertRaises(ValueError) as ctx:
+            ref.zcode_decrypt("enc:v2:os:0123456789abcdef01234567.AAAA.BBBB.CCC",
+                              "any secret")
+        self.assertEqual(str(ctx.exception),
+                         "store uses enc:v2, not supported yet")
+        with self.assertRaises(ValueError) as ctx:
+            ref.zcode_decrypt("enc:v3:whatever", "any secret")
+        self.assertEqual(str(ctx.exception),
+                         "store uses enc:v3, not supported yet")
+
 
 class SecretTest(unittest.TestCase):
     def test_env_wins(self):
@@ -173,6 +188,17 @@ class LoginTest(unittest.TestCase):
             login = ref.zcode_login_of(f)
             self.assertIsNotNone(login["error"])
             self.assertIn("ZCODE_CREDENTIAL_SECRET", login["error"])
+
+    def test_enc_v2_store_names_the_scheme(self):
+        """The error is the scheme's name, not the wrong-secret advice, and the
+        home rides anyway -- the burn from the app's log needs it (task 036)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            body = {"zcodejwttoken": "enc:v2:os:0123456789abcdef01234567.AAAA.BBBB.CCC"}
+            f = write_creds(tmp, body)
+            login = ref.zcode_login_of(f)
+            self.assertEqual(login["error"], "store uses enc:v2, not supported yet")
+            self.assertEqual(login["name"], "zcode")
+            self.assertEqual(login["home"], Path(tmp))
 
     def test_missing_email_reports(self):
         body = {"zcodejwttoken": "a.b.c", "oauth:zai:access_token": "x",

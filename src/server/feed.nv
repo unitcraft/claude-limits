@@ -578,8 +578,18 @@ export fn poll_round(found []Found, before []Known, now_ms int, next_ms int, zon
             // A ZCode login keeps the plan of its last good reading, as it keeps its
             // rows: the last good shape of the card (plan 01.8). A Qoder one keeps
             // it the same way (task 035).
-            ro plan = if f.zcode || f.qoder { prev_plan(p) } else { None }
-            out.push(shown(f, Known.new(id, address_of(f), f.org, f.dirs, AccountState.Stale, msg, prev_polled(p), 0, []).with_plan(plan)))
+            mut plan = if f.zcode || f.qoder { prev_plan(p) } else { None }
+            // A store that will not open (enc:v2) still shows the burn the app's own
+            // log gave at discovery: those numbers are this machine's knowledge, not
+            // the store's (task 036) -- the same rescue a failed poll gets, below.
+            mut rows []Window = []
+            if f.zcode && f.burn {
+                mut w = Window.new("plan", "", f.burn_pct, f.burn_reset_ms, "")
+                if f.burn_span_sec > 0 { w = w.with_span(f.burn_span_sec) }
+                rows = [w]
+                plan = Some(ZcodePlan { name: f.burn_plan_name, ends_at_ms: f.burn_plan_ends_ms })
+            }
+            out.push(shown(f, Known.new(id, address_of(f), f.org, f.dirs, AccountState.Stale, msg, prev_polled(p), 0, rows).with_plan(plan)))
             continue
         }
         ro got = if f.codex { read_codex_token(f.cred_path) } else if f.zcode { read_zcode_jwt(f.cred_path, f.store_secret) } else if f.qoder {

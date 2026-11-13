@@ -25,7 +25,7 @@ import std.os.{env, home_dir}
 import claude_limits.usage.kimi.{round_percent}
 import claude_limits.accounts.discover.{Dirs, normalise, under}
 import claude_limits.accounts.login.{Creds, Secret}
-import claude_limits.usage.zcode_cipher.{decrypt_value, fallback_secret}
+import claude_limits.usage.zcode_cipher.{decrypt_value, fallback_secret, ZcodeCipherFail}
 
 /// One ZCode login: a `v2/credentials.json`. No token in it.
 export type ZcodeLogin value {
@@ -79,6 +79,9 @@ fn read_value(text str, key str, secret str) -> Result[str, str] {
     }
     if raw == "" { return Err("credentials hold no ${key}") }
     match decrypt_value(raw, secret) {
+        // A newer scheme names itself; the wrong-secret advice would be a lie for it
+        // (task 036).
+        Err(ZcodeCipherFail.UnsupportedScheme(s)) => Err("store uses enc:${s}, not supported yet")
         Err(e) => Err("credentials will not decrypt (${e.to_str()}): wrong ZCODE_CREDENTIAL_SECRET?")
         Ok(plain) => Ok(plain)
     }
@@ -119,7 +122,10 @@ export fn zcode_logins_at(dir str, secret str) Dirs Creds -> []ZcodeLogin {
         Err(why) => { if broken == "" { broken = why }; "" }
     }
     if broken != "" {
-        out.push(zcode_login("zcode", home, path, false, broken))
+        // The burn rides even here: the app's log is this machine's knowledge and
+        // needs no token -- a store that will not open still shows its numbers
+        // (task 036, plan 01.8's bypass promoted from the successful login).
+        out.push(with_logged_burn(zcode_login("zcode", home, path, false, broken), home))
         return out
     }
     ro email = email_of(info)

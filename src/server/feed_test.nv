@@ -301,16 +301,21 @@ fn zc_text(path str) -> str {
     if path == "/zc/home/v2/credentials.json" { return zc_store() }
     if path == "/zc/home/v2/logs/2026-10-31.log" { return ZC_LOG_LINE }
     if path == "/zc/broken/v2/credentials.json" { return "{\"zcodejwttoken\":\"enc:v1:AAAA.AAAA.AAAA\"}" }
+    if path == "/zc/v2/v2/credentials.json" {
+        // The app's enc:v2 store (task 036): sealed under the OS keyring's key.
+        return "{\"zcodejwttoken\":\"enc:v2:os:0123456789abcdef01234567.AAAA.BBBB.CCC\",\"oauth:zai:access_token\":\"enc:v2:os:0123456789abcdef01234567.DDDD.EEEE.FFF\",\"oauth:zai:user_info\":\"enc:v2:os:0123456789abcdef01234567.GGGG.HHHH.III\"}"
+    }
+    if path == "/zc/v2/v2/logs/2026-10-31.log" { return ZC_LOG_LINE }
     ""
 }
 
 fn zc_logs(path str) -> []str =>
-    if path == "/zc/home/v2/logs" { ["2026-10-31.log"] } else { [] }
+    if path == "/zc/home/v2/logs" || path == "/zc/v2/v2/logs" { ["2026-10-31.log"] } else { [] }
 
 fn zc_disk[T](body fn() Dirs Creds -> T) -> T =>
     with Dirs = effect Dirs {
         list(path) -> []str { zc_logs(path) }
-        exists(path) -> bool { path == "/zc/home/v2/credentials.json" || path == "/zc/broken/v2/credentials.json" || path == "/zc/home/v2/logs/2026-10-31.log" }
+        exists(path) -> bool { path == "/zc/home/v2/credentials.json" || path == "/zc/broken/v2/credentials.json" || path == "/zc/home/v2/logs/2026-10-31.log" || path == "/zc/v2/v2/credentials.json" || path == "/zc/v2/v2/logs/2026-10-31.log" }
         is_dir(path) -> bool { path.starts_with("/zc") }
     } {
         with Creds = effect Creds {
@@ -401,6 +406,27 @@ test "a ZCode quota that fails is unknown and costs one request" {
     ro k = zc_endpoint(a, rate, fn() Http PollLog Creds -> []Known => poll_round(f, [], now, now + 300000, TimeZone.Utc))
     assert(a.n == 1)
     assert(same("state", "unknown", k[0].state.to_str()))
+}
+
+// The enc:v2 store (task 036): the card names the scheme -- and the plan row,
+// reset and name still arrive from the app's own log, discovered at found time.
+test "an enc:v2 store is stale with the scheme's name, and the plan row rides from the log" {
+    mut a = Asked.new()
+    ro f = zc_found("/zc/v2")
+    ro now = NOW_MS
+    ro k = zc_endpoint(a, "", fn() Http PollLog Creds -> []Known => poll_round(f, [], now, now + 300000, TimeZone.Utc))
+    // NOT asked: there is no token to ask with.
+    assert(a.n == 0)
+    assert(same("state", "stale", k[0].state.to_str()))
+    assert(k[0].message.contains("store uses enc:v2, not supported yet"))
+    assert(same("name", "zcode", k[0].display_name))
+    assert(k[0].windows.len() == 1)
+    assert(same("kind", "plan", k[0].windows[0].kind))
+    assert(same("pct", "50", k[0].windows[0].percent.to_str()))
+    assert(same("span", (1793581200 - 1793400212).to_str(), k[0].windows[0].span_sec.to_str()))
+    ro plan = k[0].plan ?? panic("no plan on the enc:v2 card")
+    assert(plan.name == "ZCODE TEST PLAN")
+    assert(plan.ends_at_ms == 1793581200000)
 }
 
 test "a dead ZCode store is NOT asked and is NOT renewed" {

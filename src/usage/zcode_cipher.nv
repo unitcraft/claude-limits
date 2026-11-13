@@ -24,15 +24,19 @@ import std.crypto.sha256.{Sha256}
 import std.encoding.base64.{Base64}
 
 /// Why a value did not decrypt. The store's tag failing to check is the wrong-secret
-/// case, and the caller shows it rather than a missing account (plan 01.8).
+/// case, and the caller shows it rather than a missing account (plan 01.8). A value the
+/// app sealed under a newer scheme (`enc:v2:…`, its key in the system keyring) says so
+/// BY NAME instead of passing through as if it were plaintext (task 036, plan 01.8).
 export type ZcodeCipherFail enum
     | TagMismatch
     | Shape
+    | UnsupportedScheme(str)
 
 export fn ZcodeCipherFail @to_str() -> str =>
     match @ {
         TagMismatch => "tag mismatch"
         Shape => "malformed input"
+        UnsupportedScheme(s) => "store uses enc:${s}, not supported yet"
     }
 
 // FIPS-197 §3.2.1, a literal on purpose: deriving it at import time is 65k field
@@ -302,10 +306,13 @@ export fn fallback_secret(platform str, home str, user str) -> str =>
     "zcode-credential-fallback:${platform}:${home}:${user}"
 
 /// One `enc:v1:IV.TAG.CT` value of the store, decoded and decrypted; a plain string
-/// passes through. ""-free: a failing value is an Err, and the caller decides what a
-/// login without a readable token is.
+/// passes through. A value under another `enc:` scheme is an Err naming the scheme --
+/// the app's `enc:v2:os:…` keys live in the system keyring and cannot be reached here
+/// (measured 2026-11-12, plan 01.8 "enc:v2"). ""-free: a failing value is an Err, and
+/// the caller decides what a login without a readable token is.
 export fn decrypt_value(value str, secret str) -> Result[str, ZcodeCipherFail] {
-    if !value.starts_with("enc:v1:") { return Ok(value) }
+    if !value.starts_with("enc:") { return Ok(value) }
+    if !value.starts_with("enc:v1:") { return Err(ZcodeCipherFail.UnsupportedScheme(scheme_of(value))) }
     ro body = value["enc:v1:".byte_len()..]
     ro parts = body.split(".").collect()
     if parts.len() != 3 { return Err(ZcodeCipherFail.Shape) }
@@ -316,6 +323,14 @@ export fn decrypt_value(value str, secret str) -> Result[str, ZcodeCipherFail] {
         Err(e) => Err(e)
         Ok(plain) => Ok(bytes_str(plain))
     }
+}
+
+/// The scheme tag of an `enc:<scheme>:…` value ("v2", "v3"); "unknown" when the value
+/// spells no tag -- the refusal still needs a name to say.
+fn scheme_of(value str) -> str {
+    ro parts = value.split(":").collect()
+    if parts.len() < 2 || parts[1] == "" { return "unknown" }
+    parts[1]
 }
 
 /// Plaintext bytes as text, the lossy way a token store never needs forgiving for:
