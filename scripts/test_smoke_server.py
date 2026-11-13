@@ -6,7 +6,8 @@ from smoke_server import database_health_ok
 
 class DatabaseHealthTest(unittest.TestCase):
     def health(self, **changes):
-        storage = {"encrypted": False, "key_store": "none", "schema_version": 3, "db_size_bytes": 12288}
+        # src/storage/db.nv KNOWN_SCHEMA / migrations/0005_qoder_accounts.sql.
+        storage = {"encrypted": False, "key_store": "none", "schema_version": 5, "db_size_bytes": 12288}
         storage.update(changes)
         return {"ok": True, "storage": storage}
 
@@ -20,7 +21,7 @@ class DatabaseHealthTest(unittest.TestCase):
         self.assertFalse(database_health_ok(self.health(), encrypted=True))
 
     def test_wrong_schema(self):
-        for schema in (2, 4, None, "3", 3.0, True):
+        for schema in (2, 3, 4, None, "5", 5.0, True):
             with self.subTest(schema=schema):
                 self.assertFalse(database_health_ok(self.health(schema_version=schema)))
 

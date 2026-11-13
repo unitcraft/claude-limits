@@ -3,16 +3,18 @@
 //   ./nova.sh test src/model/forecast_join_test.nv
 //
 // THE NUMBERS BELOW ARE THE REFERENCE'S. `scripts/claude_limits.py` `forecast_of` was run
-// on exactly these samples (2026-10-02, machine zone +03:00, the reference reads local
-// time for working hours) and said:
+// on exactly these samples (2026-10-21, machine zone +03:00, the reference reads local
+// time for working hours; re-run after the reset-based branch went live and the window
+// start became the observed reset) and said:
 //
-//   session       at_reset=52.0000   runs_out=None                  rate_per_hour=12.0000  span_min=60
-//   weekly_clock  at_reset=120.2903  runs_out=2026-10-05T08:04:00Z  rate_per_hour=0.4839   span_min=1860
-//   weekly_work   at_reset=96.6923   runs_out=None                  rate_per_hour=1.1538   span_min=1860
+//   session       at_reset=52.0000   runs_out=None                  rate_per_hour=12.0000  span_min=90
+//   weekly_clock  at_reset=121.5352  runs_out=2026-10-05T06:18:00Z  rate_per_hour=0.4930   span_min=4320
+//   weekly_work   at_reset=97.1667   runs_out=None                  rate_per_hour=1.1667   span_min=4320
+//   monthly_drop  at_reset=199.2293  runs_out=2026-10-16T03:08:00Z  rate_per_hour=0.2654   span_min=4320
 //
-// The port is integral: percentages are whole, so 120.29 is 120 and 96.69 is 96. The
-// moment it runs out is the reference's to the minute -- that is what the rate's scale
-// was raised for (`model/forecast.nv`).
+// The port is integral: percentages are whole, so 121.54 is 121 and 97.17 is 97, and the
+// int walk to 100 % lands a few minutes off the reference's float walk (06:19 for 06:18,
+// 03:12 for 03:08). The rate keeps hundredths: 0.4930 %/h is rate_per_hour_milli 490.
 
 module model.forecast_join_test
 
@@ -37,7 +39,7 @@ fn rules(working_hours bool) -> ForecastRules =>
 
 fn account() -> AccountView => {
     id: "a-1", email: "Main@Example.com", org: "Org", dirs: [], state: "ok", message: "",
-    polled_at: "", next_poll_at: "", locked: false, display_name: "", provider: "claude", at_100: false, same_quota_as: "", extra_usage: None,
+    polled_at: "", next_poll_at: "", locked: false, display_name: "", provider: "claude", at_100: false, same_quota_as: "", extra_usage: None, plan: None,
 }
 
 fn limit(kind str, percent int, seconds_left int, window_sec int) -> LimitView => {
@@ -79,7 +81,9 @@ fn week_samples() -> []HistSample {
 fn one(l LimitView, r HistRows, working_hours bool) -> Option[ForecastView] =>
     forecast_of(view(l), l, r, rules(working_hours), NOW_MS, OFFSET_SEC, TimeZone.Utc)
 
-test "session, as the reference: 52 % at reset, 12 %/h over the last 60 minutes" {
+test "session, as the reference: 52 % at reset, 12 %/h from the window's start" {
+    // The rate spans from the window's start (90 observed minutes), not the last 60:
+    // the reference's `rate_start` clamp is dead code since the reset-based fix.
     ro l = limit("session", 28, 2 * 3600, 5 * 3600)
     match one(l, rows("session", session_samples()), false) {
         None => panic("no forecast")
@@ -87,7 +91,7 @@ test "session, as the reference: 52 % at reset, 12 %/h over the last 60 minutes"
             assert(f.percent_at_reset == 52)
             assert(same("runs out", "", f.runs_out_at))
             assert(f.rate_per_hour_milli == 12000)
-            assert(f.sample_minutes == 60)
+            assert(f.sample_minutes == 90)
             assert(same("basis", "clock", f.basis))
             assert(same("label", "\u{2192} 52% at reset", f.label))
             assert(!f.warning)
@@ -96,48 +100,49 @@ test "session, as the reference: 52 % at reset, 12 %/h over the last 60 minutes"
     }
 }
 
-test "week by the clock, as the reference: 120 %, runs out 2026-10-05 08:04 UTC" {
-    // The rate is taken from the start of the CURRENT window (31 hours ago), not from
-    // three days back: the window resets in 5d 17h of a 7-day week.
+test "week by the clock, as the reference: 121 %, runs out 2026-10-05 06:19 UTC" {
+    // The window began 31 hours ago, INSIDE the 3-day rate span, so the previous
+    // week's tail (72h..32h ago, 18 % to 38 %) still counts: used is 20 points of
+    // tail plus 15 of this window over 71 observed hours.
     ro l = limit("weekly_all", 54, (5 * 24 + 17) * 3600, 7 * 86400)
     match one(l, rows("weekly_all", week_samples()), false) {
         None => panic("no forecast")
         Some(f) => {
-            assert(f.percent_at_reset == 120)
-            assert(f.runs_out_at.starts_with("2026-10-05T08:04:00"))
-            assert(f.sample_minutes == 1860)
+            assert(f.percent_at_reset == 121)
+            assert(f.runs_out_at.starts_with("2026-10-05T06:19:00"))
+            assert(f.sample_minutes == 4320)
             assert(f.warning)
             // The reference's line, whole: the percent, then where it runs out.
-            assert(same("label", "\u{2192} 120% at reset, ends 2026-10-05 ~08:04 (3d 23h)", f.label))
-            // 120 % at reset is past the ghost's 95: red, whatever the fill says now (54 %).
+            assert(same("label", "\u{2192} 121% at reset, ends 2026-10-05 ~06:19 (3d 21h)", f.label))
+            // 121 % at reset is past the ghost's 95: red, whatever the fill says now (54 %).
             assert(same("severity", "critical", f.severity))
         }
     }
 }
 
-test "week by working hours, as the reference: 96 % and it lasts" {
+test "week by working hours, as the reference: 97 % and it lasts" {
     ro l = limit("weekly_all", 54, (5 * 24 + 17) * 3600, 7 * 86400)
     match one(l, rows("weekly_all", week_samples()), true) {
         None => panic("no forecast")
         Some(f) => {
-            assert(f.percent_at_reset == 96)
-            assert(same("severity at 96", "critical", f.severity))
+            assert(f.percent_at_reset == 97)
+            assert(same("severity at 97", "critical", f.severity))
             assert(same("runs out", "", f.runs_out_at))
             assert(same("basis", "working_hours", f.basis))
         }
     }
 }
 
-test "under 30 minutes of history there is no forecast" {
+test "under five minutes of history there is no forecast" {
     ro l = limit("session", 28, 2 * 3600, 5 * 3600)
-    ro short = [sample(NOW_MS - 20 * MIN, 20), sample(NOW_MS, 28)]
+    ro short = [sample(NOW_MS - 3 * MIN, 20), sample(NOW_MS, 28)]
     assert(one(l, rows("session", short), false).is_none())
 }
 
-test "weekly 1 percent with 30 to 60 minutes of history keeps facts without a red projection" {
-    for minutes in [30, 60] {
-        ro l = limit("weekly_all", 1, 7 * 86400 - minutes * 60, 7 * 86400)
-        ro r = rows("weekly_all", [sample(NOW_MS - minutes * MIN, 0), sample(NOW_MS, 1)])
+test "weekly 1 percent below the five-minute floor keeps facts without a projection" {
+    for seconds in [60, 120] {
+        ro l = limit("weekly_all", 1, 7 * 86400 - seconds, 7 * 86400)
+        ro r = rows("weekly_all", [sample(NOW_MS - seconds * 1000, 0), sample(NOW_MS, 1)])
         ro v = with_forecasts(view(l), r, rules(false), NOW_MS, OFFSET_SEC, TimeZone.Utc)
         assert(v.limits[0].forecast.is_none())
         assert(v.limits[0].percent == 1)
@@ -155,25 +160,62 @@ fn boundary(kind str, window_sec int, minimum_sec int, working bool) {
     assert(one(l, enough, working).is_some())
 }
 
-test "session weekly monthly exact calendar span boundaries in both forecast bases" {
+test "the five-minute floor for every window class, in both forecast bases" {
+    // Owner's word 2026-10-31 ("уменьши до 5 минут"): the old per-kind minimum
+    // (window/20) is gone -- one floor for session, week and month alike.
     for working in [false, true] {
-        boundary("session", 5 * 3600, 1800, working)
-        boundary("weekly_all", 7 * 86400, 30240, working)
-        boundary("monthly", 30 * 86400, 129600, working)
+        boundary("session", 5 * 3600, 300, working)
+        boundary("weekly_all", 7 * 86400, 300, working)
+        boundary("monthly", 30 * 86400, 300, working)
     }
 }
 
-test "actual window duration sets the minimum rounded up to whole seconds" {
-    boundary("monthly", 31 * 86400, 133920, false)
-    boundary("weekly_all", 604801, 30241, false)
+test "a window's own length no longer raises the floor" {
+    boundary("monthly", 31 * 86400, 300, false)
+    boundary("weekly_all", 604801, 300, false)
 }
 
-test "old window age and samples before the current window cannot replace observed span" {
+test "monthly with the reset observed as a drop forecasts, arithmetic alone would wait a day" {
+    // The Kimi month of 2026-10-21: resets_at is 30d 8h ahead, so resets_at minus the
+    // 30-day guess lands in the FUTURE and leaves no post-reset samples. The samples
+    // show the real reset: 98 % -> 0 % twenty-four hours ago, with a 3-day tail before
+    // it. As the reference: 199 % at reset, runs out 2026-10-16 ~03:12.
+    ro month = [
+        sample(NOW_MS - 3 * 86400000, 85), sample(NOW_MS - 90000000, 90),
+        sample(NOW_MS - 88200000, 98), sample(NOW_MS - 86700000, 0),
+        sample(NOW_MS - HOUR, 1), sample(NOW_MS, 6),
+    ]
+    ro l = limit("monthly", 6, 30 * 86400 + 8 * 3600, 30 * 86400)
+    match one(l, rows("monthly", month), false) {
+        None => panic("no forecast")
+        Some(f) => {
+            assert(f.percent_at_reset == 199)
+            assert(f.runs_out_at.starts_with("2026-10-16T03:12:00"))
+            assert(f.sample_minutes == 4320)
+            assert(f.warning)
+            assert(same("label", "\u{2192} 199% at reset, ends 2026-10-16 ~03:12 (14d 18h)", f.label))
+        }
+    }
+    // The control: no drop visible, the arithmetic start in the future -- the forecast
+    // honestly waits for observed span. One hour of samples IS enough span now
+    // (the floor is five minutes), so the wait here is about the DROP, not the span.
+    ro nodrop = rows("monthly", [sample(NOW_MS - HOUR, 5), sample(NOW_MS, 6)])
+    assert(one(l, nodrop, false).is_none())
+}
+
+test "samples before the current window cannot replace the observed span" {
+    // The spans here are above the five-minute floor, so what is being proved is
+    // the SAMPLE SELECTION, not the floor: a limit whose window began a day ago
+    // takes no samples from before that beginning (the pre-reset tail rule of
+    // 01.1 §2.7, 2026-10-21), and samples older than the limit's own span do not
+    // stretch the observed span.
     ro late = limit("weekly_all", 1, 6 * 86400, 7 * 86400)
-    ro short = rows("weekly_all", [sample(NOW_MS - 30 * MIN, 0), sample(NOW_MS, 1)])
+    ro short = rows("weekly_all", [sample(NOW_MS - 3 * MIN, 0), sample(NOW_MS, 1)])
     assert(one(late, short, false).is_none())
     ro fresh = limit("weekly_all", 1, 7 * 86400 - 1800, 7 * 86400)
-    ro old = rows("weekly_all", [sample(NOW_MS - 24 * HOUR, 0), sample(NOW_MS - 30 * MIN, 0), sample(NOW_MS, 1)])
+    // The in-window samples span two minutes -- below the floor -- so what the
+    // assert proves is that the day-old sample cannot stretch that span.
+    ro old = rows("weekly_all", [sample(NOW_MS - 24 * HOUR, 0), sample(NOW_MS - 2 * MIN, 0), sample(NOW_MS, 1)])
     assert(one(fresh, old, false).is_none())
 }
 
@@ -271,8 +313,25 @@ test "a Kimi account's pace is found by kimi:<name>, a Codex one by codex:<lower
     assert(k.len() == 1 && k[0].account_id == "db-k" && k[0].rate_per_hour_milli == 483)
     ro c = paces_of(paced("codex", "", "Me@Example.com"), r)
     assert(c.len() == 1 && c[0].account_id == "db-c")
+
     ro m = paces_of(paced("claude", "Main@Example.com", ""), r)
     assert(m.len() == 1 && m[0].account_id == "db-m")
+}
+
+test "a ZCode row finds its history by zcode:<lowered address>, and its plan window joins" {
+    mut a = account()
+    a.email = ""
+    a.provider = "zcode"
+    a.display_name = "Me@Example.com"
+    ro l = limit("plan", 12, 5 * 3600, 6 * 3600)
+    ro v = SnapshotView{ fetched_at: "2026-10-01T09:00:00Z", next_poll_at: "", tz: "+03:00", restored: false,
+        worst: None, accounts: [a], limits: [l] }
+    ro r = HistRows{
+        accounts: [HistAccount{ id: "db-z", email: "zcode:me@example.com", color_slot: 0, polls: [] },
+                   HistAccount{ id: "db-m", email: "me@example.com", color_slot: 1, polls: [] }],
+        windows: [HistWindow{ account_id: "db-z", kind: "plan", model: "", samples: week_samples(), locks: [], rollups: [] }],
+    }
+    assert(forecast_of(v, l, r, rules(false), NOW_MS, OFFSET_SEC, TimeZone.Utc).is_some())
 }
 
 test "no pace for an account the history does not know, nor for one with no name to key it by" {

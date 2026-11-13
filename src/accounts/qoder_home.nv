@@ -1,0 +1,158 @@
+// qoder_home.nv — Qoder (Qoder CLI) logins in a folder (task 035).
+//
+// Source: the Qoder CLI's own files, measured against its WASM auth module on
+// synthetic homes 2026-11-12 (the task's `research.md`); the reference's twin is
+// `scripts/claude_limits.py` `qoder_login_of` / `qoder_logins_of`. A folder is a
+// Qoder home when the OPEN marker `.qoder-app-status.json` sits under it -- the
+// identity's source (`email`, `logged_in`). The credentials live in `.auth/user`,
+// ONE line: base64 of AES-128-CBC over the login JSON, keyed -- and poured -- by
+// the first 16 characters of `.auth/machine_id` (the cipher lives in
+// `usage/qoder_cipher.nv`). ONE ACCOUNT PER HOME, named by the lowered e-mail of
+// the status file, `qoder` when it names none.
+//
+// Detected BY CONTENT, as every home module does: the default home is `~/.qoder`,
+// but a person may point the tool anywhere. Unlike ZCode there is NO secret to
+// resolve -- the key material sits in the home itself -- so this module needs no
+// environment and takes no secret argument.
+//
+// NO TOKEN LEAVES THIS FILE except through `read_qoder_access`, for the one caller
+// that sends it -- the same split as `codex_home.read_codex_token` /
+// `zcode_home.read_zcode_access`. The store is never written (no refresh token in
+// it), and a store that will not decrypt is REPORTED (a login with `broken` set)
+// rather than silently skipped -- another machine's key must be visible.
+
+module accounts.qoder_home
+
+import std.encoding.json.{Json, JsonValue}
+import claude_limits.accounts.discover.{Dirs, normalise, under}
+import claude_limits.accounts.login.{Creds}
+import claude_limits.usage.qoder_cipher.{qoder_decrypt}
+
+/// One Qoder login: a home with the status marker. No token in it.
+export type QoderLogin value {
+    /// The account's name: the lowered e-mail of the status file, or `qoder`.
+    ro name str
+    /// The Qoder home it was found in.
+    ro home str
+    /// The status marker file itself (`.qoder-app-status.json`).
+    ro path str
+    ro has_token bool
+    /// Why the login cannot be asked yet; "" when it can. Shown instead of numbers.
+    ro broken str
+    /// The machine id the store is keyed by -- the poll's cipher key comes from it;
+    /// "" when the home does not carry one.
+    ro machine_id str
+}
+
+fn str_member(v JsonValue, key str) -> str =>
+    match v.object() {
+        Some(fields) => match fields.get(key) {
+            Some(x) => x.str() ?? ""
+            None => ""
+        }
+        None => ""
+    }
+
+/// The status file's `logged_in`; None when it does not say (an older marker).
+fn bool_member(v JsonValue, key str) -> Option[bool] =>
+    match v.object() {
+        Some(fields) => match fields.get(key) {
+            Some(x) => x.bool()
+            None => None
+        }
+        None => None
+    }
+
+/// The machine id of a home, whitespace-trimmed (a trailing newline would corrupt
+/// the 16-character key); "" when the file is missing.
+fn machine_id_of(home str) Dirs Creds -> str {
+    ro p = under(under(home, ".auth"), "machine_id")
+    if !Dirs.exists(p) { return "" }
+    Creds.read(p).trim_ascii()
+}
+
+/// The encrypted store of a home -- the file the poll asks with. The marker is
+/// only the identity; `QoderLogin.path` names the marker, this names the store.
+export fn qoder_store_path(home str) -> str => under(under(home, ".auth"), "user")
+
+fn login_of(name str, home str, path str, has_token bool, broken str, mid str) -> QoderLogin =>
+    { name, home, path, has_token, broken, machine_id: mid }
+
+/// Every Qoder login in `dir`; none when it is not a Qoder home (no status marker).
+export fn qoder_logins_at(dir str) Dirs Creds -> []QoderLogin {
+    ro home = normalise(dir)
+    ro marker = under(home, ".qoder-app-status.json")
+    mut out []QoderLogin = []
+    if !Dirs.exists(marker) { return out }
+    ro mid = machine_id_of(home)
+    // THE IDENTITY first, from the open marker; every failure below still leaves a
+    // named login on the card.
+    ro root = match Json.parse(Creds.read(marker)) {
+        Ok(v) => v
+        Err(_) => {
+            out.push(login_of("qoder", home, marker, false, "the status file is not a JSON object", mid))
+            return out
+        }
+    }
+    ro email = str_member(root, "email").trim_ascii().to_ascii_lower()
+    ro name = if email == "" { "qoder" } else { email }
+    // `logged_in: false` is a login WITH A REASON, not a missing account: the card
+    // shows why there are no numbers (a missing member says nothing -- the store decides).
+    if Some(false) = bool_member(root, "logged_in") {
+        out.push(login_of(name, home, marker, false, "logged out (the status file says so)", mid))
+        return out
+    }
+    ro user_path = under(under(home, ".auth"), "user")
+    if !Dirs.exists(user_path) {
+        out.push(login_of(name, home, marker, false, "the store .auth/user is missing", mid))
+        return out
+    }
+    if mid == "" {
+        out.push(login_of(name, home, marker, false, "no machine id (.auth/machine_id is missing)", ""))
+        return out
+    }
+    // THE STORE, decrypted by the home's own machine id. A failure to decrypt is a
+    // broken LOGIN (the blob was built on another machine, most likely), not a
+    // missing one.
+    match qoder_decrypt(Creds.read(user_path).trim_ascii(), mid) {
+        Err(e) => {
+            out.push(login_of(name, home, marker, false,
+                "the store did not decrypt (${e.to_str()}): another machine's key?", mid))
+        }
+        Ok(plain) => {
+            mut has = false
+            mut why = "the store holds no readable login"
+            match Json.parse(plain) {
+                Err(_) => {}
+                Ok(store) => {
+                    if str_member(store, "security_oauth_token") != "" || str_member(store, "access_token") != "" {
+                        has = true
+                        why = ""
+                    } else {
+                        why = "the store holds no access token"
+                    }
+                }
+            }
+            out.push(login_of(name, home, marker, has, why, mid))
+        }
+    }
+    out
+}
+
+/// The bearer token of one Qoder login -- `security_oauth_token` when the store
+/// keeps it, else `access_token` -- for the one caller that sends it in
+/// `Authorization`. `None` when the store will not open; never a partially
+/// decrypted string.
+export fn read_qoder_access(user_path str, machine_id str) Creds -> Option[str] {
+    if user_path == "" || machine_id == "" { return None }
+    ro plain = match qoder_decrypt(Creds.read(user_path).trim_ascii(), machine_id) {
+        Err(_) => return None
+        Ok(p) => p
+    }
+    ro root = Json.parse(plain).ok()?
+    ro bearer = str_member(root, "security_oauth_token")
+    if bearer != "" { return Some(bearer) }
+    ro access = str_member(root, "access_token")
+    if access != "" { return Some(access) }
+    None
+}

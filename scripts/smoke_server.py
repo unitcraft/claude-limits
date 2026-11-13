@@ -51,7 +51,7 @@ ROOT = os.path.dirname(HERE)
 
 
 def database_health_ok(health, *, encrypted=False):
-    """Require schema 3, the exact requested mode/key store and a real file."""
+    """Require schema 5, the exact requested mode/key store and a real file."""
     if not isinstance(health, dict):
         return False
     storage = health.get("storage")
@@ -59,10 +59,10 @@ def database_health_ok(health, *, encrypted=False):
         return False
     schema = storage.get("schema_version")
     size = storage.get("db_size_bytes")
-    # src/storage/db.nv KNOWN_SCHEMA / migrations/0003_codex_accounts.sql.
+    # src/storage/db.nv KNOWN_SCHEMA / migrations/0005_qoder_accounts.sql.
     return (type(encrypted) is bool and storage.get("encrypted") is encrypted
             and storage.get("key_store") == ("file" if encrypted else "none")
-            and type(schema) is int and schema == 3
+            and type(schema) is int and schema == 5
             and type(size) is int and size > 0)
 
 

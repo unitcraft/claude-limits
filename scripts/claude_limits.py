@@ -67,10 +67,22 @@ free plan's single 30-day window reads "month limit". The access token lives
 ~10 days and is NEVER renewed here: OpenAI's refresh token is single-use, and
 a renewal that missed auth.json would sign the Codex CLI out. An expired
 login is reported with advice to start Codex under that profile.
+
+ZCode (z.ai) logins close the page: ~/.zcode/v2/credentials.json
+($ZCODE_HOME), where the desktop app keeps its tokens AES-256-GCM encrypted
+(enc:v1:IV.TAG.CT, key = sha256 of a machine-derived secret -- see the zcode
+section below; the tool DECRYPTS, never re-encrypts, and writes nothing).
+Two endpoints per cycle: /api/v1/mcp/usage for the live burn
+(total_usage used/limit, reset next_refresh_at) and
+/api/v1/zcode-plan/billing/current for the plan's name and end date. No
+refresh token exists in the store, so like Codex this is read-only: a
+rejected login is reported with advice to start ZCode once.
 """
 
 import argparse
 import base64
+import getpass
+import hashlib
 import json
 import math
 import os
@@ -92,6 +104,9 @@ KIMI_USAGE_URL = "https://api.kimi.com/coding/v1/usages"
 KIMI_OAUTH_URL = "https://auth.kimi.com/api/oauth/token"
 KIMI_CLIENT_ID = "17e5f671-d194-4dfb-9706-5516cb48c098"   # public client_id of the Kimi Code CLI
 CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"   # what the Codex CLI's /status asks
+ZCODE_BASE_URL = "https://zcode.z.ai"          # the desktop app's endpoint origin ($ZCODE_BASE_URL)
+ZCODE_QUOTA_URL = "https://api.z.ai/api/monitor/usage/quota/limit"   # the PAID plan's windows ($ZCODE_QUOTA_URL)
+ZCODE_PLAN_PATH = "/api/v1/zcode-plan/billing/current"   # plan name and end date, jwt only
 DEFAULT_INTERVAL = 300
 MIN_INTERVAL = 60
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -141,6 +156,10 @@ def env_dirs():
     dirs.append(Path(kimi_home).expanduser() if kimi_home else Path.home() / ".kimi-code")
     codex_home = os.environ.get("CODEX_HOME")
     dirs.append(Path(codex_home).expanduser() if codex_home else Path.home() / ".codex")
+    zcode_home = os.environ.get("ZCODE_HOME")
+    dirs.append(Path(zcode_home).expanduser() if zcode_home else Path.home() / ".zcode")
+    qoder_home = os.environ.get("QODER_HOME")
+    dirs.append(Path(qoder_home).expanduser() if qoder_home else Path.home() / ".qoder")
     return dirs
 
 
@@ -619,6 +638,701 @@ def codex_rows_of(usage):
                None, local_time(iso), reset_at)
 
 
+# ------------------------------------------------------------ zcode (z.ai) --
+#
+# The ZCode desktop app keeps its tokens in ~/.zcode/v2/credentials.json as a
+# flat map whose values are either plain strings or "enc:v1:IV.TAG.CT"
+# (base64url) -- AES-256-GCM with the key sha256(secret). The secret is env
+# ZCODE_CREDENTIAL_SECRET when set and non-empty, else the app's
+# machine-derived fallback string (read out of the app's own code,
+# `resolveCredentialSecret`): "zcode-credential-fallback:{platform}:{homedir}:
+# {username}". This tool DECRYPTS only -- nothing here re-encrypts or writes
+# the file; there is no refresh token in the store, so a rejected login is
+# the user's to fix by starting ZCode once.
+#
+# AES is implemented here because the standard library has neither GCM nor CBC
+# and the project admits no dependencies. The forward cipher covers both key
+# sizes: AES-256-GCM for ZCode (GCM runs CTR over it in both directions) and
+# AES-128-CBC for Qoder, whose store keeps the INVERSE cipher busy
+# (task 035). Checked against the published FIPS-197 AES-256 vector and NIST
+# GCM vectors in scripts/test_zcode_creds.py (plan 01.8); FIPS-197 AES-128 and
+# SP 800-38A F.2.1 CBC vectors in scripts/test_qoder_creds.py (task 035).
+
+def _xtime(a):
+    return ((a << 1) ^ 0x1B) & 0xFF if a & 0x80 else a << 1
+
+
+def _gf_mul8(a, b):
+    """Multiplication in GF(2^8), the AES polynomial."""
+    r = 0
+    while b:
+        if b & 1:
+            r ^= a
+        a = _xtime(a)
+        b >>= 1
+    return r
+
+
+def _build_sbox():
+    """The AES S-box from first principles: multiplicative inverse, then the
+    affine transform. 65k tiny multiplications at import -- cheaper than a
+    256-entry literal that one wrong digit silently corrupts."""
+    inv = [0] * 256
+    for a in range(1, 256):
+        for b in range(1, 256):
+            if _gf_mul8(a, b) == 1:
+                inv[a] = b
+                break
+    sbox = [0] * 256
+    for a in range(256):
+        x, s = inv[a], inv[a]
+        for _ in range(4):
+            x = ((x << 1) | (x >> 7)) & 0xFF
+            s ^= x
+        sbox[a] = s ^ 0x63
+    return sbox
+
+
+_SBOX = _build_sbox()
+
+
+def _expand_key(key):
+    """AES key schedule, both sizes the file needs: 16 bytes -> 44 four-byte
+    words (Nr = 10, Qoder's CBC), 32 -> 60 (Nr = 14, ZCode's GCM)."""
+    nk = len(key) // 4
+    if nk not in (4, 8):
+        raise ValueError("AES key must be 16 or 32 bytes")
+    total = 44 if nk == 4 else 60
+    words = [list(key[4 * i:4 * i + 4]) for i in range(nk)]
+    rcon = 1
+    for i in range(nk, total):
+        t = list(words[i - 1])
+        if i % nk == 0:
+            t = [_SBOX[b] for b in t[1:] + t[:1]]
+            t[0] ^= rcon
+            rcon = _xtime(rcon)
+        elif nk == 8 and i % 8 == 4:
+            t = [_SBOX[b] for b in t]
+        words.append([words[i - nk][j] ^ t[j] for j in range(4)])
+    return words
+
+
+def _add_round_key(s, words, rnd):
+    for c in range(4):
+        w = words[4 * rnd + c]
+        for j in range(4):
+            s[4 * c + j] ^= w[j]
+
+
+def _shift_rows(s):
+    # state is column-major: byte r of column c lives at s[4c + r]
+    return [s[4 * ((c + r) % 4) + r] for c in range(4) for r in range(4)]
+
+
+def _mix_columns(s):
+    for c in range(4):
+        a0, a1, a2, a3 = s[4 * c:4 * c + 4]
+        s[4 * c + 0] = _gf_mul8(a0, 2) ^ _gf_mul8(a1, 3) ^ a2 ^ a3
+        s[4 * c + 1] = a0 ^ _gf_mul8(a1, 2) ^ _gf_mul8(a2, 3) ^ a3
+        s[4 * c + 2] = a0 ^ a1 ^ _gf_mul8(a2, 2) ^ _gf_mul8(a3, 3)
+        s[4 * c + 3] = _gf_mul8(a0, 3) ^ a1 ^ a2 ^ _gf_mul8(a3, 2)
+
+
+def _encrypt_block(words, block):
+    """The forward cipher: the only block operation GCM ever needs, and one
+    half of Qoder's CBC."""
+    nr = len(words) // 4 - 1
+    s = list(block)
+    _add_round_key(s, words, 0)
+    for rnd in range(1, nr):
+        s = [_SBOX[b] for b in s]
+        s = _shift_rows(s)
+        _mix_columns(s)
+        _add_round_key(s, words, rnd)
+    s = [_SBOX[b] for b in s]
+    s = _shift_rows(s)
+    _add_round_key(s, words, nr)
+    return bytes(s)
+
+
+def _build_inv_sbox():
+    inv = [0] * 256
+    for i, v in enumerate(_SBOX):
+        inv[v] = i
+    return inv
+
+
+_INV_SBOX = _build_inv_sbox()
+
+
+def _inv_shift_rows(s):
+    return [s[4 * ((c - r) % 4) + r] for c in range(4) for r in range(4)]
+
+
+def _inv_mix_columns(s):
+    for c in range(4):
+        a0, a1, a2, a3 = s[4 * c:4 * c + 4]
+        s[4 * c + 0] = _gf_mul8(a0, 14) ^ _gf_mul8(a1, 11) ^ _gf_mul8(a2, 13) ^ _gf_mul8(a3, 9)
+        s[4 * c + 1] = _gf_mul8(a0, 9) ^ _gf_mul8(a1, 14) ^ _gf_mul8(a2, 11) ^ _gf_mul8(a3, 13)
+        s[4 * c + 2] = _gf_mul8(a0, 13) ^ _gf_mul8(a1, 9) ^ _gf_mul8(a2, 14) ^ _gf_mul8(a3, 11)
+        s[4 * c + 3] = _gf_mul8(a0, 11) ^ _gf_mul8(a1, 13) ^ _gf_mul8(a2, 9) ^ _gf_mul8(a3, 14)
+
+
+def _decrypt_block(words, block):
+    """The inverse cipher; only Qoder's CBC needs it (GCM decrypts with the
+    forward one, FIPS-197 §5.3)."""
+    nr = len(words) // 4 - 1
+    s = list(block)
+    _add_round_key(s, words, nr)
+    for rnd in range(nr - 1, 0, -1):
+        s = _inv_shift_rows(s)
+        s = [_INV_SBOX[b] for b in s]
+        _add_round_key(s, words, rnd)
+        _inv_mix_columns(s)
+    s = _inv_shift_rows(s)
+    s = [_INV_SBOX[b] for b in s]
+    _add_round_key(s, words, 0)
+    return bytes(s)
+
+
+def _pkcs7_pad(data):
+    pad = 16 - len(data) % 16
+    return data + bytes([pad]) * pad
+
+
+def _pkcs7_unpad(data):
+    pad = data[-1] if data else 0
+    if pad < 1 or pad > 16 or data[-pad:] != bytes([pad]) * pad:
+        raise ValueError("invalid PKCS7 padding")
+    return data[:-pad]
+
+
+def _cbc_encrypt(words, data, iv):
+    out, prev = bytearray(), bytes(iv)
+    for i in range(0, len(data), 16):
+        prev = _encrypt_block(words, bytes(x ^ y for x, y in zip(data[i:i + 16], prev)))
+        out += prev
+    return bytes(out)
+
+
+def _cbc_decrypt(words, raw, iv):
+    out, prev = bytearray(), bytes(iv)
+    for i in range(0, len(raw), 16):
+        blk = raw[i:i + 16]
+        out += bytes(x ^ y for x, y in zip(_decrypt_block(words, blk), prev))
+        prev = blk
+    return bytes(out)
+
+
+_R128 = 0xE1000000000000000000000000000000   # GF(2^128) reduction, SP 800-38D
+
+
+def _gf_mul128(x, y):
+    z = 0
+    for i in range(127, -1, -1):
+        if (x >> i) & 1:
+            z ^= y
+        y = (y >> 1) ^ _R128 if y & 1 else y >> 1
+    return z
+
+
+def _ghash(h, aad, ct):
+    def blocks(b):
+        b = b + b"\0" * (-len(b) % 16)
+        for i in range(0, len(b), 16):
+            yield b[i:i + 16]
+    y = 0
+    for blk in list(blocks(aad)) + list(blocks(ct)):
+        y = _gf_mul128(y ^ int.from_bytes(blk, "big"), h)
+    tail = (len(aad) * 8).to_bytes(8, "big") + (len(ct) * 8).to_bytes(8, "big")
+    return _gf_mul128(y ^ int.from_bytes(tail, "big"), h)
+
+
+def _gctr(words, j0, data):
+    out = bytearray()
+    cb = j0
+    for i in range(0, len(data), 16):
+        cb = (cb & ~0xFFFFFFFF) | ((cb + 1) & 0xFFFFFFFF)   # inc32
+        ks = _encrypt_block(words, cb.to_bytes(16, "big"))
+        out += bytes(x ^ y for x, y in zip(data[i:i + 16], ks))
+    return bytes(out)
+
+
+def _gcm_encrypt(key, iv, plaintext):
+    """96-bit IV, no AAD -- exactly the shape ZCode's cipher uses."""
+    words = _expand_key(key)
+    h = int.from_bytes(_encrypt_block(words, b"\0" * 16), "big")
+    j0 = (int.from_bytes(iv, "big") << 32) | 1
+    ct = _gctr(words, j0, plaintext)
+    tag = (int.from_bytes(_encrypt_block(words, j0.to_bytes(16, "big")), "big")
+           ^ _ghash(h, b"", ct)).to_bytes(16, "big")
+    return ct, tag
+
+
+def _gcm_decrypt(key, iv, ct, tag):
+    words = _expand_key(key)
+    h = int.from_bytes(_encrypt_block(words, b"\0" * 16), "big")
+    j0 = (int.from_bytes(iv, "big") << 32) | 1
+    want = (int.from_bytes(_encrypt_block(words, j0.to_bytes(16, "big")), "big")
+            ^ _ghash(h, b"", ct)).to_bytes(16, "big")
+    if want != tag:
+        raise ValueError("GCM tag mismatch")
+    return _gctr(words, j0, ct)
+
+
+def zcode_secret():
+    """The credential-store secret, resolved the way the app does it: env
+    ZCODE_CREDENTIAL_SECRET when set and non-empty, else the deterministic
+    fallback string. getpass.getuser() reads USERNAME on Windows (what node's
+    os.userInfo does) and falls back to the passwd database on Linux."""
+    env = os.environ.get("ZCODE_CREDENTIAL_SECRET")
+    if env and env.strip():
+        return env.strip()
+    return (f"zcode-credential-fallback:{sys.platform}:{os.path.expanduser('~')}:"
+            f"{getpass.getuser()}")
+
+
+def zcode_decrypt(value, secret):
+    """One credentials.json value -> plaintext. Plain strings pass through;
+    enc:v1 values are decrypted and must authenticate. A value under another
+    enc: scheme (the app's enc:v2, its key in the system keyring -- measured
+    2026-11-12, plan 01.8) raises BY NAME instead of passing through."""
+    if not isinstance(value, str) or not value.startswith("enc:"):
+        return value
+    if not value.startswith("enc:v1:"):
+        scheme = value.split(":", 2)[1] if value.count(":") >= 2 else "unknown"
+        raise ValueError(f"store uses enc:{scheme}, not supported yet")
+    iv_b64, tag_b64, ct_b64 = value[7:].split(".")
+    def raw(b):
+        return base64.urlsafe_b64decode(b + "=" * (-len(b) % 4))
+    key = hashlib.sha256(secret.encode("utf-8")).digest()
+    return _gcm_decrypt(key, raw(iv_b64), raw(ct_b64), raw(tag_b64)).decode("utf-8")
+
+
+def zcode_login_of(f, home_label=None):
+    """v2/credentials.json of a ZCode home -> login dict. A home whose values
+    will not decrypt is reported AS A LOGIN with error set, never silently
+    skipped: a wrong ZCODE_CREDENTIAL_SECRET must be visible, not a missing
+    account (plan 01.8, reverse probe)."""
+    label = f"ZCode ({short_name(f.parent)})" if home_label else "ZCode"
+    home = f.parent.parent
+    try:
+        creds = json.loads(f.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as e:
+        return {"name": "zcode", "label": label, "error": f"cannot read credentials: {e}",
+                "jwt": None, "access": None, "home": home}
+    if not isinstance(creds, dict):
+        return {"name": "zcode", "label": label, "error": "credentials: not a JSON object",
+                "jwt": None, "access": None, "home": home}
+    secret = zcode_secret()
+    try:
+        jwt = zcode_decrypt(creds.get("zcodejwttoken"), secret)
+        access = zcode_decrypt(creds.get("oauth:zai:access_token"), secret)
+        info = json.loads(zcode_decrypt(creds.get("oauth:zai:user_info"), secret))
+    except (ValueError, TypeError) as e:
+        # The unsupported-scheme refusal is its own message: the wrong-secret advice
+        # would be a lie for it (task 036).
+        error = (str(e) if "not supported yet" in str(e)
+                 else f"credentials will not decrypt ({e}): wrong ZCODE_CREDENTIAL_SECRET?")
+        return {"name": "zcode", "label": label, "error": error,
+                "jwt": None, "access": None, "home": home}
+    email = info.get("email") if isinstance(info, dict) else None
+    if not jwt or not access or not email:
+        return {"name": "zcode", "label": label,
+                "error": "credentials hold no complete login (no token or no user email)",
+                "jwt": None, "access": None, "home": home}
+    name = email.lower()
+    full = f"ZCode ({name})"
+    if home_label:
+        full += f"  [{home_label}]"
+    return {"name": name, "label": full, "error": None, "jwt": jwt, "access": access,
+            "home": home}
+
+
+def zcode_logins_of(dirs):
+    """ZCode logins found in dirs, detected BY CONTENT: a dir holding
+    v2/credentials.json (the layout of $ZCODE_HOME). One account per home."""
+    out = []
+    multi = len(dirs) > 1
+    for d in dirs:
+        f = d / "v2" / "credentials.json"
+        if f.is_file():
+            out.append(zcode_login_of(f, short_name(d) if multi else None))
+    return out
+
+
+def zcode_balance_from_log(home, now=None):
+    """The plan's burn, from the desktop app's own log.
+
+    WHY THE LOG: the real burn lives at `billing/balance` (`data.balances[]`:
+    used_units/total_units -- the MCP endpoint's total_usage stays 0 for a start
+    plan, measured 2026-10-31). The app authorizes there with a FRESH zcode jwt
+    it keeps in memory and never writes to credentials.json (the file's copy is
+    from September; the server answers `parameter error` to it), so the request
+    cannot be repeated from outside. But the running app logs every reply in
+    full -- `[usage-stats] billing/balance 请求完成 {JSON}` with
+    `payload.data.balances` and `payload.data.plans` -- a few times a minute.
+    Reading that line is local, costs no request, and holds no token.
+
+    Returns {"plan": <active plan dict>, "balance": <dict>, "log_at": <mtime>}
+    for the newest readable payload, or None. Only today's and yesterday's logs
+    are looked at: an older sample would describe a plan already over."""
+    logs_dir = home / "v2" / "logs"
+    if not logs_dir.is_dir():
+        return None
+    now = now or time.time()
+    newest = sorted(logs_dir.glob("*.log"), key=lambda f: f.stat().st_mtime)[-2:]
+    for f in reversed(newest):
+        try:
+            lines = f.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        for line in reversed(lines):
+            if '"balances":' not in line or "billing/balance" not in line:
+                continue
+            start = line.find("{")
+            if start < 0:
+                continue
+            try:
+                obj = json.loads(line[start:])
+            except json.JSONDecodeError:
+                continue
+            data = (obj.get("payload") or {}).get("data") or {}
+            balances = data.get("balances")
+            plans = [p for p in (data.get("plans") or [])
+                     if isinstance(p, dict) and p.get("status") == "active"]
+            if not isinstance(balances, list) or not balances:
+                continue
+            plan = max(plans, key=lambda p: p.get("priority") or 0) if plans else None
+            pick = None
+            for b in balances:
+                if not isinstance(b, dict):
+                    continue
+                if plan and (b.get("user_plan_id"), b.get("plan_id")) != (plan.get("user_plan_id"), plan.get("plan_id")):
+                    continue
+                if pick is None or (b.get("priority") or 0) > (pick.get("priority") or 0):
+                    pick = b
+            if pick is None and plan is None:
+                pick = max((b for b in balances if isinstance(b, dict)),
+                           key=lambda b: b.get("priority") or 0, default=None)
+            if pick is None:
+                continue
+            total, used = pick.get("total_units"), pick.get("used_units")
+            if not isinstance(total, (int, float)) or total <= 0:
+                continue
+            if not isinstance(used, (int, float)) or used < 0:
+                continue
+            return {"plan": plan, "balance": pick, "log_at": f.stat().st_mtime}
+    return None
+
+
+def zcode_log_rows(snapshot):
+    """The quota rows the app's log supports: one "plan usage" row per balance,
+    percent = used/total, reset = the balance's expires_at. The plan's own
+    window (period_start..period_end) rides along -- the API names the LENGTH
+    here, which the forecast later needs (plan 01.8)."""
+    if not snapshot:
+        return
+    b = snapshot["balance"]
+    total = float(b["total_units"])
+    used = float(b.get("used_units") or 0)
+    reset = b.get("expires_at") or b.get("period_end")
+    reset = reset if isinstance(reset, (int, float)) and reset > 0 else None
+    iso = datetime.fromtimestamp(reset, timezone.utc).isoformat() if reset else None
+    yield ("plan usage", used / total * 100.0, None, local_time(iso), reset)
+
+
+def zcode_log_window_seconds(snapshot):
+    """The plan window's own length, period_end - period_start -- the input the
+    forecast lacked when the API did not name it (plan 01.8)."""
+    if not snapshot:
+        return None
+    b = snapshot["balance"]
+    start, end = b.get("period_start"), b.get("period_end")
+    if not isinstance(start, (int, float)) or not isinstance(end, (int, float)):
+        return None
+    span = end - start
+    return span if span > 0 else None
+
+
+def zcode_log_plan(snapshot):
+    """The plan of the log snapshot, or None -- the same dict shape
+    `zcode_active_plan` returns, so the plan line needs no extra request."""
+    if not snapshot:
+        return None
+    return snapshot.get("plan")
+
+
+def zcode_base_url():
+    base = (os.environ.get("ZCODE_BASE_URL") or "").strip().rstrip("/")
+    return base or ZCODE_BASE_URL
+
+
+def fetch_zcode_quota(login):
+    """The PAID plan's windows (the app's "Usage remaining": 5 hours, weekly).
+    ONE bearer -- the OAuth access token -- and it is the token the credentials
+    file holds, so this works from outside (unlike billing/balance, whose fresh
+    jwt only the app has, plan 01.8, amendment 2026-10-31)."""
+    req = urllib.request.Request(
+        os.environ.get("ZCODE_QUOTA_URL", "").strip() or ZCODE_QUOTA_URL,
+        headers={"Authorization": "Bearer " + login["access"],
+                 "User-Agent": "claude-limits", "Accept": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return json.loads(r.read().decode("utf-8"))
+
+
+def zcode_quota_rows(reply):
+    """Rows for the paid plan's windows. `unit` 3 is the five-hour window, 6 the
+    week (the app's own usage panel); `percentage` is USED percent, unlike the
+    panel, which shows remaining. Unknown units are left out."""
+    limits = (reply.get("data") or {}).get("limits")
+    if not isinstance(limits, list):
+        return
+    for lim in limits:
+        if not isinstance(lim, dict):
+            continue
+        kind = {3: "5h limit", 6: "weekly limit"}.get(lim.get("unit"))
+        if kind is None:
+            continue
+        pct = lim.get("percentage")
+        if not isinstance(pct, (int, float)):
+            continue
+        reset_ms = lim.get("nextResetTime")
+        reset = reset_ms / 1000 if isinstance(reset_ms, (int, float)) and reset_ms > 0 else None
+        iso = datetime.fromtimestamp(reset, timezone.utc).isoformat() if reset else None
+        yield (kind, float(pct), None, local_time(iso), reset)
+
+
+def fetch_zcode_plan(login):
+    """The plan's name and end date; the jwt alone authorizes this one."""
+    req = urllib.request.Request(
+        zcode_base_url() + ZCODE_PLAN_PATH,
+        headers={"Authorization": "Bearer " + login["jwt"],
+                 "User-Agent": "claude-limits", "Accept": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return json.loads(r.read().decode("utf-8"))
+
+
+def zcode_active_plan(reply):
+    """The active plan with the highest priority, or None."""
+    plans = (reply.get("data") or {}).get("plans")
+    if not isinstance(plans, list):
+        return None
+    actives = [p for p in plans if isinstance(p, dict) and p.get("status") == "active"]
+    if not actives:
+        return None
+    return max(actives, key=lambda p: p.get("priority") if isinstance(p.get("priority"), (int, float)) else 0)
+
+
+def zcode_rows_of(usage):
+    """One row, "plan usage": percent = used/limit, reset = next_refresh_at
+    (epoch seconds). The window's LENGTH is not given by the API, so the
+    forecast stays off (kind_class_of has no "plan" class) while the sample
+    is still recorded for statistics."""
+    data = usage.get("data") if isinstance(usage, dict) else None
+    t = (data or {}).get("total_usage")
+    if not isinstance(t, dict) or not isinstance(t.get("limit"), (int, float)) or t["limit"] <= 0:
+        return
+    if not isinstance(t.get("used"), (int, float)):
+        return
+    reset = data.get("next_refresh_at")
+    reset = reset if isinstance(reset, (int, float)) and reset > 0 else None
+    iso = datetime.fromtimestamp(reset, timezone.utc).isoformat() if reset else None
+    yield ("plan usage", float(t["used"]) / t["limit"] * 100.0, None, local_time(iso), reset)
+
+
+def zcode_plan_line(plan, now=None):
+    """The plan sentence under the quota rows, e.g.
+    "plan: ZCODE WEEKEND BUILD, ends Nov 2 (2d 4h)" -- the terminal's shape of
+    the card's org slot (plan 01.8)."""
+    if not isinstance(plan, dict):
+        return None
+    name = plan.get("name")
+    if not isinstance(name, str) or not name.strip():
+        return None
+    line = f"plan: {name.strip()}"
+    ends = plan.get("ends_at")
+    if isinstance(ends, (int, float)) and ends > 0:
+        when = datetime.fromtimestamp(ends).astimezone()
+        line += f", ends {when:%b} {when.day} ({duration_of(ends - (now or time.time()))})"
+    return line
+
+
+# ------------------------------------------------------------------ qoder --
+
+# The Qoder CLI keeps its login in ~/.qoder/.auth/user: ONE line of text,
+# base64(AES-128-CBC-PKCS7(json, key = machine_id[:16] as ascii bytes, iv = key))
+# -- the scheme was taken off qodercli's own WASM module (credential_storage_
+# encrypt/decrypt) on synthetic inputs; task 035, research.md in the task
+# folder. fixtures/usage/qoder-blob.json holds a blob the WASM itself built,
+# and the two implementations agree on it byte for byte. The identity lives in
+# the OPEN .qoder-app-status.json (email, logged_in); the store holds the
+# tokens. A store that will not decrypt is a broken login, never a crash.
+
+def qoder_decrypt(blob, machine_id):
+    """The login JSON from the `.auth/user` line. Any failure -- not base64,
+    a wrong machine id, a damaged store -- raises ValueError (binascii.Error
+    and UnicodeDecodeError are its subclasses): the caller shows a broken
+    login with the reason."""
+    key = machine_id[:16].encode("utf-8")
+    if len(key) != 16:
+        raise ValueError("machine_id must be at least 16 characters")
+    raw = base64.b64decode(blob.strip(), validate=True)
+    if not raw or len(raw) % 16:
+        raise ValueError("not a qoder blob")
+    return _pkcs7_unpad(_cbc_decrypt(_expand_key(key), raw, key)).decode("utf-8")
+
+
+def qoder_encrypt(plain, machine_id):
+    """The same scheme in reverse; the Nova side round-trips this byte for
+    byte with the WASM (fixtures/usage/qoder-blob.json, task 035)."""
+    key = machine_id[:16].encode("utf-8")
+    if len(key) != 16:
+        raise ValueError("machine_id must be at least 16 characters")
+    return base64.b64encode(_cbc_encrypt(_expand_key(key), _pkcs7_pad(plain.encode("utf-8")), key)).decode("ascii")
+
+
+QODER_BASE_URL = "https://openapi.qoder.sh"
+QODER_USAGE_PATH = "/api/v2/quota/usage"
+QODER_PLAN_PATH = "/api/v2/user/plan"
+
+
+def qoder_base_url():
+    base = (os.environ.get("QODER_BASE_URL") or "").strip().rstrip("/")
+    return base or QODER_BASE_URL
+
+
+def qoder_rows_of(usage):
+    """One row, "quota": the SUM the API reports (totalUsagePercentage, a
+    FRACTION 0..1, usageType "credits" -- the live wire, measured 2026-11-12)
+    against the plan's month; no package breakdown (userQuota, addOnQuota,
+    dedicatedResourcePackages are not read) -- the owner's word (2026-11-12).
+    reset = expiresAt (epoch ms). A reply whose code is not 0 is an error
+    shape, not a usage shape: no rows."""
+    if not isinstance(usage, dict) or usage.get("code", 0) != 0:
+        return
+    pct = usage.get("totalUsagePercentage")
+    if not isinstance(pct, (int, float)):
+        return
+    reset_ms = usage.get("expiresAt")
+    reset = None
+    if isinstance(reset_ms, (int, float)) and reset_ms > 0:
+        # Epoch ms on the wire; a seconds value sits below 1e11 until 5138.
+        reset = int(reset_ms / 1000) if reset_ms > 100_000_000_000 else int(reset_ms)
+    iso = datetime.fromtimestamp(reset, timezone.utc).isoformat() if reset else None
+    yield ("quota", float(pct) * 100.0, None, local_time(iso), reset)
+
+
+def qoder_active_plan(reply):
+    """The plan's name and end as {"name", "ends_at"} (epoch seconds), or
+    None -- the dict shape qoder_plan_line reads. The live wire is FLAT
+    (plan_tier_name, end_date in ms, measured 2026-11-12); an enveloped reply
+    (`data` around the fields) reads the same way."""
+    body = (reply or {}).get("data")
+    if not isinstance(body, dict):
+        body = reply or {}
+    name = body.get("plan_tier_name")
+    if not isinstance(name, str) or not name.strip():
+        return None
+    ends_ms = body.get("end_date")
+    ends = None
+    if isinstance(ends_ms, (int, float)) and ends_ms > 0:
+        ends = int(ends_ms / 1000) if ends_ms > 100_000_000_000 else int(ends_ms)
+    return {"name": name.strip(), "ends_at": ends}
+
+
+def qoder_plan_line(plan, now=None):
+    """The plan sentence under the quota rows -- "plan: NAME, ends Nov 2
+    (2d 4h)"; the card's org slot, the shape ZCode's card already carries."""
+    return zcode_plan_line(plan, now)
+
+
+def qoder_login_of(d, home_label=None):
+    """A Qoder home -> login dict (task 035). The OPEN marker
+    .qoder-app-status.json is the identity's source (email, logged_in); the
+    credentials live in .auth/user, ONE line -- base64 of AES-128-CBC over the
+    login JSON, keyed -- and poured -- by the first 16 characters of
+    .auth/machine_id (the scheme taken off qodercli's own WASM module; the
+    task's research.md). A home that will not open is reported AS A LOGIN with
+    error set, never silently skipped -- another machine's key must be visible.
+    The bearer is `security_oauth_token`, else `access_token`; it is HELD in
+    the dict and printed by nothing."""
+    label = f"Qoder ({short_name(d)})" if home_label else "Qoder"
+    dead = {"name": "qoder", "label": label, "error": None, "token": None}
+    try:
+        status = json.loads((d / ".qoder-app-status.json").read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as e:
+        return {**dead, "error": f"cannot read the status file: {e}"}
+    if not isinstance(status, dict):
+        return {**dead, "error": "the status file is not a JSON object"}
+    email = status.get("email")
+    name = email.strip().lower() if isinstance(email, str) and email.strip() else "qoder"
+    full = f"Qoder ({name})"
+    if home_label:
+        full += f"  [{home_label}]"
+    out = {**dead, "name": name, "label": full}
+    if status.get("logged_in") is False:
+        # A login WITH A REASON, not a missing account: the card shows why
+        # there are no numbers.
+        return {**out, "error": "logged out (the status file says so)"}
+    try:
+        machine_id = (d / ".auth" / "machine_id").read_text(encoding="utf-8").strip()
+        blob = (d / ".auth" / "user").read_text(encoding="utf-8").strip()
+    except OSError as e:
+        return {**out, "error": f"cannot read the store: {e}"}
+    if not machine_id:
+        return {**out, "error": "no machine id (.auth/machine_id is missing)"}
+    try:
+        store = json.loads(qoder_decrypt(blob, machine_id))
+    except (ValueError, TypeError) as e:
+        return {**out, "error": f"the store did not decrypt ({e}): another machine's key?"}
+    if not isinstance(store, dict):
+        return {**out, "error": "the store holds no readable login"}
+    token = store.get("security_oauth_token") or store.get("access_token")
+    if not isinstance(token, str) or not token:
+        return {**out, "error": "the store holds no access token"}
+    return {**out, "token": token}
+
+
+def qoder_logins_of(dirs):
+    """Qoder logins found in dirs, detected BY CONTENT: a dir holding the OPEN
+    marker .qoder-app-status.json (the layout of $QODER_HOME). One account per
+    home."""
+    out = []
+    multi = len(dirs) > 1
+    for d in dirs:
+        if (d / ".qoder-app-status.json").is_file():
+            out.append(qoder_login_of(d, short_name(d) if multi else None))
+    return out
+
+
+def fetch_qoder_usage(login):
+    """The quota reply (totalUsagePercentage against the plan's month). ONE
+    bearer -- the token the store keeps -- on openapi.qoder.sh ($QODER_BASE_URL
+    overrides)."""
+    req = urllib.request.Request(
+        qoder_base_url() + QODER_USAGE_PATH,
+        headers={"Authorization": "Bearer " + login["token"],
+                 "User-Agent": "claude-limits", "Accept": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return json.loads(r.read().decode("utf-8"))
+
+
+def fetch_qoder_plan(login):
+    """The plan's name and end date (best-effort beside the quota, task 035):
+    the same bearer, the same origin."""
+    req = urllib.request.Request(
+        qoder_base_url() + QODER_PLAN_PATH,
+        headers={"Authorization": "Bearer " + login["token"],
+                 "User-Agent": "claude-limits", "Accept": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return json.loads(r.read().decode("utf-8"))
+
+
 # ------------------------------------------------------------------ config --
 
 def load_config(path):
@@ -634,25 +1348,25 @@ def load_config(path):
         return tomllib.load(f)
 
 
-LOGIN_KINDS = ("auto", "claude", "kimi", "codex")
+LOGIN_KINDS = ("auto", "claude", "kimi", "codex", "zcode", "qoder")
 
 
 def kinded(items):
     """Config entries -> (path, kind, children) triples. Every entry MUST be
-    a table { dir = ..., kind = "auto"|"claude"|"kimi"|"codex" }: a bare path is
-    rejected so the kind of login is always a conscious choice, never
+    a table { dir = ..., kind = "auto"|"claude"|"kimi"|"codex"|"zcode"|"qoder" }: a bare
+    path is rejected so the kind of login is always a conscious choice, never
     guessed. children = true stands for every child directory of dir, each
     child keeping the entry's kind."""
     out = []
     for item in items:
         if isinstance(item, str):
             sys.exit(f"accounts entry {item!r} is a bare path; give it a kind: "
-                     "{ dir = \"...\", kind = \"auto\"|\"claude\"|\"kimi\"|\"codex\" }")
+                     "{ dir = \"...\", kind = \"auto\"|\"claude\"|\"kimi\"|\"codex\"|\"zcode\"|\"qoder\" }")
         if isinstance(item, dict) and isinstance(item.get("dir"), str):
             kind = item.get("kind")
             if kind is None:
                 sys.exit(f"accounts entry for {item['dir']!r} has no kind; use "
-                         "{ dir = \"...\", kind = \"auto\"|\"claude\"|\"kimi\"|\"codex\" }")
+                         "{ dir = \"...\", kind = \"auto\"|\"claude\"|\"kimi\"|\"codex\"|\"zcode\"|\"qoder\" }")
             if kind not in LOGIN_KINDS:
                 sys.exit(f"unknown kind {kind!r} for {item['dir']!r} in the config; "
                          f"use one of: {', '.join(LOGIN_KINDS)}")
@@ -662,7 +1376,7 @@ def kinded(items):
             out.append((item["dir"], kind, children))
         else:
             sys.exit(f"cannot read accounts entry {item!r}; use "
-                     "{ dir = \"...\", kind = \"auto\"|\"claude\"|\"kimi\"|\"codex\" }")
+                     "{ dir = \"...\", kind = \"auto\"|\"claude\"|\"kimi\"|\"codex\"|\"zcode\"|\"qoder\" }")
     return out
 
 
@@ -807,7 +1521,8 @@ def iso_epoch(iso):
 
 HISTORY_DAYS = 7          # retention; the forecast needs at most 3 working days
 HISTORY_BACKUPS_KEPT = 7  # daily copies kept alongside the live file
-HISTORY_MIN_SPAN = 1800   # floor; also wait for 5% of the window (spec 01.1 §2.7)
+HISTORY_MIN_SPAN = 300    # floor, five minutes (owner's word 2026-10-31: "уменьши
+                          # до 5 минут"; the old max(30 min, window/20) is gone)
 
 WORK_DAY_NAMES = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 
@@ -972,6 +1687,14 @@ def kind_class_of(kind):
         return "weekly"
     if k.startswith(("month", "30d", "limit_month")):
         return "monthly"
+    if k == "plan usage":
+        # A ZCode plan's burn: the window's length arrives per reply
+        # (zcode_log_window_seconds); the class only picks the forecast mode.
+        return "monthly"
+    if k == "quota":
+        # The Qoder row (task 035): one cumulative percent over the plan's
+        # month (usageType "credits"), reset = expires_at -- the month class.
+        return "monthly"
     return None
 
 
@@ -979,22 +1702,56 @@ def record_sample(history, series, kind, pct, now):
     """One series per LIMIT ROW (weekly_all and weekly_scoped:Fable are different
     quotas and must not mix); the window class only picks the forecast mode.
     The timestamp is UTC ISO 8601 with Z per engineering-conventions/database.md §1 --
-    the file is opened by eyes, and one zone keeps moments from drifting."""
-    if kind_class_of(kind) is None or pct is None:
+    the file is opened by eyes, and one zone keeps moments from drifting.
+    "plan usage" (ZCode) is recorded too although no forecast class exists for
+    it: the sample feeds the statistics views, and the Nova binary's
+    forecast_join reads observed resets from exactly this history (plan 01.8)."""
+    if pct is None:
+        return
+    if kind_class_of(kind) is None and kind != "plan usage":
         return
     mark = datetime.fromtimestamp(now, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     history.setdefault(f"{series}|{kind}", []).append([mark, round(float(pct), 4)])
 
 
+RESET_DROP_POINTS = 5.0  # a cumulative percent falls this much only at a reset
+
+
+def window_start_of(samples, reset_epoch, window, now):
+    """When the current window began: the last sharp DROP in the series (a reset
+    is the only event that takes a cumulative percent down), else the arithmetic
+    reset_epoch - window. The arithmetic guess can land in the FUTURE -- Kimi's
+    month runs 31 days against the 30-day guess, and the server reset the month
+    hours before its own announced resets_at (seen 2026-10-20) -- which leaves no
+    post-reset samples and kills the forecast for a day. The observed drop cannot
+    overshoot: it is only sought within the window span, plus 2 days of slack for
+    an early reset."""
+    start = reset_epoch - window
+    earliest = start - 2 * 86400
+    prev = None
+    for ts, value in samples:
+        if not isinstance(value, (int, float)):
+            prev = None
+            continue
+        if prev is not None and earliest <= ts <= now and prev[1] - value >= RESET_DROP_POINTS:
+            start = ts
+        prev = (ts, value)
+    return min(start, now)
+
+
 def forecast_of(history, series, kind_class, pct, reset_epoch, now, sched, window_seconds=None):
     """The spec 01.1 §2.7 formula: rate over the recent window (last 60 min
     for session, last 3 days for weekly, from the reset when it sits inside),
-    extrapolated over the REMAINING working time to the reset.
+    extrapolated over the REMAINING working time to the reset. The window's
+    start is the reset OBSERVED in the history (window_start_of), not calendar
+    arithmetic from resets_at.
 
     Returns (percent_at_reset, runs_out_epoch | None, rate_per_hour, sample_min)
     or None when the forecast is unavailable: no reset time, reset already
-    past, no samples, or a sample span below max(30 min, ceil(window / 20)).
-    This is a history sufficiency heuristic, not a precision guarantee."""
+    past, no samples, or a sample span below FIVE MINUTES (owner's word
+    2026-10-31: "уменьши до 5 минут"; the old max(30 min, window/20) is gone).
+    A sparse window's rate moves as samples land -- honest noise, not a reason
+    to show nothing."""
     if reset_epoch is None or reset_epoch <= now or pct is None:
         return None
     samples = []
@@ -1009,23 +1766,51 @@ def forecast_of(history, series, kind_class, pct, reset_epoch, now, sched, windo
     window = {"session": 5 * 3600, "weekly": 7 * 86400}.get(kind_class, 30 * 86400)
     if isinstance(window_seconds, (int, float)) and window_seconds > 0:
         window = window_seconds
-    limit_start = reset_epoch - window
-    rate_start = max(now - (3600 if calendar else sched["rate_window_days"] * 86400), limit_start)
-    reset_based = limit_start > rate_start
-    if reset_based:
-        # the current limit window began inside the rate window: percent
-        # counts from the window start (0 right after the reset)
-        rate_start = limit_start
-    rate_start = int(rate_start)      # sample timestamps are whole seconds
-    inside = [s for s in samples if s[0] >= rate_start and s[0] >= limit_start]
-    if not inside:
+    limit_start = window_start_of(samples, reset_epoch, window, now)
+    raw_rate_start = now - (3600 if calendar else sched["rate_window_days"] * 86400)
+    reset_based = limit_start > raw_rate_start   # decided BEFORE the clamp
+    rate_start = int(max(raw_rate_start, limit_start))
+    pre = [s for s in samples if raw_rate_start <= s[0] < limit_start]
+    post = [s for s in samples if s[0] >= limit_start]
+    if not post:
         return None
-    base_pct = 0.0 if reset_based else inside[0][1]
-    span = now - inside[0][0]
-    if span < max(HISTORY_MIN_SPAN, math.ceil(window / 20)):
+    if reset_based and pre:
+        # The current window began inside the rate window, so the pre-reset
+        # tail of the PREVIOUS window is still evidence of this user's pace:
+        # the same person with the same habits, the percent baseline just
+        # restarts at the reset. A saturated tail (the window pinned at
+        # ~100 %, the user throttled rather than slow) carries no pace
+        # information: trim it, keeping the climb up to saturation; and if
+        # nothing but the saturation is observable, the pace is unknown,
+        # not zero -- drop the segment entirely.
+        sat = next((i for i, s in enumerate(pre) if s[1] >= 99), None)
+        if sat is not None:
+            pre = pre[:sat + 1]
+        if len(pre) < 2:
+            pre = None
+    if reset_based and pre:
+        # Count both segments, skipping the baseline jump: usage observed
+        # before the reset (pre[-1] - pre[0]) plus usage since it (pct -
+        # post[0], the first post sample right after 0). The denominator
+        # covers the OBSERVED spans only -- hours between the last pre
+        # sample and the reset are unknown and must not dilute the rate
+        # (with a daemon's 5-min cadence the spans are contiguous).
+        base_pct = post[0][1]
+        first_ts = pre[0][0]
+        used = (float(pre[-1][1]) - float(pre[0][1])) + (float(pct) - float(base_pct))
+        span = now - first_ts
+    else:
+        base_pct = 0.0 if reset_based else post[0][1]
+        first_ts = post[0][0]
+        used = float(pct) - float(base_pct)
+        span = now - first_ts
+    if span < HISTORY_MIN_SPAN:
         return None
-    used = float(pct) - float(base_pct)
-    work = work_between(sched, inside[0][0], now, calendar)
+    if reset_based and pre:
+        work = (work_between(sched, pre[0][0], pre[-1][0], calendar)
+                + work_between(sched, limit_start, now, calendar))
+    else:
+        work = work_between(sched, first_ts, now, calendar)
     if work <= 0:
         # The whole sample window sits outside the working schedule (a fresh
         # history recorded in the evening): usage per WORKING minute is
@@ -1530,17 +2315,252 @@ def snapshot(dirs, paint, bar_style, offline_dir=None, refresher=None, kimi_refr
             print("  " + note)
         else:
             seen_signatures[tuple(sig)] = login["label"]
+    zcode_found = zcode_backoff = 0
+    for login in zcode_logins_of([d for d, kind in dirs if kind in ("auto", "zcode")]):
+        zcode_found += 1
+        series = "zcode:" + login["name"]
+        # No renewal here either: the credentials store holds no refresh token,
+        # and the tool never writes ZCode's files. A rejected login is fixed
+        # by starting ZCode once (plan 01.8).
+        if login["error"]:
+            print("\n" + paint.dead(login["label"]))
+            print("  " + login["error"])
+            # The burn from the app's own log is THIS machine's knowledge, not the
+            # store's: it stands when the store will not open at all (task 036,
+            # enc:v2) -- the bypass is not gated on a successful login.
+            snap = zcode_balance_from_log(login["home"], now) if login.get("home") else None
+            if snap:
+                for kind, pct, sev, reset, _reset_epoch in zcode_log_rows(snap):
+                    if history is not None:
+                        record_sample(history, series, kind, pct, now)
+                    print_limit_row(kind, pct, sev, reset, None, paint, bar_style,
+                                    (sched["warning"], sched["critical"]) if sched else (80, 95),
+                                    thresholds=thresholds)
+                line = zcode_plan_line(zcode_log_plan(snap), now)
+                if line:
+                    print(f"  {line}")
+            continue
+        if offline_dir:
+            fixture = Path(offline_dir) / "zcode.json"
+            try:
+                usage = json.loads(fixture.read_text(encoding="utf-8"))
+            except (FileNotFoundError, json.JSONDecodeError) as e:
+                print("\n" + paint.unknown(login["label"]))
+                print(f"  offline: {e}")
+                continue
+            print("\n" + paint.live(login["label"]))
+            for kind, pct, sev, reset, _reset_epoch in zcode_rows_of(usage):
+                print_limit_row(kind, pct, sev, reset, None, paint, bar_style)
+            plan_fixture = Path(offline_dir) / "zcode-plan.json"
+            try:
+                line = zcode_plan_line(zcode_active_plan(
+                    json.loads(plan_fixture.read_text(encoding="utf-8"))))
+            except (FileNotFoundError, json.JSONDecodeError):
+                line = None
+            if line:
+                print(f"  {line}")
+            continue
+        if next_try is not None and now < next_try.get(series, 0):
+            left = int(next_try[series] - now)
+            print("\n" + paint.unknown(login["label"]))
+            print(f"  still throttled by the server; next try in {left // 60} min {left % 60} s")
+            if last_good is not None and series in last_good:
+                print_stale_rows(last_good[series], paint, bar_style)
+            continue
+        try:
+            usage = fetch_zcode_quota(login)
+        except (urllib.error.HTTPError, OSError, ValueError) as e:
+            if isinstance(e, urllib.error.HTTPError) and e.code == 429:
+                wait = retry_after_of(e)
+                zcode_backoff = max(zcode_backoff, wait or MIN_INTERVAL)
+                if next_try is not None:
+                    next_try[series] = now + (wait or MIN_INTERVAL)
+                asked = f"server asks to wait {wait} s" if wait else "no Retry-After given"
+                head, msg = paint.unknown(login["label"]), f"HTTP 429: too many requests; {asked}"
+            elif isinstance(e, urllib.error.HTTPError) and e.code in (401, 403):
+                head, msg = (paint.dead(login["label"]),
+                             f"HTTP {e.code}: token rejected; start ZCode once to refresh it")
+            elif isinstance(e, urllib.error.HTTPError):
+                body = e.read().decode("utf-8", "replace").strip().replace("\n", " ")
+                head, msg = paint.unknown(login["label"]), f"HTTP {e.code}: {body[:160]}"
+            else:
+                head, msg = paint.unknown(login["label"]), f"network error: {e}"
+            print("\n" + head)
+            print("  " + msg)
+            if last_good is not None and series in last_good:
+                print_stale_rows(last_good[series], paint, bar_style)
+            continue
+        if usage.get("code") not in (0, 200, None):
+            print("\n" + paint.unknown(login["label"]))
+            print(f"  server error code {usage.get('code')}: {(usage.get('msg') or '').strip()[:160]}")
+            if last_good is not None and series in last_good:
+                print_stale_rows(last_good[series], paint, bar_style)
+            continue
+        print("\n" + paint.live(login["label"]))
+        # TWO sources, each its own rows. The PAID plan's windows (5 hours, weekly)
+        # come from the quota endpoint -- asked with the access token the file holds.
+        # The PROMO plan (ZCODE WEEKEND BUILD) comes from the app's log: its meter
+        # (billing/balance) needs a fresh jwt only the running app has, but the app
+        # logs every reply in full -- reading that is local and costs no request
+        # (plan 01.8, amendments of 2026-10-31).
+        good_rows = []
+        for kind, pct, sev, reset, reset_epoch in zcode_quota_rows(usage):
+            if history is not None:
+                record_sample(history, series, kind, pct, now)
+            cls = kind_class_of(kind)
+            fr = (forecast_of(history, f"{series}|{kind}", cls, pct, reset_epoch, now, sched)
+                  if history is not None and sched and sched["enabled"] and cls else None)
+            print_limit_row(kind, pct, sev, reset, fr, paint, bar_style,
+                            (sched["warning"], sched["critical"]) if sched else (80, 95),
+                            thresholds=thresholds)
+            good_rows.append((kind, pct, severity_of(sev, pct, thresholds), reset))
+        log_snapshot = zcode_balance_from_log(login["home"], now)
+        if log_snapshot:
+            for kind, pct, sev, reset, reset_epoch in zcode_log_rows(log_snapshot):
+                if history is not None:
+                    record_sample(history, series, kind, pct, now)
+                # The log payload names the window's length (period_start..period_end)
+                # -- the forecast input the API otherwise withholds.
+                cls = kind_class_of(kind)
+                fr = (forecast_of(history, f"{series}|{kind}", cls, pct, reset_epoch, now, sched,
+                                  window_seconds=zcode_log_window_seconds(log_snapshot))
+                      if history is not None and sched and sched["enabled"] and cls else None)
+                print_limit_row(kind, pct, sev, reset, fr, paint, bar_style,
+                                (sched["warning"], sched["critical"]) if sched else (80, 95),
+                                thresholds=thresholds)
+                good_rows.append((kind, pct, severity_of(sev, pct, thresholds), reset))
+            plan = zcode_log_plan(log_snapshot)
+        else:
+            plan = None
+            try:
+                plan = zcode_active_plan(fetch_zcode_plan(login))
+            except (urllib.error.HTTPError, OSError, ValueError) as e:
+                if isinstance(e, urllib.error.HTTPError) and e.code == 429:
+                    wait = retry_after_of(e)
+                    zcode_backoff = max(zcode_backoff, wait or MIN_INTERVAL)
+                    if next_try is not None:
+                        next_try[series] = max(next_try.get(series, 0), now + (wait or MIN_INTERVAL))
+        if last_good is not None:
+            last_good[series] = (now, good_rows)
+        line = zcode_plan_line(plan, now)
+        if line:
+            print(f"  {line}")
+        else:
+            print("  " + paint.empty("plan: not fetched"))
+    qoder_found = qoder_backoff = 0
+    for login in qoder_logins_of([d for d, kind in dirs if kind in ("auto", "qoder")]):
+        qoder_found += 1
+        series = "qoder:" + login["name"]
+        # No renewal either: the AES store holds no refresh token, and the tool
+        # never writes Qoder's files. A rejected login is fixed by starting
+        # Qoder once (task 035).
+        if login["error"]:
+            print("\n" + paint.dead(login["label"]))
+            print("  " + login["error"])
+            continue
+        if offline_dir:
+            fixture = Path(offline_dir) / "qoder.json"
+            try:
+                usage = json.loads(fixture.read_text(encoding="utf-8"))
+            except (FileNotFoundError, json.JSONDecodeError) as e:
+                print("\n" + paint.unknown(login["label"]))
+                print(f"  offline: {e}")
+                continue
+            print("\n" + paint.live(login["label"]))
+            for kind, pct, sev, reset, _reset_epoch in qoder_rows_of(usage):
+                print_limit_row(kind, pct, sev, reset, None, paint, bar_style)
+            plan_fixture = Path(offline_dir) / "qoder-plan.json"
+            try:
+                line = qoder_plan_line(qoder_active_plan(
+                    json.loads(plan_fixture.read_text(encoding="utf-8"))), now)
+            except (FileNotFoundError, json.JSONDecodeError):
+                line = None
+            if line:
+                print(f"  {line}")
+            continue
+        if next_try is not None and now < next_try.get(series, 0):
+            left = int(next_try[series] - now)
+            print("\n" + paint.unknown(login["label"]))
+            print(f"  still throttled by the server; next try in {left // 60} min {left % 60} s")
+            if last_good is not None and series in last_good:
+                print_stale_rows(last_good[series], paint, bar_style)
+            continue
+        try:
+            usage = fetch_qoder_usage(login)
+        except (urllib.error.HTTPError, OSError, ValueError) as e:
+            if isinstance(e, urllib.error.HTTPError) and e.code == 429:
+                wait = retry_after_of(e)
+                qoder_backoff = max(qoder_backoff, wait or MIN_INTERVAL)
+                if next_try is not None:
+                    next_try[series] = now + (wait or MIN_INTERVAL)
+                asked = f"server asks to wait {wait} s" if wait else "no Retry-After given"
+                head, msg = paint.unknown(login["label"]), f"HTTP 429: too many requests; {asked}"
+            elif isinstance(e, urllib.error.HTTPError) and e.code in (401, 403):
+                head, msg = (paint.dead(login["label"]),
+                             f"HTTP {e.code}: token rejected; start Qoder once to refresh it")
+            elif isinstance(e, urllib.error.HTTPError):
+                body = e.read().decode("utf-8", "replace").strip().replace("\n", " ")
+                head, msg = paint.unknown(login["label"]), f"HTTP {e.code}: {body[:160]}"
+            else:
+                head, msg = paint.unknown(login["label"]), f"network error: {e}"
+            print("\n" + head)
+            print("  " + msg)
+            if last_good is not None and series in last_good:
+                print_stale_rows(last_good[series], paint, bar_style)
+            continue
+        # ONE row, the SUM (the owner's word, 2026-11-12): totalUsagePercentage,
+        # a fraction 0..1, against the plan's month; the reply's non-zero code is
+        # an error shape, not a usage shape -- qoder_rows_of reads nothing from
+        # one, so the gate refuses it BEFORE the live paint, and the stale rows
+        # above stay (the same rule the Nova parser follows).
+        if usage.get("code") not in (0, None):
+            print("\n" + paint.unknown(login["label"]))
+            print(f"  server error code {usage.get('code')}: {(usage.get('msg') or '').strip()[:160]}")
+            if last_good is not None and series in last_good:
+                print_stale_rows(last_good[series], paint, bar_style)
+            continue
+        print("\n" + paint.live(login["label"]))
+        good_rows = []
+        for kind, pct, sev, reset, reset_epoch in qoder_rows_of(usage):
+            if history is not None:
+                record_sample(history, series, kind, pct, now)
+            cls = kind_class_of(kind)
+            fr = (forecast_of(history, f"{series}|{kind}", cls, pct, reset_epoch, now, sched)
+                  if history is not None and sched and sched["enabled"] and cls else None)
+            print_limit_row(kind, pct, sev, reset, fr, paint, bar_style,
+                            (sched["warning"], sched["critical"]) if sched else (80, 95),
+                            thresholds=thresholds)
+            good_rows.append((kind, pct, severity_of(sev, pct, thresholds), reset))
+        # The plan is best-effort beside the quota (task 035): a 429 sets the
+        # same backoff; any other failure just leaves the line out.
+        plan = None
+        try:
+            plan = qoder_active_plan(fetch_qoder_plan(login))
+        except (urllib.error.HTTPError, OSError, ValueError) as e:
+            if isinstance(e, urllib.error.HTTPError) and e.code == 429:
+                wait = retry_after_of(e)
+                qoder_backoff = max(qoder_backoff, wait or MIN_INTERVAL)
+                if next_try is not None:
+                    next_try[series] = max(next_try.get(series, 0), now + (wait or MIN_INTERVAL))
+        if last_good is not None:
+            last_good[series] = (now, good_rows)
+        line = qoder_plan_line(plan, now)
+        if line:
+            print(f"  {line}")
+        else:
+            print("  " + paint.empty("plan: not fetched"))
     if history is not None and history_path and not offline_dir:
         backup_history(history_path, now)
         save_history(history_path, history, now)
-    if not accounts and not kimi_found and not codex_found:
-        print("\nno Claude Code, Kimi Code or Codex logins found in:",
+    if not accounts and not kimi_found and not codex_found and not zcode_found and not qoder_found:
+        print("\nno Claude Code, Kimi Code, Codex, ZCode or Qoder logins found in:",
               ", ".join(str(d) for d, _ in dirs))
     # With per-account gating the throttled login sleeps in next_try, not in
     # the loop's interval -- a fresh 429 no longer stretches everyone else's
     # cycle. Without gating (one-shot), the server-asked backoff is returned.
-    return len(accounts) + kimi_found + codex_found, (0 if next_try is not None
-                                                      else max(backoff, kimi_backoff, codex_backoff))
+    return (len(accounts) + kimi_found + codex_found + zcode_found + qoder_found,
+            (0 if next_try is not None
+             else max(backoff, kimi_backoff, codex_backoff, zcode_backoff, qoder_backoff)))
 
 
 def parse_args(argv):

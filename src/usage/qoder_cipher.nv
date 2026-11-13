@@ -1,0 +1,342 @@
+// qoder_cipher.nv — AES-128-CBC for the Qoder credential store (task 035).
+//
+// Source: qodercli's own WASM module (`qoder_auth_wasm`,
+// `credential_storage_encrypt/decrypt`), measured on synthetic inputs 2026-11-12; the
+// reference's twin lives in `scripts/claude_limits.py` (`qoder_decrypt`/`qoder_encrypt`),
+// and the scheme is written up in the task's `research.md`. The store (`~/.qoder/.auth/
+// user`) is ONE line of text: base64 (STANDARD alphabet) of AES-128-CBC-PKCS7 over the
+// login JSON, the key being the first 16 CHARACTERS of `.auth/machine_id` as ascii
+// bytes -- and the IV is that same key. Nothing random in it: two encryptions of the
+// same text give the same blob, which is why the committed fixture
+// `fixtures/usage/qoder-blob.json` (built by the WASM itself) pins both implementations
+// byte for byte.
+//
+// WHY BY HAND, again: the stdlib has no AES, the project admits no dependencies, and
+// the owner chose (2026-10-31, for ZCode's GCM) a plain implementation over a new C-FFI.
+// Unlike GCM, CBC DECRYPTS with the inverse cipher, so this file carries both
+// directions, the S-box's inverse included. Vectors: FIPS-197 AES-128 and NIST SP
+// 800-38A F.2.1 (CBC) -- here and in `scripts/test_qoder_creds.py`.
+//
+// PURE. The key arrives as the STRING `qoder_key` cuts -- the callers hold machine ids,
+// not byte arrays. Bytes inside are `[]int` (0..255), as in `zcode_cipher.nv`.
+//
+// NO TOKEN LEAVES THIS FILE: the caller decides what a decrypted store means; this file
+// turns bytes into bytes and never prints them.
+
+module usage.qoder_cipher
+
+import std.encoding.base64.{Base64}
+
+/// Why a store did not open. Padding that does not check is the wrong-machine case
+/// (the WASM says "Invalid PKCS5 padding"); shape is everything before that -- not
+/// base64, a short store, a short key.
+export type QoderCipherFail enum
+    | Shape
+    | Padding
+
+export fn QoderCipherFail @to_str() -> str =>
+    match @ {
+        Shape => "malformed input"
+        Padding => "invalid padding"
+    }
+
+// FIPS-197 §3.2.1 -- the SAME table `zcode_cipher.nv` carries, a literal on purpose for
+// the same reason it gives there; its inverse below is derived from it, in Python, once
+// (S and S⁻¹ are mutual permutations; the tests check the round trip anyway).
+const SBOX [256]int = [
+      99, 124, 119, 123, 242, 107, 111, 197,  48,   1, 103,  43, 254, 215, 171, 118,
+     202, 130, 201, 125, 250,  89,  71, 240, 173, 212, 162, 175, 156, 164, 114, 192,
+     183, 253, 147,  38,  54,  63, 247, 204,  52, 165, 229, 241, 113, 216,  49,  21,
+       4, 199,  35, 195,  24, 150,   5, 154,   7,  18, 128, 226, 235,  39, 178, 117,
+       9, 131,  44,  26,  27, 110,  90, 160,  82,  59, 214, 179,  41, 227,  47, 132,
+      83, 209,   0, 237,  32, 252, 177,  91, 106, 203, 190,  57,  74,  76,  88, 207,
+     208, 239, 170, 251,  67,  77,  51, 133,  69, 249,   2, 127,  80,  60, 159, 168,
+      81, 163,  64, 143, 146, 157,  56, 245, 188, 182, 218,  33,  16, 255, 243, 210,
+     205,  12,  19, 236,  95, 151,  68,  23, 196, 167, 126,  61, 100,  93,  25, 115,
+      96, 129,  79, 220,  34,  42, 144, 136,  70, 238, 184,  20, 222,  94,  11, 219,
+     224,  50,  58,  10,  73,   6,  36,  92, 194, 211, 172,  98, 145, 149, 228, 121,
+     231, 200,  55, 109, 141, 213,  78, 169, 108,  86, 244, 234, 101, 122, 174,   8,
+     186, 120,  37,  46,  28, 166, 180, 198, 232, 221, 116,  31,  75, 189, 139, 138,
+     112,  62, 181, 102,  72,   3, 246,  14,  97,  53,  87, 185, 134, 193,  29, 158,
+     225, 248, 152,  17, 105, 217, 142, 148, 155,  30, 135, 233, 206,  85,  40, 223,
+     140, 161, 137,  13, 191, 230,  66, 104,  65, 153,  45,  15, 176,  84, 187,  22,
+]
+
+const INV_SBOX [256]int = [
+      82,   9, 106, 213,  48,  54, 165,  56,
+     191,  64, 163, 158, 129, 243, 215, 251,
+     124, 227,  57, 130, 155,  47, 255, 135,
+      52, 142,  67,  68, 196, 222, 233, 203,
+      84, 123, 148,  50, 166, 194,  35,  61,
+     238,  76, 149,  11,  66, 250, 195,  78,
+       8,  46, 161, 102,  40, 217,  36, 178,
+     118,  91, 162,  73, 109, 139, 209,  37,
+     114, 248, 246, 100, 134, 104, 152,  22,
+     212, 164,  92, 204,  93, 101, 182, 146,
+     108, 112,  72,  80, 253, 237, 185, 218,
+      94,  21,  70,  87, 167, 141, 157, 132,
+     144, 216, 171,   0, 140, 188, 211,  10,
+     247, 228,  88,   5, 184, 179,  69,   6,
+     208,  44,  30, 143, 202,  63,  15,   2,
+     193, 175, 189,   3,   1,  19, 138, 107,
+      58, 145,  17,  65,  79, 103, 220, 234,
+     151, 242, 207, 206, 240, 180, 230, 115,
+     150, 172, 116,  34, 231, 173,  53, 133,
+     226, 249,  55, 232,  28, 117, 223, 110,
+      71, 241,  26, 113,  29,  41, 197, 137,
+     111, 183,  98,  14, 170,  24, 190,  27,
+     252,  86,  62,  75, 198, 210, 121,  32,
+     154, 219, 192, 254, 120, 205,  90, 244,
+      31, 221, 168,  51, 136,   7, 199,  49,
+     177,  18,  16,  89,  39, 128, 236,  95,
+      96,  81, 127, 169,  25, 181,  74,  13,
+      45, 229, 122, 159, 147, 201, 156, 239,
+     160, 224,  59,  77, 174,  42, 245, 176,
+     200, 235, 187,  60, 131,  83, 153,  97,
+      23,  43,   4, 126, 186, 119, 214,  38,
+     225, 105,  20,  99,  85,  33,  12, 125,
+]
+
+/// x * 2 in GF(2^8), as in `zcode_cipher.nv`.
+fn xtime(a int) -> int =>
+    if a >= 128 { ((a * 2) - 256) ^ 0x1B } else { a * 2 }
+
+/// x * 4 and x * 8, the halves the inverse MixColumns multipliers share.
+fn mul4(a int) -> int => xtime(xtime(a))
+
+fn mul8(a int) -> int => xtime(mul4(a))
+
+/// The AES-128 key schedule: 16 bytes -> 176, flat (word = 4 bytes). The ZCode
+/// schedule (`zcode_cipher.expand_key`) is the 32-byte shape of the same loop.
+fn expand_key128(key []int) -> []int {
+    mut w []int = []
+    for b in key { w.push(b) }
+    mut rcon = 1
+    mut i = 16
+    while i < 176 {
+        mut t []int = []
+        for j in 0..4 { t.push(w[i - 4 + j]) }
+        if i % 16 == 0 {
+            // RotWord, SubWord, Rcon -- on the flat word.
+            mut s []int = []
+            for j in 1..4 { s.push(SBOX[t[j]]) }
+            s.push(SBOX[t[0]])
+            s[0] = s[0] ^ rcon
+            rcon = xtime(rcon)
+            t = s
+        }
+        for j in 0..4 { w.push(w[i - 16 + j] ^ t[j]) }
+        i += 4
+    }
+    w
+}
+
+fn add_round_key(mut s []int, w []int, rnd int) -> () {
+    ro base = rnd * 16
+    for k in 0..16 { s[k] = s[k] ^ w[base + k] }
+}
+
+/// ShiftRows over the column-major flat state: byte r of column c at s[4c + r].
+fn shift_rows(s []int) -> []int {
+    mut out []int = []
+    for c in 0..4 {
+        for r in 0..4 {
+            out.push(s[4 * ((c + r) % 4) + r])
+        }
+    }
+    out
+}
+
+fn inv_shift_rows(s []int) -> []int {
+    mut out []int = []
+    for c in 0..4 {
+        for r in 0..4 {
+            out.push(s[4 * ((c - r + 4) % 4) + r])
+        }
+    }
+    out
+}
+
+fn mix_columns(mut s []int) -> () {
+    for c in 0..4 {
+        ro a0 = s[4 * c]
+        ro a1 = s[4 * c + 1]
+        ro a2 = s[4 * c + 2]
+        ro a3 = s[4 * c + 3]
+        s[4 * c] = xtime(a0) ^ (xtime(a1) ^ a1) ^ a2 ^ a3
+        s[4 * c + 1] = a0 ^ xtime(a1) ^ (xtime(a2) ^ a2) ^ a3
+        s[4 * c + 2] = a0 ^ a1 ^ xtime(a2) ^ (xtime(a3) ^ a3)
+        s[4 * c + 3] = (xtime(a0) ^ a0) ^ a1 ^ a2 ^ xtime(a3)
+    }
+}
+
+/// The inverse MixColumns multipliers: 9 = 8+1, 11 = 8+2+1, 13 = 8+4+1,
+/// 14 = 8+4+2 over GF(2^8).
+fn m9(a int) -> int => mul8(a) ^ a
+
+fn m11(a int) -> int => mul8(a) ^ xtime(a) ^ a
+
+fn m13(a int) -> int => mul8(a) ^ mul4(a) ^ a
+
+fn m14(a int) -> int => mul8(a) ^ mul4(a) ^ xtime(a)
+
+/// The inverse MixColumns: rows carry 14/11/13/9, stepped one column over each row.
+fn inv_mix_columns(mut s []int) -> () {
+    for c in 0..4 {
+        ro a0 = s[4 * c]
+        ro a1 = s[4 * c + 1]
+        ro a2 = s[4 * c + 2]
+        ro a3 = s[4 * c + 3]
+        s[4 * c] = m14(a0) ^ m11(a1) ^ m13(a2) ^ m9(a3)
+        s[4 * c + 1] = m9(a0) ^ m14(a1) ^ m11(a2) ^ m13(a3)
+        s[4 * c + 2] = m13(a0) ^ m9(a1) ^ m14(a2) ^ m11(a3)
+        s[4 * c + 3] = m11(a0) ^ m13(a1) ^ m9(a2) ^ m14(a3)
+    }
+}
+
+/// The forward cipher, ten rounds; the encrypt half of the round trip. Exported
+/// for the published vectors, as `zcode_cipher.aes256_block` is for GCM's.
+export fn aes128_block(key []int, block []int) -> []int {
+    ro w = expand_key128(key)
+    aes128_block_with(w, block)
+}
+
+fn aes128_block_with(w []int, block []int) -> []int {
+    mut s []int = []
+    for b in block { s.push(b) }
+    add_round_key(s, w, 0)
+    mut rnd = 1
+    while rnd < 10 {
+        for k in 0..16 { s[k] = SBOX[s[k]] }
+        s = shift_rows(s)
+        mix_columns(s)
+        add_round_key(s, w, rnd)
+        rnd += 1
+    }
+    for k in 0..16 { s[k] = SBOX[s[k]] }
+    s = shift_rows(s)
+    add_round_key(s, w, 10)
+    s
+}
+
+/// The inverse cipher, ten rounds (FIPS-197 §5.3); only CBC needs it.
+export fn aes128_inv_block(key []int, block []int) -> []int {
+    aes128_inv_block_with(expand_key128(key), block)
+}
+
+fn aes128_inv_block_with(w []int, block []int) -> []int {
+    mut s []int = []
+    for b in block { s.push(b) }
+    add_round_key(s, w, 10)
+    mut rnd = 9
+    while rnd > 0 {
+        s = inv_shift_rows(s)
+        for k in 0..16 { s[k] = INV_SBOX[s[k]] }
+        add_round_key(s, w, rnd)
+        inv_mix_columns(s)
+        rnd -= 1
+    }
+    s = inv_shift_rows(s)
+    for k in 0..16 { s[k] = INV_SBOX[s[k]] }
+    add_round_key(s, w, 0)
+    s
+}
+
+fn xor16(a []int, b []int) -> []int {
+    mut out []int = []
+    for k in 0..16 { out.push(a[k] ^ b[k]) }
+    out
+}
+
+fn key_bytes(key str) -> []int {
+    mut out []int = []
+    for b in key.bytes() { out.push(b as int) }
+    out
+}
+
+/// The key the WASM is handed: the first 16 CHARACTERS of the machine id, as the
+/// app's own wrapper cuts it (`t.slice(0, 16)`); the id is an ascii UUID, so bytes
+/// and characters are the same. A shorter id gives a shorter string, and the cipher
+/// refuses it at the Shape check.
+export fn qoder_key(machine_id str) -> str {
+    ro n = machine_id.byte_len().min(16)
+    return machine_id[..n]
+}
+
+fn cbc_encrypt(w []int, data []int, iv []int) -> []int {
+    mut out []int = []
+    mut prev []int = []
+    for b in iv { prev.push(b) }
+    mut i = 0
+    while i < data.len() {
+        mut xored []int = []
+        for k in 0..16 { xored.push(data[i + k] ^ prev[k]) }
+        prev = aes128_block_with(w, xored)
+        for b in prev { out.push(b) }
+        i += 16
+    }
+    out
+}
+
+fn cbc_decrypt(w []int, raw []int, iv []int) -> []int {
+    mut out []int = []
+    mut prev []int = []
+    for b in iv { prev.push(b) }
+    mut i = 0
+    while i < raw.len() {
+        ro blk = raw[i..i + 16]
+        ro dec = aes128_inv_block_with(w, blk)
+        for b in xor16(dec, prev) { out.push(b) }
+        mut nxt []int = []
+        for k in 0..16 { nxt.push(blk[k]) }
+        prev = nxt
+        i += 16
+    }
+    out
+}
+
+/// The store's text opened: base64 (standard alphabet) -> CBC -> the padding
+/// checked and stripped -> the login JSON as text. Any failure is an Err; the
+/// caller shows a broken login, never a traceback.
+export fn qoder_decrypt(blob str, key str) -> Result[str, QoderCipherFail] {
+    ro kb = key_bytes(qoder_key(key))
+    if kb.len() != 16 { return Err(QoderCipherFail.Shape) }
+    ro raw = match Base64.decode(blob) {
+        Err(_) => return Err(QoderCipherFail.Shape)
+        Ok(bytes) => {
+            mut out []int = []
+            for b in bytes { out.push(b as int) }
+            out
+        }
+    }
+    if raw.len() == 0 || raw.len() % 16 != 0 { return Err(QoderCipherFail.Shape) }
+    ro plain = cbc_decrypt(expand_key128(kb), raw, kb)
+    // PKCS7: the last byte names the pad, and all the pad bytes carry it. A wrong
+    // machine id surfaces HERE, exactly where the WASM says "Invalid PKCS5 padding".
+    ro pad = plain[plain.len() - 1]
+    if pad < 1 || pad > 16 { return Err(QoderCipherFail.Padding) }
+    mut n = plain.len() - pad
+    while n < plain.len() {
+        if plain[n] != pad { return Err(QoderCipherFail.Padding) }
+        n += 1
+    }
+    mut kept []u8 = []
+    for k in 0..plain.len() - pad { kept.push(plain[k] as u8) }
+    Ok(kept.to_str_lossy())
+}
+
+/// The same scheme in reverse, for the tests' round trips and the fixture:
+/// PKCS7 -> CBC -> base64. Production only decrypts.
+export fn qoder_encrypt(plain str, key str) -> Result[str, QoderCipherFail] {
+    ro kb = key_bytes(qoder_key(key))
+    if kb.len() != 16 { return Err(QoderCipherFail.Shape) }
+    mut data []int = []
+    for b in plain.bytes() { data.push(b as int) }
+    ro pad = 16 - data.len() % 16
+    mut n = 0
+    while n < pad { data.push(pad); n += 1 }
+    ro raw = cbc_encrypt(expand_key128(kb), data, kb)
+    mut bytes []u8 = []
+    for b in raw { bytes.push(b as u8) }
+    Ok(Base64.encode(bytes))
+}

@@ -1,0 +1,349 @@
+// zcode_home.nv — ZCode (z.ai) logins in a folder (plan 01.8).
+//
+// Source: the reference, `scripts/claude_limits.py` `zcode_login_of` / `zcode_logins_of`,
+// and the ZCode app's own store layout, measured live 2026-10-31. A folder is a ZCode
+// home when `v2/credentials.json` sits under it -- the desktop app's token store, a flat
+// map whose values are plain strings or `enc:v1:IV.TAG.CT` (AES-256-GCM, key = sha256 of
+// the secret; the cipher lives in `usage/zcode_cipher.nv`). ONE ACCOUNT PER HOME, named
+// by the e-mail in the decrypted `oauth:zai:user_info` (lowered), `zcode` when it has none.
+//
+// Detected BY CONTENT, as every home module does: the default home is `~/.zcode`
+// (`$ZCODE_HOME`), but a person may point the tool anywhere. The SECRET is resolved by
+// the caller (it needs the environment, which this module has no effect for) and arrives
+// as an argument.
+//
+// NO TOKEN LEAVES THIS FILE except through the two read functions, for the one caller
+// that sends them -- the same split as `codex_home.read_codex_token`. The store is never
+// written: there is no refresh token in it, so like Codex this is read-only, and a home
+// that will not decrypt is REPORTED (a login with `broken` set) rather than silently
+// skipped -- a wrong `ZCODE_CREDENTIAL_SECRET` must be visible.
+
+module accounts.zcode_home
+
+import std.encoding.json.{Json, JsonValue}
+import std.os.{env, home_dir}
+import claude_limits.usage.kimi.{round_percent}
+import claude_limits.accounts.discover.{Dirs, normalise, under}
+import claude_limits.accounts.login.{Creds, Secret}
+import claude_limits.usage.zcode_cipher.{decrypt_value, fallback_secret, ZcodeCipherFail}
+
+/// One ZCode login: a `v2/credentials.json`. No token in it.
+export type ZcodeLogin value {
+    /// The account's name: the lowered e-mail of `user_info`, or `zcode`.
+    ro name str
+    /// The ZCode home it was found in.
+    ro home str
+    /// The store file itself.
+    ro path str
+    ro has_token bool
+    /// Why the login cannot be asked yet; "" when it can. Shown instead of numbers.
+    ro broken str
+    /// The plan's burn, read from the app's own log (see `zcode_balance`);
+    /// `burn` is false when the log gave nothing usable.
+    ro burn bool
+    /// The percent used (0..100, rounded half to even), the reset in ms (0 = unknown),
+    /// and the plan's name and end -- all from the same log payload.
+    ro burn_pct int
+    ro burn_reset_ms int
+    ro burn_plan_name str
+    ro burn_plan_ends_ms int
+    /// The plan window's own length, `period_end - period_start` from the same
+    /// payload: the forecast's missing input, which the API names HERE and nowhere
+    /// else (plan 01.8).
+    ro burn_span_sec int
+}
+
+fn zcode_login(name str, home str, path str, has_token bool, broken str) -> ZcodeLogin =>
+    { name, home, path, has_token, broken, burn: false, burn_pct: 0, burn_reset_ms: 0,
+      burn_plan_name: "", burn_plan_ends_ms: 0, burn_span_sec: 0 }
+
+fn with_burn(z ZcodeLogin, pct int, reset_ms int, plan_name str, plan_ends_ms int,
+             span_sec int) -> ZcodeLogin =>
+    { name: z.name, home: z.home, path: z.path, has_token: z.has_token, broken: z.broken,
+      burn: true, burn_pct: pct, burn_reset_ms: reset_ms,
+      burn_plan_name: plan_name, burn_plan_ends_ms: plan_ends_ms, burn_span_sec: span_sec }
+
+/// One value of the store, decrypted; "" counts as missing.
+fn read_value(text str, key str, secret str) -> Result[str, str] {
+    ro fields = match Json.parse(text) {
+        Ok(v) => v
+        Err(_) => return Err("credentials: not a JSON object")
+    }
+    ro obj = match fields.object() {
+        Some(o) => o
+        None => return Err("credentials: not a JSON object")
+    }
+    ro raw = match obj.get(key) {
+        None => ""
+        Some(v) => v.str() ?? ""
+    }
+    if raw == "" { return Err("credentials hold no ${key}") }
+    match decrypt_value(raw, secret) {
+        // A newer scheme names itself; the wrong-secret advice would be a lie for it
+        // (task 036).
+        Err(ZcodeCipherFail.UnsupportedScheme(s)) => Err("store uses enc:${s}, not supported yet")
+        Err(e) => Err("credentials will not decrypt (${e.to_str()}): wrong ZCODE_CREDENTIAL_SECRET?")
+        Ok(plain) => Ok(plain)
+    }
+}
+
+/// The lowered e-mail of the decrypted `user_info` JSON; "" when it names none.
+fn email_of(user_info str) -> str {
+    ro fields = Json.parse(user_info).ok() ?? return ""
+    ro obj = fields.object() ?? return ""
+    ro v = match obj.get("email") {
+        None => return ""
+        Some(x) => x.str() ?? ""
+    }
+    v.trim_ascii().to_ascii_lower()
+}
+
+/// Every ZCode login in `dir`; none when it is not a ZCode home. `secret` is the store's
+/// secret, resolved by the caller (`ZCODE_CREDENTIAL_SECRET`, else the fallback string).
+export fn zcode_logins_at(dir str, secret str) Dirs Creds -> []ZcodeLogin {
+    ro home = normalise(dir)
+    ro path = under(under(home, "v2"), "credentials.json")
+    mut out []ZcodeLogin = []
+    if !Dirs.exists(path) { return out }
+    ro text = Creds.read(path)
+    // THE FIRST failure names the cause; later ones are its consequences (a jwt that
+    // will not decrypt says so, not "no access token").
+    mut broken = ""
+    ro jwt = match read_value(text, "zcodejwttoken", secret) {
+        Ok(s) => s
+        Err(why) => { broken = why; "" }
+    }
+    ro access = match read_value(text, "oauth:zai:access_token", secret) {
+        Ok(s) => s
+        Err(why) => { if broken == "" { broken = why }; "" }
+    }
+    ro info = match read_value(text, "oauth:zai:user_info", secret) {
+        Ok(s) => s
+        Err(why) => { if broken == "" { broken = why }; "" }
+    }
+    if broken != "" {
+        // The burn rides even here: the app's log is this machine's knowledge and
+        // needs no token -- a store that will not open still shows its numbers
+        // (task 036, plan 01.8's bypass promoted from the successful login).
+        out.push(with_logged_burn(zcode_login("zcode", home, path, false, broken), home))
+        return out
+    }
+    ro email = email_of(info)
+    if jwt == "" || access == "" || email == "" {
+        out.push(zcode_login("zcode", home, path, false, "credentials hold no complete login (no token or no user email)"))
+        return out
+    }
+    ro login = with_logged_burn(zcode_login(email, home, path, true, ""), home)
+    out.push(login)
+    out
+}
+
+/// The MCP jwt of one ZCode login, for the one caller that sends it in `Authorization`.
+export fn read_zcode_jwt(path str, secret str) Creds -> Option[Secret] {
+    if path == "" { return None }
+    match read_value(Creds.read(path), "zcodejwttoken", secret) {
+        Err(_) => None
+        Ok(s) => Some(Secret.new(s))
+    }
+}
+
+/// The OAuth access token of one ZCode login, for the one caller that sends it in
+/// `X-Bigmodel-Authorization` (the burn endpoint refuses the jwt alone).
+export fn read_zcode_access(path str, secret str) Creds -> Option[Secret] {
+    if path == "" { return None }
+    match read_value(Creds.read(path), "oauth:zai:access_token", secret) {
+        Err(_) => None
+        Ok(s) => Some(Secret.new(s))
+    }
+}
+
+// The platform the way node's `os.platform()` spells it, compile-time.
+#cfg(target_os = "windows")
+fn node_platform() -> str => "win32"
+
+#cfg(target_os = "linux")
+fn node_platform() -> str => "linux"
+
+#cfg(target_os = "macos")
+fn node_platform() -> str => "darwin"
+
+#cfg(target_os = "freebsd")
+fn node_platform() -> str => "freebsd"
+
+/// The store's secret, resolved the way the app does it: env `ZCODE_CREDENTIAL_SECRET`
+/// when set and non-empty, else the deterministic fallback string (plan 01.8). THE ONE
+/// EFFECTFUL PIECE of the ZCode path, so it runs once at the start and rides to the
+/// poll inside `Found`/`Rounds`.
+///
+/// THE LINUX CAVEAT, recorded where it bites: node's `os.userInfo().username` reads the
+/// passwd database, and this falls back through `$USERNAME`/`$USER`/`unknown` -- the
+/// same string on Windows, near-certainly the same on Linux, not proven there (plan
+/// 01.8, "Шифрование").
+export fn zcode_store_secret() Os -> str {
+    ro custom = env("ZCODE_CREDENTIAL_SECRET")
+    match custom {
+        Some(s) => {
+            ro trimmed = s.trim_ascii()
+            if trimmed != "" { return trimmed }
+        }
+        None => {}
+    }
+    // AS THE SYSTEM SPELLS IT: on Windows that is with backslashes, and the app's
+    // fallback secret hashes the string as node's os.homedir() gives it -- no
+    // normalisation (a forward-slashed home made the tag fail, measured live).
+    ro home = match home_dir() {
+        Some(h) => h.display()
+        None => ""
+    }
+    ro user = match env("USERNAME") {
+        Some(u) => u
+        None => match env("USER") {
+            Some(u) => u
+            None => "unknown"
+        }
+    }
+    fallback_secret(node_platform(), home, user)
+}
+
+// ── the burn, from the app's own log (plan 01.8) ─────────────────────────────
+//
+// The real burn lives at `billing/balance` (`data.balances[]`: used_units over
+// total_units); the MCP endpoint's total_usage stays 0 on a start plan, and the
+// balance endpoint needs the FRESH zcode jwt the app keeps in memory -- the
+// file's copy is months old and the server answers `parameter error` to it
+// (measured 2026-10-31). But the running app logs every balance reply IN FULL
+// ("[usage-stats] billing/balance 请求完成 {json}"), a few times a minute.
+// Reading that line is local, costs no request, and holds no token.
+
+fn jv_num(v Option[JsonValue]) -> int =>
+    match v {
+        Some(x) => match x.num() {
+            Some(n) => n as int
+            None => 0
+        }
+        None => 0
+    }
+
+fn jv_str(v Option[JsonValue]) -> str =>
+    match v {
+        Some(x) => match x.str() {
+            Some(s) => s
+            None => ""
+        }
+        None => ""
+    }
+
+fn jv_member(obj JsonValue, key str) -> Option[JsonValue] =>
+    match obj.object() {
+        Some(fields) => fields.get(key)
+        None => None
+    }
+
+/// The last log line of the newest logs that carries a balance payload, as JSON
+/// text; "" when none. Log file names are dates (`2026-10-31.log`), so name
+/// order is time order: later files overwrite earlier finds.
+fn balance_line(logs_dir str) Dirs Creds -> str {
+    mut found = ""
+    for name in Dirs.list(logs_dir) {
+        if !name.ends_with(".log") { continue }
+        ro text = Creds.read(under(logs_dir, name))
+        for line in text.split("\n").collect() {
+            if line.contains("\"balances\"") && line.contains("billing/balance") { found = line }
+        }
+    }
+    found
+}
+
+/// The login with the burn filled from the app's log, when the newest payload
+/// parses and carries a usable total. Every failure simply returns `z` -- the
+/// card then falls back to the polled reading, as it did before this existed.
+fn with_logged_burn(z ZcodeLogin, home str) Dirs Creds -> ZcodeLogin {
+    ro line = balance_line(under(under(home, "v2"), "logs"))
+    if line == "" { return z }
+    ro json_text = match line.split_once("{") {
+        Some((_, rest)) => "{${rest}"
+        None => return z
+    }
+    ro root = match Json.parse(json_text) {
+        Ok(v) => v
+        Err(_) => return z
+    }
+    ro payload = match jv_member(root, "payload") {
+        Some(p) => p
+        None => return z
+    }
+    ro data = match jv_member(payload, "data") {
+        Some(d) => d
+        None => return z
+    }
+    // The active plan with the highest priority; a payload without plans still
+    // yields its balances, named by none.
+    mut best_plan Option[JsonValue] = None
+    mut top = 0
+    if Some(items) = jv_member(data, "plans") {
+        if Some(list) = items.array() {
+            for item in list {
+                if jv_str(jv_member(item, "status")) != "active" { continue }
+                ro priority = jv_num(jv_member(item, "priority"))
+                if best_plan.is_some() && priority <= top { continue }
+                top = priority
+                best_plan = Some(item)
+            }
+        }
+    }
+    ro plan_name = match best_plan {
+        Some(p) => jv_str(jv_member(p, "name"))
+        None => ""
+    }
+    ro plan_id = match best_plan {
+        Some(p) => jv_str(jv_member(p, "plan_id"))
+        None => ""
+    }
+    ro user_plan_id = match best_plan {
+        Some(p) => jv_str(jv_member(p, "user_plan_id"))
+        None => ""
+    }
+    // The balance of that plan; any balance when the payload names none.
+    ro balances = match jv_member(data, "balances") {
+        Some(b) => b
+        None => return z
+    }
+    ro list = match balances.array() {
+        Some(l) => l
+        None => return z
+    }
+    mut pick Option[JsonValue] = None
+    mut pick_priority = 0
+    for b in list {
+        ro bp = jv_str(jv_member(b, "plan_id"))
+        ro bup = jv_str(jv_member(b, "user_plan_id"))
+        if plan_id != "" || user_plan_id != "" {
+            if bp != plan_id && bup != user_plan_id { continue }
+        }
+        ro priority = jv_num(jv_member(b, "priority"))
+        if pick.is_some() && priority <= pick_priority { continue }
+        pick_priority = priority
+        pick = Some(b)
+    }
+    ro b = match pick {
+        Some(x) => x
+        None => return z
+    }
+    ro total = jv_num(jv_member(b, "total_units"))
+    ro used = jv_num(jv_member(b, "used_units"))
+    if total <= 0 || used < 0 { return z }
+    mut reset_s = jv_num(jv_member(b, "expires_at"))
+    if reset_s <= 0 { reset_s = jv_num(jv_member(b, "period_end")) }
+    mut ends_s = match best_plan {
+        Some(p) => jv_num(jv_member(p, "ends_at"))
+        None => 0
+    }
+    if ends_s <= 0 { ends_s = reset_s }
+    // The window's own length: the forecast's missing input (plan 01.8). 0 when the
+    // payload does not carry the period -- the kind's default applies then.
+    ro start_s = jv_num(jv_member(b, "period_start"))
+    mut span_s = 0
+    if start_s > 0 && reset_s > start_s { span_s = reset_s - start_s }
+    with_burn(z, round_percent(used * 10000 / total), reset_s * 1000, plan_name, ends_s * 1000,
+              span_s)
+}

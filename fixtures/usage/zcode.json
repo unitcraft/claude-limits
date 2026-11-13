@@ -1,0 +1,16 @@
+{
+  "_comment": "ZCode (z.ai) usage reply, GET zcode.z.ai/api/v1/mcp/usage (plan 01.8). One quota row: total_usage used/limit, reset next_refresh_at (epoch seconds). Only read by the reference tool in --offline mode when a ZCode login is present.",
+  "code": 0,
+  "msg": "",
+  "data": {
+    "server_time": 1793400000,
+    "next_refresh_at": 1793462400,
+    "level": "max",
+    "total_usage": {
+      "used": 120,
+      "limit": 1000,
+      "remaining": 880
+    }
+  },
+  "logid": "fixture-zcode-usage"
+}
