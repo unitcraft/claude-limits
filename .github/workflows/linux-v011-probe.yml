@@ -173,3 +173,28 @@ jobs:
           "$RUNNER_TEMP/claude-limits" --version
           python3 scripts/smoke_server.py "$RUNNER_TEMP/claude-limits"
           python3 "$GITHUB_WORKSPACE/harness/scripts/smoke_storage_modes.py" "$RUNNER_TEMP/claude-limits"
+
+      - name: Package and verify the Linux release
+        working-directory: ${{ runner.temp }}/claude-limits-overlay
+        run: |
+          set -euo pipefail
+          base=claude-limits-0.1.1-linux-x86_64
+          dist="$RUNNER_TEMP/dist"
+          mkdir -p "$dist/$base" "$RUNNER_TEMP/clean-release"
+          install -m 755 "$RUNNER_TEMP/claude-limits" "$dist/$base/"
+          install -m 644 README.md LICENSE-MIT LICENSE-APACHE claude-limits.example.toml "$dist/$base/"
+          tar -C "$dist" -czf "$dist/$base.tar.gz" "$base"
+          (cd "$dist" && sha256sum "$base.tar.gz" > SHA256SUMS-linux-x86_64.txt && sha256sum -c SHA256SUMS-linux-x86_64.txt)
+          tar -C "$RUNNER_TEMP/clean-release" -xzf "$dist/$base.tar.gz"
+          packaged="$RUNNER_TEMP/clean-release/$base/claude-limits"
+          test "$("$packaged" --version)" = 'claude-limits 0.1.1'
+          python3 scripts/smoke_server.py "$packaged"
+
+      - name: Upload the verified Linux package
+        uses: actions/upload-artifact@v4
+        with:
+          name: claude-limits-0.1.1-linux-x86_64
+          path: |
+            ${{ runner.temp }}/dist/claude-limits-0.1.1-linux-x86_64.tar.gz
+            ${{ runner.temp }}/dist/SHA256SUMS-linux-x86_64.txt
+          if-no-files-found: error
