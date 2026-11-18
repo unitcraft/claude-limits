@@ -92,9 +92,9 @@ fn scenario(conn ConnRef, steps []SeenDir, queries []str) Db -> []str {
         match record_discovery(conn, INST, T0 + n * 1000, [f], [d], ids(n)) {
             Err(e) => out.push("WRITE ${e.message()}")
             Ok(_) => {
-                mut line = ""
-                for q in queries { line = "${line}${one(conn, q)};" }
-                out.push(line)
+                consume sb = StringBuilder.new()
+                for q in queries { sb.append("${one(conn, q)};") }
+                out.push(sb.into_str())
             }
         }
         n += 1
@@ -108,12 +108,13 @@ fn folder_line(conn ConnRef) Db -> str =>
     match read_folder_history(conn, T0 - 3600000, T0 + 3600000 * 24, []) {
         Err(e) => "READ ${e.message()}"
         Ok(f) => {
-            mut s = "dirs=${f.dirs.len()}"
-            for d in f.dirs { s = "${s} ${d.name}" }
-            s = "${s} occ=${f.occupancy.len()}"
-            for o in f.occupancy { s = "${s} ${if o.email == "" { "-" } else { o.email }}:${o.token_state}:${if o.to_ms == 0 { "open" } else { "closed" }}" }
-            s = "${s} windows=${f.rows.windows.len()}"
-            s
+            consume sb = StringBuilder.new()
+            sb.append("dirs=${f.dirs.len()}")
+            for d in f.dirs { sb.append(" ${d.name}") }
+            sb.append(" occ=${f.occupancy.len()}")
+            for o in f.occupancy { sb.append(" ${if o.email == "" { "-" } else { o.email }}:${o.token_state}:${if o.to_ms == 0 { "open" } else { "closed" }}") }
+            sb.append(" windows=${f.rows.windows.len()}")
+            sb.into_str()
         }
     }
 

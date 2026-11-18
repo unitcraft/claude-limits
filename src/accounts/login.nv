@@ -164,11 +164,11 @@ export fn raw_field_int(text str, key str) -> int {
         Some((_, tail)) => tail
         None => return 0
     }
-    mut digits = ""
+    consume sb = StringBuilder.new()
     for ch in from_colon.trim_ascii().chars() {
-        if ch >= '0' && ch <= '9' { digits = "${digits}${ch}" } else { break }
+        if ch >= '0' && ch <= '9' { sb.append(ch) } else { break }
     }
-    digits.to_int() ?? 0
+    sb.into_str().to_int() ?? 0
 }
 
 /// Lower case, trimmed. One e-mail is one account (plan 01 §0), and `Main@Example.com`

@@ -351,14 +351,14 @@ export fn allow_header(endpoints []Endpoint) -> str {
     if has_post { parts.push("POST") }
     if has_put { parts.push("PUT") }
     if has_delete { parts.push("DELETE") }
-    mut out = ""
+    consume sb = StringBuilder.new()
     mut first = true
     for p in parts {
-        if !first { out = "${out}, " }
-        out = "${out}${p}"
+        if !first { sb.append(", ") }
+        sb.append(p)
         first = false
     }
-    out
+    sb
 }
 
 // The per-route 405. Hoisted, param-captured, for the same [M-16] reason as

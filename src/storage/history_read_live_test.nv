@@ -70,29 +70,31 @@ fn history_sql() -> []str {
 
 /// The rows flattened to one comparable line.
 fn line_of(r HistRows) -> str {
-    mut s = "w=${r.windows.len()}"
+    consume sb = StringBuilder.new()
+    sb.append("w=${r.windows.len()}")
     for w in r.windows {
-        s = "${s} ${w.kind}:${w.samples.len()}/${w.locks.len()}"
-        for l in w.locks { s = "${s}[${l.reason} open=${l.to_ms == 0}]" }
+        sb.append(" ${w.kind}:${w.samples.len()}/${w.locks.len()}")
+        for l in w.locks { sb.append("[${l.reason} open=${l.to_ms == 0}]") }
     }
-    s = "${s} a=${r.accounts.len()}"
+    sb.append(" a=${r.accounts.len()}")
     for a in r.accounts {
-        s = "${s} ${a.email} slot=${a.color_slot} p=${a.polls.len()}"
-        for p in a.polls { s = "${s},${p.outcome}" }
+        sb.append(" ${a.email} slot=${a.color_slot} p=${a.polls.len()}")
+        for p in a.polls { sb.append(",${p.outcome}") }
     }
-    s
+    sb
 }
 
 /// The rollup rows the reader brought, per window: `day:peak/avg_hundredths/locked`.
 fn rollup_line(conn ConnRef, from_ms int, to_ms int, accounts []str) Db -> str =>
     match read_history(conn, from_ms, to_ms, accounts) {
         Ok(r) => {
-            mut s = "w=${r.windows.len()}"
+            consume sb = StringBuilder.new()
+            sb.append("w=${r.windows.len()}")
             for w in r.windows {
-                s = "${s} ${w.kind}:"
-                for x in w.rollups { s = "${s}[${x.day}:${x.peak}/${x.avg_hundredths}/${x.locked_sec}]" }
+                sb.append(" ${w.kind}:")
+                for x in w.rollups { sb.append("[${x.day}:${x.peak}/${x.avg_hundredths}/${x.locked_sec}]") }
             }
-            s
+            sb.into_str()
         }
         Err(e) => "READ ${e.message()}"
     }

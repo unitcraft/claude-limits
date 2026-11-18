@@ -36,12 +36,14 @@ import claude_limits.storage.history_rows.{HistSample, HistLock, HistPoll, HistW
 /// that happens to be empty after a lookup.
 export fn history_in_sql(col str, ids []str) -> str {
     if ids.len() == 0 { return "" }
-    mut list = ""
+    consume sb = StringBuilder.new()
+    mut first = true
     for id in ids {
-        if list != "" { list = "${list}, " }
-        list = "${list}${quote(id)}"
+        if !first { sb.append(", ") }
+        sb.append(quote(id))
+        first = false
     }
-    " AND ${col}::VARCHAR IN (${list})"
+    " AND ${col}::VARCHAR IN (${sb.into_str()})"
 }
 
 fn span_sql(col str, from_ms int, to_ms int) -> str =>

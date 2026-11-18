@@ -28,13 +28,13 @@ fn bytes_lit(ns []int) -> []int {
 
 fn hex_of(bs []int) -> str {
     ro digits = "0123456789abcdef"
-    mut out = ""
+    consume sb = StringBuilder.new()
     for b in bs {
         ro hi = digits[b / 16..b / 16 + 1]
         ro lo = digits[b % 16..b % 16 + 1]
-        out = "${out}${hi}${lo}"
+        sb.append("${hi}${lo}")
     }
-    out
+    sb
 }
 
 test "the key is the 16 characters the WASM is handed" {

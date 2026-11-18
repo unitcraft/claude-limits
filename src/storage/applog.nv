@@ -86,41 +86,51 @@ fn secret_shaped(run str) -> bool {
 /// `... rejected ${token}.` must not shelter the token behind the full stop.
 fn judged(run str, after_bearer bool) -> str {
     mut core = run
-    mut dots = ""
+    consume sb = StringBuilder.new()
     loop {
         match core.strip_suffix(".") {
             Some(rest) => {
                 core = rest
-                dots = "${dots}."
+                sb.append(".")
             }
             None => break
         }
     }
+    ro dots = sb.into_str()
     if after_bearer || secret_shaped(core) { return "${REDACTED}${dots}" }
     run
 }
 
 /// `text` with every secret-shaped run replaced, and line breaks turned into spaces.
 export fn scrub(text str) -> str {
-    mut out = ""
-    mut run = ""
+    consume out = StringBuilder.new()
+    consume run = StringBuilder.new()
+    mut run_open = false
     mut after_bearer = false
     for c in text.chars() {
         if is_word(c) {
-            run = "${run}${c}"
+            run.append(c)
+            run_open = true
         } else {
-            if run != "" {
-                out = "${out}${judged(run, after_bearer)}"
+            if run_open {
+                ro piece = run.clone().into_str()
+                out.append(judged(piece, after_bearer))
+                run.truncate(0)
+                run_open = false
                 after_bearer = false
-                run = ""
             }
             // `Bearer <token>`: whatever follows the word is the token.
             if c == ' ' && out.ends_with("Bearer") { after_bearer = true }
             ro plain = if c == '\n' || c == '\r' { ' ' } else { c }
-            out = "${out}${plain}"
+            out.append(plain)
         }
     }
-    if run != "" { out = "${out}${judged(run, after_bearer)}" }
+    if run_open {
+        ro tail = run.into_str()
+        out.append(judged(tail, after_bearer))
+    } else {
+        ro _ = run.into_str()
+    }
     out
 }
 

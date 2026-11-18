@@ -143,11 +143,11 @@ fn forget_on(path str, email str, bk str, compact bool) Io -> str {
                     }
                     Ok(conn) => {
                         ro r = forget(conn, email, inst, now_ms)
-                        mut note = ""
+                        consume note_sb = StringBuilder.new(cap: 16)
                         if bk != "" {
                             match take_backup(conn, bk, now_ms, 5, false, "") {
                                 Ok(_) => ()
-                                Err(e) => { note = "${note} / BACKUP ${e.message()}" }
+                                Err(e) => { note_sb.append(" / BACKUP ${e.message()}") }
                             }
                         }
                         // The copy is the LAST thing done on the open database: see
@@ -155,17 +155,18 @@ fn forget_on(path str, email str, bk str, compact bool) Io -> str {
                         if compact {
                             match write_copy(conn, fresh_path(path), "") {
                                 Ok(_) => ()
-                                Err(e) => { note = "${note} / COPY ${e.message()}" }
+                                Err(e) => { note_sb.append(" / COPY ${e.message()}") }
                             }
                         }
                         Db.close_conn(conn)
                         Db.close_db(db)
-                        if compact && note == "" {
+                        if compact && note_sb.is_empty() {
                             match swap_in_fresh(path) {
                                 Ok(_) => ()
-                                Err(e) => { note = "${note} / SWAP ${e.message()}" }
+                                Err(e) => { note_sb.append(" / SWAP ${e.message()}") }
                             }
                         }
+                        ro note = note_sb.into_str()
                         match r {
                             Ok(Forgot.Forgotten(_)) => "forgotten${note}"
                             Ok(Forgot.NoSuchAccount) => "no such account${note}"

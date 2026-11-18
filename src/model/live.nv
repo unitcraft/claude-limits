@@ -190,11 +190,11 @@ fn minute_of(iso str) -> str => if iso.byte_len() >= 16 { iso[0..16] } else { is
 /// The quota fingerprint of one account: every row's kind, model, percent and reset
 /// minute, in row order; "" when it has no rows. The reference's `sig` (`snapshot`).
 fn signature_of(account_id str, limits []LimitView) -> str {
-    mut s = ""
+    consume sb = StringBuilder.new()
     for l in limits {
-        if l.account_id == account_id { s = "${s}${l.kind}|${l.model}|${l.percent}|${minute_of(l.resets_at)};" }
+        if l.account_id == account_id { sb.append("${l.kind}|${l.model}|${l.percent}|${minute_of(l.resets_at)};") }
     }
-    s
+    sb
 }
 
 /// The shared pool (01.3 §3.3, amendment 2026-09-21; the reference's "same quota

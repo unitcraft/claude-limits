@@ -18,10 +18,10 @@ fn seen(folders []str) Io -> str {
     // (registry 221.1 #1399).
     ro now = NOW
     ro d = with_real_disk(fn() Dirs Creds -> Discovered => discovered(fs, now))
-    mut s = ""
-    for f in d.folders { s = "${s}F ${f.path} ${f.kind};" }
-    for x in d.dirs { s = "${s}D ${x.path} ${x.name} ${x.layout} ${x.email} ${x.token_state};" }
-    s
+    consume sb = StringBuilder.new()
+    for f in d.folders { sb.append("F ${f.path} ${f.kind};") }
+    for x in d.dirs { sb.append("D ${x.path} ${x.name} ${x.layout} ${x.email} ${x.token_state};") }
+    sb
 }
 
 fn all_kinds() Io -> str =>

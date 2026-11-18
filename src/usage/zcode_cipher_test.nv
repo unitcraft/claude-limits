@@ -158,9 +158,9 @@ fn ints16(hex str) -> []int => hex16s(hex)
 
 fn hex_of(xs []int) -> str {
     ro digits = "0123456789abcdef"
-    mut out = ""
+    consume sb = StringBuilder.new()
     for b in xs {
-        out = "${out}${digits[b / 16..b / 16 + 1]}${digits[b % 16..b % 16 + 1]}"
+        sb.append("${digits[b / 16..b / 16 + 1]}${digits[b % 16..b % 16 + 1]}")
     }
-    out
+    sb
 }

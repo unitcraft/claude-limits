@@ -75,14 +75,14 @@ export fn kimi_path() -> str => "/coding/v1/usages"
 
 fn hex16(h u64) -> str {
     ro digits = "0123456789abcdef"
-    mut out = ""
+    consume sb = StringBuilder.new()
     mut shift = 60
     while shift >= 0 {
         ro nib = ((h >> (shift as u64)) & 0xf) as int
-        out = "${out}${digits[nib..nib + 1]}"
+        sb.append(digits[nib..nib + 1])
         shift -= 4
     }
-    out
+    sb
 }
 
 fn fnv_of(text str) -> u64 {

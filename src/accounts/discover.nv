@@ -82,10 +82,11 @@ const CLAUDE_DIR = ".claude"
 /// preserved, while a trailing separator is noise that makes the same folder look
 /// like two different keys.
 export fn normalise(path str) -> str {
-    mut out = ""
+    consume sb = StringBuilder.new()
     for ch in path.chars() {
-        if ch == '\\' { out = "${out}/" } else { out = "${out}${ch}" }
+        if ch == '\\' { sb.append("/") } else { sb.append(ch) }
     }
+    ro out = sb.into_str()
     if out == "/" { return out }
     if out == "//" { return out }
     out.strip_suffix("/") ?? out

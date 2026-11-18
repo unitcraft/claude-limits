@@ -317,14 +317,14 @@ export fn repair_for_start(mut cfg Config) -> []str {
 /// Windows path or a password may contain one, and cutting there would corrupt it
 /// silently, which is the worst way for a settings file to fail.
 fn strip_comment(line str) -> str {
-    mut out = ""
+    consume sb = StringBuilder.new()
     mut in_quotes = false
     for ch in line.chars() {
         if ch == '"' { in_quotes = !in_quotes }
         if ch == '#' && !in_quotes { break }
-        out = "${out}${ch}"
+        sb.append(ch)
     }
-    out.trim_ascii()
+    sb.into_str().trim_ascii()
 }
 
 /// `"text"` -> `text`. Anything not quoted is refused by the caller.
@@ -791,14 +791,16 @@ fn toml_quote(s str) -> str => "\"${s}\""
 
 fn list_of(items []str) -> str {
     if items.len() == 0 { return "[]" }
-    mut out = "["
+    consume sb = StringBuilder.new()
+    sb.append("[")
     mut first = true
     for x in items {
-        if !first { out = "${out}, " }
-        out = "${out}${toml_quote(x)}"
+        if !first { sb.append(", ") }
+        sb.append(toml_quote(x))
         first = false
     }
-    "${out}]"
+    sb.append("]")
+    sb
 }
 
 fn bool_of(b bool) -> str => if b { "true" } else { "false" }
@@ -817,76 +819,77 @@ export fn render(cfg Config) -> str => render_text(cfg, false)
 export fn render_file(cfg Config) -> str => render_text(cfg, true)
 
 fn render_text(cfg Config, secret bool) -> str {
-    mut out = "# claude-limits.toml — settings. Written by the app on Save.\n"
-    out = "${out}schema = ${cfg.schema}\n"
+    consume sb = StringBuilder.new()
+    sb.append("# claude-limits.toml — settings. Written by the app on Save.\n")
+    sb.append("schema = ${cfg.schema}\n")
 
     for path in cfg.folders {
-        out = "${out}\n[[folders]]\npath = ${toml_quote(path)}\n"
+        sb.append("\n[[folders]]\npath = ${toml_quote(path)}\n")
     }
 
-    out = "${out}\n[poll]\n"
-    out = "${out}interval_sec = ${cfg.poll.interval_sec}\n"
-    out = "${out}min_interval_sec = ${cfg.poll.min_interval_sec}\n"
-    out = "${out}request_timeout_sec = ${cfg.poll.request_timeout_sec}\n"
+    sb.append("\n[poll]\n")
+    sb.append("interval_sec = ${cfg.poll.interval_sec}\n")
+    sb.append("min_interval_sec = ${cfg.poll.min_interval_sec}\n")
+    sb.append("request_timeout_sec = ${cfg.poll.request_timeout_sec}\n")
 
-    out = "${out}\n[thresholds]\n"
-    out = "${out}warning = ${cfg.thresholds.warning}\n"
-    out = "${out}critical = ${cfg.thresholds.critical}\n"
+    sb.append("\n[thresholds]\n")
+    sb.append("warning = ${cfg.thresholds.warning}\n")
+    sb.append("critical = ${cfg.thresholds.critical}\n")
 
-    out = "${out}\n[forecast]\n"
-    out = "${out}enabled = ${bool_of(cfg.forecast.enabled)}\n"
-    out = "${out}working_hours = ${bool_of(cfg.forecast.working_hours)}\n"
-    out = "${out}work_days = ${list_of(cfg.forecast.work_days)}\n"
-    out = "${out}work_from = ${toml_quote(cfg.forecast.work_from)}\n"
-    out = "${out}work_to = ${toml_quote(cfg.forecast.work_to)}\n"
-    out = "${out}off_hours_rate = ${cfg.forecast.off_hours_rate}\n"
-    out = "${out}rate_window_days = ${cfg.forecast.rate_window_days}\n"
-    out = "${out}warning = ${cfg.forecast.warning}\n"
-    out = "${out}critical = ${cfg.forecast.critical}\n"
+    sb.append("\n[forecast]\n")
+    sb.append("enabled = ${bool_of(cfg.forecast.enabled)}\n")
+    sb.append("working_hours = ${bool_of(cfg.forecast.working_hours)}\n")
+    sb.append("work_days = ${list_of(cfg.forecast.work_days)}\n")
+    sb.append("work_from = ${toml_quote(cfg.forecast.work_from)}\n")
+    sb.append("work_to = ${toml_quote(cfg.forecast.work_to)}\n")
+    sb.append("off_hours_rate = ${cfg.forecast.off_hours_rate}\n")
+    sb.append("rate_window_days = ${cfg.forecast.rate_window_days}\n")
+    sb.append("warning = ${cfg.forecast.warning}\n")
+    sb.append("critical = ${cfg.forecast.critical}\n")
 
-    out = "${out}\n[server]\n"
-    out = "${out}bind = ${toml_quote(cfg.server.bind)}\n"
-    out = "${out}port = ${cfg.server.port}\n"
-    out = "${out}allow_lan = ${bool_of(cfg.server.allow_lan)}\n"
+    sb.append("\n[server]\n")
+    sb.append("bind = ${toml_quote(cfg.server.bind)}\n")
+    sb.append("port = ${cfg.server.port}\n")
+    sb.append("allow_lan = ${bool_of(cfg.server.allow_lan)}\n")
     // THE TOKEN ONLY FOR THE FILE. `render` serves the tag and every reader, and
     // 01.2 §3.14 wants `***` in the history -- the history takes the OLD file text
     // through `config_file.redact`, never this function's output.
     if secret && cfg.server.access_token != "" {
-        out = "${out}access_token = ${toml_quote(cfg.server.access_token)}\n"
+        sb.append("access_token = ${toml_quote(cfg.server.access_token)}\n")
     }
-    out = "${out}tls_cert = ${toml_quote(cfg.server.tls_cert)}\n"
-    out = "${out}tls_key = ${toml_quote(cfg.server.tls_key)}\n"
+    sb.append("tls_cert = ${toml_quote(cfg.server.tls_cert)}\n")
+    sb.append("tls_key = ${toml_quote(cfg.server.tls_key)}\n")
 
-    out = "${out}\n[ui]\n"
-    out = "${out}accounts_order = ${list_of(cfg.ui.accounts_order)}\n"
-    out = "${out}hidden_accounts = ${list_of(cfg.ui.hidden_accounts)}\n"
-    out = "${out}hide_stale = ${bool_of(cfg.ui.hide_stale)}\n"
-    out = "${out}time_bar = ${bool_of(cfg.ui.time_bar)}\n"
+    sb.append("\n[ui]\n")
+    sb.append("accounts_order = ${list_of(cfg.ui.accounts_order)}\n")
+    sb.append("hidden_accounts = ${list_of(cfg.ui.hidden_accounts)}\n")
+    sb.append("hide_stale = ${bool_of(cfg.ui.hide_stale)}\n")
+    sb.append("time_bar = ${bool_of(cfg.ui.time_bar)}\n")
 
-    out = "${out}\n[widget]\n"
-    out = "${out}enabled = ${bool_of(cfg.widget.enabled)}\n"
-    out = "${out}always_on_top = ${bool_of(cfg.widget.always_on_top)}\n"
-    out = "${out}x = ${cfg.widget.x}\n"
-    out = "${out}y = ${cfg.widget.y}\n"
-    out = "${out}visible = ${bool_of(cfg.widget.visible)}\n"
+    sb.append("\n[widget]\n")
+    sb.append("enabled = ${bool_of(cfg.widget.enabled)}\n")
+    sb.append("always_on_top = ${bool_of(cfg.widget.always_on_top)}\n")
+    sb.append("x = ${cfg.widget.x}\n")
+    sb.append("y = ${cfg.widget.y}\n")
+    sb.append("visible = ${bool_of(cfg.widget.visible)}\n")
 
-    out = "${out}\n[history]\n"
-    out = "${out}keep_days = ${cfg.history.keep_days}\n"
-    out = "${out}rollup_keep_days = ${cfg.history.rollup_keep_days}\n"
-    out = "${out}config_versions_keep = ${cfg.history.config_versions_keep}\n"
+    sb.append("\n[history]\n")
+    sb.append("keep_days = ${cfg.history.keep_days}\n")
+    sb.append("rollup_keep_days = ${cfg.history.rollup_keep_days}\n")
+    sb.append("config_versions_keep = ${cfg.history.config_versions_keep}\n")
 
-    out = "${out}\n[storage]\n"
-    out = "${out}encrypted = ${bool_of(cfg.storage.encrypted)}\n"
-    out = "${out}data_dir = ${toml_quote(cfg.storage.data_dir)}\n"
-    out = "${out}backups_keep = ${cfg.storage.backups_keep}\n"
-    out = "${out}memory_limit = ${toml_quote(cfg.storage.memory_limit)}\n"
-    out = "${out}threads = ${cfg.storage.threads}\n"
+    sb.append("\n[storage]\n")
+    sb.append("encrypted = ${bool_of(cfg.storage.encrypted)}\n")
+    sb.append("data_dir = ${toml_quote(cfg.storage.data_dir)}\n")
+    sb.append("backups_keep = ${cfg.storage.backups_keep}\n")
+    sb.append("memory_limit = ${toml_quote(cfg.storage.memory_limit)}\n")
+    sb.append("threads = ${cfg.storage.threads}\n")
 
-    out = "${out}\n[refresh]\n"
-    out = "${out}enabled = ${bool_of(cfg.refresh.enabled)}\n"
-    out = "${out}all_expired = ${bool_of(cfg.refresh.all_expired)}\n"
-    out = "${out}claude_model = ${toml_quote(cfg.refresh.claude_model)}\n"
-    out = "${out}timeout_sec = ${cfg.refresh.timeout_sec}\n"
-    out = "${out}cooldown_sec = ${cfg.refresh.cooldown_sec}\n"
-    out
+    sb.append("\n[refresh]\n")
+    sb.append("enabled = ${bool_of(cfg.refresh.enabled)}\n")
+    sb.append("all_expired = ${bool_of(cfg.refresh.all_expired)}\n")
+    sb.append("claude_model = ${toml_quote(cfg.refresh.claude_model)}\n")
+    sb.append("timeout_sec = ${cfg.refresh.timeout_sec}\n")
+    sb.append("cooldown_sec = ${cfg.refresh.cooldown_sec}\n")
+    sb
 }

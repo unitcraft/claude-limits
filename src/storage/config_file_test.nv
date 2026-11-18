@@ -46,12 +46,13 @@ const P = "/cfg/claude-limits.toml"
 
 /// A file with a token in it, in the shape a person's file actually has.
 fn with_token() -> str {
-    mut s = "schema = 1\n"
-    s = "${s}\n[server]\n"
-    s = "${s}bind = \"127.0.0.1\"\n"
-    s = "${s}port = 7391\n"
-    s = "${s}access_token = \"super-secret-value\"\n"
-    s
+    consume sb = StringBuilder.new()
+    sb.append("schema = 1\n")
+    sb.append("\n[server]\n")
+    sb.append("bind = \"127.0.0.1\"\n")
+    sb.append("port = 7391\n")
+    sb.append("access_token = \"super-secret-value\"\n")
+    sb
 }
 
 // ── redaction: the pure half, and the one a secret depends on ────────────────

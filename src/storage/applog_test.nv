@@ -245,11 +245,7 @@ test "live: a log path of 200+ characters with Cyrillic in it is written" {
     with Fs = real_fs() { ro _ = remove_dir_all(top.to_path()) }
 }
 
-fn pad_dir(n int) -> str {
-    mut s = ""
-    while s.chars().count() < n { s = "${s}a" }
-    s
-}
+fn pad_dir(n int) -> str => "a".repeat(n)
 
 /// Garbage for the collector to find, as nova's p1857 fixture makes it.
 fn churn(round int) -> int {

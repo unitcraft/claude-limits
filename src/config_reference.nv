@@ -30,6 +30,7 @@
 module claude_limits.config_reference
 
 import std.encoding.json.{Json, JsonValue, ParseJsonError}
+import std.text
 import claude_limits.config.{Config}
 import claude_limits.accounts.discover.{normalise}
 
@@ -66,51 +67,75 @@ fn Cur mut @skip(lines bool) -> () {
 
 /// A JSON string literal of `s`.
 fn json_str(s str) -> str {
-    mut out = "\""
+    consume sb = StringBuilder.new()
+    sb.append("\"")
     for c in s.chars() {
-        if c == '"' { out = "${out}\\\"" }
-        else if c == '\\' { out = "${out}\\\\" }
-        else if c == '\n' { out = "${out}\\n" }
-        else if c == '\t' { out = "${out}\\t" }
-        else if c == '\r' { out = "${out}\\r" }
-        else { out = "${out}${c}" }
+        if c == '"' { sb.append("\\\"") }
+        else if c == '\\' { sb.append("\\\\") }
+        else if c == '\n' { sb.append("\\n") }
+        else if c == '\t' { sb.append("\\t") }
+        else if c == '\r' { sb.append("\\r") }
+        else { sb.append(c) }
     }
-    "${out}\""
+    sb.append("\"")
+    sb
 }
 
 /// A basic string, `"..."`: TOML's escapes are JSON's (`\\ \" \n \t \r \b \f \uXXXX`),
 /// so the body is copied as it stands; `\U` (eight digits) is refused.
 fn Cur mut @basic() -> Result[str, str] {
     @i += 1
-    mut out = "\""
-    while !@done() && @at() != '"' {
+    consume sb = StringBuilder.new()
+    sb.append("\"")
+    mut err = ""
+    mut done = false
+    while !done && !@done() && @at() != '"' {
         ro c = @at()
-        if c == '\n' { return Err(@fail("a string that does not close on its line")) }
-        if c == '\\' {
-            if @i + 1 >= @cs.len() { return Err(@fail("a string that does not close")) }
-            ro e = @cs[@i + 1]
-            if e == 'U' { return Err(@fail("\\U escapes are not read here")) }
-            out = "${out}\\${e}"
-            @i += 2
-            continue
+        if c == '\n' {
+            err = @fail("a string that does not close on its line")
+            done = true
+        } else if c == '\\' {
+            if @i + 1 >= @cs.len() {
+                err = @fail("a string that does not close")
+                done = true
+            } else {
+                ro e = @cs[@i + 1]
+                if e == 'U' {
+                    err = @fail("\\U escapes are not read here")
+                    done = true
+                } else {
+                    sb.append("\\")
+                    sb.append(e)
+                    @i += 2
+                }
+            }
+        } else {
+            sb.append(c)
+            @i += 1
         }
-        out = "${out}${c}"
-        @i += 1
     }
+    ro text = sb.into_str()
+    if err != "" { return Err(err) }
     if @done() { return Err(@fail("a string that does not close")) }
     @i += 1
-    Ok("${out}\"")
+    Ok("${text}\"")
 }
 
 /// A literal string, `'...'`: no escapes at all -- the WSL path's backslashes stay.
 fn Cur mut @literal() -> Result[str, str] {
     @i += 1
-    mut s = ""
+    consume sb = StringBuilder.new()
+    mut err = ""
     while !@done() && @at() != '\'' {
-        if @at() == '\n' { return Err(@fail("a string that does not close on its line")) }
-        s = "${s}${@at()}"
+        if @at() == '\n' {
+            err = @fail("a string that does not close on its line")
+            break
+        }
+        sb.append(@at())
         @i += 1
     }
+    ro s = sb.into_str()
+    if err != "" { return Err(err) }
     if @done() { return Err(@fail("a string that does not close")) }
     @i += 1
     Ok(json_str(s))
@@ -119,16 +144,27 @@ fn Cur mut @literal() -> Result[str, str] {
 fn is_bare(c char) -> bool =>
     (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-'
 
+/// The name inside a `[section]` or `[[array]]` header, up to `]` or the line end.
+fn Cur mut @section_name() -> str {
+    consume sb = StringBuilder.new()
+    while !@done() && @at() != ']' && @at() != '\n' {
+        sb.append(@at())
+        @i += 1
+    }
+    sb.into_str()
+}
+
 /// A key: bare, or quoted. Dotted keys are refused.
 fn Cur mut @key() -> Result[str, str] {
     if @done() { return Err(@fail("a key was expected")) }
     if @at() == '"' { return @basic() }
     if @at() == '\'' { return @literal() }
-    mut k = ""
+    consume sb = StringBuilder.new()
     while !@done() && is_bare(@at()) {
-        k = "${k}${@at()}"
+        sb.append(@at())
         @i += 1
     }
+    ro k = sb.into_str()
     if k == "" { return Err(@fail("a key was expected")) }
     if !@done() && @at() == '.' { return Err(@fail("dotted keys are not read here")) }
     Ok(json_str(k))
@@ -141,22 +177,22 @@ fn Cur mut @value() -> Result[str, str] {
     if c == '\'' { return @literal() }
     if c == '[' {
         @i += 1
-        mut items = ""
+        mut items []str = []
         loop {
             @skip(true)
             if @done() { return Err(@fail("an array that does not close")) }
             if @at() == ']' { break }
             ro v = @value()?
-            items = if items == "" { v } else { "${items},${v}" }
+            items.push(v)
             @skip(true)
             if !@done() && @at() == ',' { @i += 1 }
         }
         @i += 1
-        return Ok("[${items}]")
+        return Ok("[${items.join(",")}]")
     }
     if c == '{' {
         @i += 1
-        mut pairs = ""
+        mut pairs []str = []
         loop {
             @skip(false)
             if @done() { return Err(@fail("an inline table that does not close")) }
@@ -167,18 +203,19 @@ fn Cur mut @value() -> Result[str, str] {
             @i += 1
             @skip(false)
             ro v = @value()?
-            pairs = if pairs == "" { "${k}:${v}" } else { "${pairs},${k}:${v}" }
+            pairs.push("${k}:${v}")
             @skip(false)
             if !@done() && @at() == ',' { @i += 1 }
         }
         @i += 1
-        return Ok("{${pairs}}")
+        return Ok("{${pairs.join(",")}}")
     }
-    mut word = ""
+    consume sb = StringBuilder.new()
     while !@done() && (is_bare(@at()) || @at() == '.' || @at() == '+') {
-        word = "${word}${@at()}"
+        sb.append(@at())
         @i += 1
     }
+    ro word = sb.into_str()
     if word == "true" || word == "false" { return Ok(word) }
     ro digits = word.replace("_", "")
     match digits.to_int() {
@@ -211,21 +248,16 @@ export fn toml_to_json(text str) -> Result[str, str] {
     mut done []Section = []
     mut name = ""
     mut array = false
-    mut pairs = ""
+    mut pairs []str = []
     loop {
         cur.skip(true)
         if cur.done() { break }
         if cur.at() == '[' {
-            done.push(sec(name, array, pairs))
+            done.push(sec(name, array, pairs.join(",")))
             cur.i += 1
             array = !cur.done() && cur.at() == '['
             if array { cur.i += 1 }
-            mut n = ""
-            while !cur.done() && cur.at() != ']' && cur.at() != '\n' {
-                n = "${n}${cur.at()}"
-                cur.i += 1
-            }
-            name = n.trim_ascii()
+            name = cur.section_name().trim_ascii()
             if name == "" || name.contains(".") { return Err(cur.fail("a section this reader does not know: [${name}]")) }
             ro close = if array { 2 } else { 1 }
             mut k = 0
@@ -234,7 +266,7 @@ export fn toml_to_json(text str) -> Result[str, str] {
                 cur.i += 1
                 k += 1
             }
-            pairs = ""
+            pairs = []
             continue
         }
         ro key = cur.key()?
@@ -243,36 +275,43 @@ export fn toml_to_json(text str) -> Result[str, str] {
         cur.i += 1
         cur.skip(false)
         ro v = cur.value()?
-        pairs = if pairs == "" { "${key}:${v}" } else { "${pairs},${key}:${v}" }
+        pairs.push("${key}:${v}")
         cur.skip(false)
         if !cur.done() && cur.at() != '\n' { return Err(cur.fail("one key per line")) }
     }
-    done.push(sec(name, array, pairs))
+    done.push(sec(name, array, pairs.join(",")))
 
     // The root, then each table; `[[name]]` elements gathered into one array, in order.
-    mut out = ""
+    consume sb = StringBuilder.new()
+    mut first = true
     mut arrays []str = []
     for s in done {
         if s.name == "" {
-            if s.pairs != "" { out = if out == "" { s.pairs } else { "${out},${s.pairs}" } }
+            if s.pairs != "" {
+                if !first { sb.append(",") }
+                sb.append(s.pairs)
+                first = false
+            }
         } else if !s.array {
-            ro t = "${json_str(s.name)}:{${s.pairs}}"
-            out = if out == "" { t } else { "${out},${t}" }
+            if !first { sb.append(",") }
+            sb.append("${json_str(s.name)}:{${s.pairs}}")
+            first = false
         } else {
             mut seen = false
             for a in arrays { if a == s.name { seen = true } }
             if !seen {
                 arrays.push(s.name)
-                mut items = ""
+                mut items []str = []
                 for x in done {
-                    if x.array && x.name == s.name { items = if items == "" { "{${x.pairs}}" } else { "${items},{${x.pairs}}" } }
+                    if x.array && x.name == s.name { items.push("{${x.pairs}}") }
                 }
-                ro t = "${json_str(s.name)}:[${items}]"
-                out = if out == "" { t } else { "${out},${t}" }
+                if !first { sb.append(",") }
+                sb.append("${json_str(s.name)}:[${items.join(",")}]")
+                first = false
             }
         }
     }
-    Ok("{${out}}")
+    Ok("{${sb.into_str()}}")
 }
 
 // ── onto the port's settings ─────────────────────────────────────────────────

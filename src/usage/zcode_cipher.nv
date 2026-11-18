@@ -335,11 +335,12 @@ export fn decrypt_v2(value str, key []int) -> Result[str, ZcodeCipherFail] {
     for b in key { bytes.push(b as u8) }
     ro digest = Sha256.hash(bytes)
     ro digits = "0123456789abcdef"
-    mut fingerprint = ""
+    consume sb = StringBuilder.new()
     for k in 0..12 {
         ro b = digest[k] as int
-        fingerprint = "${fingerprint}${digits[b / 16..b / 16 + 1]}${digits[b % 16..b % 16 + 1]}"
+        sb.append("${digits[b / 16..b / 16 + 1]}${digits[b % 16..b % 16 + 1]}")
     }
+    ro fingerprint = sb.into_str()
     if fingerprint != fields[3] { return Err(ZcodeCipherFail.KeyMismatch) }
     decrypt_body(fields[4], key)
 }

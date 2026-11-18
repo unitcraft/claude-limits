@@ -215,14 +215,16 @@ export fn stage_sql(points []RefPoint) -> []str {
     mut out []str = []
     mut i = 0
     while i < points.len() {
-        mut rows = ""
+        consume rows = StringBuilder.new()
         mut j = i
+        mut first = true
         while j < points.len() && j < i + CHUNK {
-            ro r = row_sql(points[j])
-            rows = if rows == "" { r } else { "${rows}, ${r}" }
+            if !first { rows.append(", ") }
+            rows.append(row_sql(points[j]))
+            first = false
             j += 1
         }
-        out.push("INSERT INTO import_pts VALUES ${rows}")
+        out.push("INSERT INTO import_pts VALUES ${rows.into_str()}")
         i = j
     }
     out
@@ -257,14 +259,16 @@ export fn import_sql(points []RefPoint, instance str, now_ms int) -> []str {
     mut out []str = []
     mut i = 0
     while i < points.len() {
-        mut rows = ""
+        consume rows = StringBuilder.new()
         mut j = i
+        mut first = true
         while j < points.len() && j < i + CHUNK {
-            ro r = row_sql(points[j])
-            rows = if rows == "" { r } else { "${rows}, ${r}" }
+            if !first { rows.append(", ") }
+            rows.append(row_sql(points[j]))
+            first = false
             j += 1
         }
-        out.push("INSERT INTO sample (id, created_at, updated_at, created_by, updated_by, window_id, sampled_at, cycle_id, percent, locked) SELECT uuidv7(), ${at}, ${at}, ${by}, ${by}, w.id, v.taken_at, c.id, v.pct, false FROM (VALUES ${rows}) AS v(k, kind, model, taken_at, pct) JOIN account a ON ${account_key_sql("a")} = v.k AND a.deleted_at IS NULL JOIN limit_window w ON w.account_id = a.id AND w.kind = v.kind AND w.model = v.model JOIN window_cycle c ON c.window_id = w.id AND c.starts_at <= v.taken_at AND v.taken_at < c.resets_at WHERE v.taken_at < coalesce((SELECT f.first_at FROM import_first f WHERE f.window_id = w.id), 'infinity'::TIMESTAMPTZ) ON CONFLICT (window_id, sampled_at) DO NOTHING")
+        out.push("INSERT INTO sample (id, created_at, updated_at, created_by, updated_by, window_id, sampled_at, cycle_id, percent, locked) SELECT uuidv7(), ${at}, ${at}, ${by}, ${by}, w.id, v.taken_at, c.id, v.pct, false FROM (VALUES ${rows.into_str()}) AS v(k, kind, model, taken_at, pct) JOIN account a ON ${account_key_sql("a")} = v.k AND a.deleted_at IS NULL JOIN limit_window w ON w.account_id = a.id AND w.kind = v.kind AND w.model = v.model JOIN window_cycle c ON c.window_id = w.id AND c.starts_at <= v.taken_at AND v.taken_at < c.resets_at WHERE v.taken_at < coalesce((SELECT f.first_at FROM import_first f WHERE f.window_id = w.id), 'infinity'::TIMESTAMPTZ) ON CONFLICT (window_id, sampled_at) DO NOTHING")
         i = j
     }
     out

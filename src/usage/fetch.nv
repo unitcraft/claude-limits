@@ -70,54 +70,59 @@ export fn Reply.new(outcome Outcome, usage Usage) -> Reply => { outcome, usage }
 /// in its own header, and keep-alive decisions belong to a client this package does not
 /// have.
 export fn request_for(host str, path str, token str) -> str {
-    mut r = "GET ${path} HTTP/1.1${CRLF}"
-    r = "${r}Host: ${host}${CRLF}"
-    r = "${r}Authorization: Bearer ${token}${CRLF}"
+    consume sb = StringBuilder.new()
+    sb.append("GET ${path} HTTP/1.1${CRLF}")
+    sb.append("Host: ${host}${CRLF}")
+    sb.append("Authorization: Bearer ${token}${CRLF}")
     // The OAuth usage endpoint answers only with this header (the reference sends it,
     // scripts/claude_limits.py:79). Missing until 2026-09-30: no test here had ever
     // spoken to the real endpoint.
-    r = "${r}anthropic-beta: oauth-2025-04-20${CRLF}"
-    r = "${r}Accept: application/json${CRLF}"
-    r = "${r}Connection: close${CRLF}${CRLF}"
-    r
+    sb.append("anthropic-beta: oauth-2025-04-20${CRLF}")
+    sb.append("Accept: application/json${CRLF}")
+    sb.append("Connection: close${CRLF}${CRLF}")
+    sb
 }
 
 /// A form POST (`application/x-www-form-urlencoded`), serialised -- the Kimi token grant
 /// (`kimi_refresh.grant_request`). Here, beside the two GETs, so the requests have one
 /// home and `CRLF` one spelling (`check-duplicate-limits.py` refused a second copy).
 export fn request_form(host str, path str, body str) -> str {
-    mut r = "POST ${path} HTTP/1.1${CRLF}"
-    r = "${r}Host: ${host}${CRLF}"
-    r = "${r}Accept: application/json${CRLF}"
-    r = "${r}Content-Type: application/x-www-form-urlencoded${CRLF}"
-    r = "${r}Content-Length: ${body.byte_len()}${CRLF}"
-    r = "${r}Connection: close${CRLF}${CRLF}"
-    "${r}${body}"
+    consume sb = StringBuilder.new()
+    sb.append("POST ${path} HTTP/1.1${CRLF}")
+    sb.append("Host: ${host}${CRLF}")
+    sb.append("Accept: application/json${CRLF}")
+    sb.append("Content-Type: application/x-www-form-urlencoded${CRLF}")
+    sb.append("Content-Length: ${body.byte_len()}${CRLF}")
+    sb.append("Connection: close${CRLF}${CRLF}")
+    sb.append(body)
+    sb
 }
 
 /// The Kimi Code request: the same shape without Anthropic's beta header, which a
 /// foreign endpoint has no use for (the reference's `fetch_kimi_usage` sends exactly
 /// `Authorization` and `Accept`).
 export fn request_kimi(host str, path str, token str) -> str {
-    mut r = "GET ${path} HTTP/1.1${CRLF}"
-    r = "${r}Host: ${host}${CRLF}"
-    r = "${r}Authorization: Bearer ${token}${CRLF}"
-    r = "${r}Accept: application/json${CRLF}"
-    r = "${r}Connection: close${CRLF}${CRLF}"
-    r
+    consume sb = StringBuilder.new()
+    sb.append("GET ${path} HTTP/1.1${CRLF}")
+    sb.append("Host: ${host}${CRLF}")
+    sb.append("Authorization: Bearer ${token}${CRLF}")
+    sb.append("Accept: application/json${CRLF}")
+    sb.append("Connection: close${CRLF}${CRLF}")
+    sb
 }
 
 /// The Codex request (the reference's `fetch_codex_usage`): the ChatGPT account in a header
 /// and the CLI's own product token, which the endpoint expects.
 export fn request_codex(host str, path str, token str, account_id str) -> str {
-    mut r = "GET ${path} HTTP/1.1${CRLF}"
-    r = "${r}Host: ${host}${CRLF}"
-    r = "${r}Authorization: Bearer ${token}${CRLF}"
-    r = "${r}chatgpt-account-id: ${account_id}${CRLF}"
-    r = "${r}User-Agent: codex_cli_rs/claude-limits${CRLF}"
-    r = "${r}Accept: application/json${CRLF}"
-    r = "${r}Connection: close${CRLF}${CRLF}"
-    r
+    consume sb = StringBuilder.new()
+    sb.append("GET ${path} HTTP/1.1${CRLF}")
+    sb.append("Host: ${host}${CRLF}")
+    sb.append("Authorization: Bearer ${token}${CRLF}")
+    sb.append("chatgpt-account-id: ${account_id}${CRLF}")
+    sb.append("User-Agent: codex_cli_rs/claude-limits${CRLF}")
+    sb.append("Accept: application/json${CRLF}")
+    sb.append("Connection: close${CRLF}${CRLF}")
+    sb
 }
 
 /// The ZCode request (the reference's `fetch_zcode_usage`): TWO bearers are required --
@@ -125,14 +130,15 @@ export fn request_codex(host str, path str, token str, account_id str) -> str {
 /// `X-Bigmodel-Authorization`. The jwt alone answers 400 "parameter error" (measured
 /// 2026-10-31); `request_kimi`'s single-bearer shape is what the plan endpoint uses.
 export fn request_zcode(host str, path str, token str, access str) -> str {
-    mut r = "GET ${path} HTTP/1.1${CRLF}"
-    r = "${r}Host: ${host}${CRLF}"
-    r = "${r}Authorization: Bearer ${token}${CRLF}"
-    r = "${r}X-Bigmodel-Authorization: Bearer ${access}${CRLF}"
-    r = "${r}User-Agent: claude-limits${CRLF}"
-    r = "${r}Accept: application/json${CRLF}"
-    r = "${r}Connection: close${CRLF}${CRLF}"
-    r
+    consume sb = StringBuilder.new()
+    sb.append("GET ${path} HTTP/1.1${CRLF}")
+    sb.append("Host: ${host}${CRLF}")
+    sb.append("Authorization: Bearer ${token}${CRLF}")
+    sb.append("X-Bigmodel-Authorization: Bearer ${access}${CRLF}")
+    sb.append("User-Agent: claude-limits${CRLF}")
+    sb.append("Accept: application/json${CRLF}")
+    sb.append("Connection: close${CRLF}${CRLF}")
+    sb
 }
 
 /// The Qoder request (the reference's `fetch_qoder_usage`): ONE bearer -- the
@@ -140,13 +146,14 @@ export fn request_zcode(host str, path str, token str, access str) -> str {
 /// `X-Bigmodel-Authorization` and no Anthropic beta header: a foreign endpoint
 /// has no use for either.
 export fn request_qoder(host str, path str, token str) -> str {
-    mut r = "GET ${path} HTTP/1.1${CRLF}"
-    r = "${r}Host: ${host}${CRLF}"
-    r = "${r}Authorization: Bearer ${token}${CRLF}"
-    r = "${r}User-Agent: claude-limits${CRLF}"
-    r = "${r}Accept: application/json${CRLF}"
-    r = "${r}Connection: close${CRLF}${CRLF}"
-    r
+    consume sb = StringBuilder.new()
+    sb.append("GET ${path} HTTP/1.1${CRLF}")
+    sb.append("Host: ${host}${CRLF}")
+    sb.append("Authorization: Bearer ${token}${CRLF}")
+    sb.append("User-Agent: claude-limits${CRLF}")
+    sb.append("Accept: application/json${CRLF}")
+    sb.append("Connection: close${CRLF}${CRLF}")
+    sb
 }
 
 /// The status code of a raw response, or 0 when the first line is not a status line.

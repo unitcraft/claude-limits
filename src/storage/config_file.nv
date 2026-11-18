@@ -126,7 +126,7 @@ export fn Saved @ok() -> bool =>
 /// are acceptable for a history row, which exists to answer "what did the settings
 /// say", not "what were the bytes"; neither is acceptable silently.
 export fn redact(text str) -> str {
-    mut out = ""
+    consume sb = StringBuilder.new()
     mut first = true
     for line in text.lines() {
         ro t = line.trim_ascii_start()
@@ -136,10 +136,11 @@ export fn redact(text str) -> str {
         } else {
             line
         }
-        if first { out = keep } else { out = "${out}\n${keep}" }
+        if !first { sb.append("\n") }
+        sb.append(keep)
         first = false
     }
-    out
+    sb
 }
 
 /// Does the file on disk differ from what was read?

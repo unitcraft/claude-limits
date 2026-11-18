@@ -64,8 +64,7 @@ test "a token in an error is masked before it is written" {
 }
 
 test "an error is cut to 200 characters, AFTER the mask" {
-    mut long = ""
-    for _ in 0..30 { long = "${long}0123456789 " }
+    ro long = "0123456789 ".repeat(30)
     ro got = scrub(long)
     mut n = 0
     for _ in got.chars() { n += 1 }
@@ -73,8 +72,7 @@ test "an error is cut to 200 characters, AFTER the mask" {
     // A token at the cut is masked whole, not half-kept: the mask comes first.
     // NOT `near`: windows.h defines `near` (and `far`) as empty macros, and the local
     // reached the C unmangled -- `nova_str near = ...` became `nova_str = ...`.
-    mut filler = ""
-    for _ in 0..19 { filler = "${filler}012345678 " }
+    ro filler = "012345678 ".repeat(19)
     ro cut = scrub("${filler}sk-ant-oat01-SECRET")
     assert(!cut.contains("sk-ant"))
     assert(!cut.contains("SECRET"))

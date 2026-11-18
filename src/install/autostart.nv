@@ -124,14 +124,15 @@ export fn command_line(exe str) -> str => "\"${exe}\" --serve"
 /// its own settings UI -- the entry still runs, and the person cannot see or disable
 /// it, which is worse than not installing one.
 export fn desktop_text(exe str) -> str {
-    mut s = "[Desktop Entry]\n"
-    s = "${s}Type=Application\n"
-    s = "${s}Name=claude-limits\n"
-    s = "${s}Comment=Claude usage limits, local backend\n"
-    s = "${s}Exec=${command_line(exe)}\n"
-    s = "${s}Terminal=false\n"
-    s = "${s}X-GNOME-Autostart-enabled=true\n"
-    s
+    consume sb = StringBuilder.new()
+    sb.append("[Desktop Entry]\n")
+    sb.append("Type=Application\n")
+    sb.append("Name=claude-limits\n")
+    sb.append("Comment=Claude usage limits, local backend\n")
+    sb.append("Exec=${command_line(exe)}\n")
+    sb.append("Terminal=false\n")
+    sb.append("X-GNOME-Autostart-enabled=true\n")
+    sb
 }
 
 /// Where the record lives on `p`, and what it contains.

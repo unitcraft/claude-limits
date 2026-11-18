@@ -46,19 +46,22 @@ fn token_like(word str) -> bool =>
 
 /// `poll.error` as 01.2 §6 wants it written: tokens masked, then at most 200 characters.
 export fn scrub(message str) -> str {
-    mut masked = ""
+    consume out = StringBuilder.new()
+    mut n = 0
     mut first = true
     for w in message.split_ascii_whitespace() {
-        ro piece = if token_like(w) { "***" } else { w }
-        masked = if first { piece } else { "${masked} ${piece}" }
-        first = false
-    }
-    mut out = ""
-    mut n = 0
-    for c in masked.chars() {
         if n == ERROR_CHARS { break }
-        out = "${out}${c}"
-        n += 1
+        if !first {
+            out.append(" ")
+            n += 1
+        }
+        ro piece = if token_like(w) { "***" } else { w }
+        for c in piece.chars() {
+            if n == ERROR_CHARS { break }
+            out.append(c)
+            n += 1
+        }
+        first = false
     }
     out
 }

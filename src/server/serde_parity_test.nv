@@ -185,9 +185,11 @@ fn shortest(n int, digits int) -> str {
     }
     ro sign = if neg { "-" } else { "" }
     if width == 0 { return "${sign}${abs / scale}.0" }
-    mut text = "${frac}"
-    while text.byte_len() < width { text = "0${text}" }
-    "${sign}${abs / scale}.${text}"
+    ro frac_text = "${frac}"
+    consume sb = StringBuilder.new()
+    if frac_text.byte_len() < width { sb.append_repeat("0", width - frac_text.byte_len()) }
+    sb.append(frac_text)
+    "${sign}${abs / scale}.${sb.into_str()}"
 }
 
 /// The retired `dto.pii_path`, verbatim: the references below need it, and the

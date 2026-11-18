@@ -1171,12 +1171,7 @@ fn main() Io Net Time Detach {
                         if named == 0 { return all }
 
                         for acc in group(logins, now_ms) {
-                            mut names = ""
-                            mut first = true
-                            for n in acc.dirs {
-                                if first { names = n } else { names = "${names}, ${n}" }
-                                first = false
-                            }
+                            ro names = acc.dirs.join(", ")
                             all.push(account_header(acc.email, acc.org, names))
 
                             // No live token: the reference prints the note and makes

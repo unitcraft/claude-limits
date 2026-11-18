@@ -30,9 +30,14 @@ fn row(w Window) -> str => "${w.kind}|${w.model}|${w.percent}|${w.resets_at_ms}"
 
 fn rows_of(body str) -> str {
     ro u = parse_kimi(body)
-    mut out = ""
-    for w in u.windows { out = if out == "" { row(w) } else { "${out} ; ${row(w)}" } }
-    out
+    consume sb = StringBuilder.new()
+    mut first = true
+    for w in u.windows {
+        if !first { sb.append(" ; ") }
+        sb.append(row(w))
+        first = false
+    }
+    sb
 }
 
 fn same(label str, want str, got str) -> bool {

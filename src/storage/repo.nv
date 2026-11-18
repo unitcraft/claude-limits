@@ -80,11 +80,13 @@ export type Tick value {
 const EMPTY = ""
 
 export fn quote(s str) -> str {
-    mut out = "'"
+    consume sb = StringBuilder.new()
+    sb.append("'")
     for ch in s.chars() {
-        if ch == '\'' { out = "${out}''" } else { out = "${out}${ch}" }
+        if ch == '\'' { sb.append("''") } else { sb.append(ch) }
     }
-    "${out}'"
+    sb.append("'")
+    sb
 }
 
 /// A moment as DuckDB reads it: microseconds since the epoch, as a TIMESTAMPTZ.
@@ -533,11 +535,12 @@ fn regex_special(ch char) -> bool =>
 /// A regular expression that matches `s` literally: `a+b@x.org` is an ordinary
 /// address, and unescaped its `+` and `.` would match other text -- or miss this one.
 export fn regex_literal(s str) -> str {
-    mut out = ""
+    consume sb = StringBuilder.new()
     for ch in s.chars() {
-        if regex_special(ch) { out = "${out}\\${ch}" } else { out = "${out}${ch}" }
+        if regex_special(ch) { sb.append("\\") }
+        sb.append(ch)
     }
-    out
+    sb
 }
 
 /// The TRANSACTIONS of `forget`, each a list of statements, in order (01.2 §3.15).

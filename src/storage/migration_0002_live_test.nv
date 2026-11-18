@@ -14,6 +14,7 @@ module storage.migration_0002_live_test
 
 import std.fs.{real_fs, read_text, create_dir_all, remove_dir_all}
 import std.os.{real_os, temp_dir}
+import std.text
 import duckdb.db_effect.{Db, ConnRef}
 import duckdb.db_real.{with_real_db}
 import duckdb.errors.{DbOptions}
@@ -122,11 +123,7 @@ fn after_0002(name str, asks []str) Io -> []str {
     })
 }
 
-fn joined(xs []str) -> str {
-    mut out = ""
-    for x in xs { out = if out == "" { x } else { "${out} | ${x}" } }
-    out
-}
+fn joined(xs []str) -> str => xs.join(" | ")
 
 fn same(label str, want []str, got []str) -> bool {
     ro w = joined(want)
