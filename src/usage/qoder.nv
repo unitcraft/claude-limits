@@ -17,12 +17,17 @@
 // `NoWindows` -- the envelope check costs one `num_in` and keeps the contract
 // the fixtures pin.
 //
-// ONE ROW, the SUM of the quota -- no package breakdown (`userQuota`,
-// `addOnQuota`, `dedicatedResourcePackages` are not read), the owner's word
-// (2026-11-12). The window kind is the month one the storage already carries
-// (`monthly`, model ''), so history keeps one series per account; the reset is
-// `expiresAt`. `isQuotaExceeded` is not read: a used-up quota already reads
-// 100.
+// ONE ROW PER PACKAGE, the owner's correction 2026-11-18. The first port summed
+// the quota into a single row (the owner's word 2026-11-12); against the live
+// account that row read 2%, while Qoder's own "My usage" shows Plan Credits
+// 0/20000 (0%) and Add-on Credits 332/400 (83%). `totalUsagePercentage` is the
+// SUM over both pools (332 of 20400), so it hid the package that is nearly
+// spent and the forecast extrapolated the sum to absurdity. `userQuota` and
+// `addOnQuota` therefore become rows of the month kind with models `plan` and
+// `add-on` (two series in history, like Kimi's month total and its code share);
+// `dedicatedResourcePackages` stay unread. A reply that names no package falls
+// back to the old single `totalUsagePercentage` row. The reset is `expiresAt`.
+// `isQuotaExceeded` is not read: a used-up quota already reads 100.
 //
 // The percent is rounded AT PARSE, half to even (`round_percent`), where every
 // other window's percent lives; the reference keeps it a float and rounds at
@@ -61,6 +66,12 @@ fn num_in(obj JsonValue, key str) -> int =>
         None => 0
     }
 
+fn float_in(obj JsonValue, key str) -> Option[f64] =>
+    match member(obj, key) {
+        Some(v) => v.num()
+        None => None
+    }
+
 fn str_in(obj JsonValue, key str) -> str =>
     match member(obj, key) {
         Some(v) => v.str() ?? ""
@@ -95,16 +106,49 @@ fn quota_window(root JsonValue) -> Option[Window] {
     Some(Window.new("monthly", "", round_percent(hund), moment_ms(num_in(root, "expiresAt")), ""))
 }
 
+/// A package's share as the fraction 0..1 the wire names (`percentage`), or
+/// `used / total` when the reply omits the percentage.
+fn fraction_of(pkg JsonValue) -> Option[f64] {
+    if Some(f) = float_in(pkg, "percentage") { return Some(f) }
+    ro used = float_in(pkg, "used")?
+    ro total = float_in(pkg, "total")?
+    if total <= 0.0 { return None }
+    Some(used / total)
+}
+
+/// One credit package: `userQuota` is the plan's own credits, `addOnQuota` the
+/// top-up pool Qoder spends first. Both are month windows ending at `expiresAt`.
+fn package_window(root JsonValue, key str, model str) -> Option[Window] {
+    ro pkg = member(root, key)?
+    if pkg.object().is_none() { return None }
+    ro fraction = fraction_of(pkg)?
+    Some(Window.new("monthly", model, round_percent((fraction * 10000.0) as int), moment_ms(num_in(root, "expiresAt")), ""))
+}
+
+/// The package rows in Qoder's own order (plan, then add-on); the combined
+/// `totalUsagePercentage` only when the reply names no package at all.
+fn quota_windows(root JsonValue) -> []Window {
+    mut out []Window = []
+    if Some(w) = package_window(root, "userQuota", "plan") { out.push(w) }
+    if Some(w) = package_window(root, "addOnQuota", "add-on") { out.push(w) }
+    if out.len() == 0 {
+        match quota_window(root) {
+            Some(w) => out.push(w)
+            None => {}
+        }
+    }
+    out
+}
+
 /// The quota reply, read. `BadJson` when it is not a JSON object; `NoWindows`
 /// when `code != 0` or nothing in it is a quota.
 export fn parse_qoder(body str) -> Usage {
     ro root = Json.parse(body) ?? return Usage.new([], PollOutcome.BadJson, false)
     if root.object().is_none() { return Usage.new([], PollOutcome.BadJson, false) }
     if num_in(root, "code") != 0 { return Usage.new([], PollOutcome.NoWindows, false) }
-    match quota_window(root) {
-        Some(w) => Usage.new([w], PollOutcome.Parsed, false)
-        None => Usage.new([], PollOutcome.NoWindows, false)
-    }
+    ro windows = quota_windows(root)
+    if windows.len() == 0 { return Usage.new([], PollOutcome.NoWindows, false) }
+    Usage.new(windows, PollOutcome.Parsed, false)
 }
 
 /// The plan reply, read into the shared `ZcodePlan` shape (the same shape the

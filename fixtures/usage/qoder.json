@@ -1,12 +1,27 @@
 {
-  "_comment": "Qoder usage reply, GET openapi.qoder.sh/api/v2/quota/usage (task 035). The live wire, measured 2026-11-12 (plan's Э9): a FLAT camelCase object, no envelope; totalUsagePercentage is a FRACTION 0..1 (the inner percentage fields of userQuota/addOnQuota are fractions too), expiresAt is epoch MILLISECONDS. One quota row: the SUM against the plan's month. userQuota, addOnQuota and dedicatedResourcePackages are deliberately absent -- no package breakdown (the owner's word, 2026-11-12). A refusal is a reply carrying code != 0 (not this shape). Only read by the reference tool in --offline mode when a Qoder login is present.",
+  "_comment": "Qoder usage reply, GET openapi.qoder.sh/api/v2/quota/usage (task 035). The live wire, measured 2026-11-18: a FLAT camelCase object, no envelope; totalUsagePercentage and the package percentage fields are FRACTIONS 0..1, expiresAt is epoch MILLISECONDS. One row per package since 2026-11-18 (the owner's correction): userQuota -> 'month (plan)', addOnQuota -> 'month (add-on)'; the summed totalUsagePercentage (332 of 20400) is only the fallback for a reply without packages. dedicatedResourcePackages is absent -- not read. Synthetic values; no personal data. Only read by the reference tool in --offline mode when a Qoder login is present.",
   "userId": "0192f3a4-0000-7000-8000-0000000000c1",
-  "userType": "personal_professional_trial",
+  "userType": "personal_ultra",
   "usageType": "credits",
-  "totalUsagePercentage": 0.42,
+  "totalUsagePercentage": 0.0166,
   "isQuotaExceeded": false,
-  "expiresAt": 1793462400000,
+  "expiresAt": 1797696000000,
   "upgradeUrl": "https://qoder.com/pricing?client=qoder",
   "outerProviders": [],
+  "userQuota": {
+    "total": 20000.0,
+    "used": 0.0,
+    "remaining": 20000.0,
+    "percentage": 0.0,
+    "unit": "credits"
+  },
+  "addOnQuota": {
+    "total": 400.0,
+    "used": 332.0,
+    "remaining": 68.0,
+    "percentage": 0.83,
+    "unit": "credits",
+    "detailUrl": "https://qoder.com/account/usage"
+  },
   "isPlanQuotaProrated": false
 }

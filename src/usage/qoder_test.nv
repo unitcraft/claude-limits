@@ -5,23 +5,26 @@
 // The same numbers were run through the reference's own `qoder_rows_of` and
 // `qoder_active_plan` (`scripts/claude_limits.py`, task 035), which printed:
 //
-//   fixture    quota 42.0      reset 1793462400   (fixtures/usage/qoder.json;
-//                                                 the wire's fraction 0.42)
+//   fixture    month (plan) 0.0, month (add-on) 83.0  (fixtures/usage/qoder.json;
+//                                                 the wire's fractions 0.0 / 0.83)
+//   fallback   quota 42.0      reset 1793462400   (a reply naming no package)
 //   half-even  quota 12.0      reset 1793462400   (a fraction of 0.125)
 //   round-up   quota 14.0      reset 1793462400   (a fraction of 0.135)
 //   no-reset   quota 42.0      reset None
 //   plan       QODER FIXTURE PLAN ends 1795446404   (end_date in ms)
 //
-// The wire was measured against the live host on 2026-11-12 (Э9): the usage
-// reply is a flat camelCase object whose `totalUsagePercentage` is a FRACTION
+// One row PER PACKAGE since 2026-11-18 (the owner's correction: Qoder's "My
+// usage" shows Plan Credits and Add-on Credits separately, and the summed
+// `totalUsagePercentage` hid an 83%-spent add-on). The package-less replies
+// below keep the old single-row fallback; the wire was measured against the
+// live host on 2026-11-12 (Э9): the usage reply is a flat camelCase object
+// whose `totalUsagePercentage` and package `percentage` fields are FRACTIONS
 // 0..1 and whose `expiresAt` is epoch ms; the plan reply is a flat snake_case
 // object, dates in ms too. The reference keeps the percent a float and rounds
 // at print; the port rounds at parse, half to even (`round_percent`), where
-// every other window's percent lives. One row per reply: the SUM of the quota
-// (`totalUsagePercentage`), no package breakdown (`userQuota`, `addOnQuota`,
-// `dedicatedResourcePackages` are not read -- the owner's word, 2026-11-12).
-// The window kind is the month one the storage already carries (`monthly`,
-// model '') -- no new kind.
+// every other window's percent lives. The window kind is the month one the
+// storage already carries (`monthly`), models `plan` / `add-on` / '' -- no new
+// kind. `dedicatedResourcePackages` are not read (the owner's word).
 
 module usage.qoder_test
 
@@ -31,6 +34,10 @@ import claude_limits.usage.fetch.{request_qoder}
 import claude_limits.window.{Window}
 
 const FIXTURE = "{\"userId\": \"0192f3a4-0000-7000-8000-0000000000c1\", \"userType\": \"personal_professional_trial\", \"usageType\": \"credits\", \"totalUsagePercentage\": 0.42, \"isQuotaExceeded\": false, \"expiresAt\": 1793462400000}"
+
+// The live shape measured 2026-11-18: the two packages beside the sum. The sum
+// (332 of 20400) reads 0.0166 -- Qoder's own screen shows the packages instead.
+const PACKAGES = "{\"userId\": \"0192f3a4-0000-7000-8000-0000000000c1\", \"userType\": \"personal_ultra\", \"usageType\": \"credits\", \"totalUsagePercentage\": 0.0166, \"isQuotaExceeded\": false, \"expiresAt\": 1797696000000, \"userQuota\": {\"total\": 20000.0, \"used\": 0.0, \"remaining\": 20000.0, \"percentage\": 0.0, \"unit\": \"credits\"}, \"addOnQuota\": {\"total\": 400.0, \"used\": 332.0, \"remaining\": 68.0, \"percentage\": 0.83, \"unit\": \"credits\"}}"
 
 fn half_even() -> str =>
     "{\"totalUsagePercentage\": 0.125, \"expiresAt\": 1793462400000}"
@@ -52,9 +59,32 @@ fn first_row(body str) -> str {
     row(u.windows[0])
 }
 
+fn all_rows(body str) -> str {
+    ro u = parse_qoder(body)
+    consume sb = StringBuilder.new()
+    for w in u.windows { sb.append("${row(w)};") }
+    sb
+}
+
 fn same(label str, want str, got str) -> bool {
     if want == got { return true }
     panic("${label}: want [${want}], got [${got}]")
+}
+
+test "the package reply: plan 0 and add-on 83 as TWO month rows, not the summed 2" {
+    assert(same("packages", "monthly|plan|0|1797696000000;monthly|add-on|83|1797696000000;", all_rows(PACKAGES)))
+}
+
+test "a package without `percentage` reads used / total" {
+    ro body = "{\"expiresAt\": 1793462400000, \"userQuota\": {\"total\": 300, \"used\": 100}}"
+    assert(same("used/total", "monthly|plan|33|1793462400000;", all_rows(body)))
+}
+
+test "one package alone is one row; a zero total with no percentage is no row" {
+    ro only_addon = "{\"expiresAt\": 1793462400000, \"addOnQuota\": {\"percentage\": 0.5}}"
+    assert(same("only add-on", "monthly|add-on|50|1793462400000;", all_rows(only_addon)))
+    ro zero = "{\"expiresAt\": 1793462400000, \"userQuota\": {\"total\": 0, \"used\": 0}}"
+    assert(parse_qoder(zero).outcome == PollOutcome.NoWindows)
 }
 
 test "the fixture: one quota row, the fraction 0.42 as 42 percent, the reset already in ms" {

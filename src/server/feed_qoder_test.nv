@@ -70,13 +70,13 @@ type Asked {
 fn Asked.new() -> Asked => { n: 0 }
 
 fn quota_reply() -> str =>
-    // The live wire's shape (measured 2026-11-12): flat camelCase, the percent a
-    // FRACTION 0..1, the reset in epoch ms.
-    "HTTP/1.1 200 OK${EOL}Content-Type: application/json${EOL}${EOL}{\"userId\":\"0192f3a4-0000-7000-8000-0000000000c1\",\"userType\":\"personal_professional_trial\",\"usageType\":\"credits\",\"totalUsagePercentage\":0.42,\"isQuotaExceeded\":false,\"expiresAt\":1793462400000}"
+    // The live wire's shape (measured 2026-11-18): flat camelCase, the package
+    // percentages FRACTIONS 0..1, the reset in epoch ms.
+    "HTTP/1.1 200 OK${EOL}Content-Type: application/json${EOL}${EOL}{\"userId\":\"0192f3a4-0000-7000-8000-0000000000c1\",\"userType\":\"personal_ultra\",\"usageType\":\"credits\",\"totalUsagePercentage\":0.0166,\"isQuotaExceeded\":false,\"expiresAt\":1797696000000,\"userQuota\":{\"total\":20000.0,\"used\":0.0,\"percentage\":0.0,\"unit\":\"credits\"},\"addOnQuota\":{\"total\":400.0,\"used\":332.0,\"percentage\":0.83,\"unit\":\"credits\"}}"
 
 fn plan_reply() -> str =>
     // The live wire's shape (measured 2026-11-12): flat snake_case, dates in ms.
-    "HTTP/1.1 200 OK${EOL}Content-Type: application/json${EOL}${EOL}{\"user_type\":\"personal_professional_trial\",\"plan_tier_name\":\"QODER TEST PLAN\",\"is_personal_version\":true,\"is_paid_plan\":false,\"end_date\":1793462400000}"
+    "HTTP/1.1 200 OK${EOL}Content-Type: application/json${EOL}${EOL}{\"user_type\":\"personal_professional_trial\",\"plan_tier_name\":\"QODER TEST PLAN\",\"is_personal_version\":true,\"is_paid_plan\":false,\"end_date\":1797696000000}"
 
 fn qd_endpoint[T](mut a Asked, raw str, body fn() Http PollLog Creds -> T) -> T =>
     with Http = effect Http {
@@ -140,7 +140,7 @@ test "a store that will not decrypt is a broken login, not a missing account" {
 
 // ── one round ────────────────────────────────────────────────────────────────
 
-test "a live Qoder login is asked TWICE -- the quota, then the plan; the month row and the plan line arrive" {
+test "a live Qoder login is asked TWICE -- the quota, then the plan; both package rows and the plan line arrive" {
     mut a = Asked.new()
     ro f = qd_found("/qd/home")
     ro now = NOW_MS
@@ -148,16 +148,20 @@ test "a live Qoder login is asked TWICE -- the quota, then the plan; the month r
     // TWO requests: the quota, then the plan (best-effort after a parsed quota).
     assert(a.n == 2)
     assert(same("state", "ok", k[0].state.to_str()))
-    assert(k[0].windows.len() == 1)
+    assert(k[0].windows.len() == 2)
     assert(same("kind", "monthly", k[0].windows[0].kind))
-    assert(same("pct", "42", k[0].windows[0].percent.to_str()))
-    assert(same("reset", "1793462400000", k[0].windows[0].resets_at_ms.to_str()))
+    assert(same("model", "plan", k[0].windows[0].model))
+    assert(same("pct", "0", k[0].windows[0].percent.to_str()))
+    assert(same("kind", "monthly", k[0].windows[1].kind))
+    assert(same("model", "add-on", k[0].windows[1].model))
+    assert(same("pct", "83", k[0].windows[1].percent.to_str()))
+    assert(same("reset", "1797696000000", k[0].windows[1].resets_at_ms.to_str()))
     assert(same("provider", "qoder", k[0].provider))
     assert(same("email", "", k[0].email))
     assert(same("name", "me@example.com", k[0].display_name))
     ro plan = k[0].plan ?? panic("no plan on the qoder card")
     assert(plan.name == "QODER TEST PLAN")
-    assert(plan.ends_at_ms == 1793462400000)
+    assert(plan.ends_at_ms == 1797696000000)
     assert(k[0].org == "")
 }
 

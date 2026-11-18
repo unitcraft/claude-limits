@@ -33,8 +33,9 @@ Each card is one account; each row is one limit window.
 
 The `session 5h` row is the five-hour window, `all 7d` the weekly window over all
 models, `Opus 7d` a weekly window for one model, `month` the monthly window of Kimi Code
-and of a free Codex plan, `plan usage` the burn window of a ZCode plan, `quota`
-the monthly sum of a Qoder plan.
+and of a free Codex plan, `plan usage` the burn window of a ZCode plan,
+`month (plan)` / `month (add-on)` the two credit pools of a Qoder plan (`quota`
+is the summed fallback when Qoder names no pools).
 
 ## Why
 
@@ -363,8 +364,10 @@ base64 over AES-128-CBC, keyed by the first 16 characters of
 `.auth/machine_id` -- the scheme taken off Qoder CLI's own WASM module. The
 script decrypts the store in memory and never writes it; no refresh token
 exists in the store, so a rejected login is reported with advice to start
-Qoder once. One `quota` row -- the total against the plan's month, no package
-breakdown -- and a plan line (name and end date) are shown.
+Qoder once. Two `month (plan)` / `month (add-on)` rows -- the plan's own credits
+and the top-up pool Qoder spends first, the way Qoder's "My usage" shows them --
+and a plan line (name and end date) are shown. A reply that names no pool falls
+back to one `quota` row carrying Qoder's summed percentage.
 
 A path with non-ASCII characters (a Cyrillic user name, say) works since the Nova
 runtime reads the command line and the environment as UTF-8 (nova `2488a47be`; the

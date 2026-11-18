@@ -1270,16 +1270,17 @@ def qoder_base_url():
 
 
 def qoder_rows_of(usage):
-    """One row, "quota": the SUM the API reports (totalUsagePercentage, a
-    FRACTION 0..1, usageType "credits" -- the live wire, measured 2026-11-12)
-    against the plan's month; no package breakdown (userQuota, addOnQuota,
-    dedicatedResourcePackages are not read) -- the owner's word (2026-11-12).
-    reset = expiresAt (epoch ms). A reply whose code is not 0 is an error
-    shape, not a usage shape: no rows."""
+    """One row per PACKAGE (owner's correction, 2026-11-18): Qoder's own
+    "My usage" shows Plan Credits and Add-on Credits separately, while
+    `totalUsagePercentage` is the sum over both pools (332 of 20400 reads
+    0.02) -- it hid an 83%-spent add-on. `userQuota` and `addOnQuota` therefore
+    yield the rows "month (plan)" and "month (add-on)" (a fraction 0..1 each,
+    the inner `percentage`, else used/total) against the plan's month; the
+    models keep two forecast series, like Kimi's month total and its code
+    share. A reply that names no package falls back to the old single "quota"
+    row from totalUsagePercentage. reset = expiresAt (epoch ms). A reply whose
+    code is not 0 is an error shape, not a usage shape: no rows."""
     if not isinstance(usage, dict) or usage.get("code", 0) != 0:
-        return
-    pct = usage.get("totalUsagePercentage")
-    if not isinstance(pct, (int, float)):
         return
     reset_ms = usage.get("expiresAt")
     reset = None
@@ -1287,6 +1288,24 @@ def qoder_rows_of(usage):
         # Epoch ms on the wire; a seconds value sits below 1e11 until 5138.
         reset = int(reset_ms / 1000) if reset_ms > 100_000_000_000 else int(reset_ms)
     iso = datetime.fromtimestamp(reset, timezone.utc).isoformat() if reset else None
+    found = False
+    for key, kind in (("userQuota", "month (plan)"), ("addOnQuota", "month (add-on)")):
+        pkg = usage.get(key)
+        if not isinstance(pkg, dict):
+            continue
+        pct = pkg.get("percentage")
+        if not isinstance(pct, (int, float)):
+            used, total = pkg.get("used"), pkg.get("total")
+            if not (isinstance(used, (int, float)) and isinstance(total, (int, float)) and total > 0):
+                continue
+            pct = used / total
+        found = True
+        yield (kind, float(pct) * 100.0, None, local_time(iso), reset)
+    if found:
+        return
+    pct = usage.get("totalUsagePercentage")
+    if not isinstance(pct, (int, float)):
+        return
     yield ("quota", float(pct) * 100.0, None, local_time(iso), reset)
 
 
@@ -1757,8 +1776,10 @@ def kind_class_of(kind):
         # (zcode_log_window_seconds); the class only picks the forecast mode.
         return "monthly"
     if k == "quota":
-        # The Qoder row (task 035): one cumulative percent over the plan's
-        # month (usageType "credits"), reset = expires_at -- the month class.
+        # The Qoder fallback row for a reply without packages (task 035): one
+        # cumulative percent over the plan's month (usageType "credits"),
+        # reset = expires_at -- the month class. The current package rows are
+        # "month (plan)" / "month (add-on)" and ride the month prefix above.
         return "monthly"
     return None
 
@@ -2573,11 +2594,13 @@ def snapshot(dirs, paint, bar_style, offline_dir=None, refresher=None, kimi_refr
             if last_good is not None and series in last_good:
                 print_stale_rows(last_good[series], paint, bar_style)
             continue
-        # ONE row, the SUM (the owner's word, 2026-11-12): totalUsagePercentage,
-        # a fraction 0..1, against the plan's month; the reply's non-zero code is
-        # an error shape, not a usage shape -- qoder_rows_of reads nothing from
-        # one, so the gate refuses it BEFORE the live paint, and the stale rows
-        # above stay (the same rule the Nova parser follows).
+        # ONE row per PACKAGE (owner's correction, 2026-11-18): Plan Credits and
+        # Add-on Credits as Qoder shows them, each a fraction of its own pool;
+        # the summed totalUsagePercentage is only the fallback for a reply
+        # without packages. A non-zero code is an error shape, not a usage
+        # shape -- qoder_rows_of reads nothing from one, so the gate refuses
+        # it BEFORE the live paint, and the stale rows above stay (the same
+        # rule the Nova parser follows).
         if usage.get("code") not in (0, None):
             print("\n" + paint.unknown(login["label"]))
             print(f"  server error code {usage.get('code')}: {(usage.get('msg') or '').strip()[:160]}")

@@ -69,22 +69,36 @@ class PrimitiveVectorTest(unittest.TestCase):
 
 
 class RowsTest(unittest.TestCase):
-    def test_fixture_row(self):
+    def test_fixture_rows_are_the_two_packages(self):
         usage = json.loads((ref.REPO_ROOT / "fixtures" / "usage" / "qoder.json")
                            .read_text(encoding="utf-8"))
         rows = list(ref.qoder_rows_of(usage))
-        self.assertEqual(len(rows), 1)
-        kind, pct, sev, reset, epoch = rows[0]
-        self.assertEqual(kind, "quota")
-        self.assertAlmostEqual(pct, 42.0)
-        self.assertIsNone(sev)
-        self.assertEqual(epoch, 1793462400)
-        self.assertIn("(", reset)   # "when (time left)" shape of every row
+        self.assertEqual([r[0] for r in rows], ["month (plan)", "month (add-on)"])
+        plan, addon = rows
+        self.assertAlmostEqual(plan[1], 0.0)
+        self.assertAlmostEqual(addon[1], 83.0)
+        self.assertIsNone(plan[2])
+        self.assertIn("(", plan[3])   # "when (time left)" shape of every row
+        self.assertEqual(plan[4], 1797696000)
+        self.assertEqual(addon[4], 1797696000)
+
+    def test_a_package_without_percentage_reads_used_over_total(self):
+        rows = list(ref.qoder_rows_of({"expiresAt": 1793462400000,
+                                       "userQuota": {"total": 300, "used": 100}}))
+        self.assertEqual(rows[0][0], "month (plan)")
+        self.assertAlmostEqual(rows[0][1], 100 / 3)
+
+    def test_a_reply_without_packages_keeps_the_summed_fallback_row(self):
+        rows = list(ref.qoder_rows_of({"totalUsagePercentage": 0.42,
+                                       "expiresAt": 1793462400000}))
+        self.assertEqual(rows[0][0], "quota")
+        self.assertAlmostEqual(rows[0][1], 42.0)
 
     def test_no_rows_without_total(self):
         self.assertEqual(list(ref.qoder_rows_of({"code": 0, "data": {}})), [])
         self.assertEqual(list(ref.qoder_rows_of({})), [])
         self.assertEqual(list(ref.qoder_rows_of({"code": 3001, "msg": "parameter error"})), [])
+        self.assertEqual(list(ref.qoder_rows_of({"userQuota": {"total": 0, "used": 0}})), [])
 
     def test_no_rows_for_any_non_zero_code_including_200(self):
         # The acceptance's finding: a code that LOOKS like success must still be
@@ -98,12 +112,18 @@ class RowsTest(unittest.TestCase):
 
 
 class SeriesTest(unittest.TestCase):
-    def test_quota_rows_are_recorded_with_their_own_forecast_class(self):
+    def test_package_rows_get_their_own_series_and_the_month_class(self):
+        self.assertEqual(ref.kind_class_of("month (plan)"), "monthly")
+        self.assertEqual(ref.kind_class_of("month (add-on)"), "monthly")
         self.assertEqual(ref.kind_class_of("quota"), "monthly")
         mark = datetime.fromtimestamp(1793400000, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         history = {}
-        ref.record_sample(history, "qoder:me@example.com", "quota", 42.0, 1793400000)
-        self.assertEqual(history, {"qoder:me@example.com|quota": [[mark, 42.0]]})
+        ref.record_sample(history, "qoder:me@example.com", "month (plan)", 0.0, 1793400000)
+        ref.record_sample(history, "qoder:me@example.com", "month (add-on)", 83.0, 1793400000)
+        self.assertEqual(history, {
+            "qoder:me@example.com|month (plan)": [[mark, 0.0]],
+            "qoder:me@example.com|month (add-on)": [[mark, 83.0]],
+        })
 
 
 class PlanTest(unittest.TestCase):
