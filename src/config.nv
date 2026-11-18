@@ -317,14 +317,16 @@ export fn repair_for_start(mut cfg Config) -> []str {
 /// Windows path or a password may contain one, and cutting there would corrupt it
 /// silently, which is the worst way for a settings file to fail.
 fn strip_comment(line str) -> str {
-    consume sb = StringBuilder.new()
     mut in_quotes = false
-    for ch in line.chars() {
-        if ch == '"' { in_quotes = !in_quotes }
-        if ch == '#' && !in_quotes { break }
-        sb.append(ch)
+    mut cut = line.byte_len()
+    mut i = 0
+    for b in line.bytes() {
+        // ASCII bytes only: a UTF-8 continuation byte never equals '"' or '#'.
+        if b == 34 { in_quotes = !in_quotes }
+        else if b == 35 && !in_quotes { cut = i; break }
+        i += 1
     }
-    sb.into_str().trim_ascii()
+    line[..cut].trim_ascii()
 }
 
 /// `"text"` -> `text`. Anything not quoted is refused by the caller.

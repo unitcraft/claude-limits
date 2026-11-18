@@ -164,11 +164,13 @@ export fn raw_field_int(text str, key str) -> int {
         Some((_, tail)) => tail
         None => return 0
     }
-    consume sb = StringBuilder.new()
-    for ch in from_colon.trim_ascii().chars() {
-        if ch >= '0' && ch <= '9' { sb.append(ch) } else { break }
+    ro digits = from_colon.trim_ascii()
+    mut i = 0
+    for ch in digits.chars() {
+        if ch >= '0' && ch <= '9' { i += 1 } else { break }
     }
-    sb.into_str().to_int() ?? 0
+    // The prefix is ASCII digits, so the char count is the byte offset.
+    digits[..i].to_int() ?? 0
 }
 
 /// Lower case, trimmed. One e-mail is one account (plan 01 §0), and `Main@Example.com`

@@ -85,19 +85,12 @@ fn secret_shaped(run str) -> bool {
 /// A run as it goes to the file. Dots at its end are the sentence's, not the token's:
 /// `... rejected ${token}.` must not shelter the token behind the full stop.
 fn judged(run str, after_bearer bool) -> str {
-    mut core = run
-    consume sb = StringBuilder.new()
-    loop {
-        match core.strip_suffix(".") {
-            Some(rest) => {
-                core = rest
-                sb.append(".")
-            }
-            None => break
-        }
-    }
-    ro dots = sb.into_str()
-    if after_bearer || secret_shaped(core) { return "${REDACTED}${dots}" }
+    ro bytes = run.bytes()
+    mut end = bytes.len()
+    // A trailing '.' is ASCII, so the byte offset is a char boundary.
+    while end > 0 && bytes[end - 1] == 46 { end -= 1 }
+    ro core = run[..end]
+    if after_bearer || secret_shaped(core) { return "${REDACTED}${run[end..]}" }
     run
 }
 
