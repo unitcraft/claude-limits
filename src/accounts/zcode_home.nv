@@ -21,11 +21,12 @@
 module accounts.zcode_home
 
 import std.encoding.json.{Json, JsonValue}
+import std.encoding.base64.{Base64}
 import std.os.{env, home_dir}
 import claude_limits.usage.kimi.{round_percent}
 import claude_limits.accounts.discover.{Dirs, normalise, under}
 import claude_limits.accounts.login.{Creds, Secret}
-import claude_limits.usage.zcode_cipher.{decrypt_value, fallback_secret, ZcodeCipherFail}
+import claude_limits.usage.zcode_cipher.{decrypt_value, decrypt_v2, zcode_key, fallback_secret, ZcodeCipherFail}
 
 /// One ZCode login: a `v2/credentials.json`. No token in it.
 export type ZcodeLogin value {
@@ -64,7 +65,7 @@ fn with_burn(z ZcodeLogin, pct int, reset_ms int, plan_name str, plan_ends_ms in
       burn_plan_name: plan_name, burn_plan_ends_ms: plan_ends_ms, burn_span_sec: span_sec }
 
 /// One value of the store, decrypted; "" counts as missing.
-fn read_value(text str, key str, secret str) -> Result[str, str] {
+fn read_value(text str, key str, secret str, path str) Creds -> Result[str, str] {
     ro fields = match Json.parse(text) {
         Ok(v) => v
         Err(_) => return Err("credentials: not a JSON object")
@@ -78,6 +79,21 @@ fn read_value(text str, key str, secret str) -> Result[str, str] {
         Some(v) => v.str() ?? ""
     }
     if raw == "" { return Err("credentials hold no ${key}") }
+    if raw.starts_with("enc:v2:") {
+        mut key_bytes []int = []
+        if raw.starts_with("enc:v2:os:") {
+            ro encoded = Creds.zcode_os_key(path)
+            if Some(bytes) = Base64.decode_url(encoded).ok() {
+                for b in bytes { key_bytes.push(b as int) }
+            }
+        } else if raw.starts_with("enc:v2:env:") {
+            key_bytes = zcode_key(secret)
+        }
+        return match decrypt_v2(raw, key_bytes) {
+            Ok(plain) => Ok(plain)
+            Err(e) => Err(e.to_str())
+        }
+    }
     match decrypt_value(raw, secret) {
         // A newer scheme names itself; the wrong-secret advice would be a lie for it
         // (task 036).
@@ -109,15 +125,15 @@ export fn zcode_logins_at(dir str, secret str) Dirs Creds -> []ZcodeLogin {
     // THE FIRST failure names the cause; later ones are its consequences (a jwt that
     // will not decrypt says so, not "no access token").
     mut broken = ""
-    ro jwt = match read_value(text, "zcodejwttoken", secret) {
+    ro jwt = match read_value(text, "zcodejwttoken", secret, path) {
         Ok(s) => s
         Err(why) => { broken = why; "" }
     }
-    ro access = match read_value(text, "oauth:zai:access_token", secret) {
+    ro access = match read_value(text, "oauth:zai:access_token", secret, path) {
         Ok(s) => s
         Err(why) => { if broken == "" { broken = why }; "" }
     }
-    ro info = match read_value(text, "oauth:zai:user_info", secret) {
+    ro info = match read_value(text, "oauth:zai:user_info", secret, path) {
         Ok(s) => s
         Err(why) => { if broken == "" { broken = why }; "" }
     }
@@ -141,7 +157,7 @@ export fn zcode_logins_at(dir str, secret str) Dirs Creds -> []ZcodeLogin {
 /// The MCP jwt of one ZCode login, for the one caller that sends it in `Authorization`.
 export fn read_zcode_jwt(path str, secret str) Creds -> Option[Secret] {
     if path == "" { return None }
-    match read_value(Creds.read(path), "zcodejwttoken", secret) {
+    match read_value(Creds.read(path), "zcodejwttoken", secret, path) {
         Err(_) => None
         Ok(s) => Some(Secret.new(s))
     }
@@ -151,7 +167,7 @@ export fn read_zcode_jwt(path str, secret str) Creds -> Option[Secret] {
 /// `X-Bigmodel-Authorization` (the burn endpoint refuses the jwt alone).
 export fn read_zcode_access(path str, secret str) Creds -> Option[Secret] {
     if path == "" { return None }
-    match read_value(Creds.read(path), "oauth:zai:access_token", secret) {
+    match read_value(Creds.read(path), "oauth:zai:access_token", secret, path) {
         Err(_) => None
         Ok(s) => Some(Secret.new(s))
     }

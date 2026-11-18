@@ -1,0 +1,17 @@
+// The production-only read boundary for ZCode's Windows Credential Manager key.
+module accounts.zcode_keyring
+
+extern "C" fn cl_zcode_os_key(path *u8, path_len int, out_len *mut int) -> *u8
+extern "C" fn cl_zcode_free_key(key *u8) -> ()
+
+export fn read_os_key(path str) -> str {
+    ro bytes = path.bytes()
+    mut len = 0
+    ro p = unsafe { cl_zcode_os_key(bytes.ptr(), bytes.len(), &len) }
+    if len != 43 { return "" }
+    ro view = unsafe { Vec[u8].new(p, 43) }
+    mut owned []u8 = []
+    for b in view { owned.push(b) }
+    unsafe { cl_zcode_free_key(p) }
+    owned.to_str_lossy()
+}

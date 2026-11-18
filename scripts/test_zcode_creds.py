@@ -92,16 +92,36 @@ class NodeBlobTest(unittest.TestCase):
         self.assertEqual(ref.zcode_decrypt(NODE_BLOB_VALUE, NODE_BLOB_SECRET),
                          NODE_BLOB_PLAINTEXT)
 
-    def test_enc_v2_is_refused_by_name(self):
-        """The app's newer scheme (measured 2026-11-12, ZCode 3.18.1): enc:v2:
-        <os|env>:<sha256(key)hex[:24]>:IV.TAG.CT -- the os key lives in the system
-        keyring, out of reach without FFI (plan 01.8, "enc:v2"). Refused BY NAME,
-        never passed through as plaintext (task 036)."""
-        with self.assertRaises(ValueError) as ctx:
-            ref.zcode_decrypt("enc:v2:os:0123456789abcdef01234567.AAAA.BBBB.CCC",
-                              "any secret")
-        self.assertEqual(str(ctx.exception),
-                         "store uses enc:v2, not supported yet")
+    def test_enc_v2_bad_shape(self):
+        with self.assertRaisesRegex(ValueError, "malformed enc:v2"):
+            ref.zcode_decrypt("enc:v2:os:0123456789abcdef01234567.AAAA.BBBB.CCC", "secret")
+
+    def test_enc_v2_os_key_and_authentication(self):
+        key = bytes(range(32))
+        ct, tag = ref._gcm_encrypt(key, bytes(12), b"paid-plan-token")
+        enc = lambda x: base64.urlsafe_b64encode(x).decode().rstrip("=")
+        value = "enc:v2:os:" + hashlib.sha256(key).hexdigest()[:24] + ":" + ".".join(map(enc, (bytes(12), tag, ct)))
+        with mock.patch.object(ref, "zcode_os_key", return_value=key) as read:
+            self.assertEqual(ref.zcode_decrypt(value, "unused", "credentials.json"), "paid-plan-token")
+            read.assert_called_once_with("credentials.json")
+            with self.assertRaisesRegex(ValueError, "fingerprint mismatch"):
+                ref.zcode_decrypt(value.replace(hashlib.sha256(key).hexdigest()[:24], "0" * 24), "unused", "credentials.json")
+            with self.assertRaises(ValueError):
+                ref.zcode_decrypt(value[:-1] + ("A" if value[-1] != "A" else "B"), "unused", "credentials.json")
+
+    def test_enc_v2_env_and_secret_file(self):
+        key = hashlib.sha256(NODE_BLOB_SECRET.encode()).digest()
+        value = "enc:v2:env:" + hashlib.sha256(key).hexdigest()[:24] + ":" + NODE_BLOB_VALUE[7:]
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {}, clear=True):
+            path = Path(tmp) / "credentials.json"
+            (Path(tmp) / "credential-secret").write_text(NODE_BLOB_SECRET, encoding="utf-8")
+            self.assertEqual(ref.zcode_decrypt(value, "unused", path), NODE_BLOB_PLAINTEXT)
+            with mock.patch.dict(os.environ, {"ZCODE_CREDENTIAL_SECRET": NODE_BLOB_SECRET}):
+                self.assertEqual(ref.zcode_decrypt(value, "unused", path), NODE_BLOB_PLAINTEXT)
+            with mock.patch.dict(os.environ, {"ZCODE_CREDENTIAL_SECRET_FILE": str(Path(tmp) / "credential-secret")}):
+                self.assertEqual(ref.zcode_decrypt(value, "unused", path), NODE_BLOB_PLAINTEXT)
+
+    def test_future_scheme_is_refused_by_name(self):
         with self.assertRaises(ValueError) as ctx:
             ref.zcode_decrypt("enc:v3:whatever", "any secret")
         self.assertEqual(str(ctx.exception),
@@ -196,7 +216,7 @@ class LoginTest(unittest.TestCase):
             body = {"zcodejwttoken": "enc:v2:os:0123456789abcdef01234567.AAAA.BBBB.CCC"}
             f = write_creds(tmp, body)
             login = ref.zcode_login_of(f)
-            self.assertEqual(login["error"], "store uses enc:v2, not supported yet")
+            self.assertEqual(login["error"], "malformed enc:v2 credential")
             self.assertEqual(login["name"], "zcode")
             self.assertEqual(login["home"], Path(tmp))
 

@@ -56,6 +56,7 @@ fn on_disk[T](body fn() Dirs Creds -> T) -> T =>
         is_dir(path) -> bool { path == "/qd/home" || path == "/qd/out" || path == "/qd/bad" || path == "/qd/wrong" || path == "/qd/none" }
     } {
         with Creds = effect Creds {
+            zcode_os_key(path) -> str { "" }
             read(path) -> str { file_text(path) }
         } {
             body()

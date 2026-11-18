@@ -60,6 +60,7 @@ fn with_login[T](body fn() Dirs Creds -> T) -> T =>
         is_dir(path) -> bool { login_dirs().contains(path) }
     } {
         with Creds = effect Creds {
+            zcode_os_key(path) -> str { "" }
             read(path) -> str { login_text(path) }
         } {
             body()
@@ -81,6 +82,7 @@ fn with_endpoint[T](mut a Asked, body fn() Http PollLog Creds -> T) -> T =>
             reading(r Reading) -> () {}
         } {
             with Creds = effect Creds {
+                zcode_os_key(path) -> str { "" }
                 read(path) -> str { login_text(path) }
             } {
                 body()

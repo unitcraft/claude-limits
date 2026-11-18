@@ -32,7 +32,7 @@ src = "src"
 
 [package]
 name = "claude_limits"
-version = "0.1.1"
+version = "0.1.6"
 description = "Usage limits of several Claude accounts: local backend with a browser page, optional always-on-top widget"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/unitcraft/claude-limits"
@@ -70,3 +70,7 @@ compress = { git = "https://github.com/nv-lang/nova-compress", version = "0.1" }
 # resolver takes the newest matching tag, so a fix sitting on the package's `main` is
 # invisible here until it is tagged.
 duckdb = { git = "https://github.com/nv-lang/nova-duckdb", version = "0.2" }
+
+[ffi]
+c_shims = ["native/zcode_keyring.c", "native/zcode_keyring.h"]
+include_dirs = ["native"]

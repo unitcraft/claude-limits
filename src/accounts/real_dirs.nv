@@ -28,6 +28,7 @@ import std.fs.{real_fs, read_dir, read_text, try_exists, metadata}
 import std.os.{real_os, home_dir}
 import claude_limits.accounts.discover.{Dirs, expand_home}
 import claude_limits.accounts.login.{Creds}
+import claude_limits.accounts.zcode_keyring.{read_os_key}
 
 /// Runs `body` with both effects served by the real filesystem.
 ///
@@ -69,6 +70,7 @@ export fn with_real_disk[T](body fn() Dirs Creds -> T) Io -> T {
             }
         } {
             with Creds = effect Creds {
+                zcode_os_key(path) -> str { read_os_key(expand_home(path, home)) }
                 read(path) -> str {
                     match read_text(expand_home(path, home).to_path()) { Err(_) => "", Ok(t) => t }
                 }

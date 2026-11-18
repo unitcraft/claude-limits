@@ -34,6 +34,7 @@ fn on_disk[T](body fn() Dirs Creds -> T) -> T =>
         is_dir(path) -> bool { path == "/h/codex" || path == "/h/key" || path == "/h/none" }
     } {
         with Creds = effect Creds {
+            zcode_os_key(path) -> str { "" }
             read(path) -> str { file_text(path) }
         } {
             body()

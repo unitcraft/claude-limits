@@ -892,20 +892,85 @@ def zcode_secret():
             f"{getpass.getuser()}")
 
 
-def zcode_decrypt(value, secret):
-    """One credentials.json value -> plaintext. Plain strings pass through;
-    enc:v1 values are decrypted and must authenticate. A value under another
-    enc: scheme (the app's enc:v2, its key in the system keyring -- measured
-    2026-11-12, plan 01.8) raises BY NAME instead of passing through."""
+def zcode_os_key(path):
+    """Read ZCode's existing Windows keyring entry; never create or modify it."""
+    if sys.platform != "win32":
+        raise ValueError("ZCode OS keyring is currently supported on Windows only")
+    import ctypes as c
+    from ctypes import wintypes as w
+
+    class Credential(c.Structure):
+        _fields_ = [("flags", w.DWORD), ("type", w.DWORD),
+                    ("target", w.LPWSTR), ("comment", w.LPWSTR),
+                    ("written", w.FILETIME), ("size", w.DWORD),
+                    ("blob", c.POINTER(c.c_ubyte)), ("persist", w.DWORD),
+                    ("count", w.DWORD), ("attributes", c.c_void_p),
+                    ("alias", w.LPWSTR), ("user", w.LPWSTR)]
+
+    api = c.WinDLL("advapi32", use_last_error=True)
+    api.CredReadW.argtypes = [w.LPCWSTR, w.DWORD, w.DWORD,
+                              c.POINTER(c.POINTER(Credential))]
+    api.CredReadW.restype = w.BOOL
+    api.CredFree.argtypes = [c.c_void_p]
+    account = hashlib.sha256(str(Path(path).resolve()).encode("utf-8")).hexdigest()
+    entry = c.POINTER(Credential)()
+    if not api.CredReadW(account + ".ZCode Credential Encryption", 1, 0, c.byref(entry)):
+        raise ValueError("ZCode OS key unavailable; run under the same Windows user as ZCode")
+    try:
+        password = c.string_at(entry.contents.blob, entry.contents.size).decode("utf-16-le")
+        if len(password) != 43 or any(ch not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-" for ch in password):
+            raise ValueError("invalid ZCode OS key")
+        return base64.urlsafe_b64decode(password + "=")
+    finally:
+        api.CredFree(entry)
+
+
+def zcode_v2_key(source, path):
+    if source == "os":
+        return zcode_os_key(path)
+    if source != "env":
+        raise ValueError("invalid ZCode credential key source")
+    secret = os.environ.get("ZCODE_CREDENTIAL_SECRET")
+    secret_file = os.environ.get("ZCODE_CREDENTIAL_SECRET_FILE")
+    if secret and secret_file:
+        raise ValueError("set only one ZCode credential secret source")
+    if not secret:
+        try:
+            secret = Path(secret_file or Path(path).parent / "credential-secret").read_text(encoding="utf-8")
+        except OSError:
+            raise ValueError("ZCode credential secret file unavailable") from None
+        if not 32 <= len(secret.encode("utf-8")) <= 4096:
+            raise ValueError("invalid ZCode credential secret file")
+    return hashlib.sha256(secret.encode("utf-8")).digest()
+
+
+def zcode_decrypt(value, secret, path=None):
+    """Authenticate v1/v2 credentials without writing the store or keyring.
+
+    V2 binds the ciphertext to its key source and SHA-256 fingerprint. The
+    path identifies the OS keyring entry, exactly as in ZCode's system cipher.
+    """
     if not isinstance(value, str) or not value.startswith("enc:"):
         return value
-    if not value.startswith("enc:v1:"):
+    key = hashlib.sha256(secret.encode("utf-8")).digest()
+    if value.startswith("enc:v2:"):
+        parts = value.split(":")
+        if len(parts) != 5 or len(parts[3]) != 24 or any(ch not in "0123456789abcdef" for ch in parts[3]):
+            raise ValueError("malformed enc:v2 credential")
+        if path is None:
+            raise ValueError("enc:v2 requires the credentials file path")
+        key = zcode_v2_key(parts[2], path)
+        if hashlib.sha256(key).hexdigest()[:24] != parts[3]:
+            raise ValueError("ZCode credential key fingerprint mismatch")
+        body = parts[4]
+    elif value.startswith("enc:v1:"):
+        body = value[7:]
+    else:
         scheme = value.split(":", 2)[1] if value.count(":") >= 2 else "unknown"
         raise ValueError(f"store uses enc:{scheme}, not supported yet")
-    iv_b64, tag_b64, ct_b64 = value[7:].split(".")
+    iv_b64, tag_b64, ct_b64 = body.split(".")
     def raw(b):
         return base64.urlsafe_b64decode(b + "=" * (-len(b) % 4))
-    key = hashlib.sha256(secret.encode("utf-8")).digest()
     return _gcm_decrypt(key, raw(iv_b64), raw(ct_b64), raw(tag_b64)).decode("utf-8")
 
 
@@ -926,13 +991,13 @@ def zcode_login_of(f, home_label=None):
                 "jwt": None, "access": None, "home": home}
     secret = zcode_secret()
     try:
-        jwt = zcode_decrypt(creds.get("zcodejwttoken"), secret)
-        access = zcode_decrypt(creds.get("oauth:zai:access_token"), secret)
-        info = json.loads(zcode_decrypt(creds.get("oauth:zai:user_info"), secret))
+        jwt = zcode_decrypt(creds.get("zcodejwttoken"), secret, f)
+        access = zcode_decrypt(creds.get("oauth:zai:access_token"), secret, f)
+        info = json.loads(zcode_decrypt(creds.get("oauth:zai:user_info"), secret, f))
     except (ValueError, TypeError) as e:
-        # The unsupported-scheme refusal is its own message: the wrong-secret advice
-        # would be a lie for it (task 036).
-        error = (str(e) if "not supported yet" in str(e)
+        # V2 has distinct keyring, secret-file, fingerprint and format failures;
+        # preserve the cause instead of suggesting a different v1 secret.
+        error = (str(e) if "not supported yet" in str(e) or any(isinstance(v, str) and v.startswith("enc:v2:") for v in creds.values())
                  else f"credentials will not decrypt ({e}): wrong ZCODE_CREDENTIAL_SECRET?")
         return {"name": "zcode", "label": label, "error": error,
                 "jwt": None, "access": None, "home": home}
@@ -2685,6 +2750,8 @@ def main(argv):
             wait = max(interval, backoff)
             if wait > interval:
                 print(f"\nbacking off: next snapshot in {wait} s")
+            else:
+                print(f"\nwaiting {wait} s until next snapshot; Ctrl+C to stop")
             sys.stdout.flush()
             time.sleep(wait)
     except KeyboardInterrupt:

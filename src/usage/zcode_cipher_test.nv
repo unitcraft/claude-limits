@@ -8,7 +8,7 @@
 
 module usage.zcode_cipher_test
 
-import claude_limits.usage.zcode_cipher.{aes256_block, gcm_decrypt, gcm_encrypt, decrypt_value, zcode_key, fallback_secret, GcmOut}
+import claude_limits.usage.zcode_cipher.{aes256_block, gcm_decrypt, gcm_encrypt, decrypt_value, decrypt_v2, zcode_key, fallback_secret, GcmOut}
 
 fn ints(xs []u8) -> []int {
     mut out []int = []
@@ -139,6 +139,19 @@ test "an enc: value this tool cannot open is refused with the scheme's name" {
 
 test "the fallback secret is spelled the way the app spells it" {
     assert(fallback_secret("win32", "C:\\Users\\me", "me") == NODE_BLOB_SECRET)
+}
+
+test "v2 authenticates the Node blob and verifies the key fingerprint" {
+    ro body = NODE_BLOB_VALUE[7..]
+    ro key = zcode_key(NODE_BLOB_SECRET)
+    ro value = "enc:v2:os:acb6fb9e76b269040c4a803e:${body}"
+    assert(decrypt_v2(value, key).ok() == Some("zcode-fixture-token-0123456789abcdef"))
+    assert(decrypt_v2("enc:v2:env:acb6fb9e76b269040c4a803e:${body}", key).ok() == Some("zcode-fixture-token-0123456789abcdef"))
+    assert(decrypt_v2(value, []).is_err())
+    assert(decrypt_v2(value, zcode_key("wrong key")).is_err())
+    assert(decrypt_v2("enc:v2:os:000000000000000000000000:${body}", key).is_err())
+    assert(decrypt_v2("enc:v2:bad:acb6fb9e76b269040c4a803e:${body}", key).is_err())
+    assert(decrypt_v2("enc:v2:os:acb6fb9e76b269040c4a803e:bad", key).is_err())
 }
 
 fn ints16(hex str) -> []int => hex16s(hex)

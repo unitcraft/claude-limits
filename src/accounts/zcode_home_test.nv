@@ -98,6 +98,7 @@ fn on_disk[T](body fn() Dirs Creds -> T) -> T =>
         is_dir(path) -> bool { path == "/h/zcode" || path == "/h/wrong" || path == "/h/partial" || path == "/h/none" }
     } {
         with Creds = effect Creds {
+            zcode_os_key(path) -> str { "" }
             read(path) -> str { file_text(path) }
         } {
             body()
@@ -152,7 +153,7 @@ test "an enc:v2 store says so BY NAME, and the burn still rides from the log" {
     assert(got[0].name == "zcode")
     assert(!got[0].has_token)
     // The exact reason, not the generic "no complete login" (task 036).
-    assert(got[0].broken == "store uses enc:v2, not supported yet")
+    assert(got[0].broken == "malformed input")
     // The bypass is alive: percent, reset and plan name are the app's own log,
     // which does not need the store to open (task 036).
     assert(got[0].burn)

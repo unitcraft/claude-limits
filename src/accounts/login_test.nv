@@ -26,6 +26,7 @@ const PAST = 1_700_000_000_000
 
 fn with_files[T](identity str, creds str, body fn() Creds -> T) -> T =>
     with Creds = effect Creds {
+        zcode_os_key(path) -> str { "" }
         read(path) -> str {
             if path.ends_with(".claude.json") { identity } else { creds }
         }

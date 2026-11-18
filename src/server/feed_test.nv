@@ -71,6 +71,7 @@ fn on_disk[T](body fn() Dirs Creds -> T) -> T =>
         is_dir(path) -> bool { dirs_here().contains(path) }
     } {
         with Creds = effect Creds {
+            zcode_os_key(path) -> str { "" }
             read(path) -> str { file_text(path) }
         } {
             body()
@@ -102,6 +103,7 @@ fn endpoint[T](mut a Asked, raw str, body fn() Http PollLog Creds -> T) -> T =>
             reading(r Reading) -> () {}
         } {
             with Creds = effect Creds {
+                zcode_os_key(path) -> str { "" }
                 read(path) -> str { file_text(path) }
             } {
                 body()
@@ -172,6 +174,7 @@ fn cx_disk[T](body fn() Dirs Creds -> T) -> T =>
         is_dir(path) -> bool { path.starts_with("/cx") }
     } {
         with Creds = effect Creds {
+            zcode_os_key(path) -> str { "" }
             read(path) -> str { cx_text(path) }
         } {
             body()
@@ -190,6 +193,7 @@ fn cx_endpoint[T](mut a Asked, raw str, body fn() Http PollLog Creds -> T) -> T 
             reading(r Reading) -> () {}
         } {
             with Creds = effect Creds {
+                zcode_os_key(path) -> str { "" }
                 read(path) -> str { cx_text(path) }
             } {
                 body()
@@ -319,6 +323,7 @@ fn zc_disk[T](body fn() Dirs Creds -> T) -> T =>
         is_dir(path) -> bool { path.starts_with("/zc") }
     } {
         with Creds = effect Creds {
+            zcode_os_key(path) -> str { "" }
             read(path) -> str { zc_text(path) }
         } {
             body()
@@ -363,6 +368,7 @@ fn zc_endpoint[T](mut a Asked, quota str, body fn() Http PollLog Creds -> T) -> 
             reading(r Reading) -> () {}
         } {
             with Creds = effect Creds {
+                zcode_os_key(path) -> str { "" }
                 read(path) -> str { zc_text(path) }
             } {
                 body()
@@ -418,7 +424,7 @@ test "an enc:v2 store is stale with the scheme's name, and the plan row rides fr
     // NOT asked: there is no token to ask with.
     assert(a.n == 0)
     assert(same("state", "stale", k[0].state.to_str()))
-    assert(k[0].message.contains("store uses enc:v2, not supported yet"))
+    assert(k[0].message.contains("malformed input"))
     assert(same("name", "zcode", k[0].display_name))
     assert(k[0].windows.len() == 1)
     assert(same("kind", "plan", k[0].windows[0].kind))

@@ -56,6 +56,7 @@ fn qd_disk[T](body fn() Dirs Creds -> T) -> T =>
         is_dir(path) -> bool { path.starts_with("/qd") }
     } {
         with Creds = effect Creds {
+            zcode_os_key(path) -> str { "" }
             read(path) -> str { qd_text(path) }
         } {
             body()
@@ -90,6 +91,7 @@ fn qd_endpoint[T](mut a Asked, raw str, body fn() Http PollLog Creds -> T) -> T 
             reading(r Reading) -> () {}
         } {
             with Creds = effect Creds {
+                zcode_os_key(path) -> str { "" }
                 read(path) -> str { qd_text(path) }
             } {
                 body()

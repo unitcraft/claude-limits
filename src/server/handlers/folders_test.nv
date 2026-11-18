@@ -100,6 +100,7 @@ fn with_fixture(body fn() Dirs Creds -> str) -> str =>
         exists(path) -> bool { known_path(path) }
         is_dir(path) -> bool { known_dir(path) }
     }, Creds = effect Creds {
+        zcode_os_key(path) -> str { "" }
         read(path) -> str { fixture_text(path) }
     } {
         body()

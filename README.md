@@ -345,10 +345,16 @@ ZCode works in the reference script (plan
 [01.8](docs/plans/01.8-zcode.md)); the Nova binary follows. A folder holding
 `v2/credentials.json` is a ZCode home: the desktop app's token store, whose
 values are AES-256-GCM encrypted (`enc:v1:...`, the key derived from the
-machine). The script decrypts them in memory -- it never writes the file, and
+machine, or `enc:v2:...`). The Python script reads v2 OS keys from Windows
+Credential Manager under the same Windows user as ZCode; v2 `env` keys use
+`ZCODE_CREDENTIAL_SECRET`, `ZCODE_CREDENTIAL_SECRET_FILE`, or the adjacent
+`credential-secret` file. OS keyrings on other platforms are not supported yet.
+The script decrypts them in memory -- it never writes the file or keyring, and
 no refresh token exists in the store, so a rejected login is reported with
-advice to start ZCode once. One `plan usage` row (burn and reset) and a plan
-line (name and end date) are shown.
+advice to start ZCode once. Paid quota rows (`5h limit` and `weekly limit`)
+come from Z.ai; `plan usage` and the promotion's name and end date come from
+ZCode's balance log. The Nova server also reads v2 OS keys from Windows
+Credential Manager and displays the paid quota windows.
 
 Qoder works the same way (task 035): a folder holding `.qoder-app-status.json`
 is a Qoder home (the CLI's default `~/.qoder`, or `$QODER_HOME`). The identity

@@ -39,6 +39,7 @@ module accounts.login
 /// discover.nv: with no write operation in the effect, a write cannot be written.
 export type Creds effect {
     read(path str) -> str        // "" when the file is absent or unreadable
+    zcode_os_key(path str) -> str // base64url key of this store; "" when unavailable
 }
 
 /// The bearer token. `consume`: used once, never copied, never printed.

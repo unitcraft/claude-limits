@@ -31,12 +31,16 @@ export type ZcodeCipherFail enum
     | TagMismatch
     | Shape
     | UnsupportedScheme(str)
+    | KeyUnavailable
+    | KeyMismatch
 
 export fn ZcodeCipherFail @to_str() -> str =>
     match @ {
         TagMismatch => "tag mismatch"
         Shape => "malformed input"
         UnsupportedScheme(s) => "store uses enc:${s}, not supported yet"
+        KeyUnavailable => "ZCode OS key unavailable; run under the same Windows user as ZCode"
+        KeyMismatch => "ZCode credential key fingerprint mismatch"
     }
 
 // FIPS-197 §3.2.1, a literal on purpose: deriving it at import time is 65k field
@@ -313,13 +317,40 @@ export fn fallback_secret(platform str, home str, user str) -> str =>
 export fn decrypt_value(value str, secret str) -> Result[str, ZcodeCipherFail] {
     if !value.starts_with("enc:") { return Ok(value) }
     if !value.starts_with("enc:v1:") { return Err(ZcodeCipherFail.UnsupportedScheme(scheme_of(value))) }
-    ro body = value["enc:v1:".byte_len()..]
+    decrypt_body(value["enc:v1:".byte_len()..], zcode_key(secret))
+}
+
+/// V2 uses the same authenticated GCM body, bound to a source and key fingerprint.
+export fn decrypt_v2(value str, key []int) -> Result[str, ZcodeCipherFail] {
+    ro fields = value.split(":").collect()
+    if fields.len() != 5 { return Err(ZcodeCipherFail.Shape) }
+    if fields[0] != "enc" || fields[1] != "v2" { return Err(ZcodeCipherFail.Shape) }
+    if fields[2] != "os" && fields[2] != "env" { return Err(ZcodeCipherFail.Shape) }
+    if fields[3].byte_len() != 24 { return Err(ZcodeCipherFail.Shape) }
+    for b in fields[3].bytes() {
+        if !((b >= 48 && b <= 57) || (b >= 97 && b <= 102)) { return Err(ZcodeCipherFail.Shape) }
+    }
+    if key.len() != 32 { return Err(ZcodeCipherFail.KeyUnavailable) }
+    mut bytes []u8 = []
+    for b in key { bytes.push(b as u8) }
+    ro digest = Sha256.hash(bytes)
+    ro digits = "0123456789abcdef"
+    mut fingerprint = ""
+    for k in 0..12 {
+        ro b = digest[k] as int
+        fingerprint = "${fingerprint}${digits[b / 16..b / 16 + 1]}${digits[b % 16..b % 16 + 1]}"
+    }
+    if fingerprint != fields[3] { return Err(ZcodeCipherFail.KeyMismatch) }
+    decrypt_body(fields[4], key)
+}
+
+fn decrypt_body(body str, key []int) -> Result[str, ZcodeCipherFail] {
     ro parts = body.split(".").collect()
     if parts.len() != 3 { return Err(ZcodeCipherFail.Shape) }
     ro iv = match decode_part(parts[0]) { Ok(b) => b, Err(e) => return Err(e) }
     ro tag = match decode_part(parts[1]) { Ok(b) => b, Err(e) => return Err(e) }
     ro ct = match decode_part(parts[2]) { Ok(b) => b, Err(e) => return Err(e) }
-    match gcm_decrypt(zcode_key(secret), iv, ct, tag) {
+    match gcm_decrypt(key, iv, ct, tag) {
         Err(e) => Err(e)
         Ok(plain) => Ok(bytes_str(plain))
     }
